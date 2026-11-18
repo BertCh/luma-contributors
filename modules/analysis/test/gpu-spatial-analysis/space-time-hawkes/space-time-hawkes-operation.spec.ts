@@ -51,6 +51,7 @@ for (const edge of [false, true]) {
       output: {
         estimates: 'estimates',
         logLikelihood: 'logLikelihood',
+        fittedLogLikelihood: 'fittedLogLikelihood',
         backgroundProbability: 'backgroundProbability',
         status: {
           converged: 'converged',
@@ -82,6 +83,7 @@ for (const edge of [false, true]) {
     const outputs = [
       'estimates',
       'logLikelihood',
+      'fittedLogLikelihood',
       'backgroundProbability',
       ...Object.values(props.output.status!)
     ];
@@ -117,6 +119,7 @@ it('compares the reported cycling input with a one-iteration budget and latest-f
     output: {
       estimates: 'estimates',
       logLikelihood: 'logLikelihood',
+      fittedLogLikelihood: 'fittedLogLikelihood',
       backgroundProbability: 'backgroundProbability',
       status: {
         converged: 'converged',
@@ -142,6 +145,7 @@ it('compares the reported cycling input with a one-iteration budget and latest-f
   const outputs = [
     'estimates',
     'logLikelihood',
+    'fittedLogLikelihood',
     'backgroundProbability',
     ...Object.values(props.output.status!)
   ];
@@ -168,3 +172,86 @@ it('compares the reported cycling input with a one-iteration budget and latest-f
     );
   }
 });
+
+for (const withProbabilities of [false, true]) {
+  it(`publishes the one-update fitted likelihood ${withProbabilities ? 'with' : 'without'} final probabilities`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const props: SpaceTimeHawkesOperationProps = {
+      id: 'hawkes-fitted-likelihood',
+      rowCount: 2,
+      maximumIterations: 1,
+      positions: 'positions',
+      times: 'times',
+      parameters: 'parameters',
+      output: {
+        estimates: 'estimates',
+        fittedLogLikelihood: 'fittedLogLikelihood',
+        ...(withProbabilities ? {backgroundProbability: 'backgroundProbability'} : {})
+      }
+    };
+    const result = await runOperationGraph(device, {
+      inputs: {
+        positions: {format: 'float32x2', values: Float32Array.of(0, 0, 1, 1)},
+        times: {format: 'float32', values: Float32Array.of(2, 2)},
+        parameters: {format: 'float32', values: Float32Array.of(1, 10, 10, 10, 1e-8, 1, 0.5, 1, 1)}
+      },
+      operations: [new GPUSpaceTimeHawkesOperation(props)],
+      outputs: Object.values(props.output) as string[]
+    });
+    expect(result['estimates'][0]).toBeCloseTo(0.2, 6);
+    // No strictly earlier parents: the fitted Poisson intensity is 0.2, not the starting 1.
+    expect(result['fittedLogLikelihood'][0]).toBeCloseTo(2 * Math.log(0.2) - 2, 5);
+    if (withProbabilities) expect(Array.from(result['backgroundProbability'])).toEqual([1, 1]);
+  });
+}
+
+for (const scene of ['endpoint', 'extreme-window'] as const) {
+  it(`publishes consistent fitted Hawkes diagnostics for ${scene}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const rowCount = scene === 'endpoint' ? 2 : 4;
+    const props: SpaceTimeHawkesOperationProps = {
+      id: 'hawkes-review-diagnostics',
+      rowCount,
+      maximumIterations: 1,
+      positions: 'positions',
+      times: 'times',
+      parameters: 'parameters',
+      output: {
+        estimates: 'estimates',
+        fittedLogLikelihood: 'fittedLogLikelihood',
+        backgroundProbability: 'backgroundProbability'
+      }
+    };
+    const inputs = {
+      positions: {format: 'float32x2' as const, values: new Float32Array(2 * rowCount)},
+      times: {
+        format: 'float32' as const,
+        values: new Float32Array(rowCount).fill(scene === 'endpoint' ? 10 : 0)
+      },
+      parameters: {
+        format: 'float32' as const,
+        values:
+          scene === 'endpoint'
+            ? Float32Array.of(1, 10, 10, 10, 1e-8, 1, 0.5, 1, 1)
+            : Float32Array.of(2 ** 100, 2 ** -126, 10, 10, 1e-8, 1, 0.5, 2 ** 126, 1)
+      }
+    };
+    for (const Operation of [GPUSpaceTimeHawkesOperation, CPUSpaceTimeHawkesOperation]) {
+      const result = await runOperationGraph(device, {
+        inputs,
+        operations: [new Operation(props)],
+        outputs: Object.values(props.output) as string[]
+      });
+      if (scene === 'endpoint') {
+        for (const output of Object.values(result))
+          expect(Array.from(output).every(Number.isNaN)).toBe(true);
+      } else {
+        expect(result['estimates'][0]).toBe(2 ** 28);
+        expect(Number.isFinite(result['fittedLogLikelihood'][0])).toBe(true);
+        expect(Math.abs(result['fittedLogLikelihood'][0] - 73.6324844)).toBeLessThan(1e-4);
+      }
+    }
+  });
+}

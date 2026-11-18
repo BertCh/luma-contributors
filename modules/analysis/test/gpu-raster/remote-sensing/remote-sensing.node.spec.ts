@@ -6,6 +6,8 @@ import {makeGPURasterMetadata} from '../../../src/raster-analysis/raster-grid/in
 
 import {expect, it} from 'vitest';
 import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
+import {getWGSLModuleUsage} from '../../../src/testing/wgsl-memory-usage';
+import {getRasterLeastSquaresWGSL} from '../../../src/raster-analysis/remote-sensing/raster-kernel-utils';
 import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
 import {
   GPURasterConservativeRemapping,
@@ -22,6 +24,14 @@ import {
   getParsedKernelSources,
   getStorageBindingCount
 } from '../../utils/gpu-contributor-test-utils';
+
+it('RS11 period-12 QR at 129 training slots fits the 8192-byte function budget', () => {
+  const usage = getWGSLModuleUsage(getRasterLeastSquaresWGSL(129, 14, true));
+  expect(usage.unresolvedTypes).toEqual([]);
+  expect(usage.unresolvedLengths).toEqual([]);
+  expect(usage.functionName).toBe('leastSquares');
+  expect(usage.functionBytes).toBeLessThanOrEqual(8192);
+});
 
 it('RS03/04/06/07/08/10/11 construct native graph kernels within eight storage bindings', () => {
   const device = createNullWebGPUDevice();
@@ -160,9 +170,9 @@ it('RS03/04/06/07/08/10/11 construct native graph kernels within eight storage b
     for (const contributor of contributors) {
       const sources = getParsedKernelSources(contributor.getCommandNodes(graph));
       expect(sources.size, contributor.id).toBeGreaterThan(0);
-      for (const source of sources.values()) {
+      for (const {source, constants} of sources.configurations) {
         expect(getStorageBindingCount(source), contributor.id).toBeLessThanOrEqual(8);
-        expect(auditWGSLModule(source), contributor.id).toEqual([]);
+        expect(auditWGSLModule(source, constants), contributor.id).toEqual([]);
       }
     }
     expect(

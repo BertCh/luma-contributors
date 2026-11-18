@@ -13,7 +13,7 @@ import type {GPUSpatialJoinGeometry} from './spatial-join-types';
 const CANDIDATE_BYTES = 16;
 /** Bytes per candidate slot of the DE-9IM matrix column of the relate engine. */
 const RELATE_CANDIDATE_BYTES = 4;
-/** Bytes per final pair: the caller-owned `leftIds` and `rightIds` columns. */
+/** Bytes per final pair: the caller-owned `leftRows` and `rightRows` columns. */
 const PAIR_BYTES = 8;
 /** Bytes per feature of the per-side bounds (`minima` and `maxima`, two `float32x2`). */
 const BOUNDS_BYTES = 16;
@@ -66,7 +66,7 @@ export type GPUSpatialJoinCapacityPlanningOptions = {
   expectedMatchesPerLeft?: number;
   /** Exact candidate requirement read from a representative run (`output.status.candidateCount`). */
   observedCandidateCount?: number;
-  /** Exact pair requirement read from a complete run (`output.pairs.requiredCount`). */
+  /** Exact pair requirement read from a complete run (`output.pairs.status.requiredCount`). */
   observedRequiredCount?: number;
 };
 

@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
+import {validateRasterWritableBuffers} from '../raster-algebra/raster-algebra-utils';
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
@@ -11,6 +12,7 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphViewsBelongToGraph,
+  validateGraphOutputsDisjointFromInputs,
   getGraphOutputViews as getRasterPreflightOutputViews
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -24,6 +26,7 @@ import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {GPU_RASTER_SAMPLING_PARAMETER_LENGTH} from './raster-sampling-parameters';
 import {
   getRasterSamplingWGSL,
+  getNamedRasterSamplingInputViews,
   validateRasterDescription,
   validateRasterSamplingView
 } from './raster-sampling-utils';
@@ -137,23 +140,24 @@ export class GPURasterSampling implements GPUCommandNodeProducer {
         capacity
       );
     }
-    const outputs = [output.values, output.outputValidity].filter(view => view !== undefined);
-    const inputs = [
-      ...getRasterAlgebraInputViews(props.values),
-      props.mask,
-      props.positions,
-      props.pointCount,
-      props.parameters
-    ];
-    if (new Set(outputs.map(view => view.buffer)).size !== outputs.length) {
-      throw new Error(`${id} outputs must not share buffers`);
-    }
-    const inputBuffers = new Set(
-      inputs.filter(view => view !== undefined).map(view => view.buffer)
+    validateRasterWritableBuffers(id, {
+      'output.values': output.values,
+      'output.outputValidity': output.outputValidity
+    });
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      {
+        'output.values': output.values,
+        'output.outputValidity': output.outputValidity
+      },
+      {
+        ...getNamedRasterSamplingInputViews(props.values),
+        mask: props.mask,
+        positions: props.positions,
+        pointCount: props.pointCount,
+        parameters: props.parameters
+      }
     );
-    if (outputs.some(view => inputBuffers.has(view.buffer))) {
-      throw new Error(`${id} outputs must not share buffers with inputs`);
-    }
   }
 
   /** Returns one per-point kernel. */

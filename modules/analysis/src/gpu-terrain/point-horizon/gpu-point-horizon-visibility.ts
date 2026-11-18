@@ -112,7 +112,7 @@ export class GPUPointHorizonVisibility implements GPUCommandNodeProducer {
   /** Validated properties. */
   readonly props: GPUPointHorizonVisibilityProps;
   /** Resolved model: lattice, segments and pyramid layout. @internal */
-  readonly model: ResolvedPointHorizonModel;
+  private readonly model: ResolvedPointHorizonModel;
 
   constructor(props: GPUPointHorizonVisibilityProps) {
     this.id = props.id ?? 'point-horizon-visibility';

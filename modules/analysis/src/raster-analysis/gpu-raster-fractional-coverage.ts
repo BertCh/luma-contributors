@@ -10,7 +10,7 @@ import {getViewBindingRange} from '@luma.gl/graph/gpu-core';
 import {
   getIndexedRasterFractionalCoverageNodes,
   validateFractionalCoverageBindings,
-  RASTER_FRACTIONAL_CLIPPING_WGSL,
+  getRasterFractionalClippingWGSL,
   RASTER_FRACTIONAL_CANDIDATE_TILE_SIZE
 } from './fractional-coverage/raster-fractional-coverage-index';
 import {
@@ -31,6 +31,15 @@ import {
 import type {GPUPolygonGeometryFields} from '../analysis-core/contracts/index';
 import type {GPURasterBufferBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
+  validateRasterCellSizeMode,
+  type GPURasterCellSizeMode
+} from '../analysis-core/contracts/raster-grid';
+import {
+  getRasterRowAreaScaleWGSL,
+  getRasterEffectiveAxisAlignmentWGSL
+} from './raster-grid/raster-cell-area-scale';
+import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../analysis-core/kernels/wgsl-common';
+import {
   GPUPolygonTriangulation,
   getPolygonTriangulationIndexCount
 } from '../analysis-core/polygon-triangulation/gpu-polygon-triangulation';
@@ -43,7 +52,8 @@ import {
   getRasterBandViews,
   getRasterBufferBandNodes,
   validateParameterTarget,
-  validateRasterParameters
+  validateRasterParameters,
+  validateRasterGridAxisAligned
 } from './raster-band-utils';
 import {
   validateRasterExpansionViews,
@@ -151,9 +161,10 @@ export type GPURasterFractionalCoverageProps = {
  * The default bounds index enumerates zone bounding rectangles in disjoint fixed-size candidate
  * tiles, with stable zone/cell order and no global area normalisation. The explicit brute-force
  * route retains its 4,194,304 pair cap. No supersampling approximation is used.
- * A vertex whose pixel coordinate is within four float32 steps of an integer is placed on that
- * cell boundary, so zone edges that follow cell boundaries leave no sliver in the neighbouring
- * cells, also when the cell size is not a float32 number (0.3, a third of a degree). Elsewhere
+ * Identity-grid coordinates are preserved exactly. Otherwise a vertex whose pixel coordinate is
+ * within four float32 steps of an integer, capped at 1e-5 pixel, is placed on that
+ * cell boundary (half-integer for point grids). Only inverse-affine errors within that cap are
+ * removed; decimal boundaries with larger errors can still emit neighboring sliver tuples. Elsewhere
  * float32 boundary slivers can still affect raw tuple counts (edges that cross a cell obliquely,
  * origins large against the geometry); compare area-weighted results with a coordinate-scale
  * tolerance rather than requiring exact positive-support counts.
@@ -323,7 +334,7 @@ export class GPURasterFractionalCoverage implements GPUCommandNodeProducer {
           {name: 'settings', view: settings, type: 'f32', access: 'read'}
         ],
         // settings = [originX, originY, a, b, d, e, determinant, 0]; inverts the affine per vertex.
-        declarations: RASTER_FRACTIONAL_CLIPPING_WGSL,
+        declarations: getRasterFractionalClippingWGSL(grid.pixelInterpretation),
         body: `let zone=index/${cellCount}u;let cell=index%${cellCount}u;let column=f32(cell%${grid.width}u)${grid.pixelInterpretation === 'point' ? '-0.5' : ''};let row=f32(cell/${grid.width}u)${grid.pixelInterpretation === 'point' ? '-0.5' : ''};var area=0.0;var complete=true;
 for(var polygon=features[featuresOffset+zone];polygon<features[featuresOffset+zone+1u];polygon++){
  if(valid[validOffset+polygon]==0u){complete=false;break;}
@@ -435,17 +446,34 @@ export type GPURasterFractionalZonalStatisticsProps = {
   /** Extensive cell totals are multiplied by fraction; densities/intensive integrals also by cell area. */
   quantity: 'extensive' | 'density' | 'intensive';
   /**
+   * Area model: uniform (default) gives coordinate units squared; geographic and web-mercator
+   * give WGS84 ground square meters at the row center. Ground modes require an axis-aligned
+   * grid. Row placement follows parameters when supplied; nonzero per-frame cross-axis terms
+   * suppress all zones (NaN aggregates, validity zero). Cannot be combined with cellAreas.
+   */
+  cellSizeMode?: GPURasterCellSizeMode;
+  /**
+   * Positive finite per-cell areas in caller-declared units; requires uniform cellSizeMode.
+   * Exactly grid.width * grid.height rows. Invalid support or unrepresentable published
+   * aggregates suppress the affected zone: NaN areas/totals/means and validity zero.
+   */
+  cellAreas?: GraphDataView<'float32'>;
+  /**
    * The per-frame georeference view given to {@link GPURasterFractionalCoverage} (layout of
-   * {@link getGPURasterFractionalCoverageParameterValues}). The cell area is read from it on every
-   * encoding as `abs(determinant)`, so the areas follow a repacked georeference. When omitted the
-   * cell area is `abs(det(grid.affine))` fixed at compile time: pass it whenever the coverage
-   * `parameters` are rewritten for another cell size.
+   * {@link getGPURasterFractionalCoverageParameterValues}). Without cellAreas, the planar cell
+   * area is read from it on every encoding as `abs(determinant)`, and ground-mode row centers
+   * follow its origin y and row step y. When omitted these come from grid.affine at compile time:
+   * pass it whenever coverage parameters are rewritten for another cell size or row placement.
    */
   parameters?: GraphDataView<'float32'>;
   output: {
+    /** Extensive totals retain input units; density/intensive integrals have input units times area. */
     totals: GraphDataView<'float32'>;
+    /** Coverage-fraction weighted mean in input units, independent of the area model. */
     means: GraphDataView<'float32'>;
+    /** Covered area in coordinate units squared, ground square meters, or cellAreas units. */
     coveredArea: GraphDataView<'float32'>;
+    /** Valid-value area in the same units as coveredArea. */
     validArea: GraphDataView<'float32'>;
     validity: GraphDataView<'uint32'>;
   };
@@ -464,15 +492,37 @@ export class GPURasterFractionalZonalStatistics implements GPUCommandNodeProduce
       [
         ...getRasterBandViews(props.input),
         ...getGraphOutputViews(props.coverage),
-        props.parameters
+        props.parameters,
+        props.cellAreas
       ],
       getGraphOutputViews(props.output)
     );
     validateRasterFractionalWritableViews(this.id, props.output, [
       ...getRasterBandViews(props.input),
       ...getGraphOutputViews(props.coverage),
-      props.parameters
+      props.parameters,
+      props.cellAreas
     ]);
+    validateRasterCellSizeMode(this.id, props.cellSizeMode);
+    for (const [name, view] of Object.entries(props.coverage.status)) {
+      if (!view) continue;
+      validateSinglePackedView(view, ['uint32'], `${this.id} coverage.status.${name}`);
+      requireRasterLength(view, 1, this.id, `coverage.status.${name}`);
+    }
+    validateRasterGridAxisAligned(this.id, props.grid, props.cellSizeMode);
+    validateRequirement(
+      this.id,
+      !props.cellAreas || (props.cellSizeMode ?? 'uniform') === 'uniform',
+      'cellSizeMode must be uniform when cellAreas is given (cellAreas already declares the areas)'
+    );
+    if (props.cellAreas) {
+      validateSinglePackedView(props.cellAreas, ['float32'], `${this.id} cellAreas`);
+      validateRequirement(
+        this.id,
+        props.cellAreas.length === props.grid.width * props.grid.height,
+        'cellAreas must contain exactly grid.width * grid.height rows'
+      );
+    }
     if (props.parameters) {
       validateRasterParameters(
         this.id,
@@ -486,7 +536,9 @@ export class GPURasterFractionalZonalStatistics implements GPUCommandNodeProduce
     );
     validateRequirement(
       this.id,
-      props.parameters !== undefined || Number.isFinite(Math.fround(cellArea)),
+      props.cellAreas !== undefined ||
+        props.parameters !== undefined ||
+        Number.isFinite(Math.fround(cellArea)),
       'grid.affine determinant must fit in finite float32'
     );
     for (const name of ['scale', 'offset'] as const) {
@@ -541,6 +593,7 @@ export class GPURasterFractionalZonalStatistics implements GPUCommandNodeProduce
       ...getRasterBandViews(props.input),
       ...getGraphOutputViews(coverage),
       props.parameters,
+      props.cellAreas,
       ...getGraphOutputViews(output)
     ]) {
       if (view)
@@ -571,25 +624,68 @@ export class GPURasterFractionalZonalStatistics implements GPUCommandNodeProduce
       ...getRasterBandViews(props.input),
       ...getGraphOutputViews(coverage),
       props.parameters,
+      props.cellAreas,
       ...getGraphOutputViews(output)
     ]);
     const band = getRasterBufferBandNodes(graph, id, props.input, props.grid, true);
     const summary = createTransientView(graph, `${id}-summary`, 'float32x4', props.zoneCount);
+    const coverageComplete = createTransientView(graph, `${id}-coverage-complete`, 'uint32', 1);
     // Slot 6 of the coverage georeference is the affine determinant; read per frame when supplied.
-    const cellArea = props.parameters
-      ? 'abs(georeference[georeferenceOffset+6u])'
-      : getWGSLFloatLiteral(
-          Math.abs(
-            props.grid.affine[0] * props.grid.affine[4] -
-              props.grid.affine[1] * props.grid.affine[3]
-          )
-        );
+    const planarArea = props.cellAreas
+      ? '0.0'
+      : props.parameters
+        ? 'abs(georeference[georeferenceOffset+6u])'
+        : getWGSLFloatLiteral(
+            Math.abs(
+              props.grid.affine[0] * props.grid.affine[4] -
+                props.grid.affine[1] * props.grid.affine[3]
+            )
+          );
+    const cellSizeMode = props.cellSizeMode ?? 'uniform';
+    const cellArea = props.cellAreas
+      ? 'cellAreas[cellAreasOffset+cell]'
+      : cellSizeMode === 'uniform'
+        ? planarArea
+        : `(${planarArea}) * getRowAreaScale(cell / ${props.grid.width}u)`;
     return [
       ...band.nodes,
+      createWGSLKernelNode(graph, {
+        id: `${id}-coverage-complete`,
+        operation: 'GPURasterFractionalZonalStatistics',
+        invocationCount: 1,
+        bindings: [
+          {name: 'count', view: coverage.status.count, type: 'u32', access: 'read'},
+          {name: 'required', view: coverage.status.requiredCount, type: 'u32', access: 'read'},
+          {name: 'overflow', view: coverage.status.overflow, type: 'u32', access: 'read'},
+          ...(coverage.status.candidateOverflow
+            ? [
+                {
+                  name: 'candidateOverflow',
+                  view: coverage.status.candidateOverflow,
+                  type: 'u32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : []),
+          {name: 'complete', view: coverageComplete, type: 'u32', access: 'read_write'}
+        ],
+        body: `complete[completeOffset]=u32(count[countOffset]<=${coverage.zoneIds.length}u&&required[requiredOffset]==count[countOffset]&&overflow[overflowOffset]==0u${coverage.status.candidateOverflow ? '&&candidateOverflow[candidateOverflowOffset]==0u' : ''});`
+      }),
       createWGSLKernelNode(graph, {
         id: `${id}-aggregate`,
         operation: 'GPURasterFractionalZonalStatistics',
         invocationCount: props.zoneCount,
+        declarations: `${GET_NAN_WGSL}
+${props.cellAreas ? IS_FINITE_VALUE_WGSL : ''}
+${
+  cellSizeMode === 'uniform'
+    ? ''
+    : getRasterRowAreaScaleWGSL(
+        props.grid,
+        cellSizeMode,
+        props.parameters ? 'georeference' : undefined
+      )
+}`,
         bindings: [
           {name: 'values', view: band.band.storage.values, type: 'f32', access: 'read'},
           {name: 'validity', view: band.band.validity!, type: 'u32', access: 'read'},
@@ -598,7 +694,17 @@ export class GPURasterFractionalZonalStatistics implements GPUCommandNodeProduce
           {name: 'fractions', view: coverage.fractions, type: 'f32', access: 'read'},
           {name: 'count', view: coverage.status.count, type: 'u32', access: 'read'},
           {name: 'summary', view: summary, type: 'f32', access: 'read_write'},
-          ...(props.parameters
+          ...(props.cellAreas
+            ? [
+                {
+                  name: 'cellAreas',
+                  view: props.cellAreas,
+                  type: 'f32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : []),
+          ...(props.parameters && !props.cellAreas
             ? [
                 {
                   name: 'georeference',
@@ -609,15 +715,32 @@ export class GPURasterFractionalZonalStatistics implements GPUCommandNodeProduce
               ]
             : [])
         ],
-        body: `var total=0.0;var weighted=0.0;var covered=0.0;var observed=0.0;for(var tuple=0u;tuple<min(count[countOffset],${coverage.zoneIds.length}u);tuple++){if(zoneIds[zoneIdsOffset+tuple]!=index){continue;}let cell=cellIds[cellIdsOffset+tuple];if(cell>=${props.grid.width * props.grid.height}u){continue;}let fraction=fractions[fractionsOffset+tuple];covered+=fraction;if(validity[validityOffset+cell]!=0u){let value=values[valuesOffset+cell];weighted+=value*fraction;total+=value*fraction*${props.quantity === 'extensive' ? '1.0' : cellArea};observed+=fraction;}}summary[summaryOffset+index*4u]=total;summary[summaryOffset+index*4u+1u]=select(bitcast<f32>(0x7fc00000u | (index & 0u)),weighted/max(observed,1.0e-30),observed>0.0);summary[summaryOffset+index*4u+2u]=covered*${cellArea};summary[summaryOffset+index*4u+3u]=observed*${cellArea};`
+        body: `var total=0.0;var weighted=0.0;var covered=0.0;var observed=0.0;var observedFraction=0.0;
+for(var tuple=0u;tuple<min(count[countOffset],${coverage.zoneIds.length}u);tuple++){
+  if(zoneIds[zoneIdsOffset+tuple]!=index){continue;}
+  let cell=cellIds[cellIdsOffset+tuple];if(cell>=${props.grid.width * props.grid.height}u){continue;}
+  let area=${cellArea};
+  ${props.cellAreas ? 'if (!isFiniteValue(area) || area <= 0.0) { covered=getNaN(); observed=covered; continue; }' : ''}
+  let fraction=fractions[fractionsOffset+tuple];covered+=fraction*area;
+  if(validity[validityOffset+cell]!=0u){
+    let value=values[valuesOffset+cell];weighted+=value*fraction;
+    total+=value*fraction*${props.quantity === 'extensive' ? '1.0' : 'area'};
+    observed+=fraction*area;observedFraction+=fraction;
+  }
+}
+let aligned=${getRasterEffectiveAxisAlignmentWGSL(props.grid, cellSizeMode, props.parameters ? 'georeference' : undefined)};
+summary[summaryOffset+index*4u]=select(getNaN(),total,aligned);
+summary[summaryOffset+index*4u+1u]=select(getNaN(),weighted/select(1.0,observedFraction,observedFraction>0.0),observedFraction>0.0&&aligned);
+summary[summaryOffset+index*4u+2u]=select(getNaN(),covered,aligned);summary[summaryOffset+index*4u+3u]=select(getNaN(),observed,aligned);`
       }),
       createWGSLKernelNode(graph, {
         id: `${id}-publish`,
         operation: 'GPURasterFractionalZonalStatistics',
         invocationCount: props.zoneCount,
+        declarations: `${GET_NAN_WGSL}\n${IS_FINITE_VALUE_WGSL}`,
         bindings: [
           {name: 'summary', view: summary, type: 'f32', access: 'read'},
-          {name: 'overflow', view: coverage.status.overflow, type: 'u32', access: 'read'},
+          {name: 'coverageComplete', view: coverageComplete, type: 'u32', access: 'read'},
           {name: 'zoneValidity', view: coverage.zoneValidity, type: 'u32', access: 'read'},
           {name: 'totals', view: output.totals, type: 'f32', access: 'read_write'},
           {name: 'means', view: output.means, type: 'f32', access: 'read_write'},
@@ -625,7 +748,14 @@ export class GPURasterFractionalZonalStatistics implements GPUCommandNodeProduce
           {name: 'observed', view: output.validArea, type: 'f32', access: 'read_write'},
           {name: 'validity', view: output.validity, type: 'u32', access: 'read_write'}
         ],
-        body: `let complete=overflow[overflowOffset]==0u&&zoneValidity[zoneValidityOffset+index]!=0u;let valid=complete&&summary[summaryOffset+index*4u+3u]>0.0;let invalid=bitcast<f32>(0x7fc00000u | (index & 0u));totals[totalsOffset+index]=select(invalid,summary[summaryOffset+index*4u],valid);means[meansOffset+index]=select(invalid,summary[summaryOffset+index*4u+1u],valid);covered[coveredOffset+index]=select(invalid,summary[summaryOffset+index*4u+2u],complete);observed[observedOffset+index]=select(invalid,summary[summaryOffset+index*4u+3u],complete);validity[validityOffset+index]=u32(valid);`
+        body: `let total=summary[summaryOffset+index*4u];let mean=summary[summaryOffset+index*4u+1u];
+let coveredArea=summary[summaryOffset+index*4u+2u];let validArea=summary[summaryOffset+index*4u+3u];
+let finiteAreas=isFiniteValue(coveredArea)&&isFiniteValue(validArea);
+let finiteValues=validArea<=0.0||(isFiniteValue(total)&&isFiniteValue(mean));
+let complete=coverageComplete[coverageCompleteOffset]!=0u&&zoneValidity[zoneValidityOffset+index]!=0u&&finiteAreas&&finiteValues;
+let valid=complete&&validArea>0.0;let invalid=getNaN();
+totals[totalsOffset+index]=select(invalid,total,valid);means[meansOffset+index]=select(invalid,mean,valid);
+covered[coveredOffset+index]=select(invalid,coveredArea,complete);observed[observedOffset+index]=select(invalid,validArea,complete);validity[validityOffset+index]=u32(valid);`
       })
     ];
   }

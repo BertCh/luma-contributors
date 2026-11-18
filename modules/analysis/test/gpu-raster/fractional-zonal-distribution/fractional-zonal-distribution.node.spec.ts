@@ -68,9 +68,9 @@ for (const [capacity, zoneCount, probabilityCount] of [
       new GPURasterFractionalZonalDistribution(props).getCommandNodes(graph)
     );
     expect(sources.size).toBeGreaterThan(5);
-    for (const [name, source] of sources) {
+    for (const {id: name, source: source, constants} of sources.configurations) {
       expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
-      expect(getPrivateMemoryBytes(source), name).toBeLessThanOrEqual(
+      expect(getPrivateMemoryBytes(source, constants), name).toBeLessThanOrEqual(
         CORE_PRIVATE_MEMORY_LIMIT_BYTES
       );
     }
@@ -142,7 +142,7 @@ it('RS01 independent weighting kernels stay within storage and memory budgets', 
     quantileMethod: 'inverse-cdf'
   });
   const kernels = getParsedKernelSources(contributor.getCommandNodes(graph));
-  for (const [name, source] of kernels)
+  for (const {id: name, source} of kernels.configurations)
     expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
 });
 

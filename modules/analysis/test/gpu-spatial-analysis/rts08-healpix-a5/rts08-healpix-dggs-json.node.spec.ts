@@ -6,6 +6,25 @@ import {describe, expect, it} from 'vitest';
 import {createHealpixDGGSJSON} from '../../../src/gpu-spatial-analysis/healpix-cells/index';
 
 describe('createHealpixDGGSJSON', () => {
+  it('round-trips arbitrary own property names including __proto__', () => {
+    const properties = JSON.parse(
+      '{"__proto__":{"title":"prototype column","unit":"C","values":[7]},"temperature":{"values":[22]}}'
+    );
+    expect(Object.keys(properties)).toEqual(['__proto__', 'temperature']);
+    const document = createHealpixDGGSJSON({order: 0, cells: [0n], properties});
+    const serialized = JSON.parse(JSON.stringify(document));
+    expect(Object.keys(serialized.schema.properties)).toEqual(['__proto__', 'temperature']);
+    expect(Object.keys(serialized.values)).toEqual(['__proto__', 'temperature']);
+    expect(serialized.schema.properties['__proto__']).toEqual({
+      type: 'number',
+      title: 'prototype column',
+      'x-ogc-unit': 'C'
+    });
+    expect(serialized.schema.properties.temperature).toEqual({type: 'number'});
+    expect(serialized.values['__proto__'][0].data).toEqual([7]);
+    expect(serialized.values.temperature[0].data).toEqual([22]);
+  });
+
   it('writes the required DGGS-JSON members and a dense data array in nested order', () => {
     // Order 2 cells below the order 1 ancestor 3: nested indexes 12..15.
     const document = createHealpixDGGSJSON({

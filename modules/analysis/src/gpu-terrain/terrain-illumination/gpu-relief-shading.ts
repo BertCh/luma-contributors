@@ -51,7 +51,7 @@ import {
   type GPURasterRowDirection,
   validateRasterCellSizeMode,
   writeRasterGridParameterValues
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 import {
   getTerrainOneSidedPaddedBandNodes,
   getTerrainPaddedIndexWGSL,

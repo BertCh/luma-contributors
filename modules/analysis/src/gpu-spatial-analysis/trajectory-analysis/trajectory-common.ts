@@ -91,7 +91,7 @@ export function getKeyBitCount(maximumKey: number): number {
 }
 
 /**
- * WGSL `rowTimeDifference(a, b)` over a `timestamps` binding: f32 seconds, or exact two-word
+ * WGSL `rowTimeDifference(a, b)` in the timestamp unit: f32 values, or exact two-word
  * timestamps (low, high) when `isWordMode`. @internal
  */
 export function getTimestampSourceWGSL(isWordMode: boolean): string {

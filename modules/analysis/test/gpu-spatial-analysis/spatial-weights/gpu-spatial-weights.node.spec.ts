@@ -70,7 +70,13 @@ it('GPUContiguityWeights validates props and declares nodes', () => {
   expect(() => new GPUContiguityWeights({...base, snapTolerance: -1})).toThrow(/snapTolerance/);
   // The snap range has a named limit: extent / tolerance at most 2^24 cells.
   expect(
-    () => new GPUContiguityWeights({...base, snapTolerance: 1e-3, coordinateExtent: 16000})
+    () =>
+      new GPUContiguityWeights({
+        ...base,
+        id: 'coordinate-range-probe',
+        snapTolerance: 1e-3,
+        coordinateExtent: 16000
+      })
   ).not.toThrow();
   expect(
     () => new GPUContiguityWeights({...base, snapTolerance: 1e-3, coordinateExtent: 17000})
@@ -139,15 +145,16 @@ it('GPUContiguityWeights rows are features: multipart layout and status wiring',
       });
       expect(contiguity.getFeatureCount()).toBe(3);
       expect(contiguity.outputWeights.information?.rowCount).toBe(3);
-      expect(contiguity.outputWeights.status?.candidateOverflow).toBe(
-        contiguity.props.output.status.candidateOverflow
-      );
+      expect(contiguity.outputWeights.status?.candidateOverflow).toBeDefined();
+      if (candidateOverflow) {
+        expect(contiguity.outputWeights.status?.candidateOverflow).toBe(
+          contiguity.props.output.status.candidateOverflow
+        );
+      }
       const sources = getGPUCommandNodeKernelSources(contiguity.getCommandNodes(graph));
       const source = (suffix: string) => sources.find(({id}) => id.endsWith(suffix))?.source ?? '';
       expect(source('-vertex-topology')).toContain('featureOffsets');
-      expect(source('-totals').includes('candidateOverflow['), `${criterion}`).toBe(
-        candidateOverflow
-      );
+      expect(source('-totals').includes('candidateOverflow['), `${criterion}`).toBe(true);
       expect(source('-totals')).toContain('requiredCount[');
     }
   }

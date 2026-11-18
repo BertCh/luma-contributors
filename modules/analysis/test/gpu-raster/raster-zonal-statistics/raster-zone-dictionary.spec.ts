@@ -14,6 +14,64 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 
+it('publishes source IDs 100 and 900 separately from denseZoneRows 0 and 1', async () => {
+  const {GPURasterZonalStatistics} = await import(
+    '../../../src/raster-analysis/raster-zonal-statistics/gpu-raster-zonal-statistics'
+  );
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const graph = new GPUCommandGraph(device);
+  const dictionary = createInputBuffer(device, Uint32Array.of(100, 900));
+  const zones = createInputBuffer(device, Uint32Array.of(900, 100));
+  const values = createInputBuffer(device, Float32Array.of(1, 2));
+  const sourceZoneIds = createOutputBuffer(device, 2);
+  const denseZoneRows = createOutputBuffer(device, 2);
+  const sums = createOutputBuffer(device, 2);
+  const invalidCount = createOutputBuffer(device, 1);
+  graph.add(
+    new GPURasterZonalStatistics({
+      grid: {width: 2, height: 1, affine: [1, 0, 0, 0, 1, 0], pixelInterpretation: 'area'},
+      zones: importGraphBuffer(graph, 'zones', zones, 'uint32', 2),
+      values: {
+        id: 'values',
+        format: 'float32',
+        storage: {
+          kind: 'buffer',
+          values: importGraphBuffer(graph, 'values', values, 'float32', 2)
+        }
+      },
+      zoneCapacity: 2,
+      zoneDictionary: importGraphBuffer(graph, 'dictionary', dictionary, 'uint32', 2),
+      output: {
+        sums: importGraphBuffer(graph, 'sums', sums, 'float32', 2),
+        sourceZoneIds: importGraphBuffer(graph, 'source-ids', sourceZoneIds, 'uint32', 2),
+        denseZoneRows: importGraphBuffer(graph, 'dense-rows', denseZoneRows, 'uint32', 2),
+        status: {invalidCount: importGraphBuffer(graph, 'invalid', invalidCount, 'uint32', 1)}
+      }
+    })
+  );
+  const compiled = graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    expect(await readUint32(sourceZoneIds, 2)).toEqual([100, 900]);
+    expect(await readUint32(denseZoneRows, 2)).toEqual([0, 1]);
+    expect(await readFloat32(sums, 2)).toEqual([2, 1]);
+    expect(await readUint32(invalidCount, 1)).toEqual([0]);
+  } finally {
+    compiled.destroy();
+    for (const buffer of [
+      dictionary,
+      zones,
+      values,
+      sourceZoneIds,
+      denseZoneRows,
+      sums,
+      invalidCount
+    ])
+      buffer.destroy();
+  }
+});
+
 it('aggregates sparse numeric zone IDs and publishes the exact ID-to-dense mapping', async () => {
   const {GPURasterZonalStatistics} = await import(
     '../../../src/raster-analysis/raster-zonal-statistics/gpu-raster-zonal-statistics'
@@ -40,7 +98,7 @@ it('aggregates sparse numeric zone IDs and publishes the exact ID-to-dense mappi
       const cellCounts = createOutputBuffer(device, 3);
       const sums = createOutputBuffer(device, 3);
       const sourceZoneIds = createOutputBuffer(device, 3);
-      const denseZoneIds = createOutputBuffer(device, 3);
+      const denseZoneRows = createOutputBuffer(device, 3);
       const invalidCount = createOutputBuffer(device, 1);
       const graph = new GPUCommandGraph(device);
       graph.add(
@@ -62,7 +120,7 @@ it('aggregates sparse numeric zone IDs and publishes the exact ID-to-dense mappi
             cellCounts: importGraphBuffer(graph, 'counts', cellCounts, 'uint32', 3),
             sums: importGraphBuffer(graph, 'sums', sums, 'float32', 3),
             sourceZoneIds: importGraphBuffer(graph, 'source-ids', sourceZoneIds, 'uint32', 3),
-            denseZoneIds: importGraphBuffer(graph, 'dense-ids', denseZoneIds, 'uint32', 3),
+            denseZoneRows: importGraphBuffer(graph, 'dense-rows', denseZoneRows, 'uint32', 3),
             status: {invalidCount: importGraphBuffer(graph, 'invalid', invalidCount, 'uint32', 1)}
           }
         })
@@ -71,7 +129,7 @@ it('aggregates sparse numeric zone IDs and publishes the exact ID-to-dense mappi
       try {
         submitGraph(device, compiled, undefined);
         expect(await readUint32(sourceZoneIds, 3)).toEqual(Array.from(dictionaryValues));
-        expect(await readUint32(denseZoneIds, 3)).toEqual(
+        expect(await readUint32(denseZoneRows, 3)).toEqual(
           invalidDictionary ? [0xffffffff, 0xffffffff, 0xffffffff] : [0, 1, 2]
         );
         expect(await readUint32(cellCounts, 3)).toEqual(
@@ -92,7 +150,7 @@ it('aggregates sparse numeric zone IDs and publishes the exact ID-to-dense mappi
           cellCounts,
           sums,
           sourceZoneIds,
-          denseZoneIds,
+          denseZoneRows,
           invalidCount
         ])
           buffer.destroy();

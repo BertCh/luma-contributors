@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+
 import {
   createTransientView,
   GPUScan,
@@ -39,7 +41,7 @@ import {
   GPU_CELL_DEFAULT_SUM_SCALE,
   ORDERED_KEY_WGSL,
   validateSumScale
-} from '../../analysis-core/cell-key-wgsl';
+} from '../../analysis-core/kernels/cell-key-wgsl';
 import {
   FIXED_POINT_WGSL,
   getFixedPointHeadroomBits
@@ -198,6 +200,57 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
   readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUKeyJoinProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'leftKeys',
+      'rightKeys',
+      'leftMask',
+      'rightMask',
+      'kind',
+      'gather',
+      'aggregates',
+      'sumScale',
+      'output'
+    ]);
+    const declaredOutput = snapshotConstructionFields(props.output, [
+      'rightRows',
+      'matchCounts',
+      'matched',
+      'rightMatched',
+      'rows'
+    ]);
+    const compact = declaredOutput.rows
+      ? snapshotConstructionFields(declaredOutput.rows, ['ids', 'status'])
+      : undefined;
+    props = Object.freeze({
+      ...props,
+      gather: props.gather
+        ? Object.freeze(
+            props.gather.map(entry => snapshotConstructionFields(entry, ['column', 'output']))
+          )
+        : undefined,
+      aggregates: props.aggregates
+        ? Object.freeze(
+            props.aggregates.map(entry =>
+              snapshotConstructionFields(entry, ['column', 'operation', 'output', 'sums'])
+            )
+          )
+        : undefined,
+      output: Object.freeze({
+        ...declaredOutput,
+        rows: compact
+          ? Object.freeze({
+              ...compact,
+              status: snapshotConstructionFields(compact.status, [
+                'count',
+                'overflow',
+                'candidateOverflow',
+                'requiredCount'
+              ])
+            })
+          : undefined
+      })
+    });
     this.id = props.id ?? 'key-join';
     this.props = props;
     this.kind = props.kind ?? 'left';
@@ -315,13 +368,19 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
       output.rows?.ids,
       output.rows?.status.count,
       output.rows?.status.overflow,
+      output.rows?.status.candidateOverflow,
       output.rows?.status.requiredCount,
       ...gather.map(entry => entry.output),
       ...aggregates.flatMap(entry => [entry.output, entry.sums])
     ];
     const dispatches: (GraphDataView | undefined)[][] = [
       [output.rightRows, output.matchCounts, output.matched],
-      [output.rows?.status.count, output.rows?.status.overflow, output.rows?.status.requiredCount],
+      [
+        output.rows?.status.count,
+        output.rows?.status.overflow,
+        output.rows?.status.candidateOverflow,
+        output.rows?.status.requiredCount
+      ],
       ...aggregates.map(entry => [entry.output, entry.sums])
     ];
     for (let first = 0; first < gather.length; first += MAXIMUM_GATHER_COLUMNS_PER_KERNEL) {
@@ -413,6 +472,7 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
       output.rows?.ids,
       output.rows?.status.count,
       output.rows?.status.overflow,
+      output.rows?.status.candidateOverflow,
       output.rows?.status.requiredCount
     ];
     validateGraphChunkBindingRanges(

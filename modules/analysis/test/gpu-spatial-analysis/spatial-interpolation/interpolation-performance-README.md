@@ -15,7 +15,7 @@ sources change during execution. Run it without concurrent GPU suites or builds;
 a machine-wide GPU lock. Repeat with fresh output directories for independent sessions. Omit
 `--workload` to capture every interpolation workload; use `--suite statistics --workload sur` for SUR.
 
-Direct `yarn test-browser-benchmarks` use remains supported with `VITE_BENCHMARK_WARMUPS`,
+Direct `yarn test-benchmarks modules/analysis/test/gpu-spatial-analysis/spatial-interpolation/interpolation-performance-benchmark.spec.ts` use remains supported with `VITE_BENCHMARK_WARMUPS`,
 `VITE_BENCHMARK_SAMPLES`, `VITE_BENCHMARK_UPDATE_SAMPLES` and `VITE_BENCHMARK_WORKLOAD`.
 Provenance is null without a valid `VITE_BENCHMARK_SOURCE_SNAPSHOT`; no historical snapshot is
 silently substituted. The graph uses the test device and records its actual adapter/limits.

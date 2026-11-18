@@ -37,6 +37,72 @@ const PROPS: OrdinaryLeastSquaresOperationProps = {
   }
 };
 
+for (const mutation of ['rename', 'remove', 'replace', 'add'] as const) {
+  for (const Operation of [CPUOrdinaryLeastSquaresOperation, GPUOrdinaryLeastSquaresOperation]) {
+    it(`${Operation.name} captures output names and prediction presence before caller ${mutation}`, async () => {
+      const props: OrdinaryLeastSquaresOperationProps = {
+        id: 'captured-ols',
+        rowCount: 4,
+        predictorCount: 1,
+        predictors: 'predictors',
+        response: 'response',
+        output: {
+          status: {code: 'code'},
+          coefficients: 'coefficients',
+          standardErrors: 'standardErrors',
+          tStatistics: 'tStatistics',
+          summary: 'summary',
+          residuals: 'residuals',
+          fitted: 'fitted',
+          ...(mutation === 'add' ? {} : {predictions: 'heldOut'})
+        }
+      };
+      const operation = new Operation(props);
+      const declared = operation.contract.outputs;
+      if (!declared || typeof declared === 'function')
+        throw new Error('OLS outputs must be static');
+      if (mutation === 'rename') props.output.predictions = 'otherScene';
+      else if (mutation === 'remove') delete props.output.predictions;
+      else if (mutation === 'replace') props.output = {...props.output, predictions: 'otherScene'};
+      else props.output.predictions = 'otherScene';
+      props.output.status.code = 'otherStatus';
+      props.output.coefficients = 'otherCoefficients';
+      delete props.output.fitted;
+      delete props.output.residuals;
+      expect(operation.contract.outputs).toEqual(declared);
+      if (operation instanceof CPUOrdinaryLeastSquaresOperation) {
+        const vector = (values: Float32Array) => ({
+          format: 'float32' as const,
+          length: values.length,
+          chunks: [{values, length: values.length}],
+          pack: () => values
+        });
+        const result = await operation.execute({
+          inputs: {
+            predictors: vector(Float32Array.of(0, 1, 2, 3)),
+            response: vector(Float32Array.of(1, 3, 5, 7))
+          }
+        });
+        expect(Object.keys(result).sort()).toEqual(Object.keys(declared).sort());
+        expect(result['code']).toEqual(Uint32Array.of(0));
+        expect(result['coefficients']).toEqual(Float32Array.of(1, 2));
+        expect(result['fitted']).toEqual(Float32Array.of(1, 3, 5, 7));
+        if (mutation !== 'add') expect(result['heldOut']).toEqual(Float32Array.of(1, 3, 5, 7));
+      } else {
+        const contributor = constructRegressionOperationContributor(operation, {
+          predictors: {format: 'float32', length: 4},
+          response: {format: 'float32', length: 4}
+        });
+        expect(contributor).toHaveProperty('props.output.fitted.length', 4);
+        expect(contributor).toHaveProperty('props.output.residuals.length', 4);
+        if (mutation === 'add')
+          expect(contributor).toHaveProperty('props.output.predictions', undefined);
+        else expect(contributor).toHaveProperty('props.output.predictions.length', 4);
+      }
+    });
+  }
+}
+
 for (const fixture of fixtures) {
   it(`matches every output against independent SciPy QR/SVD: ${fixture.name}`, () => {
     const result = computeOrdinaryLeastSquaresOnCPU(

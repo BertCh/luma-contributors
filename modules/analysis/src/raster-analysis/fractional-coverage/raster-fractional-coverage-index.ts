@@ -104,24 +104,32 @@ export function validateFractionalCoverageBindings<Parameters>(
 
 /** Shared exact clipping and affine inversion used by both coverage routes. @internal */
 export const RASTER_FRACTIONAL_CLIPPING_WGSL = `fn setting(slot:u32)->f32{return settings[settingsOffset+slot];}
-// A pixel coordinate within four float32 steps of an integer is that integer. A vertex meant to
+// A non-identity pixel coordinate within four float32 steps of an integer is that integer,
+// capped at 1e-5 pixel so representable subpixel polygons survive large pixel indices. The
+// decision uses the displacement from the nearest lattice point, a local subpixel coordinate.
+// A vertex meant to
 // lie on a cell boundary does not come out of the inverse affine as an integer: the vertex and
 // the cell size are each rounded to float32 (float32(0.9) / float32(0.3) is 2.9999998 in exact
 // arithmetic), the products and the quotient round again, and GPU division need not be correctly
 // rounded. Unsnapped, such a vertex leaves a sliver of coverage (of the order of 1e-7 of a cell)
 // in the neighbouring cell, which gives a zone support in a cell it does not touch. The snap moves no
-// vertex by more than the float32 resolution of its own pixel coordinate. It cannot absorb the
+// vertex by more than 1e-5 pixel. Exact identity transforms bypass snapping entirely. It cannot absorb the
 // rounding of 'position - origin', which is relative to the origin: keep the origin near the
 // geometry (local coordinates).
-fn snapToLattice(pixel:vec2<f32>)->vec2<f32>{let nearest=round(pixel);let tolerance=4.76837158203125e-7*max(abs(nearest),vec2<f32>(1.0));return select(pixel,nearest,abs(pixel-nearest)<=tolerance);}
+fn snapToLattice(pixel:vec2<f32>)->vec2<f32>{let nearest=round(pixel-vec2<f32>(FRACTIONAL_BOUNDARY_SHIFT))+vec2<f32>(FRACTIONAL_BOUNDARY_SHIFT);let tolerance=min(vec2<f32>(1.0e-5),4.76837158203125e-7*max(abs(nearest),vec2<f32>(1.0)));return select(pixel,nearest,abs(pixel-nearest)<=tolerance);}
 // Pixel coordinates of a vertex. On an axis-aligned grid (b = d = 0) each axis is one division,
 // which rounds less than the general form (two products, a difference and a quotient).
-fn point(vertex:u32)->vec2<f32>{let x=positions[positionsOffset+vertex*2u]-setting(0u);let y=positions[positionsOffset+vertex*2u+1u]-setting(1u);if(setting(3u)==0.0&&setting(4u)==0.0){return snapToLattice(vec2<f32>(x/setting(2u),y/setting(5u)));}return snapToLattice(vec2<f32>((setting(5u)*x-setting(3u)*y)/setting(6u),(-setting(4u)*x+setting(2u)*y)/setting(6u)));}
+fn point(vertex:u32)->vec2<f32>{let x=positions[positionsOffset+vertex*2u]-setting(0u);let y=positions[positionsOffset+vertex*2u+1u]-setting(1u);if(setting(0u)==0.0&&setting(1u)==0.0&&setting(2u)==1.0&&setting(3u)==0.0&&setting(4u)==0.0&&setting(5u)==1.0){return vec2<f32>(x,y);}if(setting(3u)==0.0&&setting(4u)==0.0){return snapToLattice(vec2<f32>(x/setting(2u),y/setting(5u)));}return snapToLattice(vec2<f32>((setting(5u)*x-setting(3u)*y)/setting(6u),(-setting(4u)*x+setting(2u)*y)/setting(6u)));}
 fn clip(vertices:ptr<function,array<vec2<f32>,8>>,count:u32,axis:u32,bound:f32,lower:bool)->u32{
  var result:array<vec2<f32>,8>;var size=0u;if(count==0u){return 0u;}var previous=(*vertices)[count-1u];var previousInside=select(previous[axis]<=bound,previous[axis]>=bound,lower);
  for(var cursor=0u;cursor<count;cursor++){let current=(*vertices)[cursor];let inside=select(current[axis]<=bound,current[axis]>=bound,lower);if(inside!=previousInside){let fraction=(bound-previous[axis])/(current[axis]-previous[axis]);var intersection=mix(previous,current,fraction);intersection[axis]=bound;result[size]=intersection;size++;}if(inside){result[size]=current;size++;}previous=current;previousInside=inside;}
  for(var cursor=0u;cursor<size;cursor++){(*vertices)[cursor]=result[cursor];}return size;
 }`;
+
+/** Selects the cell-boundary lattice while keeping exact identity coordinates untouched. @internal */
+export function getRasterFractionalClippingWGSL(pixelInterpretation: 'area' | 'point'): string {
+  return `const FRACTIONAL_BOUNDARY_SHIFT: f32 = ${pixelInterpretation === 'point' ? '-0.5' : '0.0'};\n${RASTER_FRACTIONAL_CLIPPING_WGSL}`;
+}
 
 /** Bounds-indexed exact clipping with stable, reusable candidate and compaction tiles. @internal */
 export function getIndexedRasterFractionalCoverageNodes<Parameters>(
@@ -222,7 +230,7 @@ export function getIndexedRasterFractionalCoverageNodes<Parameters>(
         {name: 'pixelX', view: pixelX, type: 'f32', access: 'read_write'},
         {name: 'pixelY', view: pixelY, type: 'f32', access: 'read_write'}
       ],
-      declarations: RASTER_FRACTIONAL_CLIPPING_WGSL,
+      declarations: getRasterFractionalClippingWGSL(grid.pixelInterpretation),
       body: 'let pixel=point(index);pixelX[pixelXOffset+index]=pixel.x;pixelY[pixelYOffset+index]=pixel.y;'
     })
   ];
@@ -373,7 +381,7 @@ pairs[pairsOffset+index*2u]=zone;pairs[pairsOffset+index*2u+1u]=row*${grid.width
           {name: 'pairs', view: tilePairs, type: 'u32', access: 'read'},
           {name: 'coverage', view: tileFractions, type: 'f32', access: 'read_write'}
         ],
-        declarations: RASTER_FRACTIONAL_CLIPPING_WGSL,
+        declarations: getRasterFractionalClippingWGSL(grid.pixelInterpretation),
         body: `coverage[coverageOffset+index]=-1.0;
 let zone=pairs[pairsOffset+index*2u];if(zone>=${zoneCount}u){return;}
 let cell=pairs[pairsOffset+index*2u+1u];let column=f32(cell%${grid.width}u)${grid.pixelInterpretation === 'point' ? '-0.5' : ''};let row=f32(cell/${grid.width}u)${grid.pixelInterpretation === 'point' ? '-0.5' : ''};

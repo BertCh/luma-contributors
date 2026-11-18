@@ -270,7 +270,7 @@ it('GPUNeighborSearch great-circle node IDs match the planar ones and compile fo
   for (const nodes of [geodesicNodes, radiusNodes]) {
     const sources = getParsedKernelSources(nodes);
     expect(sources.size).toBeGreaterThan(0);
-    for (const source of sources.values()) {
+    for (const {source} of sources.configurations) {
       expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
     }
   }
@@ -523,14 +523,16 @@ it('GPUNeighborSearch generated WGSL parses and stays inside the core limits for
       const label = `${structure} ${JSON.stringify(rest)} cross ${cross} masked ${masked}`;
       const sources = getParsedKernelSources(nodes);
       expect(sources.size, label).toBeGreaterThan(0);
-      for (const [kernelId, source] of sources) {
+      for (const {id: kernelId, source: source, constants} of sources.configurations) {
         expect(getStorageBindingCount(source), `${label} ${kernelId}`).toBeLessThanOrEqual(8);
-        expect(getPrivateMemoryBytes(source), `${label} ${kernelId}`).toBeLessThanOrEqual(
-          CORE_PRIVATE_MEMORY_LIMIT_BYTES
-        );
-        expect(getWorkgroupMemoryBytes(source), `${label} ${kernelId}`).toBeLessThanOrEqual(
-          CORE_WORKGROUP_STORAGE_LIMIT_BYTES
-        );
+        expect(
+          getPrivateMemoryBytes(source, constants),
+          `${label} ${kernelId}`
+        ).toBeLessThanOrEqual(CORE_PRIVATE_MEMORY_LIMIT_BYTES);
+        expect(
+          getWorkgroupMemoryBytes(source, constants),
+          `${label} ${kernelId}`
+        ).toBeLessThanOrEqual(CORE_WORKGROUP_STORAGE_LIMIT_BYTES);
       }
       const kernelIds = [...sources.keys()];
       expect(
@@ -542,7 +544,7 @@ it('GPUNeighborSearch generated WGSL parses and stays inside the core limits for
         label
       ).toBe(false);
       // Sanity: BVH kernels bind the whole tree once (one node table) in at most six buffers.
-      for (const [kernelId, source] of sources) {
+      for (const {id: kernelId, source} of sources.configurations) {
         if (/bvh-(knn|count|emit)/.test(kernelId)) {
           expect(source, kernelId).toContain('var<storage, read> nodeData');
           expect(getStorageBindingCount(source), kernelId).toBeLessThanOrEqual(7);

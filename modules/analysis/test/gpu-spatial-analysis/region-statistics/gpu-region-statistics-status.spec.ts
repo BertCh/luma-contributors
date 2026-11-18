@@ -101,6 +101,8 @@ it('GPURegionStatistics publishes region and selection truncation as status.over
     const summary = fixture.output('summary', SUMMARY_LENGTH);
     const overflow = fixture.output('overflow', 1);
     const candidateOverflow = fixture.output('candidate-overflow', 1);
+    const selectedOverflow = fixture.output('selected-overflow', 1);
+    const selectedCandidate = fixture.output('selected-candidate', 1);
     fixture.graph.add(
       new GPURegionStatistics({
         region: {
@@ -116,7 +118,8 @@ it('GPURegionStatistics publishes region and selection truncation as status.over
             ids: fixture.output('ids', selectionCapacity).view,
             status: {
               count: fixture.output('count', 1).view,
-              overflow: fixture.output('selection-overflow', 1).view
+              overflow: selectedOverflow.view,
+              candidateOverflow: selectedCandidate.view
             }
           },
           status: {overflow: overflow.view, candidateOverflow: candidateOverflow.view}
@@ -132,6 +135,8 @@ it('GPURegionStatistics publishes region and selection truncation as status.over
     expect(status.summary.selectionTruncated).toBe(selectionTruncated);
     expect(status.overflow).toBe(selectionTruncated ? 1 : 0);
     expect(status.candidateOverflow).toBe(0);
+    expect(await readUint32(selectedOverflow.buffer, 1)).toEqual([selectionTruncated ? 1 : 0]);
+    expect(await readUint32(selectedCandidate.buffer, 1)).toEqual([0]);
 
     // A vertex count above the lasso capacity truncates the region.
     vertexCount.write(Uint32Array.of(99));
@@ -140,6 +145,8 @@ it('GPURegionStatistics publishes region and selection truncation as status.over
     expect(status.summary.regionTruncated).toBe(true);
     expect(status.overflow).toBe(1);
     expect(status.candidateOverflow).toBe(0);
+    expect(await readUint32(selectedOverflow.buffer, 1)).toEqual([selectionTruncated ? 1 : 0]);
+    expect(await readUint32(selectedCandidate.buffer, 1)).toEqual([1]);
 
     compiled.destroy();
     vertexCount.destroy();
@@ -174,6 +181,8 @@ it('GPURegionStatistics publishes grid candidate truncation as status.candidateO
     const summary = fixture.output('summary', SUMMARY_LENGTH);
     const overflow = fixture.output('overflow', 1);
     const candidateOverflow = fixture.output('candidate-overflow', 1);
+    const selectedOverflow = fixture.output('selected-overflow', 1);
+    const selectedCandidateOverflow = fixture.output('selected-candidate-overflow', 1);
     fixture.graph.add(
       new GPURegionStatistics({
         region: {kind: 'rectangle', bounds: bounds.importToGraph(fixture.graph)},
@@ -182,6 +191,15 @@ it('GPURegionStatistics publishes grid candidate truncation as status.candidateO
         spatialIndex: {kind: 'grid', index, candidateCapacity},
         output: {
           summary: summary.view,
+          selectedRows: {
+            ids: fixture.output('selected-ids', ROW_COUNT).view,
+            status: {
+              count: fixture.output('selected-count', 1).view,
+              requiredCount: fixture.output('selected-required', 1).view,
+              overflow: selectedOverflow.view,
+              candidateOverflow: selectedCandidateOverflow.view
+            }
+          },
           status: {overflow: overflow.view, candidateOverflow: candidateOverflow.view}
         }
       })
@@ -194,6 +212,8 @@ it('GPURegionStatistics publishes grid candidate truncation as status.candidateO
     expect(status.candidateOverflow).toBe(truncated ? 1 : 0);
     // A candidate overflow is not folded into overflow.
     expect(status.overflow).toBe(0);
+    expect(await readUint32(selectedOverflow.buffer, 1)).toEqual([0]);
+    expect(await readUint32(selectedCandidateOverflow.buffer, 1)).toEqual([truncated ? 1 : 0]);
     compiled.destroy();
     bounds.destroy();
     fixture.destroy();

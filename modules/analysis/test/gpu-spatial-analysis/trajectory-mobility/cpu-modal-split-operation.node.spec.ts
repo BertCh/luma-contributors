@@ -9,6 +9,33 @@ import {
 } from '../../../src/gpu-spatial-analysis/trajectory-mobility/cpu-modal-split-operation';
 import {GPUModalSplitOperation} from '../../../src/gpu-spatial-analysis/trajectory-mobility/gpu-modal-split-operation';
 import {getModalFixture, getModalProps} from './modal-split-operation-fixture';
+import {computeTrajectorySegmentsOnCPU} from '../../../src/gpu-spatial-analysis/trajectory-staypoints/cpu-trajectory-segments-operation';
+import {getSegmentsFixture} from '../trajectory-staypoints/trajectory-segments-operation-fixture';
+
+it('suppresses modal counts from bounded or upstream-incomplete triplegs', () => {
+  const fixture = getSegmentsFixture();
+  for (const capacity of [3, 6]) {
+    const segments = computeTrajectorySegmentsOnCPU(fixture, {triplegCapacity: capacity});
+    const input = {
+      ...fixture,
+      triplegs: {
+        tracks: segments.triplegIds,
+        startRows: segments.triplegStartRows,
+        endRows: segments.triplegEndRows,
+        count: segments.triplegCount,
+        overflow: segments.triplegOverflow,
+        candidateOverflow: segments.triplegCandidateOverflow
+      },
+      modes: new Uint32Array(capacity)
+    };
+    const complete = computeModalSplitOnCPU(input, {modeCount: 1, metric: 'count'});
+    expect(Array.from(complete.modalSplit)).toEqual(capacity === 3 ? [NaN, NaN, NaN] : [3, 2, 0]);
+    input.triplegs.candidateOverflow[0] = 1;
+    expect(
+      Array.from(computeModalSplitOnCPU(input, {modeCount: 1, metric: 'count'}).modalSplit)
+    ).toEqual([NaN, NaN, NaN]);
+  }
+});
 
 it('counts supplied-mode empty triplegs and gives them zero distance without reading times', () => {
   for (const start of [0, 1, 2]) {

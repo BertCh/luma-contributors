@@ -31,7 +31,7 @@ export type CPUAZPRegionsInput = CPURegionInput & {
   extensiveValues?: Float32Array;
   extensiveThreshold?: Float32Array;
 };
-/** The CPU ignores the optional GPU round budget and completes the greedy search. */
+/** Explicit CPU round budget; defaults to 256 when the pure function is called without one. */
 export type CPUAZPRegionsOptions = Pick<
   AZPRegionsOperationProps,
   'columnCount' | 'standardize' | 'regionCapacity' | 'minimumRegionSize'
@@ -110,8 +110,9 @@ export function computeAZPRegionsTableOnCPU(
   minimumRegionSize: number,
   extensiveValues?: Float32Array,
   extensiveThreshold = 0,
-  initialInvalidCount = 0
-): {labels: Uint32Array; iterationCount: number; invalidCount: number} {
+  initialInvalidCount = 0,
+  maximumIterations = Infinity
+): {labels: Uint32Array; iterationCount: number; invalidCount: number; converged: boolean} {
   const labels = initialLabels.slice();
   const rowCount = labels.length;
   let invalidCount = initialInvalidCount;
@@ -128,8 +129,9 @@ export function computeAZPRegionsTableOnCPU(
     for (const member of visitRegion(adjacency, labels, row, -1)) visited.add(member);
   }
   let iterationCount = 0;
-  if (invalidCount > 0) return {labels, iterationCount, invalidCount};
-  while (true) {
+  let converged = false;
+  if (invalidCount > 0) return {labels, iterationCount, invalidCount, converged};
+  while (iterationCount < maximumIterations) {
     const sizes = new Float64Array(regionCapacity);
     const extensiveSums = new Float64Array(regionCapacity);
     const sums = new Float64Array(regionCapacity * columnCount);
@@ -215,11 +217,14 @@ export function computeAZPRegionsTableOnCPU(
     const selected = contenders.filter(
       move => claimKeys[move.source] === move.key && claimKeys[move.destination] === move.key
     );
-    if (selected.length === 0) break;
+    if (selected.length === 0) {
+      converged = true;
+      break;
+    }
     for (const move of selected) labels[move.row] = move.destination;
     iterationCount++;
   }
-  return {labels, iterationCount, invalidCount};
+  return {labels, iterationCount, invalidCount, converged};
 }
 
 /**
@@ -235,8 +240,8 @@ export function computeAZPRegionsTableOnCPU(
  * - Extensive sums and departing-value subtraction also use float64. An extensive-threshold
  *   decision can differ when a small remainder is lost from the GPU's float32 region sum.
  *   For [1, 16777216] at threshold 1, the twin permits the second row to leave; the GPU may not.
- * - Runs to the local optimum, ignoring maximumIterations; iterationLimitReached is always 0,
- *   converged is 1 on valid input, and iterationCount counts successful batched rounds.
+ * - Honors maximumIterations (default 256 for the pure function). A final successful batch at
+ *   the limit is not proof of convergence; a no-move round must execute to set converged.
  * - Drops GPU column, storage and command-node caps. Empty slot arrays are accepted. Invalid
  *   labels, nonfinite features, negative/nonfinite extensive values or threshold and bad neighbor
  *   IDs keep labels, publish zero objective and set invalidCount, including extra initial components.
@@ -284,11 +289,15 @@ export function computeAZPRegionsOnCPU(
     options.minimumRegionSize ?? 1,
     input.extensiveValues,
     input.extensiveThreshold?.[0],
-    invalidCount
+    invalidCount,
+    options.maximumIterations ?? 256
   );
   const status = new Uint32Array(GPU_AZP_STATUS.length);
   status[GPU_AZP_STATUS.iterationCount] = result.iterationCount;
-  status[GPU_AZP_STATUS.converged] = Number(result.invalidCount === 0);
+  status[GPU_AZP_STATUS.converged] = Number(result.invalidCount === 0 && result.converged);
+  status[GPU_AZP_STATUS.iterationLimitReached] = Number(
+    result.invalidCount === 0 && !result.converged
+  );
   status[GPU_AZP_STATUS.invalidCount] = result.invalidCount;
   return {
     labels: result.labels,
@@ -299,9 +308,10 @@ export function computeAZPRegionsOnCPU(
   };
 }
 
-/** CPU twin, completing the two-hop greedy search without GPU storage or round budgets. */
+/** CPU twin, honoring the round budget without GPU storage limits. */
 export class CPUAZPRegionsOperation extends GPUCPUOperation {
   constructor(props: AZPRegionsOperationProps) {
+    props = Object.freeze({...props});
     const id = props.id ?? 'azp-regions';
     validateCapacity(id, 'rowCount', props.rowCount, 2);
     validateRequirement(

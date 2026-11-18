@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validateRecipeBoundary, getRecipeView as getOrCreateView} from './recipe-utils';
+import {addPreparedRecipe} from './prepared-recipe';
+
+import {validateRecipeBoundary, getRecipeView, getOrCreateView} from './recipe-utils';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   GPURasterFillNoData,
@@ -12,7 +14,13 @@ import {
   GPURasterRankFilter,
   type GPURasterRankFilterProps
 } from '../../raster-analysis/gpu-raster-rank-filter';
-import {getRasterBandViews} from '../../raster-analysis/raster-band-utils';
+import {
+  getRasterBandViews,
+  snapshotRasterBand,
+  validateRasterTextureBand,
+  validateRasterBandBelongsToGraph
+} from '../../raster-analysis/raster-band-utils';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import type {GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
 import {createRecipeKernelNode as createWGSLKernelNode} from './recipe-utils';
 import {addRecipeCountNodes, RecipeBuilder, type GPURecipeResult} from './recipe-utils';
@@ -34,10 +42,57 @@ export function addSurfacePreparationRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUSurfacePreparationRecipeProps
 ): GPURecipeResult<GPUSurfacePreparationOutput> & {band: GPURasterBufferBand<'float32'>} {
+  return addPreparedRecipe(graph, props, declareSurfacePreparationRecipe);
+}
+
+function declareSurfacePreparationRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUSurfacePreparationRecipeProps
+): GPURecipeResult<GPUSurfacePreparationOutput> & {band: GPURasterBufferBand<'float32'>} {
+  props = snapshotConstructionFields(props, [
+    'id',
+    'grid',
+    'input',
+    'maximumDistance',
+    'method',
+    'filter',
+    'outputs'
+  ]);
+  const provided = snapshotConstructionFields(props.outputs ?? {}, [
+    'values',
+    'validity',
+    'originalValidity',
+    'filled',
+    'filtered',
+    'unresolvedCount'
+  ]);
+  props = {
+    ...props,
+    input: snapshotRasterBand(props.input),
+    outputs: provided,
+    filter:
+      props.filter &&
+      snapshotConstructionFields(props.filter, ['radius', 'quantile', 'borderMode', 'noDataPolicy'])
+  };
   const id = props.id ?? 'surface-preparation-recipe';
-  const builder = new RecipeBuilder(graph);
+  validateRasterTextureBand(id, props.input, props.grid);
+  validateRasterBandBelongsToGraph(id, graph, props.input, []);
+  // Defaults use fresh graph-owned buffers: validate every caller-owned boundary before registering them.
+  validateRecipeBoundary(graph, id, getRasterBandViews(props.input), Object.values(provided));
   const count = props.grid.width * props.grid.height;
-  const provided = props.outputs ?? {};
+  for (const [name, format, length] of [
+    ['values', 'float32', count],
+    ['validity', 'uint32', count],
+    ['originalValidity', 'uint32', count],
+    ['filled', 'uint32', count],
+    ['filtered', 'uint32', count],
+    ['unresolvedCount', 'uint32', 1]
+  ] as const) {
+    const view = provided[name];
+    // With a supplied view getRecipeView only validates; it cannot register a default resource.
+    if (view) getRecipeView(graph, `${id} outputs.${name}`, format, length, view);
+  }
+  const builder = new RecipeBuilder(graph);
   const outputs: GPUSurfacePreparationOutput = {
     values: getOrCreateView(graph, `${id}-values`, 'float32', count, provided.values),
     validity: getOrCreateView(graph, `${id}-validity`, 'uint32', count, provided.validity),
@@ -58,7 +113,6 @@ export function addSurfacePreparationRecipe<Parameters>(
       provided.unresolvedCount
     )
   };
-  validateRecipeBoundary(graph, id, getRasterBandViews(props.input), Object.values(outputs));
   const fillValues = props.filter
     ? getOrCreateView(graph, `${id}-fill-values`, 'float32', count)
     : outputs.values;

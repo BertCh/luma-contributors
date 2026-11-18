@@ -180,15 +180,13 @@ fn isRowAfterEnd(row: u32, windowEndHigh: f32, windowEndLow: f32) -> bool {
 export type SortedTimeWindowIdsProps = {
   id: string;
   range: GraphDataView<'uint32'>;
-  /** Caller IDs; the capacity is their length (at least 1). */
-  ids: GraphDataView<'uint32'>;
-  sourceIds?: GraphDataView<'uint32'>;
+  /** Source-row destination; its length is the capacity. */
+  rows: GraphDataView<'uint32'>;
 };
 
 /**
- * Writes the first `min(rowCount, capacity)` IDs of the sorted range: `sourceIds[firstRow + i]`, or
- * the row index. One invocation per capacity slot, returning early past the count, so a caller who
- * only needs the range pays for the slots of a small `ids` view.
+ * Writes the first `min(rowCount, capacity)` source rows of the sorted range. One invocation per
+ * capacity slot, returning early past the count. Caller identities are mapped in a separate pass.
  *
  * @internal
  */
@@ -197,26 +195,23 @@ export function createSortedTimeWindowIdsNode<Parameters>(
   props: SortedTimeWindowIdsProps
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
-    // The retained range may share the caller's writable IDs buffer.
+    // The retained range may share the caller's writable rows buffer.
     {name: 'range', view: props.range, type: 'u32', access: 'read_write'},
-    {name: 'idsOut', view: props.ids, type: 'u32', access: 'read_write'}
+    {name: 'rowsOut', view: props.rows, type: 'u32', access: 'read_write'}
   ];
-  if (props.sourceIds) {
-    bindings.push({name: 'sourceIds', view: props.sourceIds, type: 'u32', access: 'read'});
-  }
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: 'GPUTimeWindowFilter',
     variant: 'sorted-ids',
     bindings,
-    invocationCount: props.ids.length,
+    invocationCount: props.rows.length,
     body: `let firstRow = range[rangeOffset];
   // The invocation count is the capacity.
   let count = min(range[rangeOffset + 1u], INVOCATION_COUNT);
   if (index >= count) {
     return;
   }
-  idsOut[idsOutOffset + index] = ${props.sourceIds ? 'sourceIds[sourceIdsOffset + firstRow + index]' : 'firstRow + index'};`
+  rowsOut[rowsOutOffset + index] = firstRow + index;`
   });
 }
 

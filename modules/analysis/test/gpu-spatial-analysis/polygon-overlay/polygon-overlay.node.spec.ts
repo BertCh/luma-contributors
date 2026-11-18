@@ -240,9 +240,10 @@ it('GPUPolygonOverlay kernels parse, call only declared functions and respect co
         source.match(/var<storage/g)?.length ?? 0,
         `${kernel.id} bindings`
       ).toBeLessThanOrEqual(8);
-      expect(getPrivateMemoryBytes(source), `${kernel.id} private memory`).toBeLessThanOrEqual(
-        CORE_PRIVATE_MEMORY_LIMIT_BYTES
-      );
+      expect(
+        getPrivateMemoryBytes(source, kernel.constants),
+        `${kernel.id} private memory`
+      ).toBeLessThanOrEqual(CORE_PRIVATE_MEMORY_LIMIT_BYTES);
       // Reserved WGSL words that wgsl_reflect accepts (the noding kernels have their own audit).
       if (!kernel.id.includes('-noding-')) {
         expect(source, kernel.id).not.toMatch(/\b(?:target|from|sample|filter)\s*[:=)]/);

@@ -35,6 +35,7 @@ export type {
   GPUMantelTransform
 } from './gpu-mantel-test';
 export {
+  decodeGPUSpaceTimeInferenceMetadata,
   getGPUSpaceTimeParameterValues,
   getGPUSpaceTimeRelativeTimes,
   getKnoxPoissonPValue,
@@ -42,7 +43,11 @@ export {
   GPU_SPACE_TIME_SUMMARY,
   GPU_SPACE_TIME_SUMMARY_LENGTH
 } from './space-time-parameters';
-export type {GPUSpaceTimeSettings, GPUSpaceTimeRelativeTimes} from './space-time-parameters';
+export type {
+  GPUSpaceTimeInferenceMetadata,
+  GPUSpaceTimeSettings,
+  GPUSpaceTimeRelativeTimes
+} from './space-time-parameters';
 
 // GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
 export {

@@ -88,20 +88,38 @@ function createServiceFixture(
     ? createOutputBuffer(device, nodeCount)
     : undefined;
   const parameters: GPUParameterBuffer[] = [];
-  const createParameter = <Format extends 'uint32' | 'float32'>(
+  function createParameter(
     name: string,
-    format: Format,
+    format: 'uint32',
     values: number[]
-  ) => {
-    const parameter = new GPUParameterBuffer(device, {
-      id: `service-${name}`,
-      format,
-      length: values.length,
-      values: format === 'uint32' ? Uint32Array.from(values) : Float32Array.from(values)
-    });
+  ): GPUParameterBuffer<'uint32'>;
+  function createParameter(
+    name: string,
+    format: 'float32',
+    values: number[]
+  ): GPUParameterBuffer<'float32'>;
+  function createParameter(
+    name: string,
+    format: 'uint32' | 'float32',
+    values: number[]
+  ): GPUParameterBuffer<'uint32'> | GPUParameterBuffer<'float32'> {
+    const parameter =
+      format === 'uint32'
+        ? new GPUParameterBuffer(device, {
+            id: `service-${name}`,
+            format,
+            length: values.length,
+            values: Uint32Array.from(values)
+          })
+        : new GPUParameterBuffer(device, {
+            id: `service-${name}`,
+            format,
+            length: values.length,
+            values: Float32Array.from(values)
+          });
     parameters.push(parameter);
     return parameter;
-  };
+  }
   const facilities = createParameter('facilities', 'uint32', options.facilities);
   const facilityCosts = options.facilityCosts
     ? createParameter('facility-costs', 'float32', options.facilityCosts)

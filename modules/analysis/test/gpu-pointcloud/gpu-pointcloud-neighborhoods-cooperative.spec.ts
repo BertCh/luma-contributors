@@ -4,7 +4,7 @@
 
 import {expect, it} from 'vitest';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {GPUPointCloudNeighborhoods} from '../../src/pointcloud-analysis/gpu-pointcloud-neighborhoods';
+import {GPUPointCloudNeighborhoods} from '../../src/pointcloud-analysis/operations/gpu-pointcloud-neighborhoods';
 import {makeSpatialFixture, readFloats, readIntegers} from '../spatial-test-utils';
 import {requireTestDevice} from '../utils/require-test-device';
 
@@ -113,10 +113,12 @@ async function checkCooperative(
               }
             : {}),
           supportBounds: {minimum: [-5, -5, -5], maximum: [5, 5, 5]},
-          indices: indices.view,
-          squaredDistances: squaredDistances.view,
-          counts: counts.view,
-          status: status.view
+          output: {
+            indices: indices.view,
+            squaredDistances: squaredDistances.view,
+            counts: counts.view,
+            status: status.view
+          }
         })
       );
       return {indices, squaredDistances, counts, status};
@@ -184,9 +186,7 @@ for (const pointCount of [0, 1, 2, 129]) {
             ...(indexed
               ? {grid: {origin: [-1, -1, -1] as const, dimensions: [2, 2, 2] as const, cellSize: 1}}
               : {}),
-            indices: indices.view,
-            squaredDistances: distances.view,
-            counts: counts.view
+            output: {indices: indices.view, squaredDistances: distances.view, counts: counts.view}
           })
         );
         for (const invalid of [false, true]) {
@@ -250,10 +250,12 @@ for (const indexed of [false, true]) {
           ...(indexed
             ? {grid: {origin: [-1, -1, -1] as const, dimensions: [5, 4, 4] as const, cellSize: 0.5}}
             : {}),
-          indices: indices.view,
-          squaredDistances: distances.view,
-          counts: counts.view,
-          status: status.view
+          output: {
+            indices: indices.view,
+            squaredDistances: distances.view,
+            counts: counts.view,
+            status: status.view
+          }
         })
       );
       await fixture.run();
@@ -320,10 +322,12 @@ for (const capacity of [1, 4, 16, 64]) {
                   }
                 : {}),
               supportBounds: {minimum: [-5, -5, -5], maximum: [5, 5, 5]},
-              indices: indices.view,
-              squaredDistances: squaredDistances.view,
-              counts: counts.view,
-              status: status.view
+              output: {
+                indices: indices.view,
+                squaredDistances: squaredDistances.view,
+                counts: counts.view,
+                status: status.view
+              }
             })
           );
           return {indices, squaredDistances, counts, status};

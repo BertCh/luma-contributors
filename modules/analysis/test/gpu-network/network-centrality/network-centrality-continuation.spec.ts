@@ -7,11 +7,13 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
-import {getCoreDefaultBuffer} from '../../../src/analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../../src/analysis-core/contracts/network-topology';
 import {
   GPUNetworkCentrality,
   computeNetworkCentralityOnCPU,
-  createNetworkCentralityContinuation
+  createNetworkCentralityContinuation,
+  planNetworkCentralitySchedule,
+  type NetworkCentralityScheduleStep
 } from '../../../src/gpu-network/network-centrality/index';
 import {
   createInputBuffer,
@@ -36,7 +38,8 @@ async function runContinuation(
     localIterations?: number;
     nonzeroViews?: boolean;
     packedOutputs?: boolean;
-    batches?: readonly {pivots: readonly number[]; reset: boolean}[];
+    batches?: readonly {pivots: readonly number[]; reset: boolean | 0 | 1}[];
+    scheduleSteps?: readonly NetworkCentralityScheduleStep[];
   }
 ) {
   const graph = new GPUCommandGraph(device);
@@ -163,7 +166,7 @@ async function runContinuation(
       const values = new Uint32Array(pivots.length).fill(0xffffffff);
       values.set(batch.pivots);
       getCoreDefaultBuffer(props.pivotNodes.buffer.defaultBuffer!).write(values, byteOffset);
-      await runner.runBatch({reset: batch.reset});
+      await runner.runBatch(options.scheduleSteps?.[snapshots.length] ?? batch);
       snapshots.push(await read());
     }
     const result = snapshots[snapshots.length - 1];
@@ -190,6 +193,42 @@ function expectRelative(actual: ArrayLike<number>, expected: ArrayLike<number>, 
       tolerance * Math.abs(expected[row])
     );
 }
+
+it('accumulates planner batches at a shared vertex and retains an earlier failure', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const steps = [...planNetworkCentralitySchedule({pivotCount: 2, laneCount: 1})];
+  const {snapshots} = await runContinuation(
+    device,
+    6,
+    [
+      [0, 1, 1],
+      [1, 2, 1],
+      [3, 1, 1],
+      [0, 4, 1],
+      [4, 5, 0],
+      [5, 4, 0]
+    ],
+    [0],
+    {
+      roundsPerStep: 1,
+      maximumIterations: 6,
+      scheduleSteps: steps,
+      batches: [
+        {pivots: [0], reset: steps[0].reset},
+        {pivots: [3], reset: steps[1].reset}
+      ]
+    }
+  );
+  // Both pivots contribute one path through vertex 1. Only pivot 0 reaches the zero cycle.
+  expect(snapshots[0].betweenness[1]).toBeCloseTo(1, 5);
+  expect(snapshots[1].betweenness[1]).toBeCloseTo(2, 5);
+  for (const snapshot of snapshots) {
+    expect(snapshot.converged).toEqual([0]);
+    expect(snapshot.zeroWeightCycle).toEqual([1]);
+    expect(snapshot.iterationLimitReached).toEqual([0]);
+  }
+});
 
 it('continues a 2050-hop weighted road path across bounded graphs with closed-form centralities', async () => {
   const device = await getWebGPUTestDevice();

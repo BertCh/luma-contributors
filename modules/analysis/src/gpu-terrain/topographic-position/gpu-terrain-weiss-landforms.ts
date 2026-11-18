@@ -9,20 +9,23 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand, GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
+  validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getRasterBandViews,
   getRasterBufferBandNodes,
+  snapshotRasterBand,
   RASTER_WGSL_HELPERS,
   validateRasterBandBelongsToGraph,
   validateRasterBuffersDistinct,
@@ -45,7 +48,7 @@ import {
   getRasterGroundCellSizeWGSL,
   type GPURasterCellSizeMode,
   validateRasterCellSizeMode
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 
 /** Number of float32 values read from `GPUTerrainWeissLandformsProps.parameters`. */
 export const GPU_TERRAIN_WEISS_LANDFORMS_PARAMETER_LENGTH = 8;
@@ -179,10 +182,14 @@ export type GPUTerrainWeissLandformsProps = {
  * cancellation occurs. Slope is Horn's 3×3 slope with clamped borders. A cell is invalid when its
  * elevation, either position value, or its slope is invalid. Global statistics make the classes
  * depend on the whole tile, as in the original ArcView method; use `'local'` for tile-independent
- * classes. `requiredHalo` bounds the local position and slope terms only; it is sufficient for
+ * classes. `localRadius` bounds the local position and slope terms only; it is sufficient for
  * `'local'` standardization, but no fixed local radius covers `'global'`. This class does not
  * implement `GPURasterHaloStage`; do not pass a global-standardized instance directly to the
- * published halo assembler expecting seam-free results.
+ * published halo assembler expecting seam-free results. Use `getHaloStage()` in local mode;
+ * global mode refuses because its statistics depend on the entire grid.
+ * Grid dimensions/affine and both scale radii are captured at construction, so reusing the caller's
+ * metadata cannot change the footprint after its halo has been validated. Parameter-buffer and
+ * elevation contents remain per-frame inputs.
  *
  * Classes (`s`, `l` = small and large standardized position, `t` = `standardThreshold`):
  * `s ≤ -t`: canyon (`l ≤ -t`), midslope drainage, upland drainage (`l ≥ t`);
@@ -195,9 +202,61 @@ export class GPUTerrainWeissLandforms implements GPUCommandNodeProducer {
   /** Validated properties. */
   readonly props: GPUTerrainWeissLandformsProps;
   /** Receptive field in pixels for the local terms; global standardization reads the whole grid. */
-  readonly requiredHalo: number;
+  readonly localRadius: number;
 
   constructor(props: GPUTerrainWeissLandformsProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'elevation',
+      'parameters',
+      'smallScale',
+      'largeScale',
+      'standardization',
+      'quantum',
+      'output',
+      'cellSizeMode'
+    ]);
+    const grid = snapshotConstructionFields(props.grid, [
+      'width',
+      'height',
+      'affine',
+      'pixelInterpretation',
+      'coordinateReferenceSystem',
+      'level',
+      'levelZeroOrigin'
+    ]);
+    const smallScale = snapshotConstructionFields(props.smallScale ?? {radius: 3}, [
+      'radius',
+      'innerRadius'
+    ]);
+    const largeScale = snapshotConstructionFields(props.largeScale ?? {radius: 15}, [
+      'radius',
+      'innerRadius'
+    ]);
+    // Topology is validated once. Keep later graph construction and halo metadata on that
+    // footprint even when the caller reuses its grid or scale objects for another contributor.
+    props = Object.freeze({
+      ...props,
+      grid: Object.freeze({
+        ...grid,
+        affine: Object.freeze([...grid.affine]) as GPURasterMetadata['affine']
+      }),
+      smallScale: Object.freeze({
+        radius: smallScale.radius,
+        innerRadius: smallScale.innerRadius ?? 0
+      }),
+      largeScale: Object.freeze({
+        radius: largeScale.radius,
+        innerRadius: largeScale.innerRadius ?? 0
+      }),
+      elevation: snapshotRasterBand(props.elevation),
+      output: snapshotConstructionFields(props.output, [
+        'landforms',
+        'standardizedPosition',
+        'outputValidity'
+      ])
+    });
     this.id = props.id ?? 'terrain-weiss-landforms';
     this.props = props;
     const {id} = this;
@@ -216,7 +275,7 @@ export class GPUTerrainWeissLandforms implements GPUCommandNodeProducer {
         throw new Error(`${id} scales need integer radius >= 1 and 0 <= innerRadius < radius`);
       }
     }
-    this.requiredHalo = Math.max(1, ...scales.map(scale => scale.radius));
+    this.localRadius = Math.max(1, ...scales.map(scale => scale.radius));
     if (!['global', 'local'].includes(props.standardization ?? 'global')) {
       throw new Error(`${id} standardization must be global or local`);
     }
@@ -252,6 +311,16 @@ export class GPUTerrainWeissLandforms implements GPUCommandNodeProducer {
       [output.landforms, output.standardizedPosition, output.outputValidity],
       [...getRasterBandViews(props.elevation), props.parameters]
     );
+  }
+
+  /** Returns a complete local-mode halo stage; global statistics have no local halo bound. */
+  getHaloStage(): GPURasterHaloStage {
+    validateRequirement(
+      this.id,
+      this.props.standardization === 'local',
+      'standardization global has no local halo bound; use local for halo assembly'
+    );
+    return {requiredHalo: this.localRadius};
   }
 
   /** Returns position, slope, optional global statistics, and classification nodes. */

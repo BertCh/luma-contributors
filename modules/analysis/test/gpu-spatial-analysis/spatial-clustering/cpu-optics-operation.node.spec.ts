@@ -46,6 +46,75 @@ const PROPS: OPTICSOperationProps = {
   }
 };
 
+it.each([
+  'dbscan',
+  'xi'
+] as const)('X7 respects the explicit visit budget before %s extraction', extractionMethod => {
+  const positions = Float32Array.of(0, 0, 1, 0, 4, 0, 5, 0);
+  for (const budget of [1, 4]) {
+    const result = computeOPTICSOnCPU(positions, {
+      minimumSamples: 2,
+      maximumDistance: 2,
+      extractionDistance: 1.5,
+      extractionMethod,
+      maximumIterations: budget
+    });
+    expect(Array.from(result.ordering)).toEqual(
+      budget === 1 ? [0, 0xffffffff, 0xffffffff, 0xffffffff] : [0, 1, 2, 3]
+    );
+    expect(Array.from(result.status)).toEqual([budget, budget === 4 ? 1 : 0, 0]);
+    expect(Array.from(result.iterationCount)).toEqual([budget]);
+    expect(Array.from(result.converged)).toEqual([budget === 4 ? 1 : 0]);
+    expect(Array.from(result.iterationLimitReached)).toEqual([budget === 1 ? 1 : 0]);
+    expect(Array.from(result.labels)).toEqual(
+      budget === 1 ? [0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff] : [0, 0, 1, 1]
+    );
+    if (budget === 1) {
+      expect(Array.from(result.clusterSummary)).toEqual([0, 0]);
+      expect(result.clusterIntervals.every(value => value === 0xffffffff)).toBe(true);
+    }
+  }
+});
+
+it('X7 CPU operation retains its validated non-enumerable visit budget', async () => {
+  let budget = 1;
+  const props = {...PROPS, rowCount: 4};
+  Object.defineProperty(props, 'maximumIterations', {get: () => budget});
+  const operation = new CPUOPTICSOperation(props);
+  budget = 4;
+  const values = Float32Array.of(0, 0, 1, 0, 4, 0, 5, 0);
+  const result = await operation.execute({
+    inputs: {
+      positions: {format: 'float32x2', length: 4, chunks: [{values, length: 4}], pack: () => values}
+    }
+  } as Parameters<typeof operation.execute>[0]);
+  expect(Array.from(result['ordering'] as Uint32Array)).toEqual([
+    0, 0xffffffff, 0xffffffff, 0xffffffff
+  ]);
+});
+
+it('X7 GPU operation retains the visit budget until contributor lowering', () => {
+  const props = {...PROPS, rowCount: 4, maximumIterations: 1};
+  const operation = new GPUOPTICSOperation(props);
+  props.maximumIterations = 4;
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const getView = createOperationTestViewGetter(graph, {
+      positions: {format: 'float32x2', length: 4},
+      ordering: {format: 'uint32', length: 4},
+      coreDistances: {format: 'float32', length: 4},
+      reachability: {format: 'float32', length: 4},
+      predecessors: {format: 'uint32', length: 4},
+      labels: {format: 'uint32', length: 4},
+      status: {format: 'uint32', length: 3}
+    });
+    expect(operation.createContributor(getView)).toMatchObject({props: {maximumIterations: 1}});
+  } finally {
+    device.destroy();
+  }
+});
+
 function expectDistances(actual: Float32Array, expected: (number | string)[]) {
   expect(actual.length).toBe(expected.length);
   expected.forEach((value, row) => {
@@ -166,7 +235,7 @@ it('matches an equatorial closed form across the antimeridian and excludes inval
   }
 });
 
-it('drops GPU caps and completes despite visit and neighbor budgets', () => {
+it('drops GPU scheduling and neighbor caps while preserving the explicit visit budget', () => {
   const result = computeOPTICSOnCPU(Float32Array.of(0, 0, 1, 0, 2, 0), {
     minimumSamples: 2,
     maximumDistance: 4,
@@ -175,9 +244,9 @@ it('drops GPU caps and completes despite visit and neighbor budgets', () => {
     neighborIndex: 'grid',
     neighborCapacity: 1
   });
-  expect(Array.from(result.status)).toEqual([3, 1, 0]);
+  expect(Array.from(result.status)).toEqual([1, 0, 0]);
   expect(Array.from(result.candidateOverflow)).toEqual([0]);
-  expect(Array.from(result.labels)).toEqual([0, 0, 0]);
+  expect(Array.from(result.labels)).toEqual([0xffffffff, 0xffffffff, 0xffffffff]);
   const invalid = computeOPTICSOnCPU(new Float32Array(4097 * 2).fill(NaN), {
     minimumSamples: 257,
     maximumDistance: 1,

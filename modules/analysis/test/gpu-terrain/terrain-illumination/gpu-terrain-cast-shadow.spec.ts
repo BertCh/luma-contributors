@@ -14,6 +14,7 @@ import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
   getGPUTerrainCastShadowParameterValues,
   GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH,
+  GPU_TERRAIN_CAST_SHADOW_SWEEP_PARAMETER_LENGTH,
   GPUTerrainCastShadow,
   type GPUTerrainCastShadowSettings
 } from '../../../src/gpu-terrain/terrain-illumination/gpu-terrain-cast-shadow';
@@ -32,6 +33,7 @@ import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis
 import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {computeTerrainHorizonSweepBruteForce} from './terrain-horizon-sweep-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {computeTerrainCastShadowOracle} from './terrain-cast-shadow-oracle';
 
 type CastShadowResult = {
   sunVisibility: number[];
@@ -48,6 +50,10 @@ function createCastShadowFixture(
     maximumRadius?: number;
     rowDirection?: 'south' | 'north';
     cellSizeMode?: 'uniform' | 'web-mercator' | 'geographic';
+    sweepSettings?: Pick<
+      GPUTerrainCastShadowSettings,
+      'sweepOrigin' | 'sweepReferenceCellSize' | 'sweepSourceGrid'
+    >;
   } = {}
 ) {
   const pixelCount = width * height;
@@ -68,9 +74,11 @@ function createCastShadowFixture(
   const settings = new GPUParameterBuffer(device, {
     id: 'cast-shadow-parameters',
     format: 'float32',
-    length: GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH,
+    length: options.sweepSettings
+      ? GPU_TERRAIN_CAST_SHADOW_SWEEP_PARAMETER_LENGTH
+      : GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH,
     values: getGPUTerrainCastShadowParameterValues(
-      {azimuthDegrees: 0, altitudeDegrees: 0},
+      {azimuthDegrees: 0, altitudeDegrees: 0, ...options.sweepSettings},
       defaultGrid
     )
   });
@@ -79,6 +87,7 @@ function createCastShadowFixture(
     maximumRadius: options.maximumRadius,
     rowDirection: options.rowDirection,
     cellSizeMode: options.cellSizeMode,
+    parameterLayout: options.sweepSettings ? 'sweep' : 'standard',
     elevation: {
       id: 'elevation',
       format: 'float32',
@@ -116,7 +125,9 @@ function createCastShadowFixture(
       frameGrid: GPURasterMetadata = defaultGrid
     ): Promise<CastShadowResult> {
       // The packer takes no row direction or cell size mode: the contributor owns both.
-      settings.write(getGPUTerrainCastShadowParameterValues(values, frameGrid));
+      settings.write(
+        getGPUTerrainCastShadowParameterValues({...options.sweepSettings, ...values}, frameGrid)
+      );
       submitGraph(device, compiled, undefined);
       return {
         sunVisibility: await readFloat32(buffers.sunVisibility, pixelCount),
@@ -149,11 +160,182 @@ function expectNaNPattern(actual: number[], expected: number[]): number {
     if (Number.isNaN(value)) {
       expect(Number.isNaN(actual[index]), `NaN at ${index}`).toBe(true);
     } else {
+      expect(Number.isFinite(actual[index]), `finite at ${index}`).toBe(true);
       worst = Math.max(worst, Math.abs(actual[index] - value));
     }
   }
   return worst;
 }
+
+it('RT-03 cast shadow agrees on a whole and cropped blocker with its supported halo', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fullGrid = makeGPURasterMetadata({width: 9, height: 9, cellSize: 1, rowDirection: 'north'});
+  const windowGrid = makeGPURasterMetadata({
+    width: 7,
+    height: 7,
+    cellSize: 1,
+    rowDirection: 'north',
+    origin: [1, 1]
+  });
+  const elevation = new Float32Array(81);
+  elevation[5 * 9 + 4] = 10;
+  const window = new Float32Array(49);
+  window[4 * 7 + 3] = 10;
+  const sun = {azimuthDegrees: 22.5, altitudeDegrees: 20, angularRadiusDegrees: 0};
+  for (const shared of [false, true]) {
+    const fullSettings = shared
+      ? {
+          sweepReferenceCellSize: [1, 1] as const,
+          sweepSourceGrid: fullGrid,
+          sweepOrigin: [0, 0] as const
+        }
+      : undefined;
+    const windowSettings = shared ? {...fullSettings, sweepOrigin: [1, 1] as const} : undefined;
+    const fullFixture = createCastShadowFixture(device, elevation, 9, 9, {
+      maximumRadius: 2,
+      rowDirection: 'north',
+      sweepSettings: fullSettings
+    });
+    const windowFixture = createCastShadowFixture(device, window, 7, 7, {
+      maximumRadius: 2,
+      rowDirection: 'north',
+      sweepSettings: windowSettings
+    });
+    try {
+      if (shared) {
+        expect(fullFixture.contributor.getHaloStage()).toEqual({requiredHalo: 2});
+        expect(windowFixture.contributor.getHaloStage()).toEqual({requiredHalo: 2});
+      } else {
+        expect(() => fullFixture.contributor.getHaloStage()).toThrow(/parameterLayout/);
+        expect(() => windowFixture.contributor.getHaloStage()).toThrow(/parameterLayout/);
+      }
+      const full = await fullFixture.run(sun, fullGrid);
+      const cropped = await windowFixture.run(sun, windowGrid);
+      const fullPixel = 4 * 9 + 4;
+      const windowPixel = 3 * 7 + 3;
+      expect(full.horizonAngle[fullPixel]).toBeCloseTo(83.822396, 3);
+      expect(cropped.horizonAngle[windowPixel]).toBeCloseTo(shared ? 83.822396 : 0, 3);
+      expect(full.sunVisibility[fullPixel]).toBe(0);
+      expect(cropped.sunVisibility[windowPixel]).toBe(shared ? 0 : 1);
+      expect(full.validity[fullPixel]).toBe(1);
+      expect(cropped.validity[windowPixel]).toBe(1);
+      for (const [actual, grid, values, sweepSettings] of [
+        [full, fullGrid, elevation, fullSettings],
+        [cropped, windowGrid, window, windowSettings]
+      ] as const) {
+        const expected = computeTerrainCastShadowOracle({
+          width: grid.width,
+          height: grid.height,
+          elevation: values,
+          parameters: getGPUTerrainCastShadowParameterValues({...sun, ...sweepSettings}, grid),
+          maximumRadius: 2,
+          rowDirection: 'north',
+          parameterLayout: shared ? 'sweep' : 'standard'
+        });
+        expect(expectNaNPattern(actual.horizonAngle, expected.horizonAngle)).toBeLessThan(2e-3);
+        expect(expectNaNPattern(actual.sunVisibility, expected.sunVisibility)).toBeLessThan(1e-6);
+        expect(actual.validity).toEqual(expected.validity);
+      }
+    } finally {
+      fullFixture.destroy();
+      windowFixture.destroy();
+    }
+  }
+});
+
+it('RT-03 cast shadow uses a shared geographic source row at the distance cutoff', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fullGrid = makeGPURasterMetadata({
+    width: 9,
+    height: 11,
+    origin: [0, 89],
+    cellSize: [0.0001, 0.00001]
+  });
+  const windowGrid = makeGPURasterMetadata({
+    width: 5,
+    height: 5,
+    origin: [0.0002, 88.99998],
+    cellSize: [0.0001, 0.00001]
+  });
+  const elevation = new Float32Array(99);
+  elevation[3 * 9 + 5] = 10;
+  const window = new Float32Array(25);
+  window[1 * 5 + 3] = 10;
+  const sweepSettings = {sweepReferenceCellSize: [1, 1] as const, sweepSourceGrid: fullGrid};
+  const fullFixture = createCastShadowFixture(device, elevation, 9, 11, {
+    maximumRadius: 1,
+    cellSizeMode: 'geographic',
+    sweepSettings: {...sweepSettings, sweepOrigin: [0, 0]}
+  });
+  const windowFixture = createCastShadowFixture(device, window, 5, 5, {
+    maximumRadius: 1,
+    cellSizeMode: 'geographic',
+    sweepSettings: {...sweepSettings, sweepOrigin: [2, 2]}
+  });
+  try {
+    const sun = {
+      azimuthDegrees: 90,
+      altitudeDegrees: 20,
+      angularRadiusDegrees: 0,
+      maximumDistance: 0.19493955373764038
+    };
+    const full = await fullFixture.run(sun, fullGrid);
+    const cropped = await windowFixture.run(sun, windowGrid);
+    for (const [result, pixel] of [
+      [full, 3 * 9 + 4],
+      [cropped, 1 * 5 + 2]
+    ] as const) {
+      expect(result.horizonAngle[pixel]).toBeCloseTo(88.88322, 3);
+      expect(result.sunVisibility[pixel]).toBe(0);
+      expect(result.validity[pixel]).toBe(1);
+    }
+  } finally {
+    fullFixture.destroy();
+    windowFixture.destroy();
+  }
+});
+
+it('RT-03 cast shadow updates placement and sun on one compiled shared-source sweep', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const sourceGrid = makeGPURasterMetadata({
+    width: 10,
+    height: 10,
+    cellSize: 1,
+    rowDirection: 'north'
+  });
+  const elevation = new Float32Array(81);
+  elevation[4 * 9 + 3] = 10;
+  const fixture = createCastShadowFixture(device, elevation, 9, 9, {
+    maximumRadius: 2,
+    rowDirection: 'north',
+    sweepSettings: {
+      sweepReferenceCellSize: [1, 1],
+      sweepSourceGrid: sourceGrid,
+      sweepOrigin: [0, 0]
+    }
+  });
+  try {
+    for (const [origin, azimuthDegrees, angle, visibility] of [
+      [[0, 0], 22.5, 0, 1],
+      [[1, 1], 22.5, 83.822396, 0],
+      [[1, 1], 90, 0, 1],
+      [[0, 0], 22.5, 0, 1]
+    ] as const) {
+      const actual = await fixture.run(
+        {azimuthDegrees, altitudeDegrees: 20, angularRadiusDegrees: 0, sweepOrigin: origin},
+        makeGPURasterMetadata({width: 9, height: 9, cellSize: 1, rowDirection: 'north', origin})
+      );
+      expect(actual.horizonAngle[3 * 9 + 3]).toBeCloseTo(angle, 3);
+      expect(actual.sunVisibility[3 * 9 + 3]).toBe(visibility);
+      expect(actual.validity[3 * 9 + 3]).toBe(1);
+    }
+  } finally {
+    fixture.destroy();
+  }
+});
 
 it('GPUTerrainCastShadow matches the float64 brute force along the sun line', async () => {
   const device = await getWebGPUTestDevice();

@@ -134,7 +134,9 @@ export class GPURasterEmbeddingLinearProbe<
     );
     if (props.weights) validateSinglePackedView(props.weights, ['float32'], `${id} weights`);
     if (props.bias) validateSinglePackedView(props.bias, ['float32'], `${id} bias`);
-    validateRasterEmbeddingViews(id, this.getInputs(), this.getOutputs());
+    const inputs = this.getInputs();
+    const outputs = this.getOutputs();
+    validateRasterEmbeddingViews(id, inputs, outputs, [{inputs, outputs}]);
     this.chunks = planRasterEmbeddingChunks(
       id,
       pixelCount,

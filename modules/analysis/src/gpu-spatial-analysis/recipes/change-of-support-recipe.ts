@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {addPreparedRecipe} from './prepared-recipe';
+
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {GPUPolygonRasterization} from '../../raster-analysis/polygon-rasterization/index';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
@@ -151,7 +153,32 @@ export type GPUChangeOfSupportRecipeProps = GPURecipeOverrides<
 };
 
 /** Named outputs of {@link addChangeOfSupportRecipe}. */
-export type GPUChangeOfSupportRecipeResult = GPURecipeResult & {
+export type GPUChangeOfSupportRecipeOutputs = Pick<
+  GPUChangeOfSupportRecipeViews,
+  | 'extensiveWeights'
+  | 'intensiveWeights'
+  | 'areas'
+  | 'sourceAreas'
+  | 'sourceTransferredFractions'
+  | 'extensiveValues'
+  | 'intensiveValues'
+  | 'categoryShares'
+>;
+
+/** Ports between change-of-support stages. */
+export type GPUChangeOfSupportRecipeIntermediates = Pick<
+  GPUChangeOfSupportRecipeViews,
+  'sourceZones' | 'targetZones'
+>;
+
+/** Change-of-support outputs, intermediates and top-level convenience fields. */
+export type GPUChangeOfSupportRecipeResult = GPURecipeResult<
+  GPUChangeOfSupportRecipeOutputs,
+  GPUChangeOfSupportRecipeIntermediates
+> &
+  GPUChangeOfSupportRecipeViews;
+
+type GPUChangeOfSupportRecipeViews = {
   /** Resolved coordinate context of the raster. */
   spatialContext: GPUSpatialContext;
   sourceZoneCount: number;
@@ -214,6 +241,13 @@ export type GPUChangeOfSupportRecipeResult = GPURecipeResult & {
  * `GPUChangeOfSupportRecipeProps.spatialContext`.
  */
 export function addChangeOfSupportRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUChangeOfSupportRecipeProps
+): GPUChangeOfSupportRecipeResult {
+  return addPreparedRecipe(graph, props, declareChangeOfSupportRecipe);
+}
+
+function declareChangeOfSupportRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUChangeOfSupportRecipeProps
 ): GPUChangeOfSupportRecipeResult {

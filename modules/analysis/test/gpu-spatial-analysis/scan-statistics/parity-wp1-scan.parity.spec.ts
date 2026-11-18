@@ -5,10 +5,8 @@
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {GraphDataView} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
-import {
-  GPUSpatialScanStatistic,
-  getGPUSpatialScanStatisticParameterValues
-} from '../../../src/gpu-spatial-analysis/scan-statistics/index';
+import {getGPUSpatialScanStatisticParameterValues} from '../../../src/gpu-spatial-analysis/scan-statistics/index';
+import {createSpatialScanStatisticForTesting} from '../../../src/gpu-spatial-analysis/scan-statistics/gpu-spatial-scan-statistic';
 import type {
   GPUSpatialScanModel,
   GPUSpatialScanRateDirection,
@@ -69,7 +67,7 @@ for (const scene of [...fixture.cases, ...showcase.cases]) {
     const summary = rig.output('uint32', 4);
     const zoneStatistics = rig.output('float32', scene.positions.length / 2);
     try {
-      const producer = new GPUSpatialScanStatistic({
+      const producer = createSpatialScanStatisticForTesting({
         id: 'reference-scan',
         positions: rig.input(
           new Float32Array(scene.positions),

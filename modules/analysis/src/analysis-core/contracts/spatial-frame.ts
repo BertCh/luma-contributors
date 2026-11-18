@@ -85,15 +85,16 @@ export function createGPULocalSpatialFrame(props: GPULocalSpatialFrameProps): GP
 }
 
 /**
- * Declared context units of a frame: `'meters'` or `'kilometers'` for linear frames, otherwise
- * `undefined` (native), because the library checks declarations and never converts.
+ * Declared units accepted by a native planar context: `'meters'` for meter frames, otherwise
+ * `undefined` (native). Other units, including kilometers, remain in `frame.unit`; the library
+ * never converts coordinates or thresholds.
  */
 export function getGPUSpatialFrameContextUnits(frame: GPUSpatialFrame): GPUSpatialUnit | undefined {
   const metersPerUnit = frame.unit?.metersPerUnit;
   if (metersPerUnit === 1) {
     return 'meters';
   }
-  return metersPerUnit === 1000 ? 'kilometers' : undefined;
+  return undefined;
 }
 
 /**

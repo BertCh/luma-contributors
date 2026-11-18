@@ -9,13 +9,47 @@ import {
   getBoundedDispatchLayout,
   getViewBinding,
   type GPUCommandGraph,
-  type GPUCommandNode
+  type GPUCommandNode,
+  type GPUCommandNodeProducer,
+  type GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import {
   createGraphChunkDispatchParameters,
+  planGraphChunkDispatch,
+  validateDisjointWritableViews,
   validateGraphChunkDispatchBindings,
   type GraphChunkDispatchPlan
 } from '../../src/analysis-core/kernels/graph-chunk-dispatch';
+import {
+  validateCommandNodeBudget,
+  validateGraphOutputsDisjointFromInputs
+} from '../../src/analysis-core/kernels/gpu-contributor-utils';
+import {snapshotConstructionFields} from '../../src/analysis-core/kernels/construction-snapshot';
+
+/** Tiny authoring fixture: output[row] = input[row] * 3 + globalRow + totalRows. */
+export class ExampleChunkContributor implements GPUCommandNodeProducer {
+  readonly plan: GraphChunkDispatchPlan;
+  readonly estimatedCommandNodeCount: number;
+  readonly options: Readonly<{id?: string; maximumWorkgroupsPerDimension?: number}>;
+
+  constructor(
+    input: GraphVectorView<'uint32'>,
+    output: GraphVectorView<'uint32'>,
+    options: {id?: string; maximumWorkgroupsPerDimension?: number} = {}
+  ) {
+    this.options = snapshotConstructionFields(options, ['id', 'maximumWorkgroupsPerDimension']);
+    this.plan = planGraphChunkDispatch('example', {input, output});
+    validateDisjointWritableViews('example', {output});
+    validateGraphOutputsDisjointFromInputs('example', [output], [input]);
+    this.estimatedCommandNodeCount =
+      this.plan.nonemptyChunkCount + (this.plan.chunks.length ? 1 : 0);
+    validateCommandNodeBudget('example', this.estimatedCommandNodeCount);
+  }
+
+  getCommandNodes<Parameters>(graph: GPUCommandGraph<Parameters>) {
+    return createExampleChunkNodes(graph, this.plan, this.options);
+  }
+}
 
 // Fixed source and no pipeline overrides, including for unequal lengths and 3D dispatches.
 export const EXAMPLE_CHUNK_SOURCE = /* wgsl */ `

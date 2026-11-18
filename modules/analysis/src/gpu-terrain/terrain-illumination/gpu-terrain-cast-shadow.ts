@@ -20,7 +20,9 @@ import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-no
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   captureGraphCommandNodes,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateCapacity,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getRasterBandViews,
@@ -37,6 +39,7 @@ import {GPU_SOLAR_DISK_ANGULAR_RADIUS_DEGREES} from './gpu-solar-shadow-mask';
 import {
   createTerrainHorizonSweepNode,
   getTerrainSweepLineGeometry,
+  getTerrainSweepSourceParameterValues,
   TERRAIN_SWEEP_GRID_SLOTS,
   TERRAIN_SWEEP_MAXIMUM_EXTENT
 } from './terrain-horizon-sweep';
@@ -49,11 +52,14 @@ import {
   type GPURasterRowDirection,
   validateRasterCellSizeMode,
   writeRasterGridParameterValues
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 import {resolveTerrainRowDirection} from '../terrain-curvature/terrain-geomorphometry-utils';
 
 /** Number of float32 values read from `GPUTerrainCastShadowProps.parameters`. */
 export const GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH = 16;
+
+/** Explicit shared-source sweep layout: 16 solar values, 12 source/reference values, four reserved zeros. */
+export const GPU_TERRAIN_CAST_SHADOW_SWEEP_PARAMETER_LENGTH = 32;
 
 /**
  * CPU-side description packed by {@link getGPUTerrainCastShadowParameterValues}.
@@ -78,6 +84,20 @@ export type GPUTerrainCastShadowSettings = {
   curvatureCoefficient?: number;
   /** Ground search radius in meters; `<= 0` is unlimited. Defaults to 0. */
   maximumDistance?: number;
+  /**
+   * Shared positive ground metres per overview pixel `[x, y]` for line geometry and curvature.
+   * Together with `sweepSourceGrid`, selects the 32-value sweep layout (this pair is at 16..17).
+   * Use the same pair in every window of a mosaic and update it consistently per frame.
+   */
+  sweepReferenceCellSize?: readonly [number, number];
+  /** Per-frame window origin in overview pixels relative to `sweepSourceGrid`. Defaults to [0, 0]. */
+  sweepOrigin?: readonly [number, number];
+  /**
+   * Common full overview grid for row spacing and distance cutoffs. Required with sweep settings;
+   * its height is at most 16777215, and every window must lie inside it. Use the same grid in
+   * each window, including the whole-grid evaluation.
+   */
+  sweepSourceGrid?: GPURasterMetadata;
 };
 
 /**
@@ -94,20 +114,31 @@ export type GPUTerrainCastShadowSettings = {
  * direction to a pixel slope with its own `cellSizeMode` and the ground cell of row `height / 2`.
  * The contributor is the only source of both modes, so settings and contributor cannot disagree.
  *
+ * With `sweepReferenceCellSize` and `sweepSourceGrid`, writes the explicit 32-value sweep layout:
+ * shared ground cells at 16..17, origin modulo 65536 at 18..19, shared source cell sizes at 20..21,
+ * source north/south edges at 22..23, source height and window source row at 24..25, reserved zeros
+ * at 26..31. `sweepOrigin` is per-frame overview placement relative to the shared source grid,
+ * default [0, 0]. The window must lie inside that source; source height is at most 16777215.
+ * Ordinary settings keep the 16-value layout even in larger targets; padding never selects sweep.
+ *
  * @throws If the grid cell size is not finite and positive, the angular radius is negative or not
  * finite, the azimuth is not finite, or `target` is too short.
  */
 export function getGPUTerrainCastShadowParameterValues(
   settings: GPUTerrainCastShadowSettings,
   grid: GPURasterMetadata,
-  target: Float32Array = new Float32Array(GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH)
+  target?: Float32Array
 ): Float32Array {
+  const usesSharedSource =
+    settings.sweepReferenceCellSize !== undefined ||
+    settings.sweepOrigin !== undefined ||
+    settings.sweepSourceGrid !== undefined;
+  const minimumLength = usesSharedSource
+    ? GPU_TERRAIN_CAST_SHADOW_SWEEP_PARAMETER_LENGTH
+    : GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH;
+  const values = target ?? new Float32Array(minimumLength);
   validateTerrainIlluminationCellSize('getGPUTerrainCastShadowParameterValues', grid);
-  validateParameterTarget(
-    'getGPUTerrainCastShadowParameterValues',
-    target,
-    GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH
-  );
+  validateParameterTarget('getGPUTerrainCastShadowParameterValues', values, minimumLength);
   const angularRadius = settings.angularRadiusDegrees ?? GPU_SOLAR_DISK_ANGULAR_RADIUS_DEGREES;
   if (!Number.isFinite(angularRadius) || angularRadius < 0) {
     throw new Error('Terrain cast shadow angular radius must be finite and non-negative');
@@ -121,7 +152,7 @@ export function getGPUTerrainCastShadowParameterValues(
   const groundDirection: [number, number] = [snap(Math.sin(azimuth)), snap(-Math.cos(azimuth))];
   // The line geometry does not depend on the grid extent, only the line count does.
   const geometry = getTerrainSweepLineGeometry(groundDirection, 1, 1);
-  target.set([
+  values.set([
     0,
     0,
     settings.zFactor ?? 1,
@@ -139,8 +170,20 @@ export function getGPUTerrainCastShadowParameterValues(
     groundDirection[0],
     groundDirection[1]
   ]);
-  writeRasterGridParameterValues(target, grid, TERRAIN_SWEEP_GRID_SLOTS);
-  return target;
+  writeRasterGridParameterValues(values, grid, TERRAIN_SWEEP_GRID_SLOTS);
+  if (usesSharedSource) {
+    // Keep the source placement validation and numerical packing identical to terrain horizon.
+    values.set(
+      getTerrainSweepSourceParameterValues(
+        'getGPUTerrainCastShadowParameterValues',
+        settings,
+        grid
+      ),
+      16
+    );
+    values.fill(0, 28, GPU_TERRAIN_CAST_SHADOW_SWEEP_PARAMETER_LENGTH);
+  }
+  return values;
 }
 
 /** Caller-owned outputs of {@link GPUTerrainCastShadow}; at least one is required. */
@@ -158,9 +201,10 @@ export type GPUTerrainCastShadowOutput = {
 /**
  * Properties for {@link GPUTerrainCastShadow}.
  *
- * Topology: grid size, elevation format and calibration, `maximumRadius`, `cellSizeMode`,
+ * Topology: grid size, elevation format and calibration, `maximumRadius`, `parameterLayout`, `cellSizeMode`,
  * `rowDirection`, and which outputs exist. Per-frame: `parameters` (sun, disk radius, grid cell
- * size and latitude band, z factor, curvature, maximum distance) and elevation contents.
+ * size and latitude band, z factor, curvature, maximum distance, shared source origin/grid/reference)
+ * and elevation contents.
  * Cell-size model: see {@link GPUTerrainCastShadowSettings}.
  */
 export type GPUTerrainCastShadowProps = {
@@ -170,13 +214,20 @@ export type GPUTerrainCastShadowProps = {
   grid: GPURasterMetadata;
   /** Elevation band, buffer or texture; scale, offset, nodata, and validity are honored. */
   elevation: GPURasterBand;
-  /** Per-frame parameters with 16 float32 values, see {@link getGPUTerrainCastShadowParameterValues}. */
+  /** Per-frame parameters with at least 16 float32 values, or 32 with `parameterLayout: 'sweep'`. */
   parameters: GraphDataView<'float32'>;
+  /**
+   * Compile-time interpretation of parameters. Defaults to `'standard'`, the local 16-value model.
+   * `'sweep'` selects 32 values packed with a shared source grid/reference cell and per-frame
+   * source origin. Only this explicit layout can provide a seamless halo through `getHaloStage()`.
+   * Spare view capacity never selects a layout; placement and sun updates reuse the same shader.
+   */
+  parameterLayout?: 'standard' | 'sweep';
   /** Caller-owned outputs. */
   output: GPUTerrainCastShadowOutput;
   /**
    * Search radius in pixels along the sun line (counted as `k * hypot(1, slope)`), a positive
-   * integer. Also the required tile halo. Defaults to the tile diagonal, `ceil(hypot(width,
+   * safe integer. The supported shared-source sweep's tile halo is this radius. Defaults to the tile diagonal, `ceil(hypot(width,
    * height))`, which covers the whole tile for every sun azimuth.
    */
   maximumRadius?: number;
@@ -212,9 +263,14 @@ export type GPUTerrainCastShadowProps = {
  * (`smooth(-w, w, H + bias - O)`, a lateral-diffusion approximation) was not adopted: the hull
  * sweep is equally O(1) amortised and exact against brute force. Pixels with an invalid centre
  * elevation receive NaN. Pixels closer than `maximumRadius` to the tile edge see a truncated
- * horizon: pass a tile with a `maximumRadius` halo for seamless results.
+ * horizon. For seamless results use `parameterLayout: 'sweep'` with the same `sweepSourceGrid`
+ * and `sweepReferenceCellSize` across windows, and each window's per-frame `sweepOrigin`. This
+ * anchors phase, reference geometry/curvature and source-row spacing/distance cutoffs. Then
+ * `getHaloStage()` returns `{requiredHalo: maximumRadius}`. Standard settings retain local line
+ * phase and middle-row reference geometry; more padding alone cannot make that model seamless,
+ * and `getHaloStage()` refuses it, including when the parameter view has spare capacity.
  */
-export class GPUTerrainCastShadow implements GPUCommandNodeProducer, GPURasterHaloStage {
+export class GPUTerrainCastShadow implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
@@ -223,12 +279,12 @@ export class GPUTerrainCastShadow implements GPUCommandNodeProducer, GPURasterHa
   readonly maximumRadius: number;
   /** Row direction the kernels use: the prop, or the direction the grid affine states. */
   readonly rowDirection: GPURasterRowDirection;
-  /** Receptive field in pixels (`GPURasterHaloStage` contract). */
-  readonly requiredHalo: number;
+  /** Explicit interpretation of parameter words; independent of view capacity. */
+  readonly parameterLayout: 'standard' | 'sweep';
 
   constructor(props: GPUTerrainCastShadowProps) {
     this.id = props.id ?? 'terrain-cast-shadow';
-    this.props = props;
+    this.props = Object.freeze({...props});
     const {id} = this;
     const {output} = props;
     const {width, height} = props.grid;
@@ -239,11 +295,14 @@ export class GPUTerrainCastShadow implements GPUCommandNodeProducer, GPURasterHa
       );
     }
     const maximumRadius = props.maximumRadius ?? Math.ceil(Math.hypot(width, height));
-    if (!Number.isSafeInteger(maximumRadius) || maximumRadius < 1) {
-      throw new Error(`${id} maximumRadius must be a positive integer`);
-    }
+    validateCapacity(id, 'maximumRadius', maximumRadius, 1, Number.MAX_SAFE_INTEGER);
     this.maximumRadius = maximumRadius;
-    this.requiredHalo = maximumRadius;
+    this.parameterLayout = props.parameterLayout ?? 'standard';
+    validateRequirement(
+      id,
+      this.parameterLayout === 'standard' || this.parameterLayout === 'sweep',
+      'parameterLayout must be standard or sweep'
+    );
     if (
       !output.sunVisibility &&
       !output.horizonAngle &&
@@ -273,7 +332,13 @@ export class GPUTerrainCastShadow implements GPUCommandNodeProducer, GPURasterHa
       'uint32',
       pixelCount
     );
-    validateRasterParameters(id, props.parameters, GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH);
+    validateRasterParameters(
+      id,
+      props.parameters,
+      this.parameterLayout === 'sweep'
+        ? GPU_TERRAIN_CAST_SHADOW_SWEEP_PARAMETER_LENGTH
+        : GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH
+    );
     validateRasterOutputTexture(
       id,
       'output.sunVisibilityTexture',
@@ -289,6 +354,16 @@ export class GPUTerrainCastShadow implements GPUCommandNodeProducer, GPURasterHa
       [output.sunVisibility, output.horizonAngle, output.outputValidity],
       [...getRasterBandViews(props.elevation), props.parameters]
     );
+  }
+
+  /** Returns a complete halo stage only for the explicit shared-source sweep model. */
+  getHaloStage(): GPURasterHaloStage {
+    validateRequirement(
+      this.id,
+      this.parameterLayout === 'sweep',
+      'parameterLayout must be sweep with shared source placement/reference for a seamless halo'
+    );
+    return {requiredHalo: this.maximumRadius};
   }
 
   /** Returns elevation canonicalization, the sweep node, and the optional texture node. */
@@ -353,6 +428,9 @@ export class GPUTerrainCastShadow implements GPUCommandNodeProducer, GPURasterHa
           rowDirection: this.rowDirection
         },
         maximumRadius: this.maximumRadius,
+        referenceCellSizeIndex: this.parameterLayout === 'sweep' ? 16 : undefined,
+        originIndex: this.parameterLayout === 'sweep' ? 18 : undefined,
+        sourceGridIndex: this.parameterLayout === 'sweep' ? 20 : undefined,
         cellSizeMode: props.cellSizeMode ?? 'uniform',
         zFactorSign: 1,
         elevationValues: source.band.storage.values as GraphDataView<'float32'>,

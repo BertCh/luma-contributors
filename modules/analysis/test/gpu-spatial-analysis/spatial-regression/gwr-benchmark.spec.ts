@@ -6,7 +6,7 @@
  * GWR benchmark: grid candidate path against the all-rows scan (`indexGridSize: false`) on the same
  * uniform scene, with a result comparison. Bounded fixed bandwidth covering about 60 rows.
  *
- * Run with `LUMA_TEST_BROWSER_BENCHMARKS=true npx vitest run --project headless --no-file-parallelism --silent=false <this file>`.
+ * Run with `yarn test-benchmarks modules/analysis/test/gpu-spatial-analysis/spatial-regression/gwr-benchmark.spec.ts`.
  */
 
 import type {Buffer} from '@luma.gl/core';

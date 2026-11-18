@@ -13,6 +13,75 @@ import {runOperationGraph} from '../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../utils/require-test-device';
 import fixtures from './raster-morphology-operation-fixtures.json';
 
+it('R3 an eleven by eleven background finishes only when the flood budget reaches the center', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const maximumIterations of [4, 5]) {
+    for (const Operation of [CPURasterFillHolesOperation, GPURasterFillHolesOperation]) {
+      const operation = new Operation({
+        grid: {width: 11, height: 11, affine: [1, 0, 0, 0, -1, 11], pixelInterpretation: 'area'},
+        input: 'input',
+        connectivity: 8,
+        maximumIterations,
+        output: {
+          values: 'filled',
+          status: {converged: 'converged', iterationCount: 'rounds', iterationLimitReached: 'limit'}
+        }
+      });
+      try {
+        const result = await runOperationGraph(device, {
+          inputs: {input: {format: 'uint32', values: new Uint32Array(121)}},
+          operations: [operation],
+          outputs: ['filled', 'converged', 'rounds', 'limit']
+        });
+        expect(Array.from(result['filled'])).toEqual(
+          Array.from({length: 121}, (_, cell) => Number(maximumIterations === 4 && cell === 60))
+        );
+        expect(Array.from(result['converged'])).toEqual([Number(maximumIterations === 5)]);
+        expect(Array.from(result['rounds'])).toEqual([maximumIterations + 1]);
+        expect(Array.from(result['limit'])).toEqual([Number(maximumIterations === 4)]);
+      } finally {
+        if (operation instanceof GPURasterFillHolesOperation) operation.destroy();
+      }
+    }
+  }
+});
+
+it('both forms preserve the one-round boundary flood and its unfinished-hole status', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props: RasterFillHolesOperationProps = {
+    grid: {width: 7, height: 7, affine: [1, 0, 0, 0, -1, 7], pixelInterpretation: 'area'},
+    input: 'input',
+    maximumIterations: 1,
+    output: {
+      values: 'filled',
+      status: {converged: 'converged', iterationCount: 'rounds', iterationLimitReached: 'limit'}
+    }
+  };
+  const expected = Array.from({length: 49}, (_, cell) => {
+    const row = Math.floor(cell / 7);
+    const column = cell % 7;
+    return Number(Math.min(row, column, 6 - row, 6 - column) > 1);
+  });
+  for (const Operation of [CPURasterFillHolesOperation, GPURasterFillHolesOperation]) {
+    const operation = new Operation(props);
+    try {
+      const result = await runOperationGraph(device, {
+        inputs: {input: {format: 'uint32', values: new Uint32Array(49)}},
+        operations: [operation],
+        outputs: ['filled', 'converged', 'rounds', 'limit']
+      });
+      expect(Array.from(result['filled'])).toEqual(expected);
+      expect(Array.from(result['converged'])).toEqual([0]);
+      expect(Array.from(result['rounds'])).toEqual([2]);
+      expect(Array.from(result['limit'])).toEqual([1]);
+    } finally {
+      if (operation instanceof GPURasterFillHolesOperation) operation.destroy();
+    }
+  }
+});
+
 it('compares every hole-fill output exactly for holes, passages, diagonal gaps and empty foreground', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

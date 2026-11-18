@@ -519,6 +519,18 @@ export const COVERAGE_EXPANSION_OPERATOR_OVERRIDES: Readonly<
         ...GLOBAL_COORDINATE_OPERATOR_OVERRIDES[name],
         ...GEOMETRY_OPERATOR_OVERRIDES[name],
         ...CONTINUOUS_SAMPLING_OPERATOR_OVERRIDES[name],
+        ...(name === 'addPopulationSupportAlignmentRecipe' ? {status: ['invalidCount']} : {}),
+        ...(name === 'addVisibilityGraphRecipe'
+          ? {
+              inputs: ['points', 'lines', 'polygons', 'parameters'],
+              outputs: ['network', 'attributes', 'summary'],
+              status: ['count', 'requiredCount', 'overflow', 'candidateOverflow', 'invalidCount'],
+              readback: 'none',
+              dimensionality: '2d',
+              documentation: 'docs/api/gpu-spatial-analysis/urban-morphology.md',
+              contract: 'GPUVisibilityGraphProps | GPUVisibilityGraphCSRProps'
+            }
+          : {}),
         ...(name === 'GPUSpatialPanelLagMaximumLikelihood'
           ? {
               tests: `${TEST_ROOT}/spatial-regression/statistics-advanced.spec.ts`,

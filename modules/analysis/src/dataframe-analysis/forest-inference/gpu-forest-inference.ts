@@ -90,20 +90,28 @@ export type GPUForestInferenceProps<Rows extends GraphDataView | GraphVectorView
     parameters: GraphDataView<'float32'>;
     /** Source row count, including padding rows; padding is excluded with mask. */
     rowCount: number;
-    /** Scalar-packed float32 features, row-major within each chunk by default. Mutually exclusive with rasterStack. */
-    features?: GPUForestInferenceRowView<'float32', Rows>;
-    featureLayout?: 'row-major' | 'feature-major';
-    /**
-     * Co-registered, calibrated float32 buffer bands in feature order; one row per grid cell.
-     * Band validity becomes a missing feature and follows the model's missing-value branch.
-     * Texture bands and raw scale/offset/noDataValue metadata must be prepared upstream first.
-     * No spatial measures are computed, so the affine and cellSizeMode do not affect inference.
-     */
-    rasterStack?: {bands: readonly GPURasterBand<'float32'>[]; grid: GPURasterMetadata};
     /** Nonzero keeps a row. Zero invalidates all predictions, scores and leaf ids for that row. */
     mask?: GPUForestInferenceRowView<'uint32', Rows>;
     output: GPUForestInferenceOutput<Rows>;
-  };
+  } & (
+    | {
+        /** Scalar-packed float32 features, row-major within each chunk by default. */
+        features: GPUForestInferenceRowView<'float32', Rows>;
+        featureLayout?: 'row-major' | 'feature-major';
+        rasterStack?: never;
+      }
+    | {
+        features?: never;
+        featureLayout?: never;
+        /**
+         * Co-registered, calibrated float32 buffer bands in feature order; one row per grid cell.
+         * Band validity becomes a missing feature and follows the model's missing-value branch.
+         * Texture bands and raw scale/offset/noDataValue metadata must be prepared upstream first.
+         * No spatial measures are computed, so the affine and cellSizeMode do not affect inference.
+         */
+        rasterStack: {bands: readonly GPURasterBand<'float32'>[]; grid: GPURasterMetadata};
+      }
+  );
 
 /**
  * Data-parallel inference of an imported sparse numerical forest. One invocation per row traverses
@@ -147,6 +155,11 @@ export class GPUForestInference<
       id,
       Boolean(props.features) !== Boolean(rasterStack),
       'exactly one of features or rasterStack must be supplied'
+    );
+    validateRequirement(
+      id,
+      !rasterStack || props.featureLayout === undefined,
+      'featureLayout requires features and must be omitted with rasterStack'
     );
     validateRequirement(
       id,

@@ -38,7 +38,11 @@ function createTable(graph: GPUCommandGraph, capacity: number, withSums = true):
     cells: view('uint32x2', capacity),
     counts: view('uint32', capacity),
     sums: withSums ? view('uint32x2', capacity) : undefined,
-    status: {count: view('uint32', 1), overflow: view('uint32', 1)}
+    status: {
+      count: view('uint32', 1),
+      overflow: view('uint32', 1),
+      candidateOverflow: view('uint32', 1)
+    }
   };
 }
 
@@ -56,7 +60,11 @@ function createProps(
       presence: view('uint32', 8),
       delta: view('float32', 8),
       zScore: view('float32', 8),
-      status: {count: view('uint32', 1), overflow: view('uint32', 1)}
+      status: {
+        count: view('uint32', 1),
+        overflow: view('uint32', 1),
+        candidateOverflow: view('uint32', 1)
+      }
     },
     ...overrides
   };
@@ -104,7 +112,7 @@ it('GPUCellTableCompare validates its props', () => {
       before,
       output: {...createProps(graph).output, cells: before.cells}
     };
-  }, /outputs must not share/);
+  }, /outputs(?:\[0\])? must not share/);
   expectThrows(
     graph => ({
       output: {
@@ -129,22 +137,27 @@ it('GPUCellTableCompare names nodes deterministically and stays within 8 binding
     'cmp-scan-level-0-scan',
     'cmp-merge',
     'cmp-measures',
+    'cmp-statistics-extent-level-0',
+    'cmp-statistics-extent-finalize',
     'cmp-statistics-sums',
     'cmp-statistics-squares',
     'cmp-statistics',
     'cmp-derived',
     'cmp-tail',
+    'cmp-candidate-status',
     'cmp-publish'
   ]);
   const sources = getGPUCommandNodeKernelSources(nodes);
-  for (const {id, source} of sources) {
+  for (const {id, source, constants} of sources) {
     expect(getStorageBindingCount(source), `${id} storage bindings`).toBeLessThanOrEqual(8);
-    expect(getWorkgroupMemoryBytes(source), `${id} workgroup bytes`).toBeLessThanOrEqual(
+    expect(getWorkgroupMemoryBytes(source, constants), `${id} workgroup bytes`).toBeLessThanOrEqual(
       CORE_WORKGROUP_STORAGE_LIMIT_BYTES
     );
   }
-  // The z-score reduction is three kernels, with no atomics, one workgroup tile per 256 slots.
-  const statistics = sources.filter(({id}) => id.startsWith('cmp-statistics'));
+  // The extent comes from the published reduction; three fixed-order kernels use its scale.
+  const statistics = sources.filter(
+    ({id}) => id.startsWith('cmp-statistics') && !id.includes('-extent-')
+  );
   expect(statistics.map(({id}) => id)).toEqual([
     'cmp-statistics-sums',
     'cmp-statistics-squares',
@@ -171,12 +184,16 @@ it('GPUCellTableCompare spreads the z-score reduction over workgroups for large 
       presence: view('uint32', capacity),
       delta: view('float32', capacity),
       zScore: view('float32', capacity),
-      status: {count: view('uint32', 1), overflow: view('uint32', 1)}
+      status: {
+        count: view('uint32', 1),
+        overflow: view('uint32', 1),
+        candidateOverflow: view('uint32', 1)
+      }
     }
   });
   const nodes = new GPUCellTableCompare({...props, id: 'big'}).getCommandNodes(graph);
-  const sources = getGPUCommandNodeKernelSources(nodes).filter(({id}) =>
-    id.startsWith('big-statistics')
+  const sources = getGPUCommandNodeKernelSources(nodes).filter(
+    ({id}) => id.startsWith('big-statistics') && !id.includes('-extent-')
   );
   expect(sources).toHaveLength(3);
   // ceil(3000 / 256) = 12 workgroups.
@@ -221,7 +238,8 @@ it('compareCellTablesOnCPU bounds the union and flags overflow', () => {
   expect(compareCellTablesOnCPU([], [], options)).toEqual({
     rows: [],
     total: 0,
-    overflow: false
+    overflow: false,
+    candidateOverflow: false
   });
 });
 

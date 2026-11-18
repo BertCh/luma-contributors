@@ -9,6 +9,69 @@ import {GPUModalSplitOperation} from '../../../src/gpu-spatial-analysis/trajecto
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {getModalFixture, getModalProps} from './modal-split-operation-fixture';
+import {CPUTrajectorySegmentsOperation} from '../../../src/gpu-spatial-analysis/trajectory-staypoints/cpu-trajectory-segments-operation';
+import {GPUTrajectorySegmentsOperation} from '../../../src/gpu-spatial-analysis/trajectory-staypoints/gpu-trajectory-segments-operation';
+import {
+  getSegmentsFixture,
+  getSegmentsProps
+} from '../trajectory-staypoints/trajectory-segments-operation-fixture';
+
+it('suppresses modal counts from a bounded segments graph and restores complete counts', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = getSegmentsFixture();
+  for (const [Segments, Modal] of [
+    [GPUTrajectorySegmentsOperation, GPUModalSplitOperation],
+    [CPUTrajectorySegmentsOperation, CPUModalSplitOperation]
+  ] as const) {
+    for (const [capacity, upstreamLoss] of [
+      [3, 0],
+      [6, 0],
+      [6, 1]
+    ]) {
+      const segmentProps = getSegmentsProps(capacity, 5);
+      segmentProps.staypoints!.status.candidateOverflow = 'stayCandidateOverflow';
+      const modalProps = {
+        ...getModalProps('count', false),
+        rowCount: 22,
+        trackCount: 3,
+        modeCount: 1,
+        triplegCapacity: capacity,
+        triplegs: {
+          tracks: 'triplegIds',
+          startRows: 'triplegStartRows',
+          endRows: 'triplegEndRows',
+          status: {
+            count: 'triplegCount',
+            overflow: 'triplegOverflow',
+            candidateOverflow: 'triplegCandidateOverflow'
+          }
+        }
+      };
+      const result = await runOperationGraph(device, {
+        inputs: {
+          positions: {format: 'float32x2', values: fixture.positions},
+          timestamps: {format: 'float32', values: fixture.timestamps},
+          trackOffsets: {format: 'uint32', values: fixture.trackOffsets},
+          staypointIds: {format: 'uint32', values: fixture.staypointIds},
+          parameters: {format: 'float32', values: fixture.parameters},
+          stayTracks: {format: 'uint32', values: fixture.staypoints.tracks},
+          stayStartRows: {format: 'uint32', values: fixture.staypoints.startRows},
+          stayFinishRows: {format: 'uint32', values: fixture.staypoints.finishRows},
+          stayDurations: {format: 'float32', values: fixture.staypoints.durations},
+          stayCount: {format: 'uint32', values: fixture.staypoints.count},
+          stayCandidateOverflow: {format: 'uint32', values: Uint32Array.of(upstreamLoss)},
+          modes: {format: 'uint32', values: new Uint32Array(capacity)}
+        },
+        operations: [new Segments(segmentProps), new Modal(modalProps)],
+        outputs: ['modalSplit']
+      });
+      expect(Array.from(result['modalSplit'])).toEqual(
+        capacity === 3 || upstreamLoss ? [NaN, NaN, NaN] : [3, 2, 0]
+      );
+    }
+  }
+});
 
 for (const metric of ['count', 'distance'] as const) {
   for (const start of [0, 1, 2]) {

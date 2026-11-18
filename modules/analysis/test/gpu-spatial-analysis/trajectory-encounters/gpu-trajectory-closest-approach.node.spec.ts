@@ -16,6 +16,38 @@ import {
   getStorageBindingCount
 } from '../../utils/gpu-contributor-test-utils';
 import {CLOSEST_APPROACH_FIXTURE, computeClosestApproachOracle} from './closest-approach-oracle';
+import {getTimestampSourceWGSL} from '../../../src/gpu-spatial-analysis/trajectory-analysis/trajectory-common';
+import {createWGSLKernelNode} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createCPUGraphMemory,
+  executeCommandNodesOnCPU
+} from '../segment-intersection/wgsl-graph-executor';
+
+it('subtracts timestamp ticks without converting milliseconds into seconds', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const timestamps = createTransientView(graph, 'times', 'float32', 2);
+    const result = createTransientView(graph, 'difference', 'float32', 1);
+    const node = createWGSLKernelNode(graph, {
+      id: 'time-unit-probe',
+      operation: 'TestTimeUnits',
+      invocationCount: 1,
+      bindings: [
+        {name: 'timestamps', view: timestamps, type: 'f32', access: 'read'},
+        {name: 'difference', view: result, type: 'f32', access: 'read_write'}
+      ],
+      declarations: getTimestampSourceWGSL(false),
+      body: 'difference[differenceOffset] = rowTimeDifference(1u, 0u);'
+    });
+    const memory = createCPUGraphMemory();
+    memory.write(timestamps, Float32Array.of(0, 1000));
+    executeCommandNodesOnCPU([node], memory);
+    expect(memory.readFloat32(result)[0]).toBe(1000);
+  } finally {
+    device.destroy();
+  }
+});
 
 let serial = 0;
 
@@ -81,9 +113,10 @@ it('GPUTrajectoryClosestApproach declares parseable kernels within the core limi
     expect(index, prefix).toBeGreaterThan(previous);
     previous = index;
   }
-  for (const [kernelId, source] of getParsedKernelSources(nodes)) {
+  const recordedKernelSources1 = getParsedKernelSources(nodes);
+  for (const {id: kernelId, source: source, constants} of recordedKernelSources1.configurations) {
     expect(getStorageBindingCount(source), kernelId).toBeLessThanOrEqual(8);
-    expect(getPrivateMemoryBytes(source), kernelId).toBeLessThanOrEqual(8192);
+    expect(getPrivateMemoryBytes(source, constants), kernelId).toBeLessThanOrEqual(8192);
   }
   // Word timestamps build too.
   const words = new GPUCommandGraph(createNullWebGPUDevice());

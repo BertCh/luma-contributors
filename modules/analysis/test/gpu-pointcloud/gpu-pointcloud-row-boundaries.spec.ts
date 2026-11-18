@@ -100,8 +100,7 @@ async function runHeights(
         ).view,
         coverage: fixture.view('uint32', new Uint32Array(ROWS).fill(1)).view,
         ...(interpolation ? {interpolation} : {}),
-        heights: heights.view,
-        status: status.view
+        output: {heights: heights.view, status: status.view}
       })
     );
     await fixture.run();
@@ -199,10 +198,12 @@ it('Surfaces (and its grid index) put both ends of every row in that row', async
             height: ROWS,
             ...(rowDirection ? {rowDirection} : {})
           },
-          terrain: outputs.terrain.view,
-          surface: outputs.surface.view,
-          canopy: outputs.canopy.view,
-          coverage: outputs.coverage.view
+          output: {
+            terrain: outputs.terrain.view,
+            surface: outputs.surface.view,
+            canopy: outputs.canopy.view,
+            coverage: outputs.coverage.view
+          }
         })
       );
       return {label, rowDirection, outputs};

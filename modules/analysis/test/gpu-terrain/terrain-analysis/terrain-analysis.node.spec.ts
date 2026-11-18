@@ -370,8 +370,9 @@ it('GPUTerrainDerivatives schedules gradients and the shade kernel', () => {
     /parameters/
   );
   const shared = createBand(graph, 'shared-elevation', 30);
+  // The shared validator reports the overlapping logical range before co-binding checks.
   expect(() => create({elevation: shared, output: {slope: shared.storage.values}})).toThrow(
-    /share buffers/
+    /^terrain-derivatives .*logical byte ranges must not overlap/
   );
   expect(() => create({cellSizeMode: 'polar' as never})).toThrow(/cellSizeMode/);
   expect(() => create({grid: makeGPURasterMetadata({width: 0, height: 5})})).toThrow(/dimensions/);

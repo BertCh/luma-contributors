@@ -7,14 +7,28 @@ import {
   type GPUContributorOperationOutput
 } from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUNetworkPathExtraction} from './gpu-network-path-extraction';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /** Graph names and caller-selected capacity of one compact path output. */
 export type NetworkPathExtractionCompactOperationOutput = {
   capacity: number;
   ids: string;
-  status: {count: string; overflow: string; requiredCount: string};
+  status: {count: string; overflow: string; requiredCount: string; candidateOverflow?: string};
   lineOffsets?: string;
 };
+
+export type NetworkPathExtractionNodeOperationOutput =
+  NetworkPathExtractionCompactOperationOutput & {
+    nodeRows?: string;
+    pathCosts?: string;
+    pathFound?: string;
+  };
+
+export type NetworkPathExtractionEdgeOperationOutput =
+  NetworkPathExtractionCompactOperationOutput & {
+    edgeRows?: string;
+  };
 
 /** Shared graph-value properties; every number and optional-port presence is compile-time. */
 export type NetworkPathExtractionOperationProps = {
@@ -29,14 +43,91 @@ export type NetworkPathExtractionOperationProps = {
   predecessorsComplete?: string;
   maximumPathLength?: number;
   nodeIds?: string;
-  output: NetworkPathExtractionCompactOperationOutput & {pathCosts?: string; pathFound?: string};
+  output: NetworkPathExtractionNodeOperationOutput;
   edges?: {
     edgeCount: number;
     topology: {offsets: string; neighbors: string; weights: string; nodePositions?: string};
     edgeIds?: string;
-    output: NetworkPathExtractionCompactOperationOutput;
+    output: NetworkPathExtractionEdgeOperationOutput;
   };
 };
+
+/** Capture role-specific ports and their nested maps for both backends. @internal */
+export function snapshotNetworkPathExtractionOperationProps(
+  props: NetworkPathExtractionOperationProps
+): NetworkPathExtractionOperationProps {
+  const snapshot = snapshotConstructionFields(props, [
+    'id',
+    'nodeCount',
+    'targetCapacity',
+    'predecessors',
+    'costs',
+    'targets',
+    'targetCount',
+    'predecessorsComplete',
+    'maximumPathLength',
+    'nodeIds',
+    'output',
+    'edges'
+  ]);
+  const id = snapshot.id ?? 'network-path-extraction';
+  validateRequirement(
+    id,
+    !('edgeRows' in snapshot.output),
+    'output.edgeRows is only supported under edges.output'
+  );
+  const output = snapshotConstructionFields(snapshot.output, [
+    'capacity',
+    'ids',
+    'nodeRows',
+    'status',
+    'lineOffsets',
+    'pathCosts',
+    'pathFound'
+  ]);
+  const edges =
+    snapshot.edges &&
+    snapshotConstructionFields(snapshot.edges, ['edgeCount', 'topology', 'edgeIds', 'output']);
+  if (edges)
+    validateRequirement(
+      id,
+      !('nodeRows' in edges.output),
+      'edges.output.nodeRows is only supported under output'
+    );
+  const edgeOutput =
+    edges &&
+    snapshotConstructionFields(edges.output, [
+      'capacity',
+      'ids',
+      'edgeRows',
+      'status',
+      'lineOffsets'
+    ]);
+  const statusFields = ['count', 'overflow', 'requiredCount', 'candidateOverflow'] as const;
+  return Object.freeze({
+    ...snapshot,
+    output: Object.freeze({
+      ...output,
+      status: snapshotConstructionFields(output.status, statusFields)
+    }),
+    edges:
+      edges && edgeOutput
+        ? Object.freeze({
+            ...edges,
+            topology: snapshotConstructionFields(edges.topology, [
+              'offsets',
+              'neighbors',
+              'weights',
+              'nodePositions'
+            ]),
+            output: Object.freeze({
+              ...edgeOutput,
+              status: snapshotConstructionFields(edgeOutput.status, statusFields)
+            })
+          })
+        : undefined
+  });
+}
 
 /**
  * GPU path extraction as a vector operation, including optional edge extraction. Compile with
@@ -45,6 +136,7 @@ export type NetworkPathExtractionOperationProps = {
  */
 export class GPUNetworkPathExtractionOperation extends GPUContributorOperation {
   constructor(props: NetworkPathExtractionOperationProps) {
+    props = snapshotNetworkPathExtractionOperationProps(props);
     const inputs: Record<string, string> = {
       predecessors: props.predecessors,
       costs: props.costs,
@@ -62,6 +154,12 @@ export class GPUNetworkPathExtractionOperation extends GPUContributorOperation {
       outputs[`${prefix}ids`] = {value: output.ids, format: 'uint32', length: output.capacity};
       for (const field of ['count', 'overflow', 'requiredCount'] as const)
         outputs[`${prefix}${field}`] = {value: output.status[field], format: 'uint32', length: 1};
+      if (output.status.candidateOverflow !== undefined)
+        outputs[`${prefix}candidateOverflow`] = {
+          value: output.status.candidateOverflow,
+          format: 'uint32',
+          length: 1
+        };
       if (output.lineOffsets !== undefined)
         outputs[`${prefix}lineOffsets`] = {
           value: output.lineOffsets,
@@ -70,6 +168,12 @@ export class GPUNetworkPathExtractionOperation extends GPUContributorOperation {
         };
     };
     addCompactOutput(props.output, '');
+    if (props.output.nodeRows !== undefined)
+      outputs['nodeRows'] = {
+        value: props.output.nodeRows,
+        format: 'uint32',
+        length: props.output.capacity
+      };
     if (props.output.pathCosts !== undefined)
       outputs['pathCosts'] = {
         value: props.output.pathCosts,
@@ -90,6 +194,12 @@ export class GPUNetworkPathExtractionOperation extends GPUContributorOperation {
         inputs['nodePositions'] = props.edges.topology.nodePositions;
       if (props.edges.edgeIds !== undefined) inputs['edgeIds'] = props.edges.edgeIds;
       addCompactOutput(props.edges.output, 'edge-');
+      if (props.edges.output.edgeRows !== undefined)
+        outputs['edge-edgeRows'] = {
+          value: props.edges.output.edgeRows,
+          format: 'uint32',
+          length: props.edges.output.capacity
+        };
     }
     super({
       id: props.id ?? 'network-path-extraction',
@@ -104,6 +214,10 @@ export class GPUNetworkPathExtractionOperation extends GPUContributorOperation {
           status: {
             count: getView<'uint32'>(`${prefix}count`),
             overflow: getView<'uint32'>(`${prefix}overflow`),
+            candidateOverflow:
+              output.status.candidateOverflow === undefined
+                ? undefined
+                : getView<'uint32'>(`${prefix}candidateOverflow`),
             requiredCount: getView<'uint32'>(`${prefix}requiredCount`)
           },
           lineOffsets:
@@ -126,6 +240,8 @@ export class GPUNetworkPathExtractionOperation extends GPUContributorOperation {
           nodeIds: props.nodeIds === undefined ? undefined : getView<'uint32'>('nodeIds'),
           output: {
             ...getCompactOutput(props.output, ''),
+            nodeRows:
+              props.output.nodeRows === undefined ? undefined : getView<'uint32'>('nodeRows'),
             pathCosts:
               props.output.pathCosts === undefined ? undefined : getView<'float32'>('pathCosts'),
             pathFound:
@@ -146,7 +262,13 @@ export class GPUNetworkPathExtractionOperation extends GPUContributorOperation {
                   },
                   edgeIds:
                     props.edges.edgeIds === undefined ? undefined : getView<'uint32'>('edgeIds'),
-                  output: getCompactOutput(props.edges.output, 'edge-')
+                  output: {
+                    ...getCompactOutput(props.edges.output, 'edge-'),
+                    edgeRows:
+                      props.edges.output.edgeRows === undefined
+                        ? undefined
+                        : getView<'uint32'>('edge-edgeRows')
+                  }
                 }
         });
       }

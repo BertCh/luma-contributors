@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {addPreparedRecipe} from './prepared-recipe';
+import {
+  snapshotWeightsFields,
+  snapshotWeightsPort
+} from '../spatial-weights/weights-construction-snapshot';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -112,6 +118,30 @@ export function addContiguityOrderCorrelogramRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUContiguityOrderCorrelogramRecipeProps
 ): GPUContiguityOrderCorrelogramRecipeResult {
+  return addPreparedRecipe(graph, props, declareContiguityOrderCorrelogramRecipe);
+}
+
+function declareContiguityOrderCorrelogramRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUContiguityOrderCorrelogramRecipeProps
+): GPUContiguityOrderCorrelogramRecipeResult {
+  const captured = snapshotWeightsFields(props, [
+    'id',
+    'weights',
+    'values',
+    'mask',
+    'maximumOrder',
+    'slotCapacity',
+    'workCapacity',
+    'outputs'
+  ]);
+  props = Object.freeze({
+    ...captured,
+    weights: snapshotWeightsPort(captured.weights),
+    ...(captured.outputs
+      ? {outputs: snapshotWeightsFields(captured.outputs, ['correlogram', 'incompleteOrders'])}
+      : {})
+  });
   const id = props.id ?? 'contiguity-order-correlogram';
   const {maximumOrder} = props;
   validateCapacity(id, 'maximumOrder', maximumOrder, 1, GPU_SPATIAL_WEIGHTS_MAXIMUM_ORDER);
@@ -157,6 +187,8 @@ export function addContiguityOrderCorrelogramRecipe<Parameters>(
       props.weights.offsets,
       props.weights.neighbors,
       props.weights.weights,
+      props.weights.status?.overflow,
+      props.weights.status?.candidateOverflow,
       props.values,
       props.mask
     ],
@@ -164,10 +196,19 @@ export function addContiguityOrderCorrelogramRecipe<Parameters>(
   );
   const builder = new RecipeBuilder(graph);
   const orderWeights: GPUSpatialWeights[] = [];
-  const stages: {stage: string; status: {overflow: GraphDataView<'uint32'>}}[] = [];
+  const stages: {
+    stage: string;
+    status: {overflow: GraphDataView<'uint32'>; candidateOverflow: GraphDataView<'uint32'>};
+  }[] = [];
   for (let order = 1; order <= maximumOrder; order++) {
     const orderId = `${id}-order-${order}`;
     const ring = createTransientSpatialWeights(graph, `${orderId}-ring`, rows, slotCapacity);
+    ring.status.candidateOverflow = createTransientView(
+      graph,
+      `${orderId}-candidate-overflow`,
+      'uint32',
+      1
+    );
     const standardized = createTransientView(
       graph,
       `${orderId}-row-weights`,
@@ -221,6 +262,12 @@ export function addContiguityOrderCorrelogramRecipe<Parameters>(
         bindings: [
           {name: 'summary', view: summary, type: 'f32', access: 'read'},
           {name: 'ringOverflow', view: ring.status.overflow, type: 'u32', access: 'read'},
+          {
+            name: 'ringCandidateOverflow',
+            view: ring.status.candidateOverflow,
+            type: 'u32',
+            access: 'read'
+          },
           {name: 'correlogram', view: outputs.correlogram, type: 'f32', access: 'read_write'},
           {
             name: 'incompleteOrders',
@@ -235,10 +282,13 @@ export function addContiguityOrderCorrelogramRecipe<Parameters>(
   }
   correlogram[correlogramOffset + ${base + columns.count}u] = summary[summaryOffset + ${GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY.count}u];
   correlogram[correlogramOffset + ${base + columns.islandCount}u] = summary[summaryOffset + ${GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY.islandCount}u];
-  incompleteOrders[incompleteOrdersOffset + ${order - 1}u] = ringOverflow[ringOverflowOffset];`
+  incompleteOrders[incompleteOrdersOffset + ${order - 1}u] = u32(ringOverflow[ringOverflowOffset] != 0u || ringCandidateOverflow[ringCandidateOverflowOffset] != 0u);`
       })
     );
-    stages.push({stage: `order-${order}`, status: {overflow: ring.status.overflow}});
+    stages.push({
+      stage: `order-${order}`,
+      status: {overflow: ring.status.overflow, candidateOverflow: ring.status.candidateOverflow}
+    });
   }
   return {
     contributors: builder.contributors,

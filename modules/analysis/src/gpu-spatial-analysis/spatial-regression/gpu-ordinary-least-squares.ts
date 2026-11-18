@@ -47,6 +47,10 @@ import {GPU_REGRESSION_PRECISION_CONDITION_LIMIT} from '../../analysis-core/cont
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
 import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
+import {
+  CENTERED_REGRESSION_PREDICTION_WGSL,
+  getCenteredRegressionContributionWGSL
+} from './centered-regression-prediction';
 
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateRegressionAllocations} from './spatial-likelihood-allocations';
@@ -81,6 +85,10 @@ export type GPUOrdinaryLeastSquaresOutput = {
   residuals?: GraphDataView<'float32'>;
   /** Optional per-row fitted values; NaN for excluded rows and for a failed fit. */
   fitted?: GraphDataView<'float32'>;
+  /** Optional predictions for every finite predictor row, including masked rows or missing responses.
+   * Uses training-only centers and their mean correction; NaN for a failed fit or invalid predictors.
+   */
+  predictions?: GraphDataView<'float32'>;
 };
 
 /**
@@ -88,7 +96,7 @@ export type GPUOrdinaryLeastSquaresOutput = {
  *
  * Per-frame (no recompile): the contents of `parameters` and of every input buffer. Topology (needs
  * a new graph): `predictorCount`, the row count, whether `mask`, `parameters`, `residuals` and
- * `fitted` are present, and `tileRowCount`.
+ * `fitted` and `predictions` are present, and `tileRowCount`.
  */
 export type GPUOrdinaryLeastSquaresProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'ordinary-least-squares'`. */
@@ -129,12 +137,11 @@ export type GPUOrdinaryLeastSquaresProps = {
  * per-frame ridge penalty `lambda >= 0` shrinks the slopes (never the intercept).
  *
  * Accumulation is deterministic and well-conditioned, with no float atomics:
- * 1. Tile pass: one invocation per tile of `tileRowCount` consecutive rows sums the used rows in
- *    row order into a per-tile partial (plain f32; a tile is at most a few hundred rows, and the
- *    hot loop avoids depending on the compiler preserving compensation code). A merge pass then
- *    sums the partials in a fixed pairwise order (`getPairwiseSumWGSL`; a float Kahan merge is
- *    folded to a plain sum by the shader compiler of the test GPU). This yields the column means and the
- *    row count.
+ * 1. One origin pass selects the first complete training row of each tile. A tile pass sums
+ *    differences from that row, fixing each difference with an integer bit cast, then a merge
+ *    shifts the partials to the first nonempty tile's origin and sums them in a fixed pairwise
+ *    order (`getPairwiseSumWGSL`). Only then is the origin added back to obtain the stored means.
+ *    This avoids accumulating large raw values before recovering small predictor variances.
  * 2. A second tile and merge pass accumulates the centered cross-products `X'X`, `X'y`, `y'y`
  *    about those means, which removes the cancellation of the raw-moment formulation. A float32
  *    mean misses the true mean of its column by up to a float32 step, so the same pass sums the
@@ -257,7 +264,7 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
     if (output.status.code.length < 1) {
       throw new Error(`${id} output.status.code must hold one uint32 row`);
     }
-    for (const name of ['residuals', 'fitted'] as const) {
+    for (const name of ['residuals', 'fitted', 'predictions'] as const) {
       const view = output[name];
       if (view) {
         validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
@@ -283,11 +290,12 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
         summary: output.summary,
         code: output.status.code,
         residuals: output.residuals,
-        fitted: output.fitted
+        fitted: output.fitted,
+        predictions: output.predictions
       },
       [
         ['coefficients', 'standardErrors', 'tStatistics', 'summary', 'code'],
-        ['residuals', 'fitted']
+        ['residuals', 'fitted', 'predictions']
       ]
     );
     validateGraphOutputsDisjointFromInputs(
@@ -299,16 +307,17 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
         output.summary,
         output.status.code,
         output.residuals,
-        output.fitted
+        output.fitted,
+        output.predictions
       ],
       [props.predictors, props.response, props.mask, props.parameters]
     );
   }
 
   /**
-   * Returns the main chain (tile and merge means, tile and merge moments, solve, residuals,
+   * Returns the main chain (origin selection, tile and merge means, tile and merge moments, solve, residuals,
    * residual-moment tile and merge, finish) followed by the heteroskedasticity chain (the same
-   * four accumulation nodes on `e^2`, a solve, a finish for Koenker-Bassett and Breusch-Pagan),
+   * five accumulation nodes on `e^2`, a solve, a finish for Koenker-Bassett and Breusch-Pagan),
    * in order.
    */
   getCommandNodes<Parameters>(
@@ -327,7 +336,8 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
       summary: output.summary,
       code: output.status.code,
       residuals: output.residuals,
-      fitted: output.fitted
+      fitted: output.fitted,
+      predictions: output.predictions
     });
     validateRegressionAllocations(
       graph.device,
@@ -361,7 +371,7 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
         prefix: id,
         response: props.response,
         workspace: mainWorkspace,
-        partialMeans: u32('partial-means', tileCount * (k + 2)),
+        partialMeans: u32('partial-means', tileCount * getMeanPartialStride(k)),
         partialMoments: u32('partial-moments', tileCount * (layout.momentCount + k + 1))
       })
     );
@@ -391,6 +401,7 @@ ${getCholeskyWGSL(k)}`,
           readWorkspace(mainWorkspace),
           write('residualOut', residualView, 'f32'),
           ...(output.fitted ? [write('fittedOut', output.fitted, 'f32')] : []),
+          ...(output.predictions ? [write('predictionOut', output.predictions, 'f32')] : []),
           write('squaredOut', squaredView, 'f32')
         ],
         invocationCount: rowCount,
@@ -399,26 +410,30 @@ ${getRowWGSL(rowCount, k, tileRowCount, Boolean(props.mask))}`,
         body: `let nan = getNaN();
   residualOut[residualOutOffset + index] = nan;
   ${output.fitted ? 'fittedOut[fittedOutOffset + index] = nan;' : ''}
+  ${output.predictions ? 'predictionOut[predictionOutOffset + index] = nan;' : ''}
   squaredOut[squaredOutOffset + index] = nan;
-  if (ws[wsOffset + W_STATUS] != 0u || !isRowValid(index)) {
+  if (ws[wsOffset + W_STATUS] != 0u) {
     return;
+  }
+  for (var column = 0u; column < K; column++) {
+    if (!isFiniteValue(design[designOffset + index * K + column])) { return; }
   }
   // Each x - xbar is rounded as written, as in the moment pass: a compiler that regrouped the sum
   // into sum(b x) - sum(b xbar) would round every fitted value to a float32 step of b x.
-  var fit = 0.0;
-  for (var j = 0u; j < K; j++) {
-    fit = fit + wsGet(W_SLOPES + j) * getRoundedDifference(design[designOffset + index * K + j], wsGet(W_MEANS + j), ws[wsOffset + W_RUNTIME_ZERO]);
-  }
+  ${getCenteredRegressionContributionWGSL({predictorCount: k, predictor: 'design[designOffset + index * K + column]', mean: 'wsGet(W_MEANS + column)', slope: 'wsGet(W_SLOPES + column)', runtimeZero: 'ws[wsOffset + W_RUNTIME_ZERO]'})}
+  let fit = centeredContribution;
   let meanResponse = wsGet(W_MEANS + K);
   // The stored means are float32: W_RESIDUAL_OFFSET is what they miss of the true means, carried
   // through the fit, so the residuals sum to zero as least squares with an intercept requires.
   let offset = wsGet(W_RESIDUAL_OFFSET);
+  ${output.predictions ? 'predictionOut[predictionOutOffset + index] = getCenteredRegressionPrediction(meanResponse, fit, offset, ws[wsOffset + W_RUNTIME_ZERO]);' : ''}
+  if (!isRowValid(index)) { return; }
   // getRoundedDifference: without it the shader compiler of the test GPU adds the offset to the
   // mean first, where it is lost below the float32 step of the mean.
   let centeredResponse = getRoundedDifference(response[responseOffset + index], meanResponse, ws[wsOffset + W_RUNTIME_ZERO]);
   let residual = (centeredResponse - fit) - offset;
   residualOut[residualOutOffset + index] = residual;
-  ${output.fitted ? 'fittedOut[fittedOutOffset + index] = meanResponse + (fit + offset);' : ''}
+  ${output.fitted ? 'fittedOut[fittedOutOffset + index] = getCenteredRegressionPrediction(meanResponse, fit, offset, ws[wsOffset + W_RUNTIME_ZERO]);' : ''}
   squaredOut[squaredOutOffset + index] = residual * residual;`
       })
     );
@@ -500,7 +515,7 @@ ${getBelsleyConditionNumberWGSL(k)}`,
         prefix: `${id}-bp`,
         response: squaredView,
         workspace: bpWorkspace,
-        partialMeans: u32('bp-partial-means', tileCount * (k + 2)),
+        partialMeans: u32('bp-partial-means', tileCount * getMeanPartialStride(k)),
         partialMoments: u32('bp-partial-moments', tileCount * (layout.momentCount + k + 1))
       })
     );
@@ -576,7 +591,7 @@ export function getOrdinaryLeastSquaresAllocationLengths(
   return {
     'OLS residuals/squared residuals': rowCount,
     'OLS workspace': layout.length,
-    'OLS mean partials': tileCount * (predictorCount + 2),
+    'OLS mean partials': tileCount * getMeanPartialStride(predictorCount),
     'OLS moment partials': tileCount * (layout.momentCount + predictorCount + 1),
     'OLS residual partials': tileCount * RESIDUAL_SUM_COUNT
   };
@@ -614,6 +629,11 @@ function getWorkspaceLayout(k: number): WorkspaceLayout {
   };
 }
 
+/** Per tile: training-row origins, sums of differences, count, and a separately written zero. */
+function getMeanPartialStride(predictorCount: number): number {
+  return 2 * (predictorCount + 1) + 2;
+}
+
 const FINITE_WGSL = /* wgsl */ `
 ${GET_NAN_WGSL}
 
@@ -641,6 +661,7 @@ const W_DEVIATION_SUMS: u32 = ${layout.deviationSums}u;
 const W_RESIDUAL_OFFSET: u32 = ${layout.residualOffset}u;
 const W_RUNTIME_ZERO: u32 = ${layout.runtimeZero}u;
 ${ROUNDED_DIFFERENCE_WGSL}
+${CENTERED_REGRESSION_PREDICTION_WGSL}
 ${FINITE_WGSL}
 fn wsGet(slot: u32) -> f32 {
   return bitcast<f32>(ws[wsOffset + slot]);
@@ -655,7 +676,7 @@ ${
 // The stored float32 mean of column c misses the true mean by getMeanCorrection(c), which is
 // exact to the rounding of a sum of small deviations.
 fn getMeanCorrection(column: u32) -> f32 {
-  return wsGet(W_DEVIATION_SUMS + column) / max(f32(ws[wsOffset + W_COUNT]), 1.0);
+  return getRoundedDifference(wsGet(W_DEVIATION_SUMS + column) / max(f32(ws[wsOffset + W_COUNT]), 1.0), 0.0, ws[wsOffset + W_RUNTIME_ZERO]);
 }
 // Cross-product about the true means: the sum about the stored means less n times the product of
 // the two mean corrections.
@@ -706,7 +727,7 @@ type AccumulationProps = {
   partialMoments: GraphDataView<'uint32'>;
 };
 
-/** Tile and merge passes for means plus count, then for centered moments. */
+/** Select training-row origins, sum and merge shifted means, then tile and merge centered moments. */
 function getAccumulationNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: AccumulationProps
@@ -715,6 +736,7 @@ function getAccumulationNodes<Parameters>(
   const d = k + 1;
   const layout = getWorkspaceLayout(k);
   const momentCount = layout.momentCount;
+  const meanPartialStride = getMeanPartialStride(k);
   const hasMask = Boolean(props.mask);
   const rowBindings = [
     read('design', props.predictors, 'f32'),
@@ -729,15 +751,39 @@ const TILE_COUNT: u32 = ${tileCount}u;`;
     `${getPairwiseSumWGSL({count: 'TILE_COUNT', term: `bitcast<f32>(partial[partialOffset + sumItem * ${stride} + index])`})}`;
   return [
     createKernel(graph, {
+      id: `${prefix}-means-origins`,
+      variant: 'means-origins',
+      workgroupSize: TILE_WORKGROUP_SIZE,
+      bindings: [...rowBindings, write('partial', props.partialMeans, 'u32')],
+      invocationCount: tileCount,
+      declarations: `${FINITE_WGSL}\n${getRowWGSL(rowCount, k, tileRowCount, hasMask)}`,
+      body: `let base = partialOffset + index * ${meanPartialStride}u;
+  for (var column = 0u; column < ${d}u; column++) { partial[base + column] = bitcast<u32>(0.0); }
+  // Separate dispatch: later difference bit casts read a zero the compiler cannot know.
+  partial[base + ${2 * d + 1}u] = 0u;
+  let firstRow = index * TILE_ROWS;
+  let lastRow = min(firstRow + TILE_ROWS, ROW_COUNT);
+  for (var row = firstRow; row < lastRow; row++) {
+    if (!isRowValid(row)) { continue; }
+    for (var column = 0u; column < ROW_K; column++) {
+      partial[base + column] = bitcast<u32>(design[designOffset + row * ROW_K + column]);
+    }
+    partial[base + ROW_K] = bitcast<u32>(response[responseOffset + row]);
+    break;
+  }`
+    }),
+    createKernel(graph, {
       id: `${prefix}-means-tiles`,
       variant: 'means-tiles',
       workgroupSize: TILE_WORKGROUP_SIZE,
       bindings: [...rowBindings, write('partial', props.partialMeans, 'u32')],
       invocationCount: tileCount,
-      declarations: `${FINITE_WGSL}
+      declarations: `${FINITE_WGSL}\n${ROUNDED_DIFFERENCE_WGSL}
 ${getRowWGSL(rowCount, k, tileRowCount, hasMask)}`,
       body: `let firstRow = index * TILE_ROWS;
   let lastRow = min(firstRow + TILE_ROWS, ROW_COUNT);
+  let base = partialOffset + index * ${meanPartialStride}u;
+  let runtimeZero = partial[base + ${2 * d + 1}u];
   var sums: array<f32, ${d}>;
   var count = 0u;
   for (var row = firstRow; row < lastRow; row++) {
@@ -746,15 +792,14 @@ ${getRowWGSL(rowCount, k, tileRowCount, hasMask)}`,
     }
     count = count + 1u;
     for (var j = 0u; j < ROW_K; j++) {
-      sums[j] = sums[j] + design[designOffset + row * ROW_K + j];
+      sums[j] += getRoundedDifference(design[designOffset + row * ROW_K + j], bitcast<f32>(partial[base + j]), runtimeZero);
     }
-    sums[ROW_K] = sums[ROW_K] + response[responseOffset + row];
+    sums[ROW_K] += getRoundedDifference(response[responseOffset + row], bitcast<f32>(partial[base + ROW_K]), runtimeZero);
   }
-  let base = partialOffset + index * ${d + 1}u;
   for (var column = 0u; column < ${d}u; column++) {
-    partial[base + column] = bitcast<u32>(sums[column]);
+    partial[base + ${d}u + column] = bitcast<u32>(sums[column]);
   }
-  partial[base + ${d}u] = count;`
+  partial[base + ${2 * d}u] = count;`
     }),
     createKernel(graph, {
       id: `${prefix}-means-merge`,
@@ -763,11 +808,26 @@ ${getRowWGSL(rowCount, k, tileRowCount, hasMask)}`,
       invocationCount: d,
       declarations: mergeDeclarations,
       body: `var rows = 0u;
+  var referenceTile = 0u;
   for (var tile = 0u; tile < TILE_COUNT; tile++) {
-    rows = rows + partial[partialOffset + tile * ${d + 1}u + ${d}u];
+    let tileRows = partial[partialOffset + tile * ${meanPartialStride}u + ${2 * d}u];
+    if (rows == 0u && tileRows > 0u) { referenceTile = tile; }
+    rows += tileRows;
   }
-  ${mergeLoop(`${d + 1}u`)}
-  wsSet(W_MEANS + index, select(0.0, sum / f32(rows), rows > 0u));
+  let origin = bitcast<f32>(partial[partialOffset + referenceTile * ${meanPartialStride}u + index]);
+  let runtimeZero = partial[partialOffset + ${2 * d + 1}u];
+  ${getPairwiseSumWGSL({
+    count: 'TILE_COUNT',
+    setup: `let base = partialOffset + sumItem * ${meanPartialStride}u;
+    let tileRows = partial[base + ${2 * d}u];
+    var contribution = 0.0;
+    if (tileRows > 0u) {
+      let shift = getRoundedDifference(bitcast<f32>(partial[base + index]), origin, runtimeZero);
+      contribution = bitcast<f32>(partial[base + ${d}u + index]) + shift * f32(tileRows);
+    }`,
+    term: 'contribution'
+  })}
+  wsSet(W_MEANS + index, select(0.0, origin + sum / max(f32(rows), 1.0), rows > 0u));
   if (index == 0u) {
     ws[wsOffset + W_COUNT] = rows;
     // A zero the compiler cannot see: the runtime zero of getRoundedDifference.
@@ -924,7 +984,7 @@ function getFinishBody(k: number): string {
   var intercept = wsGet(W_MEANS + K);
   var u: array<f32, ${k}>;
   for (var i = 0u; i < K; i++) {
-    intercept = intercept - wsGet(W_SLOPES + i) * wsGet(W_MEANS + i);
+    intercept = getRoundedDifference(intercept, wsGet(W_SLOPES + i) * wsGet(W_MEANS + i), ws[wsOffset + W_RUNTIME_ZERO]);
     u[i] = wsGet(W_MEANS + i) / wsGet(W_SCALE + i);
   }
   intercept = intercept + wsGet(W_RESIDUAL_OFFSET);

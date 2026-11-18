@@ -40,6 +40,7 @@ for (const entry of fixture.cases) {
           const rows = entry.queries.length / 2;
           const joinCount = entry.k + Number(entry.selfJoin);
           const ids = rig.output('uint32', rows * joinCount);
+          const neighborRows = rig.output('uint32', rows * joinCount);
           const distances = rig.output('float32', rows * joinCount);
           const counts = rig.output('uint32', rows);
           const joinOverflow = rig.output('uint32', 1);
@@ -67,13 +68,14 @@ for (const entry of fixture.cases) {
                     : rig.input(Float32Array.of(entry.radius), 'float32', 1),
                 output: {
                   neighborIds: ids.view,
+                  neighborRows: neighborRows.view,
                   neighborDistances: distances.view,
                   neighborCounts: counts.view,
                   status: {overflow: joinOverflow.view}
                 }
               }),
               new GPUNearestFeatureWeights({
-                neighborIds: ids.view,
+                neighborRows: neighborRows.view,
                 neighborDistances: distances.view,
                 neighborCounts: counts.view,
                 slotCapacity: joinCount,

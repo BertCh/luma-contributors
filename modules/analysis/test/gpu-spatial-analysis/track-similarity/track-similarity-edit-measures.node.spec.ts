@@ -156,7 +156,11 @@ it('GPUTrackSimilarity edit-measure kernels fit the core limits at maximal optio
     const source = sources.get(id);
     expect(source, id).toBeDefined();
     expect(getStorageBindingCount(source!), id).toBeLessThanOrEqual(8);
-    expect(getWorkgroupMemoryBytes(source!), id).toBeLessThanOrEqual(16384);
+    for (const kernel of sources.getConfigurations(id)) {
+      expect(getWorkgroupMemoryBytes(kernel.source, kernel.constants), id).toBeLessThanOrEqual(
+        16384
+      );
+    }
     // Fixed-order sums only: no atomics.
     expect(source, id).not.toContain('atomic');
   }

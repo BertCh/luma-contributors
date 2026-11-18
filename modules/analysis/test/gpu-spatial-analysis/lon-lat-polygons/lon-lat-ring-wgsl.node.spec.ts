@@ -10,7 +10,7 @@ import {
   getLonLatRingWGSL,
   hasLonLatPolygonStatus,
   LON_LAT_RING_WGSL
-} from '../../../src/analysis-core/lon-lat-ring-wgsl';
+} from '../../../src/analysis-core/kernels/lon-lat-ring-wgsl';
 import {
   createNullWebGPUDevice,
   getGPUCommandNodeKernelSources

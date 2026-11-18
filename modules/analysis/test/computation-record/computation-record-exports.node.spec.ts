@@ -33,11 +33,29 @@ edges:
   step:1 -waw[second]-> finish
   finish -explicit-> copy
 resources:
-  first transient 16B alloc=scratch life=init..step:0
-  second transient 16B alloc=scratch life=step:1..finish
-  output imported 16B alloc=- life=finish..copy`;
+  first transient 16B (precision unknown) alloc=scratch life=init..step:0
+  second transient 16B (precision unknown) alloc=scratch life=step:1..finish
+  output unknown 16B (precision unknown) alloc=- life=finish..copy`;
 
 describe('computation record text exports', () => {
+  it('labels lower-bound resource sizes and carries execution identity into trace metadata', () => {
+    const graph = {
+      ...record.graphs[1],
+      resources: [
+        {
+          id: 'unobserved',
+          kind: 'buffer' as const,
+          ownership: 'unknown' as const,
+          bytes: 8,
+          bytesKind: 'lower-bound' as const
+        }
+      ]
+    };
+    expect(printGPUComputationGraph(graph)).toContain('unobserved unknown >=8B');
+    expect(toChromeTraceEvents({...record, executionId: 'execution-1'}, []).metadata).toMatchObject(
+      {executionId: 'execution-1'}
+    );
+  });
   it('prints graph forms with stable indentation and omission rules', () => {
     expect(printGPUComputationGraph(record.graphs[0])).toBe(intentText);
     expect(printGPUComputationGraph(record.graphs[1])).toBe(compiledText);
@@ -120,6 +138,18 @@ relations:
 });
 
 describe('computation record JSON exports', () => {
+  it('trace export refuses stale or missing execution identity before joining timings', () => {
+    const current = {...record, executionId: 'current'};
+    const currentMetrics = {...metrics, executionId: 'current'};
+    expect(() => toChromeTraceEvents(current, [currentMetrics])).not.toThrow();
+    expect(() => toChromeTraceEvents(current, [{...currentMetrics, executionId: 'stale'}])).toThrow(
+      'executionId'
+    );
+    expect(() => toChromeTraceEvents(current, [metrics])).toThrow('executionId');
+    expect(() => toChromeTraceEvents(current, [{...currentMetrics, runId: 'other'}])).toThrow(
+      'runId'
+    );
+  });
   it('exports Chrome thread metadata, microseconds, counters and RAW flows', () => {
     const trace = toChromeTraceEvents(record, [metrics]);
     expect(trace.displayTimeUnit).toBe('ns');

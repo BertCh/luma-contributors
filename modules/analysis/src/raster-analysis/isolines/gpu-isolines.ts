@@ -36,11 +36,13 @@ import type {GPURasterBand, GPURasterHaloStage, GPURasterMetadata} from '@luma.g
 import {
   getRasterAlgebraInputNodes,
   getRasterAlgebraInputViews,
+  getNamedRasterAlgebraInputViews,
   isRasterAlgebraBand,
   validateRasterAlgebraInput,
   validateRasterAlgebraInputBindings
 } from '../raster-algebra/raster-algebra-input';
 import {GPU_ISOLINES_PARAMETER_LENGTH} from './isolines-parameters';
+import {getNamedRasterOutputViews} from '../raster-algebra/raster-algebra-utils';
 import {
   getIsolinesCornersWGSL,
   ISOLINES_SADDLE_WGSL,
@@ -284,11 +286,12 @@ export class GPUIsolines implements GPUCommandNodeProducer, GPURasterHaloStage {
         1
       );
     }
-    validateIsolinesAliasing(
-      id,
-      [...this.getOutputViews()],
-      [...getRasterAlgebraInputViews(props.values), props.mask, props.levels, props.parameters]
-    );
+    validateIsolinesAliasing(id, getNamedRasterOutputViews(output), {
+      ...getNamedRasterAlgebraInputViews(props.values, 'values'),
+      mask: props.mask,
+      levels: props.levels,
+      parameters: props.parameters
+    });
   }
 
   private getOutputViews(): GraphDataView[] {
@@ -897,6 +900,7 @@ ${declarations}`,
       '',
       1
     );
+    // contract-allow: single-invocation -- binary search over segmentCapacity offsets, at most ceil(log2(segmentCapacity + 1)) steps.
     kernel(
       'stitch-publish',
       [

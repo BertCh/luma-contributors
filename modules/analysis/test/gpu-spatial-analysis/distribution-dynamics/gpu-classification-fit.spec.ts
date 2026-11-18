@@ -4,6 +4,7 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
+import {expectNumericArrayClose} from '../../../src/testing/expect-numeric-array-close';
 import {
   GPUClassificationFit,
   GPU_CLASSIFICATION_FIT_ADAM,
@@ -61,11 +62,10 @@ function computeFitOracle(
 }
 
 function expectClose(actual: number[], expected: number[], label: string, relative = 1e-4): void {
-  expect(actual.length, `${label} length`).toBe(expected.length);
-  expected.forEach((value, index) => {
-    if (Math.abs(actual[index] - value) > 1e-5 + relative * Math.abs(value)) {
-      throw new Error(`${label}: [${index}] ${actual[index]} != ${value}`);
-    }
+  expectNumericArrayClose(actual, expected, {
+    absoluteTolerance: 1e-5,
+    relativeTolerance: relative,
+    label
   });
 }
 

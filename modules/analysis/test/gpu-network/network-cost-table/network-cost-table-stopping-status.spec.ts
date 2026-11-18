@@ -25,7 +25,8 @@ for (const stopped of [false, true]) {
           converged: withConverged ? harness.output('uint32', 1) : undefined,
           iterationLimitReached: harness.output('uint32', 1),
           overflow: harness.output('uint32', 1),
-          requiredCount: harness.output('uint32', 1)
+          requiredCount: harness.output('uint32', 1),
+          complete: harness.output('uint32', 1)
         };
         const output = {
           offsets: harness.output('uint32', nodeCount + 1),
@@ -70,6 +71,9 @@ for (const stopped of [false, true]) {
             expect(first(status.requiredCount)).toEqual([targets.length]);
             expect(first(status.overflow)).toEqual([Number(targets.length > capacity)]);
             expect(first(status.iterationLimitReached)).toEqual([Number(stopped)]);
+            expect(first(status.complete)).toEqual([
+              Number(!stopped && targets.length <= capacity)
+            ]);
             if (status.converged) expect(first(status.converged)).toEqual([Number(!stopped)]);
             // A negative cutoff rejects all starts: the next encoding is empty and converged.
             harness.rewrite(costLimit, Float32Array.of(-1));
@@ -79,6 +83,7 @@ for (const stopped of [false, true]) {
         expect(result(status.requiredCount)).toEqual([0]);
         expect(result(status.overflow)).toEqual([0]);
         expect(result(status.iterationLimitReached)).toEqual([0]);
+        expect(result(status.complete)).toEqual([1]);
         if (status.converged) expect(result(status.converged)).toEqual([1]);
       });
     }

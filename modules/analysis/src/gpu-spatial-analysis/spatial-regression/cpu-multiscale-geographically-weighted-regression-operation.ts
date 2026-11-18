@@ -19,7 +19,7 @@ import {
 } from '../../analysis-core/operations/cpu-operation-rows';
 import {getCPUTrajectoryDistance} from '../../analysis-core/operations/cpu-trajectory-distance';
 import {validateMultiscaleBandwidthSelection} from './mgwr-bandwidth-selection';
-import {selectGoldenSectionBandwidth} from './gwr-golden-section-nodes';
+import {selectGoldenSectionBandwidthWithStatus} from './gwr-golden-section-nodes';
 import {
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_MAXIMUM_SEARCH_ITERATIONS,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MINIMUM_VARIANCE
@@ -64,6 +64,8 @@ export type CPUMultiscaleGeographicallyWeightedRegressionResult = {
   fitted: Float32Array;
   codes: Uint32Array;
   iterationCount: Uint32Array;
+  /** One flag per design column; any component search exhausted its budget during this run. */
+  componentSearchIterationLimitReached: Uint32Array;
   selectedBandwidths: Float32Array;
   conditionalStandardErrors: Float32Array;
   inference?: {
@@ -137,9 +139,12 @@ function validateOptions(
  *   full-model trace(S) is the sum of the coupled component operator traces (Li and Fotheringham
  *   2020), as reported by inference.summary[0]. Golden-section uses GWR's float32 score tolerance
  *   and also probes the upper endpoint to retain a feasible bandwidth when interiors are invalid.
- * - Shader-only predictor, row, candidate and backfit iteration caps are dropped. maximumIterations is
- *   ignored: sweeps continue to contribution tolerance, numerical failure, or a repeated complete
- *   float64 state (code 3). An exhausted GPU fit can converge here.
+ * - Shader-only predictor, row, candidate and backfit iteration caps are dropped. maximumIterations
+ *   bounds completed sweeps (default 32), as on GPU; finite limit iterates have code 3 and publish
+ *   coefficients and fitted values. Conditional and full inference require convergence.
+ *   Coefficients and predictions must be representable in float32; output overflow invalidates
+ *   the entire coupled fit with code 4 and NaN outputs. Component search-limit flags accumulate
+ *   independently of backfit convergence and reset on each call.
  * - The CPU visits all complete-case rows in input order; indexGridSize has no computational
  *   effect. Gaussian cutoff is retained; bisquare weights are zero at or above the bandwidth.
  * - Great-circle distances call the shared float64 transcription of the GPU geodesic helper,
@@ -232,6 +237,7 @@ export function computeMultiscaleGeographicallyWeightedRegressionOnCPU(
     input.parameters.subarray(COEFFICIENT_BANDWIDTH_START, COEFFICIENT_BANDWIDTH_START + width)
   );
   const tolerance = input.parameters[CONTRIBUTION_TOLERANCE_INDEX];
+  const componentSearchIterationLimitReached = new Uint32Array(width);
   const weight = (focus: number, row: number, bandwidth: number) => {
     const distance = getCPUTrajectoryDistance(input.positions, focus, row, radius);
     const ratio = distance / bandwidth;
@@ -242,8 +248,11 @@ export function computeMultiscaleGeographicallyWeightedRegressionOnCPU(
   };
   let code: number = GPU_ITERATIVE_REGRESSION_STATUS.ITERATION_LIMIT;
   let iterationCount = 0;
-  const seenStates = new Set<string>();
-  while (code === GPU_ITERATIVE_REGRESSION_STATUS.ITERATION_LIMIT) {
+  const maximumIterations = options.maximumIterations ?? 32;
+  while (
+    code === GPU_ITERATIVE_REGRESSION_STATUS.ITERATION_LIMIT &&
+    iterationCount < maximumIterations
+  ) {
     const previous = current.map(row => row.slice());
     for (let column = 0; column < width; column++) {
       const partial = Array.from({length: count}, (_, row) => {
@@ -299,13 +308,15 @@ export function computeMultiscaleGeographicallyWeightedRegressionOnCPU(
             : NaN;
         };
         if (options.bandwidthSelection?.searchMethod === 'golden-section') {
-          bandwidths[column] = selectGoldenSectionBandwidth(
+          const selection = selectGoldenSectionBandwidthWithStatus(
             input.bandwidthCandidates[column * 2],
             input.bandwidthCandidates[column * 2 + 1],
             evaluate,
             options.bandwidthSelection.maximumSearchIterations ??
               GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_MAXIMUM_SEARCH_ITERATIONS
           );
+          bandwidths[column] = selection.bandwidth;
+          if (selection.iterationLimitReached) componentSearchIterationLimitReached[column] = 1;
         } else {
           let bestScore = Infinity;
           let best = NaN;
@@ -360,7 +371,14 @@ export function computeMultiscaleGeographicallyWeightedRegressionOnCPU(
       for (let column = 0; column < width; column++) {
         const coefficient = current[row][column];
         if (!Number.isFinite(coefficient)) {
-          code = GPU_ITERATIVE_REGRESSION_STATUS.SINGULAR;
+          code = Number.isNaN(coefficient)
+            ? GPU_ITERATIVE_REGRESSION_STATUS.SINGULAR
+            : GPU_ITERATIVE_REGRESSION_STATUS.NUMERICAL_FAILURE;
+          failed = true;
+          break;
+        }
+        if (!Number.isFinite(Math.fround(coefficient))) {
+          code = GPU_ITERATIVE_REGRESSION_STATUS.NUMERICAL_FAILURE;
           failed = true;
           break;
         }
@@ -376,6 +394,14 @@ export function computeMultiscaleGeographicallyWeightedRegressionOnCPU(
           Math.abs(contribution - before) / Math.max(1, Math.abs(before))
         );
       }
+      const fitted = current[row].reduce(
+        (sum, coefficient, column) => sum + predictor(row, column) * coefficient,
+        0
+      );
+      if (!failed && !Number.isFinite(Math.fround(fitted))) {
+        code = GPU_ITERATIVE_REGRESSION_STATUS.NUMERICAL_FAILURE;
+        failed = true;
+      }
       if (failed) break;
     }
     if (failed) break;
@@ -387,9 +413,6 @@ export function computeMultiscaleGeographicallyWeightedRegressionOnCPU(
       code = GPU_ITERATIVE_REGRESSION_STATUS.CONVERGED;
       break;
     }
-    const state = [...bandwidths, ...usedRows.flatMap(row => current[row])].join(',');
-    if (seenStates.has(state)) break;
-    seenStates.add(state);
   }
   const result: CPUMultiscaleGeographicallyWeightedRegressionResult = {
     coefficients: new Float32Array(count * width).fill(NaN),
@@ -398,10 +421,14 @@ export function computeMultiscaleGeographicallyWeightedRegressionOnCPU(
       keep ? code : GPU_ITERATIVE_REGRESSION_STATUS.EXCLUDED
     ),
     iterationCount: Uint32Array.of(iterationCount),
+    componentSearchIterationLimitReached,
     selectedBandwidths: Float32Array.from(bandwidths),
     conditionalStandardErrors: new Float32Array(count * width).fill(NaN)
   };
-  if (code === GPU_ITERATIVE_REGRESSION_STATUS.CONVERGED) {
+  if (
+    code === GPU_ITERATIVE_REGRESSION_STATUS.CONVERGED ||
+    code === GPU_ITERATIVE_REGRESSION_STATUS.ITERATION_LIMIT
+  ) {
     const noise = input.noiseVariance?.[0];
     for (const focus of usedRows) {
       result.coefficients.set(current[focus], focus * width);
@@ -409,7 +436,12 @@ export function computeMultiscaleGeographicallyWeightedRegressionOnCPU(
         (sum, coefficient, column) => sum + predictor(focus, column) * coefficient,
         0
       );
-      if (noise !== undefined && noise >= 0 && Number.isFinite(noise))
+      if (
+        code === GPU_ITERATIVE_REGRESSION_STATUS.CONVERGED &&
+        noise !== undefined &&
+        noise >= 0 &&
+        Number.isFinite(noise)
+      )
         for (let column = 0; column < width; column++) {
           let numerator = 0;
           let denominator = 0;
@@ -488,9 +520,18 @@ export function computeMultiscaleGeographicallyWeightedRegressionOnCPU(
   return result;
 }
 
-/** CPU MGWR, including full inference, without shader size/sweep/work caps. */
+/** CPU MGWR, including full inference, without shader size/work caps; the sweep budget is retained. */
 export class CPUMultiscaleGeographicallyWeightedRegressionOperation extends GPUCPUOperation {
   constructor(props: MultiscaleGeographicallyWeightedRegressionOperationProps) {
+    props = {
+      ...props,
+      maximumIterations: props.maximumIterations ?? 32,
+      bandwidthSelection: props.bandwidthSelection ? {...props.bandwidthSelection} : undefined,
+      output: {...props.output, status: {...props.output.status}},
+      inference: props.inference
+        ? {...props.inference, output: {...props.inference.output}}
+        : undefined
+    };
     const id = props.id ?? 'multiscale-geographically-weighted-regression';
     validateOptions(id, props);
     validateCapacity(id, 'rowCount', props.rowCount);

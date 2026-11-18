@@ -6,7 +6,7 @@ import {
   getRasterGroundCellSize,
   type GPURasterCellSizeMode,
   type RasterGridGeoreference
-} from '../../../src/analysis-core/raster-grid';
+} from '../../../src/analysis-core/contracts/raster-grid';
 import {createMulberryRandom, getOracleGroundCellSize} from '../terrain-oracle-utils';
 import type {GPUTerrainHeightReference} from '../../../src/analysis-core/contracts/vertical-datum';
 

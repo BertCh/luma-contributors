@@ -6,6 +6,8 @@ import {GPU_SPATIAL_ANALYSIS_CAPABILITIES} from '../spatial-analysis-catalog';
 import {GPU_SPATIAL_ANALYSIS_OPERATORS} from '../spatial-analysis-operators';
 import type {
   GPUAnalysisOperator,
+  GPUAnalysisOperatorIdentity,
+  GPUAnalysisCapability,
   GPUAnalysisOperatorQuery,
   GPUSpatialAnalysisCapability
 } from '../spatial-analysis-ontology';
@@ -18,6 +20,7 @@ import {SPATIOTEMPORAL_REVIEW_OPERATORS} from '../spatiotemporal-review-catalog'
 import {GPU_ANALYSIS_OPERATOR_KIND_RECORDS} from '../analysis-experience/analysis-operator-kind-records';
 
 import {REUSED_ANALYSIS_OPERATORS} from '../reused-analysis-catalog';
+import {freezeCatalog} from '../freeze-catalog';
 
 const DOCUMENTATION_FALLBACK = 'docs/api/analysis-catalog.md';
 
@@ -44,16 +47,17 @@ function makeEntryPointOperator(
     cardinality: capability.outputBound,
     semantics: 'unspecified',
     deterministic: 'unspecified',
-    status: [],
-    readback: 'none',
+    status: detail.status ?? 'unknown',
+    readback: detail.readback ?? 'unknown',
     summary: detail.summary,
     role: annotation.role ?? 'operator',
-    tier: annotation.tier ?? 'scale',
+    tier: annotation.tier ?? 'unknown',
     ...(annotation.limits ? {limits: annotation.limits} : {}),
     ...(annotation.limitation ? {limitation: annotation.limitation} : {}),
     evidence: {
       status: 'partial',
       tests: detail.tests,
+      ...(detail.additionalTests ? {additionalTests: detail.additionalTests} : {}),
       documentation: detail.documentation || DOCUMENTATION_FALLBACK,
       contract: 'unaudited'
     }
@@ -61,30 +65,93 @@ function makeEntryPointOperator(
 }
 
 /** Every capability family of every entry point: the original families followed by the new ones. */
-const ALL_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] = [
+const CAPABILITY_FAMILIES: readonly GPUSpatialAnalysisCapability[] = [
   ...GPU_SPATIAL_ANALYSIS_CAPABILITIES,
   ...ENTRY_POINT_CAPABILITIES,
   FITTING_KERNEL_CAPABILITY
 ];
 
-const ALL_OPERATORS: readonly GPUAnalysisOperator[] = [
-  ...GPU_SPATIAL_ANALYSIS_OPERATORS,
-  ...REUSED_ANALYSIS_OPERATORS,
-  ...ENTRY_POINT_CAPABILITIES.flatMap(capability =>
-    capability.operators.map(exportName => makeEntryPointOperator(capability, exportName))
-  ),
-  // Operators of `gpu-spatial-analysis` added after the original 261; their families are original.
-  ...SPATIOTEMPORAL_REVIEW_OPERATORS,
-  ...FITTING_KERNEL_OPERATORS
-];
+const ALL_OPERATORS: readonly GPUAnalysisOperator[] = freezeCatalog(
+  (
+    [
+      ...GPU_SPATIAL_ANALYSIS_OPERATORS,
+      ...REUSED_ANALYSIS_OPERATORS,
+      ...ENTRY_POINT_CAPABILITIES.flatMap(capability =>
+        capability.operators.map(exportName => makeEntryPointOperator(capability, exportName))
+      ),
+      // Operators of `gpu-spatial-analysis` added after the original 261; their families are original.
+      ...SPATIOTEMPORAL_REVIEW_OPERATORS,
+      ...FITTING_KERNEL_OPERATORS,
+      {
+        ...GPU_SPATIAL_ANALYSIS_OPERATORS.find(
+          operator => operator.exportName === 'addVisibilityGraphRecipe'
+        )!,
+        package: '@luma-contributors/analysis/gpu-network',
+        primaryCapability: 'network-structure',
+        summary:
+          'Visibility adjacency with budgeted exact or deterministic sampled CSR network metrics.',
+        inputs: ['points', 'lines', 'polygons', 'parameters'],
+        outputs: ['network', 'attributes', 'summary'],
+        status: [
+          'count',
+          'requiredCount',
+          'overflow',
+          'candidateOverflow',
+          'invalidCount',
+          'approximation',
+          'converged',
+          'iterationLimitReached',
+          'zeroWeightCycle'
+        ],
+        limitation:
+          'CSR metrics use budgeted exact all-source calculations or deterministic sampled estimates. Auto mode samples when the exact command budget cannot fit; explicit exact mode rejects an insufficient budget. Sampled maximum depth is a lower bound.',
+        evidence: {
+          status: 'partial',
+          tests:
+            'modules/analysis/test/gpu-spatial-analysis/urban-ecology/visibility-graph-metrics.spec.ts',
+          documentation: 'docs/api/gpu-network/visibility-graph.md',
+          contract: 'GPUVisibilityGraphCSRProps | GPUVisibilityGraphProps'
+        }
+      }
+    ] satisfies GPUAnalysisOperator[]
+  ).map(operator => {
+    // Every public assembly path passes through annotation application, including fitting helpers.
+    const annotation =
+      OPERATOR_ANNOTATIONS[`${operator.package}:${operator.exportName}`] ??
+      OPERATOR_ANNOTATIONS[operator.exportName];
+    if (!annotation) return operator;
+    return {...operator, ...annotation};
+  })
+);
 
-const OPERATOR_BY_NAME = new Map(ALL_OPERATORS.map(operator => [operator.exportName, operator]));
+const ALL_CAPABILITIES: readonly GPUAnalysisCapability[] = freezeCatalog(
+  CAPABILITY_FAMILIES.map(capability => ({
+    ...capability,
+    operators: ALL_OPERATORS.filter(operator => operator.primaryCapability === capability.id).map(
+      operator => operator.exportName
+    ),
+    operatorIdentities: ALL_OPERATORS.filter(
+      operator => operator.primaryCapability === capability.id
+    ).map(({package: packageName, exportName}) => ({package: packageName, exportName}))
+  }))
+);
+
+const OPERATORS_BY_NAME = new Map<string, GPUAnalysisOperator[]>();
+const OPERATOR_BY_IDENTITY = new Map<string, GPUAnalysisOperator>();
+for (const operator of ALL_OPERATORS) {
+  const key = `${operator.package}:${operator.exportName}`;
+  if (OPERATOR_BY_IDENTITY.has(key)) throw new Error(`Duplicate catalog identity ${key}`);
+  OPERATOR_BY_IDENTITY.set(key, operator);
+  const named = OPERATORS_BY_NAME.get(operator.exportName) ?? [];
+  named.push(operator);
+  OPERATORS_BY_NAME.set(operator.exportName, named);
+}
 
 /**
  * Capability families of all nine entry points. `GPU_SPATIAL_ANALYSIS_CAPABILITIES` keeps
  * returning the original `gpu-spatial-analysis` families only.
  */
-export function getGPUAnalysisCapabilityCatalog(): readonly GPUSpatialAnalysisCapability[] {
+export function getGPUAnalysisCapabilityCatalog(): readonly GPUAnalysisCapability[] {
   return ALL_CAPABILITIES;
 }
 
@@ -96,9 +163,19 @@ export function getGPUAnalysisOperatorCatalog(): readonly GPUAnalysisOperator[] 
   return ALL_OPERATORS;
 }
 
-/** Returns one operator descriptor of any entry point. */
-export function getGPUAnalysisOperator(exportName: string): GPUAnalysisOperator | undefined {
-  return OPERATOR_BY_NAME.get(exportName);
+/** Returns one frozen descriptor. Bare names must be unique; qualify ambiguous names by package. */
+export function getGPUAnalysisOperator(
+  identity: string | GPUAnalysisOperatorIdentity
+): GPUAnalysisOperator | undefined {
+  if (typeof identity !== 'string')
+    return OPERATOR_BY_IDENTITY.get(`${identity.package}:${identity.exportName}`);
+  const named = OPERATORS_BY_NAME.get(identity);
+  if (named && named.length > 1) {
+    throw new Error(
+      `getGPUAnalysisOperator: ambiguous exportName "${identity}"; specify package (${named.map(operator => operator.package).join(', ')})`
+    );
+  }
+  return named?.[0];
 }
 
 /**
@@ -113,6 +190,7 @@ export function queryGPUAnalysisOperators(
     if (!query.includeHelpers && operator.role === 'helper') return false;
     if (query.package && operator.package !== query.package) return false;
     if (query.tier && operator.tier !== query.tier) return false;
+    if (query.readback && operator.readback !== query.readback) return false;
     if (query.dimensionality && operator.dimensionality !== query.dimensionality) return false;
     if (query.primaryCapability && operator.primaryCapability !== query.primaryCapability)
       return false;
@@ -121,7 +199,12 @@ export function queryGPUAnalysisOperators(
     if (query.output && !operator.outputs.includes(query.output)) return false;
     if (query.coordinateModel && !operator.coordinateModels.includes(query.coordinateModel))
       return false;
-    if (query.status && !operator.status.includes(query.status)) return false;
+    if (query.status) {
+      if (query.status === 'unknown') {
+        if (operator.status !== 'unknown') return false;
+      } else if (operator.status === 'unknown' || !operator.status.includes(query.status))
+        return false;
+    }
     if (query.semantics && operator.semantics !== query.semantics) return false;
     if (query.evidence && operator.evidence.status !== query.evidence) return false;
     if (!search) return true;

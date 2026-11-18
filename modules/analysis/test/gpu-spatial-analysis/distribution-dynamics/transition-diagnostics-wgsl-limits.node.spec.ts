@@ -59,14 +59,14 @@ for (const [classCount, conditionCount] of [
   it(`constructs at ${classCount} classes x ${conditionCount} conditions within core limits`, () => {
     const sources = getSources(classCount, conditionCount);
     expect(sources.some(({id}) => id.endsWith('-steady-states'))).toBe(true);
-    for (const {id, source} of sources) {
-      expect(getPrivateMemoryBytes(source), `${id} private bytes`).toBeLessThanOrEqual(
+    for (const {id, source, constants} of sources) {
+      expect(getPrivateMemoryBytes(source, constants), `${id} private bytes`).toBeLessThanOrEqual(
         CORE_PRIVATE_MEMORY_LIMIT_BYTES
       );
       expect(getStorageBindingCount(source), `${id} storage bindings`).toBeLessThanOrEqual(8);
     }
     // Only 2 * K words stay private in the solver (used-state list and solution).
     const solver = sources.find(({id}) => id.endsWith('-steady-states'))!;
-    expect(getPrivateMemoryBytes(solver.source)).toBe(2 * classCount * 4);
+    expect(getPrivateMemoryBytes(solver.source, solver.constants)).toBe(2 * classCount * 4);
   });
 }

@@ -313,10 +313,7 @@ it('table audit site 3: point cloud neighbourhoods keep the nearest capacity poi
           radius,
           capacity,
           strategy,
-          indices,
-          squaredDistances,
-          counts,
-          status
+          output: {indices, squaredDistances, counts, status}
         })
       );
       const actualIndices = read(indices);

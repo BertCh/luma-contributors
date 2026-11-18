@@ -7,12 +7,13 @@ import {getCPUOperationUint32Rows} from '../../analysis-core/operations/cpu-oper
 import type {RasterFillHolesOperationProps} from './gpu-raster-fill-holes-operation';
 import {
   validateRasterMorphologyOptions,
+  captureRasterMorphologyOperationProps,
   visitRasterMorphologyNeighbors
 } from './raster-morphology-operation-utils';
 
 export type CPURasterFillHolesOptions = Pick<
   RasterFillHolesOperationProps,
-  'grid' | 'connectivity'
+  'grid' | 'connectivity' | 'maximumIterations'
 >;
 export type CPURasterFillHolesResult = {
   values: Uint32Array;
@@ -25,12 +26,14 @@ export type CPURasterFillHolesResult = {
  * Floods zero-valued background from the boundary and fills every unreached component. All
  * nonzero input values are foreground and become 1, as in the contributor's reconstruction.
  * Only grid.width * grid.height input rows are read; any surplus rows are ignored.
+ * The queue contains only cells within maximumIterations edges of the boundary. Frontier cells
+ * inspect their immediate neighbors for the verification pass but never enqueue farther cells.
  *
  * What differs from the GPU contributor:
- * - Boundary flooding always finishes; maximumIterations and the GPU node budget are ignored.
- *   converged is always 1 and iterationLimitReached is always 0.
- * - iterationCount is maximum shortest boundary-background path length plus one verifying round
- *   (1 when no background propagates), so it can exceed the GPU's round budget.
+ * - The CPU uses shortest boundary-background path lengths instead of synchronous rounds.
+ *   maximumIterations (default 64) bounds the flood distance just as on the GPU;
+ *   iterationCount includes the verification pass, which does not advance the published flood.
+ * - The GPU command-node budget is not used.
  *
  * @throws Error naming input for an inconsistent length, or an invalid option.
  */
@@ -57,26 +60,36 @@ export function computeRasterFillHolesOnCPU(
     }
   }
   let maximumDistance = 0;
+  const maximumIterations = options.maximumIterations ?? 64;
+  let frontierUnreached = false;
   for (let cursor = 0; cursor < queue.length; cursor++) {
     const cell = queue[cursor];
     visitRasterMorphologyNeighbors(cell, width, height, options.connectivity ?? 4, neighbor => {
       if (input[neighbor] !== 0 || distances[neighbor] !== -1) return;
+      if (distances[cell] === maximumIterations) {
+        frontierUnreached = true;
+        return;
+      }
       distances[neighbor] = distances[cell] + 1;
       maximumDistance = Math.max(maximumDistance, distances[neighbor]);
       queue.push(neighbor);
     });
   }
+  const converged = !frontierUnreached;
   return {
-    values: Uint32Array.from(distances, distance => (distance < 0 ? 1 : 0)),
-    converged: Uint32Array.of(1),
-    iterationLimitReached: Uint32Array.of(0),
-    iterationCount: Uint32Array.of(maximumDistance + 1)
+    values: Uint32Array.from(distances, distance =>
+      Number(distance < 0 || distance > maximumIterations)
+    ),
+    converged: Uint32Array.of(Number(converged)),
+    iterationLimitReached: Uint32Array.of(Number(!converged)),
+    iterationCount: Uint32Array.of(Math.min(maximumDistance + 1, maximumIterations + 1))
   };
 }
 
-/** CPU boundary flood, without the GPU command-node or convergence budget. */
+/** CPU boundary flood with the same distance budget and verification count as the GPU. */
 export class CPURasterFillHolesOperation extends GPUCPUOperation {
   constructor(props: RasterFillHolesOperationProps) {
+    props = captureRasterMorphologyOperationProps(props);
     const id = props.id ?? 'raster-fill-holes';
     validateRasterMorphologyOptions(id, props);
     super({

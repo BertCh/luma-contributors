@@ -5,7 +5,7 @@
 import type {Buffer, Device} from '@luma.gl/core';
 import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
-import type {GPUSpatialJoinGeometry} from '../../../src/gpu-spatial-analysis/spatial-join/index';
+import type {GPUGeometryPredicatesGeometry} from '../../../src/gpu-spatial-analysis/geometry-predicates/index';
 import {createInputBuffer} from '../../utils/gpu-contributor-test-utils';
 
 /** A fixture coordinate: `null` encodes NaN and `'inf'` encodes Infinity. */
@@ -32,7 +32,7 @@ export function createPredicateGeometry(
   name: string,
   spec: PredicateGeometrySpec,
   buffers: Buffer[]
-): GPUSpatialJoinGeometry {
+): GPUGeometryPredicatesGeometry {
   const positions: number[] = [];
   const lineOffsets = [0];
   const featureOffsets = [0];

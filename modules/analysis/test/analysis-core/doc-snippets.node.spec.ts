@@ -15,7 +15,7 @@ import {
   readDocPage
 } from './doc-program';
 
-// A-7: every ```ts block on the analysis doc pages type-checks against the current barrels.
+// A-7: every ts or typescript fence on every discovered API page checks against current barrels.
 //
 // A block is a module of its own and keeps its own imports. Most blocks are fragments of a larger
 // program, so the check resolves the names a block uses without declaring them:
@@ -53,12 +53,12 @@ const TYPED_FREE_NAMES: Record<string, [string, string]> = {
 /** Diagnostics that report a name with no declaration. */
 const MISSING_NAME_CODES = new Set([2304, 2552, 2749, 18004, 2503]);
 
-/** Extracts the ```ts blocks of one page. */
-function extractSnippets(page: string): DocSnippet[] {
-  const lines = readDocPage(page).split('\n');
+/** Extracts TypeScript fragments; complete walkthroughs also have stricter, no-implicit-input specs. */
+function extractSnippets(page: string, text = readDocPage(page)): DocSnippet[] {
+  const lines = text.split('\n');
   const snippets: DocSnippet[] = [];
   for (let index = 0; index < lines.length; index++) {
-    if (lines[index].trim() !== '```ts') {
+    if (!/^```(?:ts|typescript)\s*$/.test(lines[index].trim())) {
       continue;
     }
     const fenceLine = index + 1;
@@ -81,13 +81,52 @@ function extractSnippets(page: string): DocSnippet[] {
   return snippets;
 }
 
-function getSnippetPath(snippet: DocSnippet): string {
-  return join(
-    DOCS_ROOT,
-    '__doc_snippets__',
-    `${snippet.page.replace(/[/.]/g, '-')}-${snippet.fenceLine}.ts`
+it('checks both TypeScript fence spellings and preserves per-fragment opt-out reasons', () => {
+  const snippets = extractSnippets(
+    'fixture.md',
+    [
+      '```ts',
+      'const first = 1;',
+      '```',
+      '',
+      '{/* no-typecheck: signature only */}',
+      '',
+      '```typescript',
+      'second(...);',
+      '```',
+      '',
+      '```typescript',
+      'const third = 3;',
+      '```'
+    ].join('\n')
   );
+  expect(snippets.map(snippet => [snippet.fenceLine, snippet.code, snippet.optOutReason])).toEqual([
+    [1, 'const first = 1;', undefined],
+    [7, 'second(...);', 'signature only'],
+    [11, 'const third = 3;', undefined]
+  ]);
+});
+
+function getSnippetPath(snippet: DocSnippet): string {
+  return join(DOCS_ROOT, '__doc_snippets__', `${snippet.page}-${snippet.fenceLine}.ts`);
 }
+
+it('R6 preserves diagnostics and page identities when flattened snippet names would collide', () => {
+  const snippets = [
+    ...extractSnippets('a-b.md', '```ts\nconst value: number = "invalid";\n```'),
+    ...extractSnippets('a/b.md', '```ts\nconst value: number = 1;\n```')
+  ];
+  const files = new Map(
+    snippets.map(snippet => [getSnippetPath(snippet), `${snippet.code}\nexport {};`])
+  );
+  const program = createVirtualProgram(files);
+  const failures = snippets.flatMap(snippet =>
+    program
+      .getSemanticDiagnostics(program.getSourceFile(getSnippetPath(snippet)))
+      .map(diagnostic => [snippet.page, diagnostic.code])
+  );
+  expect(failures).toEqual([['a-b.md', 2322]]);
+});
 
 /** Returns the identifier a missing-name diagnostic points at and whether it is a type. */
 function getMissingName(diagnostic: typescript.Diagnostic): {name: string; isType: boolean} | null {
@@ -142,7 +181,9 @@ function getLibraryGlobalNames(
   const checker = program.getTypeChecker();
   const visit = (node: typescript.Node): void => {
     if (typescript.isIdentifier(node) && !names.has(node.text)) {
-      const symbol = checker.getSymbolAtLocation(node);
+      const symbol = typescript.isShorthandPropertyAssignment(node.parent)
+        ? checker.getShorthandAssignmentValueSymbol(node.parent)
+        : checker.getSymbolAtLocation(node);
       const declarations = symbol?.declarations ?? [];
       const isLibraryValue =
         declarations.length > 0 &&
@@ -163,6 +204,12 @@ function getLibraryGlobalNames(
   sourceFile.forEachChild(visit);
   return names;
 }
+
+it('resolves browser globals used as shorthand fragment inputs', () => {
+  const path = join(DOCS_ROOT, '__doc_snippets__', 'shorthand-input.ts');
+  const program = createVirtualProgram(new Map([[path, 'const output = {status};\nexport {};']]));
+  expect([...getLibraryGlobalNames(program, program.getSourceFile(path))]).toEqual(['status']);
+});
 
 /** An analysis entry export: the first entry that exports the name, and its meanings. */
 type EntryExport = {entry: string; isType: boolean; isValue: boolean};
@@ -241,9 +288,32 @@ function getPrelude(
   ];
 }
 
+it('R3 checks implicit analysis-core packer calls with the public function type', () => {
+  const options = getRepositoryCompilerOptions();
+  const prelude = getPrelude(
+    new Map([['getGPUAdamStepParameterValues', false]]),
+    getEntryExports(options)
+  );
+  const path = join(DOCS_ROOT, '__doc_snippets__', 'invalid-adam.ts');
+  const program = createVirtualProgram(
+    new Map([
+      [
+        path,
+        [...prelude, 'getGPUAdamStepParameterValues({learningRate: "fast"});', 'export {};'].join(
+          '\n'
+        )
+      ]
+    ]),
+    options
+  );
+  expect(
+    program.getSemanticDiagnostics(program.getSourceFile(path)).map(diagnostic => diagnostic.code)
+  ).toContain(2322);
+}, 600_000);
+
 it('analysis doc ```ts blocks type-check against the barrels', () => {
   const options = getRepositoryCompilerOptions();
-  const snippets = ANALYSIS_DOC_PAGES.flatMap(extractSnippets);
+  const snippets = ANALYSIS_DOC_PAGES.flatMap(page => extractSnippets(page));
   const optOuts = snippets.filter(snippet => snippet.optOutReason !== undefined);
   expect(
     optOuts.filter(snippet => !snippet.optOutReason).map(s => `${s.page}:${s.fenceLine}`),

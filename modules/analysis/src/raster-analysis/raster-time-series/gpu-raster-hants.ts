@@ -89,13 +89,23 @@ export type GPURasterHANTSProps<
   dateAxis?: GPURasterIrregularDateAxis;
   output: {
     /** Fitted curve at every slice, gaps included; NaN when status is 1 or 2. */
-    smoothed: RasterTimeSeriesField<'float32', Rows>;
+    smoothed: RasterTimeSeriesField<'float32', RasterTimeSeriesScalarView>;
     /** Per cell: mean, then cosine and sine per harmonic, centred on the axis midpoint. */
-    coefficients: RasterTimeSeriesField<'float32', Rows>;
+    coefficients: RasterTimeSeriesField<'float32', RasterTimeSeriesScalarView>;
     /** Per cell: 0 converged, 1 insufficient support, 2 rank failure, 8 rejection passes exhausted (partial result published). */
-    status: RasterTimeSeriesField<'uint32', Rows>;
+    status: RasterTimeSeriesField<'uint32', RasterTimeSeriesScalarView>;
     /** Optional per cell `[rejectedObservationCount, passesUsed]`. */
-    diagnostics?: RasterTimeSeriesField<'uint32', Rows>;
+    diagnostics?: RasterTimeSeriesField<'uint32', RasterTimeSeriesScalarView>;
+  };
+};
+
+/** A complete cell chunk after the constructor's topology planner resolves every output. */
+type PackedHANTSProps = Omit<GPURasterHANTSProps, 'output'> & {
+  output: {
+    smoothed: GraphDataView<'float32'>;
+    coefficients: GraphDataView<'float32'>;
+    status: GraphDataView<'uint32'>;
+    diagnostics?: GraphDataView<'uint32'>;
   };
 };
 
@@ -200,7 +210,10 @@ export class GPURasterHANTS<
     });
     this.estimatedCommandNodeCount = this.chunkProps.length * 1;
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
-    validateRasterTimeSeriesViews(id, this.getInputs(), this.getOutputs());
+    const inputs = this.getInputs();
+    const outputs = this.getOutputs();
+    // One fit dispatch per cell chunk binds every listed input and output simultaneously.
+    validateRasterTimeSeriesViews(id, inputs, outputs, [{inputs, outputs}]);
   }
 
   private getInputs(): RasterTimeSeriesScalarView[] {
@@ -226,13 +239,13 @@ export class GPURasterHANTS<
       this.getChunkCommandNodes(graph, {
         ...props,
         id: `${this.id}-chunk-${chunkIndex}`
-      } as unknown as GPURasterHANTSProps)
+      } as unknown as PackedHANTSProps)
     );
   }
 
   private getChunkCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>,
-    props: GPURasterHANTSProps
+    props: PackedHANTSProps
   ): readonly GPUCommandNode<Parameters>[] {
     const {rejectionPassCount, rejectionSide} = this;
     const id = props.id!;

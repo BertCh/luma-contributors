@@ -58,6 +58,37 @@ function getFunctionBody(source: string, name: string): string {
   return source.slice(start, next < 0 ? undefined : next);
 }
 
+it('snapshots triangulation options, context and output maps before graph declaration', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const props: GPUPolygonTriangulationProps = {
+      positions: createTransientView(graph, 'positions', 'float32x2', 3),
+      featureOffsets: createTransientView(graph, 'features', 'uint32', 2),
+      polygonOffsets: createTransientView(graph, 'polygons', 'uint32', 2),
+      ringOffsets: createTransientView(graph, 'rings', 'uint32', 2),
+      maximumWork: 100,
+      largePolygonMethod: 'none',
+      spatialContext: {coordinateSpace: 'planar', metric: 'native'},
+      output: {
+        indices: createTransientView(graph, 'indices', 'uint32', 3),
+        valid: createTransientView(graph, 'valid', 'uint32', 1)
+      }
+    };
+    const producer = new GPUPolygonTriangulation(props);
+    const indices = props.output.indices;
+    props.maximumWork = 0;
+    props.spatialContext!.coordinateSpace = 'longitude-latitude';
+    props.output.indices = createTransientView(graph, 'replacement-indices', 'uint32', 0);
+    expect(producer.props.maximumWork).toBe(100);
+    expect(producer.props.output.indices).toBe(indices);
+    expect(producer.spatialContext.coordinateSpace).toBe('planar');
+    expect(producer.getCommandNodes(graph).length).toBeGreaterThan(0);
+  } finally {
+    device.destroy();
+  }
+});
+
 it('review Rule 1: middleInside decides the diagonal parity with the exact SoS rule', () => {
   const source = getEarcutSource();
   expect(() => new WgslReflect(source)).not.toThrow();
@@ -184,12 +215,14 @@ it('every monotone kernel parses, binds at most 8 storage buffers and stays with
   for (const kernel of sources) {
     expect(() => new WgslReflect(kernel.source), kernel.id).not.toThrow();
     expect(getStorageBindingCount(kernel.source), `${kernel.id} bindings`).toBeLessThanOrEqual(8);
-    expect(getPrivateMemoryBytes(kernel.source), `${kernel.id} private`).toBeLessThanOrEqual(
-      CORE_PRIVATE_MEMORY_LIMIT_BYTES
-    );
-    expect(getWorkgroupMemoryBytes(kernel.source), `${kernel.id} workgroup`).toBeLessThanOrEqual(
-      CORE_WORKGROUP_STORAGE_LIMIT_BYTES
-    );
+    expect(
+      getPrivateMemoryBytes(kernel.source, kernel.constants),
+      `${kernel.id} private`
+    ).toBeLessThanOrEqual(CORE_PRIVATE_MEMORY_LIMIT_BYTES);
+    expect(
+      getWorkgroupMemoryBytes(kernel.source, kernel.constants),
+      `${kernel.id} workgroup`
+    ).toBeLessThanOrEqual(CORE_WORKGROUP_STORAGE_LIMIT_BYTES);
     if (
       kernel.id.includes('-monotone-') ||
       /-(classify-rings|polygon-capacities|publish-layout)$/.test(kernel.id)

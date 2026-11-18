@@ -161,7 +161,9 @@ it('GPUSolarIrradiance validates props and schedules chunked nodes', () => {
   expect(() => create({}, {})).toThrow(/at least one output/);
   expect(() => create({slope: float('lonely-slope')})).toThrow(/together/);
   const shared = float('shared');
-  expect(() => create({}, {sunHours: shared, insolation: shared})).toThrow(/share buffers/);
+  expect(() => create({}, {sunHours: shared, insolation: shared})).toThrow(
+    /^irradiance-12 output\[1\] chunk 0 logical byte ranges must not overlap \(writable storage\)$/
+  );
   expect(() => create({parameters: createTransientView(graph, 'short', 'float32', 4)})).toThrow(
     /at least 8/
   );

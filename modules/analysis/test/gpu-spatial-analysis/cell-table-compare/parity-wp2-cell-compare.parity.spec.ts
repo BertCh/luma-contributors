@@ -35,7 +35,8 @@ for (const fixture of cellFixtures)
           const status = {
             count: rig.output('count', 1, 'uint32'),
             requiredCount: rig.output('required', 1, 'uint32'),
-            overflow: rig.output('overflow', 1, 'uint32')
+            overflow: rig.output('overflow', 1, 'uint32'),
+            candidateOverflow: rig.output('compare-candidate-overflow', 1, 'uint32')
           };
           rig.graph.add(
             new GPUCellTableCompare({
@@ -56,7 +57,8 @@ for (const fixture of cellFixtures)
                 status: {
                   count: status.count.view,
                   requiredCount: status.requiredCount.view,
-                  overflow: status.overflow.view
+                  overflow: status.overflow.view,
+                  candidateOverflow: status.candidateOverflow.view
                 }
               }
             })
@@ -107,11 +109,10 @@ for (const fixture of cellFixtures)
                   relative
                 );
               for (const field of ['count', 'requiredCount', 'overflow'] as const)
-                compare(field, await readUint32(status[field].buffer, 1), [
-                  field === 'overflow'
-                    ? Number(expected.overflow || inheritedOverflow)
-                    : expected[field]
-                ]);
+                compare(field, await readUint32(status[field].buffer, 1), [expected[field]]);
+              compare('candidateOverflow', await readUint32(status.candidateOverflow.buffer, 1), [
+                inheritedOverflow
+              ]);
               const tail = capacity - expected.count;
               compare('every key and tail', await readUint32(cells.buffer, capacity * 2), [
                 ...expected.cells,

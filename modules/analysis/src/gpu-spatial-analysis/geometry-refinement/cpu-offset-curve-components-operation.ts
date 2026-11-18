@@ -27,11 +27,12 @@ export type CPUOffsetCurveComponentsInput = {
   raw: {positions: Float32Array; lineOffsets: Uint32Array};
 };
 
-/** Output dimensions and the contributor's geometric slack/provenance parameters. */
+/** Output dimensions, geometric parameters and optional noding budgets (uncapped when omitted). */
 export type CPUOffsetCurveComponentsOptions = Pick<
   OffsetCurveComponentsOperationProps,
   'distance' | 'tolerance' | 'rowsPerVertex' | 'vertexCapacity' | 'componentCapacity'
->;
+> &
+  Partial<Pick<OffsetCurveComponentsOperationProps, 'intersectionCapacity' | 'segmentCapacity'>>;
 
 /** All graph outputs, including partial unreferenced vertex prefixes and zeroed unused rows. */
 export type CPUOffsetCurveComponentsResult = {
@@ -54,19 +55,25 @@ function validateOptions(id: string, options: CPUOffsetCurveComponentsOptions): 
   validateCapacity(id, 'rowsPerVertex', options.rowsPerVertex ?? 1);
   validateFiniteNumber(id, 'distance', options.distance);
   validateFiniteNumber(id, 'tolerance', options.tolerance, 0);
+  if (options.intersectionCapacity !== undefined)
+    validateCapacity(id, 'intersectionCapacity', options.intersectionCapacity);
+  if (options.segmentCapacity !== undefined)
+    validateCapacity(id, 'segmentCapacity', options.segmentCapacity);
 }
 
 /**
  * Nodes raw planar offsets, trims their source-distance bands, cancels duplicate/opposite fragments,
  * and chains components in the contributor's seed/successor order. Preserves its geometric slack,
- * 1e-7 cut-interval rule, first-match ties, whole-component metadata publication and partial writes.
+ * first-match ties, whole-component metadata publication and partial writes.
  *
  * What differs from the GPU contributor:
  * - Arithmetic is float64, rounded once at output; distance-band, coincidence and cut decisions
  *   near tolerance boundaries can differ.
- * - Noding is uncapped and uses exact rational predicates/visit keys on float32 input edges;
- *   intersectionCapacity, segmentCapacity, the 1024-successor scan and GPU binding limits are
- *   dropped. No uncertain-predicate status is produced; finite raw inputs set incompleteNoding=0.
+ * - Noding uses exact rational predicates/visit keys on float32 input edges. Optional segmentCapacity
+ *   retains a traversal-order prefix; optional intersectionCapacity suppresses geometry when its
+ *   pair list is exhausted, since the GPU's spatial-index-dependent partial prefix is not replayed.
+ *   Either loss sets incompleteNoding=1 without setting final-output overflow. Omitted budgets are
+ *   uncapped. No uncertain-predicate status, 1024-successor scan or GPU binding limit is imposed.
  * - Intersections remain float64 through clipping instead of being rounded in intermediate buffers.
  * - Unused positions/sourceEdges are zeroed; the GPU leaves them untouched on reused buffers.
  * - Empty coordinate arrays with valid zero offsets are accepted. Empty raw arrays return
@@ -86,7 +93,16 @@ export function computeOffsetCurveComponentsOnCPU(
   validateCPURefinementLines(input.raw.positions, input.raw.lineOffsets, 'raw');
   if (input.original.lineOffsets.length !== input.raw.lineOffsets.length)
     throw new Error('raw.lineOffsets must match original.lineOffsets length');
-  const noded = nodeCPURefinementLines(input.raw.positions, input.raw.lineOffsets);
+  const noded = nodeCPURefinementLines(input.raw.positions, input.raw.lineOffsets, {
+    intersectionCapacity: options.intersectionCapacity
+  });
+  const segments =
+    options.segmentCapacity === undefined
+      ? noded.segments
+      : noded.segments.slice(0, options.segmentCapacity);
+  const incompleteNoding = Number(
+    Boolean(noded.incomplete) || segments.length < noded.segments.length
+  );
   const distance = Math.abs(options.distance);
   const tolerance = options.tolerance;
   const rowsPerVertex = options.rowsPerVertex ?? 1;
@@ -124,7 +140,7 @@ export function computeOffsetCurveComponentsOnCPU(
     return minimum;
   };
   const fragments: Fragment[] = [];
-  for (const segment of noded.segments) {
+  for (const segment of segments) {
     const {start, end, line} = segment;
     const directionX = end.x - start.x;
     const directionY = end.y - start.y;
@@ -175,11 +191,19 @@ export function computeOffsetCurveComponentsOnCPU(
           options.distance <
         0;
     }
-    const cuts = [0, 1];
-    const insertCut = (fraction: number) => {
-      if (fraction > 0 && fraction < 1) cuts.push(fraction);
+    const cuts: {fraction: number; point: Point}[] = [
+      {fraction: 0, point: start},
+      {fraction: 1, point: end}
+    ];
+    const cutFractions = new Set([0, 1]);
+    const insertCut = (fraction: number, point: Point) => {
+      if (fraction > 0 && fraction < 1 && !cutFractions.has(fraction)) {
+        cutFractions.add(fraction);
+        cuts.push({fraction, point});
+      }
     };
     for (let vertex = offsets[line]; vertex + 1 < offsets[line + 1]; vertex++) {
+      if (outerJoin && (vertex === owner || vertex + 1 === owner)) continue;
       const first = pointAt(vertex);
       const last = pointAt(vertex + 1);
       const edgeX = last.x - first.x;
@@ -193,40 +217,55 @@ export function computeOffsetCurveComponentsOnCPU(
         for (const side of [-distance, distance]) {
           const fraction =
             (side - ((start.x - first.x) * normalX + (start.y - first.y) * normalY)) / denominator;
+          const point = {x: start.x + fraction * directionX, y: start.y + fraction * directionY};
+          if (normalX === 0) point.y = first.y + side * normalY;
+          if (normalY === 0) point.x = first.x + side * normalX;
           const projection =
-            ((start.x + fraction * directionX - first.x) * edgeX +
-              (start.y + fraction * directionY - first.y) * edgeY) /
-            lengthSquared;
-          if (projection >= 0 && projection <= 1) insertCut(fraction);
+            ((point.x - first.x) * edgeX + (point.y - first.y) * edgeY) / lengthSquared;
+          if (projection >= 0 && projection <= 1) insertCut(fraction, point);
         }
       }
       for (const endpoint of [first, last]) {
         const deltaX = start.x - endpoint.x;
         const deltaY = start.y - endpoint.y;
-        const linear = deltaX * directionX + deltaY * directionY;
-        const constant = deltaX ** 2 + deltaY ** 2 - distance ** 2;
-        const discriminant = linear ** 2 - squaredLength * constant;
+        const segmentLength = Math.sqrt(squaredLength);
+        const unitX = directionX / segmentLength;
+        const unitY = directionY / segmentLength;
+        const along = deltaX * unitX + deltaY * unitY;
+        const across = deltaX * unitY - deltaY * unitX;
+        const discriminant = (distance - Math.abs(across)) * (distance + Math.abs(across));
         if (discriminant >= 0) {
           const root = Math.sqrt(discriminant);
-          insertCut((-linear - root) / squaredLength);
-          insertCut((-linear + root) / squaredLength);
+          const foot = {x: endpoint.x + across * unitY, y: endpoint.y - across * unitX};
+          insertCut((-along - root) / segmentLength, {
+            x: foot.x - root * unitX,
+            y: foot.y - root * unitY
+          });
+          insertCut((-along + root) / segmentLength, {
+            x: foot.x + root * unitX,
+            y: foot.y + root * unitY
+          });
         }
       }
     }
-    cuts.sort((left, right) => left - right);
+    cuts.sort((left, right) => left.fraction - right.fraction);
     const outwardX = -directionY / Math.sqrt(squaredLength);
     const outwardY = directionX / Math.sqrt(squaredLength);
     const epsilon = Math.max(1e-5, tolerance * 2, distance * 1e-5);
     for (let slot = 0; slot + 1 < cuts.length; slot++) {
-      const first = cuts[slot];
-      const last = cuts[slot + 1];
-      if (last - first <= 1e-7) continue;
+      const firstCut = cuts[slot];
+      const lastCut = cuts[slot + 1];
+      const first = firstCut.fraction;
+      const last = lastCut.fraction;
+      if (last <= first) continue;
       const middle = {
         x: start.x + (first + last) * 0.5 * directionX,
         y: start.y + (first + last) * 0.5 * directionY
       };
       if (getSeparation(middle, line, owner, outerJoin) + tolerance < distance) continue;
       if (
+        Math.hypot(lastCut.point.x - firstCut.point.x, lastCut.point.y - firstCut.point.y) >
+          epsilon &&
         Math.max(
           getSeparation(
             {x: middle.x + epsilon * outwardX, y: middle.y + epsilon * outwardY},
@@ -241,21 +280,21 @@ export function computeOffsetCurveComponentsOnCPU(
             outerJoin
           )
         ) <=
-        distance + epsilon * 0.05
+          distance + epsilon * 0.05
       )
         continue;
       fragments.push({
-        start: {x: start.x + first * directionX, y: start.y + first * directionY},
-        end: {x: start.x + last * directionX, y: start.y + last * directionY},
+        start: firstCut.point,
+        end: lastCut.point,
         line,
         source: owner,
         state: 1
       });
     }
   }
-  const matchTolerance = Math.max(1e-5, distance * 1e-5);
-  const matches = (first: Point, second: Point) =>
-    Math.hypot(first.x - second.x, first.y - second.y) <= matchTolerance;
+  // Shared noded/clipped coordinates identify endpoints. Proximity cannot establish topology:
+  // long nearby legs and gaps removed by clipping must remain distinct at every scale.
+  const matches = (first: Point, second: Point) => first.x === second.x && first.y === second.y;
   for (let candidate = 0; candidate < fragments.length; candidate++) {
     const first = fragments[candidate];
     if (first.state !== 1) continue;
@@ -334,14 +373,14 @@ export function computeOffsetCurveComponentsOnCPU(
     componentCount,
     vertexCount,
     Number(componentCount > options.componentCapacity || vertexCount > options.vertexCapacity),
-    noded.incomplete,
+    incompleteNoding,
     0,
     0
   ]);
   return result;
 }
 
-/** CPU twin: complete noding without GPU intermediate capacity or binding limits. */
+/** CPU twin: honours noding budgets; pair exhaustion suppresses geometry with incompleteNoding=1. */
 export class CPUOffsetCurveComponentsOperation extends GPUCPUOperation {
   constructor(props: OffsetCurveComponentsOperationProps) {
     const id = props.id ?? 'offset-curve-components';

@@ -29,7 +29,7 @@ import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph
 import {validateCellDispatchOutputs} from '../cell-indexing/cell-dispatch-validation';
 import {
   validateCellIndexResolution,
-  type GPUCellFamily
+  type GPUCellTopologyFamily
 } from '../cell-indexing/cell-index-families';
 import {getCellTableNodes, hasCellKeyHighWord} from '../cell-aggregation/cell-table';
 import type {GPUCellWordOrder} from '../cell-aggregation/gpu-cell-aggregation';
@@ -102,7 +102,7 @@ export type GPUCellCompactionProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'cell-compaction'`. */
   id?: string;
   /** Grid family of the input and output cells. */
-  family: GPUCellFamily;
+  family: GPUCellTopologyFamily;
   /** Compact or uncompact. */
   operation: GPUCellCompactOperation | GPUCellUncompactOperation;
   /** Input cell keys, two `uint32` words per row. */
@@ -131,7 +131,7 @@ function getH3SubtreeSizes(): {hexagon: number[]; pentagon: number[]} {
 }
 
 /** WGSL helpers shared by both operations. */
-function getFamilyWGSL(family: GPUCellFamily, wordOrder: GPUCellWordOrder): string {
+function getFamilyWGSL(family: GPUCellTopologyFamily, wordOrder: GPUCellWordOrder): string {
   const sizes = getH3SubtreeSizes();
   const toArray = (name: string, values: number[]) =>
     `const ${name} = array<u32, ${values.length}>(${values.map(value => `${value}u`).join(', ')});`;

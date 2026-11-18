@@ -3,7 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it, vi} from 'vitest';
-import {GPUCellAggregation} from '../../../src/gpu-spatial-analysis/cell-aggregation/gpu-cell-aggregation';
+import {
+  GPUCellAggregation,
+  createCellAggregation
+} from '../../../src/gpu-spatial-analysis/cell-aggregation/gpu-cell-aggregation';
 import {
   createNullWebGPUDevice,
   createVectorView,
@@ -193,8 +196,8 @@ it('tiled cell columns sharing one allocation never mix read-only and writable s
     expect(() => new GPUCellAggregation({...props, output: {...output, counts: overlap}})).toThrow(
       /overlap/
     );
-    expect(
-      () => new GPUCellAggregation({...props, output, extraCounts: [output.status.count]})
+    expect(() =>
+      createCellAggregation({...props, output, extraCounts: [output.status.count]})
     ).toThrow(/overlap/);
   } finally {
     device.destroy();

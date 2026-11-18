@@ -9,6 +9,9 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {snapshotRegressionConstructionProps} from './regression-construction-snapshot';
+import {getRegressionWeightsSuppressionNodes} from './regression-weights-completeness';
+import {getRegressionTraceLayout} from './regression-trace-layout';
 import {
   getWGSLFloatLiteral,
   type WGSLKernelBinding
@@ -297,7 +300,31 @@ export class GPUSpatialErrorMaximumLikelihood implements GPUCommandNodeProducer 
   /** Number of accumulation tiles. */
   readonly tileCount: number;
 
+  private readonly traceTileRowCount: number;
+  private readonly traceTileCount: number;
+
   constructor(props: GPUSpatialErrorMaximumLikelihoodProps) {
+    props = snapshotRegressionConstructionProps(
+      props,
+      [
+        'id',
+        'weights',
+        'predictors',
+        'response',
+        'predictorCount',
+        'maximumPower',
+        'traceMode',
+        'tailExtrapolation',
+        'logDeterminant',
+        'eigenvalues',
+        'traceProbeCount',
+        'traceParameters',
+        'tileRowCount',
+        'output'
+      ],
+      ['table', 'summary', 'residuals', 'status', 'powerTraceStandardErrors'],
+      'spatial-error-maximum-likelihood'
+    );
     const id = props.id ?? 'spatial-error-maximum-likelihood';
     this.id = id;
     this.props = props;
@@ -388,6 +415,9 @@ export class GPUSpatialErrorMaximumLikelihood implements GPUCommandNodeProducer 
       Math.max(MINIMUM_DEFAULT_TILE_ROWS, Math.ceil(rows / MAXIMUM_DEFAULT_TILE_COUNT));
     // Tiles never span chunks; a whole CSR has ceil(rows / tileRowCount) tiles.
     this.tileCount = getGPUSpatialWeightsTilePlan(props.weights, this.tileRowCount).tileCount;
+    const traceLayout = getRegressionTraceLayout(id, props.weights, rows);
+    this.traceTileRowCount = traceLayout.tileRowCount;
+    this.traceTileCount = traceLayout.tileCount;
     validateRegressionOutputDispatches(
       id,
       {
@@ -446,8 +476,7 @@ export class GPUSpatialErrorMaximumLikelihood implements GPUCommandNodeProducer 
       converged: props.output.status.converged,
       powerTraceStandardErrors: props.output.powerTraceStandardErrors
     });
-    const traceTileRowCount = Math.max(32, Math.ceil(rowCount / 1024));
-    const traceTileCount = getGPUSpatialWeightsTilePlan(props.weights, traceTileRowCount).tileCount;
+    const traceTileCount = this.traceTileCount;
     const weightPlan = getGPUSpatialWeightsTilePlan(props.weights, tileRowCount);
     const edgeCount = Math.max(
       ...weightPlan.dispatches.map(dispatch => dispatch.weights.weights.length),
@@ -782,6 +811,7 @@ ${getCholeskyWGSL(k)}`,
       ),
       ...new GPUSpatialWeightsTraces({
         id: `${id}-traces`,
+        tileRowCount: this.traceTileRowCount,
         weights,
         maximumPower,
         mode: this.traceMode,
@@ -1031,7 +1061,10 @@ ${getFinishWGSL(k, maximumPower, stochastic, output.status.converged !== undefin
         'finish();'
       )
     );
-    return nodes;
+    return [
+      ...nodes,
+      ...getRegressionWeightsSuppressionNodes<Parameters>(graph, id, props.weights, props.output)
+    ];
   }
 }
 

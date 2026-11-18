@@ -42,6 +42,75 @@ function getInput(fixture = fixtures[0]) {
   };
 }
 
+it('G3 operations retain declared loss inputs after caller status and output maps mutate', async () => {
+  const props = {
+    ...PROPS,
+    weights: {...PROPS.weights, status: {candidateOverflow: 'flag' as string | undefined}},
+    output: {...PROPS.output, status: {...PROPS.output.status}}
+  };
+  const cpu = new CPUSpatialRegressionDiagnosticsOperation(props);
+  const gpu = new GPUSpatialRegressionDiagnosticsOperation(props);
+  const input = getInput();
+  const vector = <Values extends Float32Array | Uint32Array>(values: Values) => ({
+    format: (values instanceof Float32Array ? 'float32' : 'uint32') as 'float32' | 'uint32',
+    length: values.length,
+    chunks: [{values, length: values.length}],
+    pack: () => values
+  });
+  const inputs = {
+    offsets: vector(input.weights.offsets),
+    neighbors: vector(input.weights.neighbors),
+    weights: vector(input.weights.weights),
+    predictors: vector(input.predictors),
+    response: vector(input.response),
+    residuals: vector(input.residuals),
+    mask: vector(input.mask),
+    weightsCandidateOverflow: vector(Uint32Array.of(1))
+  };
+  expect((await cpu.execute({inputs}))['code']).toEqual(Uint32Array.of(3));
+  delete props.weights.status.candidateOverflow;
+  props.output.status.code = 'replacement';
+  expect((await cpu.execute({inputs}))['code']).toEqual(Uint32Array.of(3));
+  const contributor = constructRegressionOperationContributor(gpu, {
+    offsets: {format: 'uint32', length: 31},
+    neighbors: {format: 'uint32', length: 90},
+    weights: {format: 'float32', length: 90},
+    predictors: {format: 'float32', length: 60},
+    response: {format: 'float32', length: 30},
+    residuals: {format: 'float32', length: 30},
+    mask: {format: 'uint32', length: 30},
+    weightsCandidateOverflow: {format: 'uint32', length: 1}
+  });
+  inputs.weightsCandidateOverflow.pack()[0] = 0;
+  const recovered = (await cpu.execute({inputs})) as Record<string, Float32Array | Uint32Array>;
+  expect(recovered['code']).toEqual(Uint32Array.of(0));
+  expect(Number.isFinite(recovered['tests'][0])).toBe(true);
+  expect(contributor).toHaveProperty('props.weights.status.candidateOverflow');
+  expect(
+    (contributor as unknown as {props: {weights: {status: {candidateOverflow?: unknown}}}}).props
+      .weights.status.candidateOverflow
+  ).toBeDefined();
+});
+
+it.each([
+  'overflow',
+  'candidateOverflow'
+] as const)('F2 suppresses CPU diagnostics on weights %s and recovers', flag => {
+  const input = getInput();
+  const loss = Uint32Array.of(1);
+  const weights = {...input.weights, status: {[flag]: loss}};
+  const result = computeSpatialRegressionDiagnosticsOnCPU({...input, weights}, {predictorCount: 2});
+  expect(result.status[0]).toBe(3);
+  for (let test = 0; test < 6; test++) {
+    expect(result.tests[3 * test]).toBeNaN();
+    expect(result.tests[3 * test + 2]).toBeNaN();
+  }
+  loss[0] = 0;
+  expect(
+    computeSpatialRegressionDiagnosticsOnCPU({...input, weights}, {predictorCount: 2}).status[0]
+  ).toBe(0);
+});
+
 for (const fixture of fixtures) {
   it(`matches independent dense SciPy annihilator traces and tests: ${fixture.name}`, () => {
     const result = computeSpatialRegressionDiagnosticsOnCPU(getInput(fixture), fixture);
@@ -138,4 +207,30 @@ it('checks array consistency and both operation constructions', () => {
       shapes
     )
   ).not.toThrow();
+  const withStatus = {
+    ...PROPS,
+    weights: {...PROPS.weights, status: {overflow: 'loss', candidateOverflow: 'candidate-loss'}}
+  };
+  for (const Operation of [
+    CPUSpatialRegressionDiagnosticsOperation,
+    GPUSpatialRegressionDiagnosticsOperation
+  ]) {
+    const operation = new Operation(withStatus);
+    expect(operation.inputs).toMatchObject({
+      weightsOverflow: 'loss',
+      weightsCandidateOverflow: 'candidate-loss'
+    });
+    if ('destroy' in operation) operation.destroy();
+  }
+  const contributor = constructRegressionOperationContributor(
+    new GPUSpatialRegressionDiagnosticsOperation(withStatus),
+    {
+      ...shapes,
+      weightsOverflow: {format: 'uint32', length: 1},
+      weightsCandidateOverflow: {format: 'uint32', length: 1}
+    }
+  );
+  expect(contributor).toMatchObject({
+    props: {weights: {status: {overflow: expect.anything(), candidateOverflow: expect.anything()}}}
+  });
 });

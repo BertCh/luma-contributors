@@ -748,7 +748,7 @@ it('addHotSpotAnalysisRecipe analyses a dense lattice with queen weights', async
         }
       });
       expect(recipe.inference.testedRowsDefinition).toBe(
-        minimumNeighbors === 0 ? 'lattice cells' : 'lattice cells with at least 8 neighbors'
+        `included rows with at least ${Math.max(1, minimumNeighbors ?? 8)} active neighbor${Math.max(1, minimumNeighbors ?? 8) === 1 ? '' : 's'} (islands excluded) and a defined z-score`
       );
       fixture.run();
       expect((await fixture.readUint32(overflow, 1))[0]).toBe(0);

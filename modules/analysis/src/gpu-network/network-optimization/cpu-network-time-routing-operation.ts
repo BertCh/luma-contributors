@@ -26,7 +26,7 @@ const NONE = 0xffffffff;
 /** Packed routing inputs and cost layout, matching GPUNetworkTimeRouting. */
 export type CPUNetworkTimeRoutingInput = Pick<
   NetworkTimeRoutingOperationProps,
-  'costModel' | 'samplesPerTransition' | 'waitingPolicy'
+  'costModel' | 'samplesPerTransition' | 'waitingPolicy' | 'maximumRelaxations'
 > & {
   stateVertices: Uint32Array;
   transitions: Uint32Array;
@@ -86,7 +86,7 @@ export function validateNetworkTimeRoutingOperationProps(
 }
 
 /**
- * Exact label correction with float64 labels. Scan order and strict improvements preserve the
+ * Budgeted label correction with float64 labels. Scan order and strict improvements preserve the
  * GPU's predecessor tie rule. Used by the percentile twin without an intermediate float32 cast.
  * departureTime overrides the one-row departure for a float64 departure window. @internal
  */
@@ -96,6 +96,8 @@ export function computeNetworkTimeRoutingFloat64(
 ): NetworkTimeRoutingFloat64Result {
   const {stateVertices, transitions, costs, endpoints, departure} = input;
   const stateCount = stateVertices.length;
+  const maximumRelaxations = input.maximumRelaxations ?? stateCount;
+  validateCapacity('network-time-routing', 'maximumRelaxations', maximumRelaxations, 0);
   if (transitions.length % 2) throw new Error('transitions must hold two components per row');
   const transitionCount = transitions.length / 2;
   const sampleCount = input.costModel === 'piecewise-arrival' ? input.samplesPerTransition! : 1;
@@ -154,10 +156,9 @@ export function computeNetworkTimeRoutingFloat64(
   }
   result.valid = 1;
   arrivals[initial] = departureTime;
-  let changed: boolean;
-  do {
+  for (let round = 0; round < maximumRelaxations; round++) {
     result.iterationCount++;
-    changed = false;
+    let changed = false;
     for (let edge = 0; edge < transitionCount; edge++) {
       const source = transitions[edge * 2];
       const destination = transitions[edge * 2 + 1];
@@ -193,8 +194,11 @@ export function computeNetworkTimeRoutingFloat64(
         changed = true;
       }
     }
-  } while (changed);
-  result.converged = 1;
+    if (!changed) {
+      result.converged = 1;
+      break;
+    }
+  }
   for (let state = 0; state < stateCount; state++) {
     if (stateVertices[state] === endpoints[1] && arrivals[state] < result.arrivalTime) {
       result.targetState = state;
@@ -209,8 +213,8 @@ export function computeNetworkTimeRoutingFloat64(
  * Summary is [valid, converged, targetState, float32 arrival bits]; missing keys are 0xffffffff.
  *
  * What differs from the GPU contributor:
- * - GPU state, transition and sample caps are dropped; maximumRelaxations is ignored. Valid
- *   finite computations run to convergence, including when the GPU budget is zero.
+ * - GPU state, transition and sample caps are dropped. maximumRelaxations bounds transition
+ *   sweeps (default state count), including the final unchanged sweep that proves convergence.
  * - Float64 arithmetic can distinguish routes tied in float32 and accept arrivals that overflow
  *   shader arithmetic. Float32 output overflow becomes Infinity without clearing valid.
  * - Strict improvement in transition scan order and lowest-state target ties match the GPU.
@@ -239,7 +243,7 @@ export function computeNetworkTimeRoutingOnCPU(input: CPUNetworkTimeRoutingInput
   };
 }
 
-/** CPU twin, preferred for exact reference routing. GPU caps and relaxation budget are dropped. */
+/** CPU twin, preferred for exact reference routing. GPU shape caps are dropped; budgets bind. */
 export class CPUNetworkTimeRoutingOperation extends GPUCPUOperation {
   constructor(props: NetworkTimeRoutingOperationProps) {
     const id = props.id ?? 'network-time-routing';
@@ -268,6 +272,7 @@ export class CPUNetworkTimeRoutingOperation extends GPUCPUOperation {
           endpoints: getCPUOperationUint32Rows(id, inputs, 'endpoints'),
           departure: getCPUOperationFloat32Rows(id, inputs, 'departure'),
           costModel: props.costModel,
+          maximumRelaxations: props.maximumRelaxations,
           samplesPerTransition: props.samplesPerTransition,
           waitingPolicy: props.waitingPolicy
         });

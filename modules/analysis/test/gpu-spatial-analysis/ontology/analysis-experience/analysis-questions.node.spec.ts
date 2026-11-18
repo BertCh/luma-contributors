@@ -789,7 +789,11 @@ describe('getGPUAnalysisOperatorQuestions on the hand-labelled operators', () =>
       getGPUAnalysisCapabilityCatalog().map(capability => [capability.id, capability])
     );
     for (const [exportName] of LABELLED_OPERATORS) {
-      const operator = getGPUAnalysisOperator(exportName);
+      const operator = getGPUAnalysisOperator(
+        exportName === 'addVisibilityGraphRecipe'
+          ? {package: '@luma-contributors/analysis/gpu-spatial-analysis', exportName}
+          : exportName
+      );
       expect(operator, exportName).toBeDefined();
       domains.add(capabilityById.get(operator!.primaryCapability)!.domain);
     }
@@ -801,7 +805,11 @@ describe('getGPUAnalysisOperatorQuestions on the hand-labelled operators', () =>
   });
 
   it.each(LABELLED_OPERATORS)('answers %s with the labelled questions', (exportName, expected) => {
-    const operator = getGPUAnalysisOperator(exportName)!;
+    const operator = getGPUAnalysisOperator(
+      exportName === 'addVisibilityGraphRecipe'
+        ? {package: '@luma-contributors/analysis/gpu-spatial-analysis', exportName}
+        : exportName
+    )!;
     expect(getGPUAnalysisOperatorQuestions(operator)).toEqual(expected);
   });
 });

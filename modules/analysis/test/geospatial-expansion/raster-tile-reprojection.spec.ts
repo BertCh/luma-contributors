@@ -6,6 +6,7 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
   GPURasterTileReprojection,
+  type GPURasterTileReprojectionProps,
   type GPURasterReprojectionSourceTile
 } from '../../src/raster-analysis/gpu-raster-tile-reprojection';
 import {importGraphBuffer} from '../../src/analysis-core/kernels/gpu-contributor-utils';
@@ -25,6 +26,167 @@ const sourceGrid = {
   affine: [1, 0, 0, 0, -1, 2] as const,
   pixelInterpretation: 'area' as const
 };
+
+it.each([
+  'source authority',
+  'destination authority',
+  'source wellKnownText',
+  'destination wellKnownText',
+  'source projectionJson',
+  'destination projectionJson'
+] as const)('final3 H3 tiled one-cell output survives mutation of %s', async mutation => {
+  const device = await getWebGPUTestDevice('core');
+  requireTestDevice(device);
+  const run = async (mutate: boolean) => {
+    const graph = new GPUCommandGraph(device);
+    const makeGrid = () => ({
+      width: 1,
+      height: 1,
+      affine: [1, 0, 0, 0, 1, 0] as const,
+      pixelInterpretation: 'point' as const,
+      coordinateReferenceSystem: {
+        authority: 'EPSG:4326',
+        wellKnownText: 'GEOGCRS["WGS 84"]',
+        projectionJson: {id: {authority: 'EPSG', code: 4326}, axis: [{name: 'latitude'}]}
+      }
+    });
+    const source = makeGrid();
+    const destination = makeGrid();
+    const input = createInputBuffer(device, Float32Array.of(22));
+    const values = createOutputBuffer(device, 1);
+    const validity = createOutputBuffer(device, 1);
+    const contributor = new GPURasterTileReprojection({
+      sourceGrid: source,
+      destinationGrid: destination,
+      sources: [
+        {
+          pixelBounds: [0, 0, 1, 1],
+          input: {
+            id: 'one-cell',
+            format: 'float32',
+            storage: {
+              kind: 'buffer',
+              values: importGraphBuffer(graph, 'one-cell', input, 'float32', 1)
+            }
+          }
+        }
+      ],
+      output: {
+        values: importGraphBuffer(graph, 'values', values, 'float32', 1),
+        validity: importGraphBuffer(graph, 'validity', validity, 'uint32', 1)
+      }
+    });
+    if (mutate) {
+      const crs = (mutation.startsWith('source') ? source : destination).coordinateReferenceSystem;
+      if (mutation.endsWith('authority')) crs.authority = 'EPSG:3857';
+      if (mutation.endsWith('wellKnownText'))
+        crs.wellKnownText = 'PROJCRS["WGS 84 / Pseudo-Mercator"]';
+      if (mutation.endsWith('projectionJson')) {
+        crs.projectionJson.id.code = 3857;
+        crs.projectionJson.axis[0].name = 'easting';
+      }
+    }
+    graph.add(contributor);
+    const compiled = graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      return {values: await readFloat32(values, 1), validity: await readUint32(validity, 1)};
+    } finally {
+      compiled.destroy();
+      contributor.destroy();
+      input.destroy();
+      values.destroy();
+      validity.destroy();
+    }
+  };
+  const control = await run(false);
+  expect(control).toEqual({values: [22], validity: [1]});
+  expect(await run(true)).toEqual(control);
+});
+
+it.each([
+  'source dimensions',
+  'destination dimensions',
+  'source affine',
+  'destination affine',
+  'inherited fields'
+] as const)('final2 G2/F4 tiled output retains the second source cell with %s', async mutation => {
+  const device = await getWebGPUTestDevice('core');
+  requireTestDevice(device);
+  const run = async (mutate: boolean) => {
+    const graph = new GPUCommandGraph(device);
+    const source = {
+      width: 2,
+      height: 1,
+      affine: [1, 0, 0, 0, 1, 0] as [number, number, number, number, number, number],
+      pixelInterpretation: 'point' as const
+    };
+    const destination = {...source, affine: [...source.affine] as typeof source.affine};
+    const input = createInputBuffer(device, Float32Array.of(22));
+    const values = createOutputBuffer(device, 2);
+    const validity = createOutputBuffer(device, 2);
+    const props: GPURasterTileReprojectionProps = {
+      sourceGrid: source,
+      destinationGrid: destination,
+      sources: [
+        {
+          pixelBounds: [1, 0, 2, 1],
+          input: {
+            id: 'second-cell',
+            format: 'float32',
+            storage: {
+              kind: 'buffer',
+              values: importGraphBuffer(graph, 'second-cell', input, 'float32', 1)
+            }
+          }
+        }
+      ],
+      method: 'nearest',
+      output: {
+        values: importGraphBuffer(graph, 'values', values, 'float32', 2),
+        validity: importGraphBuffer(graph, 'validity', validity, 'uint32', 2)
+      }
+    };
+    const inheritedProps =
+      mutate && mutation === 'inherited fields'
+        ? Object.create({
+            ...props,
+            sourceGrid: Object.create(source),
+            destinationGrid: Object.create(destination),
+            sources: props.sources.map(tile => Object.create(tile)),
+            output: Object.create(props.output)
+          })
+        : props;
+    const contributor = new GPURasterTileReprojection(inheritedProps);
+    if (mutate) {
+      if (mutation === 'source dimensions') source.width = 1;
+      if (mutation === 'destination dimensions') destination.width = 1;
+      if (mutation === 'source affine') source.affine[2] = 1;
+      if (mutation === 'destination affine') destination.affine[2] = 1;
+      if (mutation === 'inherited fields') source.width = 1;
+    }
+    graph.add(contributor);
+    const compiled = graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      return {values: await readFloat32(values, 2), validity: await readUint32(validity, 2)};
+    } finally {
+      compiled.destroy();
+      contributor.destroy();
+      input.destroy();
+      values.destroy();
+      validity.destroy();
+    }
+  };
+  const control = await run(false);
+  const actual = await run(true);
+  expect(control.validity).toEqual([0, 1]);
+  expect(actual.validity).toEqual(control.validity);
+  expect(Number.isNaN(control.values[0])).toBe(true);
+  expect(Number.isNaN(actual.values[0])).toBe(true);
+  expect(control.values[1]).toBe(22);
+  expect(actual.values[1]).toBe(control.values[1]);
+});
 
 for (const scenario of ['seam', 'missing', 'overlap'] as const) {
   for (const noDataPolicy of ['strict', 'renormalize'] as const) {

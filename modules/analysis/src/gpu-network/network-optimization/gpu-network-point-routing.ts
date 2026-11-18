@@ -20,7 +20,7 @@ import {
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   getFrontierPhaseLayout,
@@ -50,6 +50,11 @@ export type GPUNetworkPointRoutingProps = {
   id?: string;
   /** Allowed directed [incomingEdge, outgoingEdge] turns, normally from an explicit line graph. */
   turns: GraphDataView<'uint32x2'>;
+  /** Optional nonnegative finite penalty per allowed turn; omitted means zero. Penalties are
+   * charged in full even when the destination edge is only partially traversed. */
+  turnPenalties?: GraphDataView<'float32'>;
+  /** Base-edge travel costs. Negative or non-finite values close that edge; queries touching a
+   * closed endpoint get status 1, and turns through closed edges are skipped. */
   costs: GraphDataView<'float32'>;
   /** [sourceEdge, targetEdge], preserving parallel-edge identity. Snap coordinates with GPUNetworkSnapping first. */
   queries: GraphDataView<'uint32x2'>;
@@ -144,6 +149,14 @@ export class GPUNetworkPointRouting implements GPUCommandNodeProducer {
     validateCapacity(id, 'queries rows', props.queries.length, 0);
     validateCapacity(id, 'queries rows * costs rows', props.queries.length * props.costs.length, 0);
     validateSinglePackedView(props.turns, ['uint32x2'], `${id} turns`);
+    if (props.turnPenalties) {
+      validateSinglePackedView(props.turnPenalties, ['float32'], `${id} turnPenalties`);
+      validateRequirement(
+        id,
+        props.turnPenalties.length === props.turns.length,
+        'turnPenalties must hold one row per turn'
+      );
+    }
     validateSinglePackedView(props.queries, ['uint32x2'], `${id} queries`);
     validateSinglePackedView(props.fractions, ['float32x2'], `${id} fractions`);
     for (const [name, view] of [
@@ -178,6 +191,7 @@ export class GPUNetworkPointRouting implements GPUCommandNodeProducer {
     );
     validateGraphOutputsDisjointFromInputs(id, Object.values(props.output), [
       props.turns,
+      props.turnPenalties,
       props.costs,
       props.queries,
       props.fractions
@@ -189,7 +203,9 @@ export class GPUNetworkPointRouting implements GPUCommandNodeProducer {
       view.buffer.defaultBuffer ? getCoreDefaultBuffer(view.buffer.defaultBuffer) : view.buffer;
     const outputAllocations = Object.values(props.output).map(getAllocation);
     const inputAllocations = new Set(
-      [props.turns, props.costs, props.queries, props.fractions].map(getAllocation)
+      [props.turns, props.turnPenalties, props.costs, props.queries, props.fractions]
+        .filter(view => view !== undefined)
+        .map(getAllocation)
     );
     validateRequirement(
       id,
@@ -217,6 +233,7 @@ export class GPUNetworkPointRouting implements GPUCommandNodeProducer {
     const {id, props} = this;
     validateGraphViewsBelongToGraph(id, graph, [
       props.turns,
+      props.turnPenalties,
       props.costs,
       props.queries,
       props.fractions,
@@ -225,6 +242,7 @@ export class GPUNetworkPointRouting implements GPUCommandNodeProducer {
     // Check every row-proportional binding before any transient resource or command is created.
     for (const [name, view] of Object.entries({
       turns: props.turns,
+      ...(props.turnPenalties ? {turnPenalties: props.turnPenalties} : {}),
       edgeCosts: props.costs,
       queries: props.queries,
       fractions: props.fractions,
@@ -240,6 +258,7 @@ export class GPUNetworkPointRouting implements GPUCommandNodeProducer {
     }
     validateNetworkOptimizationBindings(graph, id, {
       turns: props.turns,
+      turnPenalties: props.turnPenalties,
       edgeCosts: props.costs,
       queries: props.queries,
       fractions: props.fractions,

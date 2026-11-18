@@ -15,16 +15,17 @@ import {
 /** Logical graph values in place of the contributor's buffer views. */
 export type RasterFractionalZonalStatisticsOperationProps = Pick<
   GPURasterFractionalZonalStatisticsProps,
-  'id' | 'grid' | 'zoneCount' | 'quantity'
+  'id' | 'grid' | 'zoneCount' | 'quantity' | 'cellSizeMode'
 > & {
   input: RasterOperationBand;
   parameters?: string;
+  cellAreas?: string;
   coverage: {
     zoneIds: string;
     cellIds: string;
     fractions: string;
     zoneValidity: string;
-    status: {count: string; requiredCount: string; overflow: string};
+    status: {count: string; requiredCount: string; overflow: string; candidateOverflow?: string};
   };
   output: {totals: string; means: string; coveredArea: string; validArea: string; validity: string};
 };
@@ -44,7 +45,11 @@ export class GPURasterFractionalZonalStatisticsOperation extends GPUContributorO
         count: props.coverage.status.count,
         requiredCount: props.coverage.status.requiredCount,
         overflow: props.coverage.status.overflow,
-        ...(props.parameters !== undefined ? {parameters: props.parameters} : {})
+        ...(props.coverage.status.candidateOverflow !== undefined
+          ? {candidateOverflow: props.coverage.status.candidateOverflow}
+          : {}),
+        ...(props.parameters !== undefined ? {parameters: props.parameters} : {}),
+        ...(props.cellAreas !== undefined ? {cellAreas: props.cellAreas} : {})
       },
       outputs: {
         totals: {value: props.output.totals, format: 'float32', length: props.zoneCount},
@@ -60,6 +65,7 @@ export class GPURasterFractionalZonalStatisticsOperation extends GPUContributorO
             getView(port === 'validity' ? 'inputValidity' : port)
           ),
           parameters: props.parameters !== undefined ? getView<'float32'>('parameters') : undefined,
+          cellAreas: props.cellAreas !== undefined ? getView<'float32'>('cellAreas') : undefined,
           coverage: {
             zoneIds: getView<'uint32'>('zoneIds'),
             cellIds: getView<'uint32'>('cellIds'),
@@ -68,7 +74,11 @@ export class GPURasterFractionalZonalStatisticsOperation extends GPUContributorO
             status: {
               count: getView<'uint32'>('count'),
               requiredCount: getView<'uint32'>('requiredCount'),
-              overflow: getView<'uint32'>('overflow')
+              overflow: getView<'uint32'>('overflow'),
+              candidateOverflow:
+                props.coverage.status.candidateOverflow !== undefined
+                  ? getView<'uint32'>('candidateOverflow')
+                  : undefined
             }
           },
           output: {

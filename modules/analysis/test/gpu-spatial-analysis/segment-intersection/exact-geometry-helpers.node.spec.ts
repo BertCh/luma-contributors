@@ -198,7 +198,9 @@ describe('exact geometry kernels', () => {
             expect(count, `ray shoot ${level} call sites of ${name}`).toBeLessThanOrEqual(1);
           }
         }
-        expect(getPrivateMemoryBytes(source)).toBeLessThanOrEqual(CORE_PRIVATE_MEMORY_LIMIT_BYTES);
+        expect(getPrivateMemoryBytes(source, rayShoot!.constants)).toBeLessThanOrEqual(
+          CORE_PRIVATE_MEMORY_LIMIT_BYTES
+        );
       }
       // The per-piece membership loop over every ring is gone.
       expect(kernels.some(kernel => /membership|insidePolygons/.test(kernel.source))).toBe(false);
@@ -404,7 +406,12 @@ describe('exact geometry kernels', () => {
             dangleCount: view('uint32', 1),
             unusedEdgeCount: view('uint32', 1)
           },
-          status: status()
+          status: {
+            count: view('uint32', 1),
+            requiredRingCount: view('uint32', 1),
+            overflow: view('uint32', 1),
+            candidateOverflow: view('uint32', 1)
+          }
         }
       } as never);
       expect(expectExactKernels(makeValid.getCommandNodes(graph), 'make-valid')).toBeGreaterThan(0);

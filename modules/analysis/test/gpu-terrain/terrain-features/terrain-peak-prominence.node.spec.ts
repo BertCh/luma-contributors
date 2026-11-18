@@ -47,7 +47,7 @@ it('builds parallel splicing and gated elder doubling with invariant pipelines a
       expect(node.workload?.maximumInvocationCount).toBe(width * 5);
     }
     const sources = getParsedKernelSources(nodes);
-    for (const source of sources.values())
+    for (const {source} of sources.configurations)
       expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
     expect(sources.get('terrain-peak-prominence-tree-splice')).toContain('atomicMin(&parents');
     expect(sources.get('terrain-peak-prominence-tree-record')).toContain(

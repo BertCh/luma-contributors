@@ -103,7 +103,7 @@ export const KEPLER_ANALYSIS_OPERATOR_OVERRIDES: Readonly<Record<string, Operato
     status: ['invalidCount', 'overflow'],
     evidence: 'partial',
     tests: `${TEST_ROOT}/recipes/quantile-lisa.spec.ts`,
-    documentation: 'modules/analysis/docs/gpu-quantile-lisa.md',
+    documentation: 'docs/api/gpu-spatial-analysis/quantile-lisa.md',
     contract: 'GPUQuantileLISAProps'
   },
   GPUDorlingCartogram: {

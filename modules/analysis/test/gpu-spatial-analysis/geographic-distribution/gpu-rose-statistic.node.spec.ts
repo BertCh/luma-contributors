@@ -26,9 +26,11 @@ for (const mode of ['directional', 'axial'] as const) {
         bins: createTransientView(graph, 'bins', 'float32', 4)
       }
     }).getCommandNodes(graph);
-    const [{source}] = getGPUCommandNodeKernelSources(nodes);
+    const [{source, constants}] = getGPUCommandNodeKernelSources(nodes);
     device.destroy();
-    expect(getWorkgroupMemoryBytes(source)).toBeLessThanOrEqual(CORE_WORKGROUP_STORAGE_LIMIT_BYTES);
+    expect(getWorkgroupMemoryBytes(source, constants)).toBeLessThanOrEqual(
+      CORE_WORKGROUP_STORAGE_LIMIT_BYTES
+    );
     expect(source).toContain('directionCosine += cosineAngle;');
     expect(source).toContain('directionSine += sineAngle;');
     expect(source).toContain(

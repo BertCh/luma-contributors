@@ -31,6 +31,10 @@ const FIXTURE = decodeOracleFixture<{cases: FixtureCase[]}>(fixtureJson);
 
 /** Float32 unit roundoff. */
 const FLOAT32_EPSILON = 2 ** -24;
+// Log masses and dual potentials round at the unit cost/epsilon scale in the two-cell case.
+// Four unit roundoffs remain over 3,000 times below the old self-cost error (8.8e-4).
+// Keep the tighter divergence bound and exact stopping-status assertions below.
+const TWO_CELL_COMPONENT_TOLERANCE = 4 * FLOAT32_EPSILON;
 /**
  * Relative agreement (to the transport cost) of a converged float32 run with binary64, for grids
  * whose largest exponent `maximum cost / epsilon` is at most 200. Measured 3e-7 at most (about two
@@ -84,6 +88,101 @@ function makeRandomProblem(seed: number) {
 }
 
 const RUN = {maximumIterations: 400};
+
+it('retains the large self-plan residual of a tiny mass during epsilon scaling', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const maximumIterations of [2, 3]) {
+    const result = await runSinkhornGPU(
+      device,
+      {
+        width: 2,
+        height: 1,
+        cellWidth: 16,
+        cellHeight: 1,
+        epsilon: 1,
+        source: [1, 1e-37],
+        target: [1, 0]
+      },
+      {maximumIterations, epsilonStart: 2, scalingFactor: 0.5, tolerance: 0.01}
+    );
+    expect(result.converged).toBe(maximumIterations === 2 ? 0 : 1);
+    expect(result.iterationLimitReached).toBe(maximumIterations === 2 ? 1 : 0);
+    expect(result.iterationCount).toBe(maximumIterations);
+  }
+});
+
+it('reports the missing target mass when a truncated blur cannot reach it', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const result = await runSinkhornGPU(
+    device,
+    {
+      width: 3,
+      height: 1,
+      cellWidth: 1,
+      cellHeight: 1,
+      epsilon: 1,
+      source: [1, 0, 0],
+      target: [0, 0, 1]
+    },
+    {maximumIterations: 2, blurRadius: 1, tolerance: 1e-4}
+  );
+  expect(result.marginalError).toBe(1);
+  expect(result.converged).toBe(0);
+  expect(result.iterationLimitReached).toBe(1);
+  expect(result.iterationCount).toBe(2);
+  expect(result.approximation).toBe(1);
+});
+
+for (const scalingFactor of [1, 0.5]) {
+  it(`waits for the exact final epsilon on one cell (scalingFactor=${scalingFactor})`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const result = await runSinkhornGPU(
+      device,
+      {width: 1, height: 1, cellWidth: 1, cellHeight: 1, epsilon: 1, source: [1], target: [1]},
+      {maximumIterations: 2, epsilonStart: 1 + 2 ** -23, scalingFactor}
+    );
+    expect(result.iterationCount).toBe(2);
+    expect(result.converged).toBe(scalingFactor === 1 ? 0 : 1);
+    expect(result.iterationLimitReached).toBe(scalingFactor === 1 ? 1 : 0);
+  });
+}
+
+for (const reverse of [false, true]) {
+  it(`waits for both two-cell self plans before declaring convergence (reverse=${reverse})`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const problem = {
+      width: 2,
+      height: 1,
+      cellWidth: 1,
+      cellHeight: 1,
+      epsilon: 1,
+      source: reverse ? [1, 0] : [99, 1],
+      target: reverse ? [99, 1] : [1, 0]
+    };
+    const reference = computeSinkhornDivergenceReference(problem, 1e-13);
+    const limited = await runSinkhornGPU(device, problem, {maximumIterations: 2, tolerance: 1e-4});
+    expect(limited.marginalError).toBeLessThan(1e-4);
+    expect(limited.converged).toBe(0);
+    expect(limited.iterationLimitReached).toBe(1);
+    expect(limited.iterationCount).toBe(2);
+    const result = await runSinkhornGPU(device, problem, {maximumIterations: 100, tolerance: 1e-6});
+    expect(result.converged).toBe(1);
+    expect(result.iterationLimitReached).toBe(0);
+    expect(result.iterationCount).toBeGreaterThan(2);
+    expect(Number.isFinite(result.divergence)).toBe(true);
+    expect(Math.abs(result.divergence - reference.divergence)).toBeLessThan(1e-7);
+    [reference.crossCost, reference.sourceCost, reference.targetCost].forEach((expected, index) => {
+      expect(Number.isFinite(result.components[index])).toBe(true);
+      expect(Math.abs(result.components[index] - expected)).toBeLessThan(
+        TWO_CELL_COMPONENT_TOLERANCE
+      );
+    });
+  });
+}
 
 it('returns zero for positive masses on a single cell with default blur settings', async () => {
   const device = await getWebGPUTestDevice();
@@ -207,6 +306,57 @@ it('GPUSinkhornDivergence matches the binary64 dense reference on random sparse 
     );
   }
 }, 240000);
+
+it('normalizes finite masses even when their float32 totals would overflow', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const problem = {
+    width: 2,
+    height: 1,
+    cellWidth: 1,
+    cellHeight: 1,
+    epsilon: 1,
+    source: [3, 2],
+    target: [2, 3]
+  };
+  const reference = computeSinkhornDivergenceReference(problem);
+  const results: Awaited<ReturnType<typeof runSinkhornGPU>>[] = [];
+  for (const [sourceScale, targetScale] of [
+    [1, 1],
+    [2 ** 126, 1],
+    [1, 2 ** 126],
+    [2 ** 126, 2 ** 126]
+  ]) {
+    const result = await runSinkhornGPU(
+      device,
+      {
+        ...problem,
+        source: problem.source.map(mass => mass * sourceScale),
+        target: problem.target.map(mass => mass * targetScale)
+      },
+      {maximumIterations: 100, tolerance: 1e-6}
+    );
+    expect(result.converged).toBe(1);
+    expect(result.iterationLimitReached).toBe(0);
+    expect(result.invalidCount).toBe(0);
+    expect(result.approximation).toBe(0);
+    expect(Number.isFinite(result.marginalError)).toBe(true);
+    expect(result.marginalError).toBeLessThanOrEqual(1e-6);
+    expect(Number.isFinite(result.divergence)).toBe(true);
+    expect(Math.abs(result.divergence - reference.divergence)).toBeLessThan(1e-6);
+    [reference.crossCost, reference.sourceCost, reference.targetCost].forEach((expected, index) => {
+      expect(Number.isFinite(result.components[index])).toBe(true);
+      expect(Math.abs(result.components[index] - expected)).toBeLessThan(1e-6);
+    });
+    results.push(result);
+  }
+  for (const result of results.slice(1)) {
+    expect(Math.abs(result.divergence - results[0].divergence)).toBeLessThan(1e-6);
+    result.components.forEach((value, index) =>
+      expect(Math.abs(value - results[0].components[index])).toBeLessThan(1e-6)
+    );
+  }
+});
 
 it('GPUSinkhornDivergence normalizes masses, counts invalid cells and refuses unusable input', async () => {
   const device = await getWebGPUTestDevice();

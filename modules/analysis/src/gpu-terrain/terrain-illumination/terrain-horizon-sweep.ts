@@ -8,6 +8,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
@@ -16,9 +17,15 @@ import {
 import {TERRAIN_ILLUMINATION_WGSL_CONSTANTS} from './terrain-illumination-utils';
 import {
   getRasterGroundCellSizeWGSL,
+  getRasterGridGeoreference,
   type GPURasterCellSizeMode,
   type GPURasterRowDirection
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
+import {
+  validateCapacity,
+  validateFiniteNumber,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /** Fixed-point scale of the digital line slope: `slopeFixed = round(minor / major * 65536)`. @internal */
 export const TERRAIN_SWEEP_SLOPE_SCALE = 65536;
@@ -32,13 +39,104 @@ export const TERRAIN_SWEEP_GRID_SLOTS = {cellSizeIndex: 0, northEdgeIndex: 4} as
 /** Workgroup size of the sweep kernels (one invocation per digital line). @internal */
 const TERRAIN_SWEEP_WORKGROUP_SIZE = 64;
 
+// Global source row indices are combined as integers before conversion to float32 in WGSL.
+const TERRAIN_SWEEP_MAXIMUM_SOURCE_ROW_COUNT = 2 ** 24 - 1;
+
+/** Shared per-frame placement and ground reference of a terrain sweep. @internal */
+export type TerrainSweepSourceSettings = {
+  sweepOrigin?: readonly [number, number];
+  sweepReferenceCellSize?: readonly [number, number];
+  sweepSourceGrid?: GPURasterMetadata;
+};
+
+/** Packs the common 12-word reference/phase/source block used by horizon and cast shadow. @internal */
+export function getTerrainSweepSourceParameterValues(
+  id: string,
+  settings: TerrainSweepSourceSettings,
+  grid: GPURasterMetadata
+): Float32Array {
+  const reference = settings.sweepReferenceCellSize;
+  const sourceGrid = settings.sweepSourceGrid;
+  validateRequirement(
+    id,
+    reference !== undefined && sourceGrid !== undefined,
+    'sweepReferenceCellSize and sweepSourceGrid are required for sweep settings'
+  );
+  validateRequirement(
+    id,
+    reference.length === 2,
+    'sweepReferenceCellSize must contain exactly two positive finite ground cell sizes'
+  );
+  for (const [axis, cellSize] of reference.entries()) {
+    validateFiniteNumber(id, `sweepReferenceCellSize[${axis}]`, cellSize, Number.MIN_VALUE);
+  }
+  const origin = settings.sweepOrigin ?? [0, 0];
+  validateRequirement(
+    id,
+    origin.length === 2 && origin.every(Number.isSafeInteger),
+    'sweepOrigin must contain two safe integer source overview pixel coordinates'
+  );
+  validateCapacity(
+    id,
+    'sweepSourceGrid.height',
+    sourceGrid.height,
+    1,
+    TERRAIN_SWEEP_MAXIMUM_SOURCE_ROW_COUNT
+  );
+  validateCapacity(id, 'sweepSourceGrid.width', sourceGrid.width, 1, Number.MAX_SAFE_INTEGER);
+  validateRequirement(
+    id,
+    origin[0] >= 0 &&
+      origin[1] >= 0 &&
+      origin[0] + grid.width <= sourceGrid.width &&
+      origin[1] + grid.height <= sourceGrid.height,
+    'sweepOrigin and window dimensions must lie inside sweepSourceGrid'
+  );
+  const source = getRasterGridGeoreference(sourceGrid);
+  validateFiniteNumber(id, 'sweepSourceGrid.cellSizeX', source.cellSize[0], Number.MIN_VALUE);
+  validateFiniteNumber(id, 'sweepSourceGrid.cellSizeY', source.cellSize[1], Number.MIN_VALUE);
+  validateFiniteNumber(id, 'sweepSourceGrid.northEdge', source.northEdge!);
+  validateFiniteNumber(id, 'sweepSourceGrid.southEdge', source.southEdge!);
+  return Float32Array.from([
+    ...reference,
+    origin[0] % TERRAIN_SWEEP_SLOPE_SCALE,
+    origin[1] % TERRAIN_SWEEP_SLOPE_SCALE,
+    ...source.cellSize,
+    source.northEdge!,
+    source.southEdge!,
+    sourceGrid.height,
+    origin[1],
+    0,
+    0
+  ]);
+}
+
+/** Row metric shared by sweep and march. Source rows are added as integers before conversion. @internal */
+export function getTerrainHorizonGroundCellSizeWGSL(
+  mode: GPURasterCellSizeMode,
+  sourceGridIndex?: number
+): string {
+  if (sourceGridIndex === undefined)
+    return getRasterGroundCellSizeWGSL(mode, TERRAIN_SWEEP_GRID_SLOTS);
+  return `${getRasterGroundCellSizeWGSL(mode, {
+    cellSizeIndex: sourceGridIndex,
+    northEdgeIndex: sourceGridIndex + 2
+  })
+    .replaceAll('getGroundCellSize', 'getSourceGroundCellSize')
+    .replaceAll('f32(HEIGHT)', `settings[settingsOffset + ${sourceGridIndex + 4}u]`)}
+fn getGroundCellSize(row: u32) -> vec2<f32> {
+  return getSourceGroundCellSize(row + u32(settings[settingsOffset + ${sourceGridIndex + 5}u]));
+}`;
+}
+
 /**
  * Exact integer description of the digital line family for one direction.
  *
  * The lines `L_m = {(a, m + F(a))}` with `F(a) = (slopeFixed * a + 32768) >> 16` partition all
  * pixels of the grid. `a` is the column for x-major directions (`|dx| >= |dy|`, minor index = row)
  * and the row for y-major directions (minor index = column). The same integers are used on CPU
- * oracles and in WGSL, so both agree on which pixels lie on which line.
+ * oracles and in WGSL, so both agree on which pixels lie on which line. At source origin `o`,
+ * local offsets use `F(a + o) - F(o)` to preserve that global family when the window moves.
  *
  * @internal
  */
@@ -59,12 +157,25 @@ export type TerrainSweepLineGeometry = {
 
 /**
  * Returns `F(a) = (slopeFixed * a + 32768) >> 16` (arithmetic shift, i.e. floor division), the
- * minor offset of major index `a`. Exact in float64 for grid extents up to 32767.
+ * minor offset of major index `a`. With `majorOrigin = o`, returns `F(a + o) - F(o)`.
+ * Exact for grid extents up to 32767 and any safe-integer origin, without multiplying the full
+ * origin by the slope.
  *
  * @internal
  */
-export function getTerrainSweepMinorOffset(slopeFixed: number, major: number): number {
-  return Math.floor((slopeFixed * major + 32768) / TERRAIN_SWEEP_SLOPE_SCALE);
+export function getTerrainSweepMinorOffset(
+  slopeFixed: number,
+  major: number,
+  majorOrigin: number = 0
+): number {
+  // Only the origin modulo the slope scale affects the line phase. Reducing before multiplying
+  // is exact even for safe-integer source origins whose full product would exceed float64.
+  const originRemainder = majorOrigin % TERRAIN_SWEEP_SLOPE_SCALE;
+  const phase =
+    (((slopeFixed * originRemainder + 32768) % TERRAIN_SWEEP_SLOPE_SCALE) +
+      TERRAIN_SWEEP_SLOPE_SCALE) %
+    TERRAIN_SWEEP_SLOPE_SCALE;
+  return Math.floor((slopeFixed * major + phase) / TERRAIN_SWEEP_SLOPE_SCALE);
 }
 
 /**
@@ -80,7 +191,8 @@ export function getTerrainSweepMinorOffset(slopeFixed: number, major: number): n
 export function getTerrainSweepLineGeometry(
   direction: readonly [number, number],
   width: number,
-  height: number
+  height: number,
+  origin: readonly [number, number] = [0, 0]
 ): TerrainSweepLineGeometry {
   const [dx, dy] = direction;
   if (!Number.isFinite(dx) || !Number.isFinite(dy) || (dx === 0 && dy === 0)) {
@@ -105,7 +217,11 @@ export function getTerrainSweepLineGeometry(
   const slopeFixed = Math.round((minor / major) * TERRAIN_SWEEP_SLOPE_SCALE) + 0;
   const majorExtent = xMajor ? width : height;
   const minorExtent = xMajor ? height : width;
-  const lastOffset = getTerrainSweepMinorOffset(slopeFixed, majorExtent - 1);
+  const lastOffset = getTerrainSweepMinorOffset(
+    slopeFixed,
+    majorExtent - 1,
+    origin[xMajor ? 0 : 1]
+  );
   return {
     xMajor,
     slopeFixed,
@@ -127,12 +243,17 @@ export function getTerrainSweepLineGeometry(
 export function getTerrainSweepMirroredLineGeometry(
   geometry: TerrainSweepLineGeometry,
   width: number,
-  height: number
+  height: number,
+  origin: readonly [number, number] = [0, 0]
 ): TerrainSweepLineGeometry {
   const slopeFixed = -geometry.slopeFixed + 0;
   const majorExtent = geometry.xMajor ? width : height;
   const minorExtent = geometry.xMajor ? height : width;
-  const lastOffset = getTerrainSweepMinorOffset(slopeFixed, majorExtent - 1);
+  const lastOffset = getTerrainSweepMinorOffset(
+    slopeFixed,
+    majorExtent - 1,
+    origin[geometry.xMajor ? 0 : 1]
+  );
   return {
     xMajor: geometry.xMajor,
     slopeFixed,
@@ -159,9 +280,10 @@ export function getTerrainSweepGroundLineGeometry(
   groundDirection: readonly [number, number],
   groundCell: readonly [number, number],
   width: number,
-  height: number
+  height: number,
+  origin: readonly [number, number] = [0, 0]
 ): TerrainSweepLineGeometry {
-  const geometry = getTerrainSweepLineGeometry(groundDirection, width, height);
+  const geometry = getTerrainSweepLineGeometry(groundDirection, width, height, origin);
   const [cellX, cellY] = groundCell.map(Math.fround);
   if (cellX === cellY || !(cellX > 0 && cellY > 0 && Number.isFinite(cellX + cellY))) {
     return geometry;
@@ -178,7 +300,11 @@ export function getTerrainSweepGroundLineGeometry(
     (Math.abs(scaled % 1) === 0.5 && nearest % 2 !== 0 ? nearest - 1 : nearest) + 0;
   const majorExtent = xMajor ? width : height;
   const minorExtent = xMajor ? height : width;
-  const lastOffset = getTerrainSweepMinorOffset(slopeFixed, majorExtent - 1);
+  const lastOffset = getTerrainSweepMinorOffset(
+    slopeFixed,
+    majorExtent - 1,
+    origin[xMajor ? 0 : 1]
+  );
   return {
     xMajor,
     slopeFixed,
@@ -345,6 +471,12 @@ export type TerrainHorizonSweepNodeProps = {
   maximumRadius: number;
   /** Cell size interpretation. */
   cellSizeMode: GPURasterCellSizeMode;
+  /** Settings index of the reduced source origin x/y. Omitted means window-relative geometry. */
+  originIndex?: number;
+  /** Shared source georeference settings: cell x/y, north/south edges, height, source row offset. */
+  sourceGridIndex?: number;
+  /** Optional shared ground-cell x/y pair in settings, independent of the window's middle row. */
+  referenceCellSizeIndex?: number;
   /** 1 for horizons, -1 for the nadir pass (inverted DEM; curvature still drops). */
   zFactorSign: 1 | -1;
   /** Canonical elevation values, one per pixel: NaN exactly where a pixel is invalid. */
@@ -405,7 +537,8 @@ export type TerrainHorizonSweepKernelProps = Omit<TerrainHorizonSweepNodeProps, 
  *
  * One digital line family has one pixel slope, so the sweep follows the sector's ground azimuth
  * with the pixel direction of a reference row: row 0 in `uniform` mode (every row is identical)
- * and row `height / 2` otherwise. Square reference cells keep the baked geometry; anisotropic ones
+ * and row `height / 2` otherwise, unless `referenceCellSizeIndex` supplies a shared reference.
+ * Square reference cells keep the baked geometry; anisotropic ones
  * (geographic tiles, non-square `cellSize`) derive it in the kernel from the per-frame cell size,
  * so the dispatch always covers `width + height` lines and surplus invocations exit. Rows away from
  * the reference row see a slightly rotated ground azimuth on geographic tiles (cos(latitude)
@@ -413,7 +546,7 @@ export type TerrainHorizonSweepKernelProps = Omit<TerrainHorizonSweepNodeProps, 
  *
  * `Lref` is constant for the whole sweep: the ground step of the reference row. The argmax is exact for
  * `c = 0` in every mode and for any `c` in uniform mode; with `c != 0` and latitude-dependent
- * cells it uses the middle row's spacing. The reported angle always uses the pixel's own row
+ * cells it uses the reference spacing. The reported angle always uses the pixel's own row
  * spacing `Lp`.
  *
  * Elevation, validity, and hull pointers of invalid pixels follow the march semantics: invalid
@@ -497,7 +630,11 @@ export function createTerrainHorizonSweepNode<Parameters>(
   }
   // The direction is a ground azimuth; on anisotropic cells the line follows the pixel direction
   // of the reference row instead (CPU twin: getTerrainSweepGroundLineGeometry).
-  let referenceCell = getGroundCellSize(${referenceRow});
+  let referenceCell = ${
+    props.referenceCellSizeIndex === undefined
+      ? `getGroundCellSize(${referenceRow})`
+      : `vec2<f32>(settings[settingsOffset + ${props.referenceCellSizeIndex}u], settings[settingsOffset + ${props.referenceCellSizeIndex + 1}u])`
+  };
   if (referenceCell.x != referenceCell.y && all(referenceCell > vec2<f32>(0.0)) &&
       isFiniteValue(referenceCell.x + referenceCell.y) && any(groundDirection != vec2<f32>(0.0))) {
     let pixelDirection = groundDirection / referenceCell;
@@ -541,6 +678,9 @@ ${
     body: `${geometryWGSL}
   let majorExtent = select(HEIGHT, WIDTH, xMajor);
   let minorExtent = select(WIDTH, HEIGHT, xMajor);
+  let origin = ${props.originIndex === undefined ? '0u' : `u32(settings[settingsOffset + ${props.originIndex}u + select(1u, 0u, xMajor)])`};
+  // Unsigned arithmetic retains the exact low 16 product bits for either slope sign.
+  sweepPhase = i32((bitcast<u32>(slopeFixed) * origin + 32768u) & 65535u);
   let lastOffset = getFixedOffset(slopeFixed, i32(majorExtent) - 1);
   let lineCount = i32(minorExtent) + abs(lastOffset);
   if (i32(index) >= lineCount) {
@@ -556,7 +696,8 @@ ${
   let curvature = settings[settingsOffset + 3u];
   sweepMaximumDistance = settings[settingsOffset + 6u];
   sweepStepPixelLength = stepPixelLength;
-  let referenceStep = getStepLength(${referenceRow}, xMajor, slopeFixed);
+  let slope = f32(slopeFixed) / ${TERRAIN_SWEEP_SLOPE_SCALE}.0;
+  let referenceStep = length(select(vec2<f32>(slope, 1.0), vec2<f32>(1.0, slope), xMajor) * referenceCell);
   sweepCurvature = curvature * referenceStep * referenceStep;
   var previous = NONE;
   for (var stepIndex = 0; stepIndex < sweepMajorExtent; stepIndex++) {
@@ -622,7 +763,7 @@ const HEIGHT: u32 = ${props.height}u;
 const NONE: u32 = 0xffffffffu;
 const MAXIMUM_RADIUS: f32 = ${getWGSLFloatLiteral(props.maximumRadius)};
 ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
-${getRasterGroundCellSizeWGSL(props.cellSizeMode, TERRAIN_SWEEP_GRID_SLOTS)}
+${getTerrainHorizonGroundCellSizeWGSL(props.cellSizeMode, props.sourceGridIndex)}
 var<private> sweepXMajor: bool;
 var<private> sweepSlopeFixed: i32;
 var<private> sweepTravel: i32;
@@ -636,8 +777,9 @@ var<private> sweepStepPixelLength: f32;
 var<private> sweepPixelStep: f32;
 var<private> sweepElevation: f32;
 var<private> sweepMajor: i32;
+var<private> sweepPhase: i32;
 fn getFixedOffset(slopeFixed: i32, major: i32) -> i32 {
-  return (slopeFixed * major + 32768) >> 16u;
+  return (slopeFixed * major + sweepPhase) >> 16u;
 }
 // Ground length of one major step on the pixel row, using the row's cell size.
 fn getStepLength(row: u32, xMajor: bool, slopeFixed: i32) -> f32 {

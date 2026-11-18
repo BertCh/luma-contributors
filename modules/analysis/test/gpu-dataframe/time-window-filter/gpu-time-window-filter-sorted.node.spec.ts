@@ -35,7 +35,7 @@ function createProps(
     timestamps: createTransientView(graph, 'timestamps', 'float32', rows),
     window: createTransientView(graph, 'window', 'float32', 8),
     output: {
-      ids: createTransientView(graph, 'ids', 'uint32', 4),
+      rows: createTransientView(graph, 'rows', 'uint32', 4),
       status: {
         count: createTransientView(graph, 'count', 'uint32', 1),
         overflow: createTransientView(graph, 'overflow', 'uint32', 1),
@@ -59,8 +59,8 @@ it('GPUTimeWindowFilter sorted schedules a range search, ids, and publish withou
     'time-window-filter-publish'
   ]);
   const sources = getParsedKernelSources(nodes);
-  for (const source of sources.values()) {
-    expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
+  for (const {id, source} of sources.configurations) {
+    expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
   }
   device.destroy();
 });
@@ -108,8 +108,7 @@ it('GPUTimeWindowFilter sorted generates parsing kernels in float, double-single
       window: createTransientView(graph, `w-${mode}`, isWords ? 'uint32' : 'float32', 8) as never,
       ...(mode === 'double-single'
         ? {timestampsLow: createTransientView(graph, 'low', 'float32', rows)}
-        : {}),
-      sourceIds: createTransientView(graph, `s-${mode}`, 'uint32', rows)
+        : {})
     });
     const nodes = new GPUTimeWindowFilter(props).getCommandNodes(graph);
     const sources = getParsedKernelSources(nodes);

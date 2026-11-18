@@ -370,10 +370,14 @@ function runOverlayOnCPU(
       ring: nodedRings[row]
     })),
     overflow: memory.readUint32(output.status.overflow)[0],
-    candidateOverflow: memory.readUint32(output.status.candidateOverflow)[0],
+    // The partial run stops before final publication; its completed boundary stage owns this flag.
+    candidateOverflow: memory.readUint32(
+      publishCapacity ? output.status.candidateOverflow : output.boundary.status.candidateOverflow
+    )[0],
     boundaryRequired: memory.readUint32(output.boundary.status.requiredCount)[0],
     ringRequired: memory.readUint32(output.status.requiredRingCount)[0],
     boundaryOverflow: memory.readUint32(output.boundary.status.overflow)[0],
+    boundaryCandidateOverflow: memory.readUint32(output.boundary.status.candidateOverflow)[0],
     nodedRequired: memory.readUint32(output.status.nodedSegmentRequiredCount)[0],
     writtenRingCount: publishCapacity
       ? memory.readUint32(views.get('polygon-overlay-ring-count')!)[0]
@@ -575,6 +579,21 @@ describe('face labelling pointer jumping executed on the CPU', () => {
 });
 
 describe('GPUPolygonOverlay face labelling executed on the CPU', () => {
+  it('reports candidate-only noding loss before ring assembly and completes with a larger budget', () => {
+    const fixture = FIXTURE.cases.find(value => value.name === 'crowded-pixel@1.0/intersection')!;
+    const limited = runOverlayOnCPU(fixture);
+    expect(limited.boundaryOverflow).toBe(0);
+    expect(limited.boundaryCandidateOverflow).toBe(1);
+    expect(limited.candidateOverflow).toBe(1);
+    const complete = runOverlayOnCPU(fixture, LARGE_CAPACITY);
+    expect(complete.candidateOverflow).toBe(0);
+    expect(complete.boundaryOverflow).toBe(0);
+    expect(toPrimitiveSteps(complete.edges)).toEqual(toPrimitiveSteps(fixture.expected.edges));
+    expect(toPrimitiveSteps(complete.edges)).toEqual(
+      getLabellingOracleSteps(fixture, complete.nodedPieces)
+    );
+  }, 600_000);
+
   it('reproduces the A/B intersection ring-capacity overflow at 1000 vertices per operand', () => {
     const scene = createOverlayABScene(1000);
     const fixture: FixtureCase = {
@@ -685,7 +704,7 @@ describe('GPUPolygonOverlay face labelling executed on the CPU', () => {
   for (const fixture of EXECUTED_CASES) {
     it(fixture.name, () => {
       let result = runOverlayOnCPU(fixture);
-      if (result.overflow || result.boundaryOverflow) {
+      if (result.overflow || result.candidateOverflow || result.boundaryOverflow) {
         result = runOverlayOnCPU(fixture, LARGE_CAPACITY);
       }
       expect(result.overflow, 'overflow').toBe(0);

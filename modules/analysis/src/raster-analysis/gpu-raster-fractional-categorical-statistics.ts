@@ -37,8 +37,11 @@ import {
   getRasterGridGeoreference,
   validateRasterCellSizeMode,
   type GPURasterCellSizeMode
-} from '../analysis-core/raster-grid';
-import {getRasterRowAreaScaleWGSL} from './raster-grid/raster-cell-area-scale';
+} from '../analysis-core/contracts/raster-grid';
+import {
+  getRasterRowAreaScaleWGSL,
+  getRasterEffectiveAxisAlignmentWGSL
+} from './raster-grid/raster-cell-area-scale';
 import {
   requireRasterLength,
   validateRasterExpansionGraph,
@@ -433,6 +436,7 @@ if (!missing && category >= ${categoryCapacity}u) { categories[categoriesOffset 
         operation,
         invocationCount: 1,
         bindings: [
+          ...(cellSizeMode !== 'uniform' ? georeferenceBindings : []),
           {name: 'count', view: coverage.status.count, type: 'u32', access: 'read'},
           {name: 'required', view: coverage.status.requiredCount, type: 'u32', access: 'read'},
           {name: 'overflow', view: coverage.status.overflow, type: 'u32', access: 'read'},
@@ -448,7 +452,7 @@ if (!missing && category >= ${categoryCapacity}u) { categories[categoriesOffset 
             : []),
           {name: 'failure', view: failure, type: 'u32', access: 'read_write'}
         ],
-        body: `failure[failureOffset] = u32(overflow[overflowOffset] != 0u ${coverage.status.candidateOverflow ? '|| candidateOverflow[candidateOverflowOffset] != 0u' : ''} || count[countOffset] > ${tupleCapacity}u || required[requiredOffset] != count[countOffset]);
+        body: `failure[failureOffset] = u32(!(${getRasterEffectiveAxisAlignmentWGSL(grid, cellSizeMode, props.parameters ? 'georeference' : undefined)}) || overflow[overflowOffset] != 0u ${coverage.status.candidateOverflow ? '|| candidateOverflow[candidateOverflowOffset] != 0u' : ''} || count[countOffset] > ${tupleCapacity}u || required[requiredOffset] != count[countOffset]);
 failure[failureOffset+1u]=0u;failure[failureOffset+2u]=min(count[countOffset],${tupleCapacity}u);`
       })
     ];

@@ -3,6 +3,22 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
+
+it('honors an explicit one-row search budget and marks split stays incomplete', () => {
+  const result = computeTrajectoryStaypointsOnCPU(
+    {
+      positions: new Float32Array(8),
+      timestamps: Float32Array.of(0, 1, 2, 3),
+      trackOffsets: Uint32Array.of(0, 4),
+      parameters: Float32Array.of(1, 1, 0, 1)
+    },
+    {capacity: 2, maximumSearchRows: 1}
+  );
+  expect(result.count[0]).toBe(2);
+  expect(Array.from(result.startRows)).toEqual([0, 2]);
+  expect(Array.from(result.finishRows)).toEqual([2, 3]);
+  expect(result.candidateOverflow[0]).toBe(1);
+});
 import {
   computeTrajectoryStaypointsOnCPU,
   CPUTrajectoryStaypointsOperation

@@ -661,7 +661,7 @@ const MAP_MATCHING_CASES: KernelAuditCase[] = [
               targets: view('uint32', 4096),
               costs: view('float32', 4096),
               costLimit: view('float32', 1),
-              status: {overflow: view('uint32', 1)}
+              status: {complete: view('uint32', 1)}
             },
             output: mapMatchingOutput(context, 1000, 20)
           })
@@ -1644,7 +1644,8 @@ function ringOutput(
   {view}: KernelAuditContext,
   capacity: number,
   vertices: number,
-  withGroups: boolean
+  withGroups: boolean,
+  includeEdgeOverflow = false
 ) {
   return {
     ringOffsets: view('uint32', capacity + 1),
@@ -1669,7 +1670,8 @@ function ringOutput(
       overflow: view('uint32', 1),
       requiredCount: view('uint32', 1),
       openSegmentCount: view('uint32', 1),
-      touchingSegmentCount: view('uint32', 1)
+      touchingSegmentCount: view('uint32', 1),
+      ...(includeEdgeOverflow ? {edgeOverflow: view('uint32', 1)} : {})
     }
   };
 }
@@ -2898,7 +2900,10 @@ const DRIVE_TIME_CATCHMENT_RECIPE_CASES: KernelAuditCase[] = [
                     width: 128,
                     height: 128,
                     output: isochroneRasterOutput(context, 128 * 128, 4096, 4096, true),
-                    rings: {edgeCapacity: 4096, output: ringOutput(context, 1024, 4096, false)}
+                    rings: {
+                      edgeCapacity: 4096,
+                      output: ringOutput(context, 1024, 4096, false, true)
+                    }
                   }
                 }
               : {cellOutline: isochroneCellOutline(context, path, 4096, 1024, false)}),

@@ -9,6 +9,7 @@ import {
   GPUPointCloudICP,
   getPointCloudAbsoluteTransform,
   getPointCloudLocalOrigin,
+  getPointCloudLocalOriginSummary,
   getPointCloudLocalTransform,
   makePointCloudLocalPositions
 } from '@luma-contributors/analysis/pointcloud-analysis';
@@ -18,6 +19,44 @@ const f = Math.fround;
 
 describe('point-cloud local origin', () => {
   const positions = [1000000.123, 4600456.911, 25.5, 1000100.456, 4600500.321, 30.25];
+
+  it('ignores complete non-finite points when deriving a shared origin', () => {
+    const mixedPositions = [1, 2, 3, NaN, 400, 500, 7, 8, 9, 100, Infinity, 900];
+    const origin = getPointCloudLocalOrigin(mixedPositions);
+    expect(origin).toEqual([4, 5, 6]);
+    expect(getPointCloudLocalOriginSummary(mixedPositions)).toEqual({
+      origin: [4, 5, 6],
+      skippedPointCount: 2
+    });
+    const localPositions = makePointCloudLocalPositions(mixedPositions, origin);
+    expect(Array.from(localPositions.slice(0, 3))).toEqual([-3, -3, -3]);
+    expect(Array.from(localPositions.slice(6, 9))).toEqual([3, 3, 3]);
+    expect(Array.from(makePointCloudLocalPositions([4, 5, 6], origin))).toEqual([0, 0, 0]);
+    expect(Number.isNaN(localPositions[3])).toBe(true);
+    expect(Number.isFinite(localPositions[10])).toBe(false);
+  });
+
+  it('defines an empty or all-invalid origin and rejects partial XYZ triples', () => {
+    expect(getPointCloudLocalOrigin([])).toEqual([0, 0, 0]);
+    expect(getPointCloudLocalOrigin([NaN, 1, 2, 3, Infinity, 4])).toEqual([0, 0, 0]);
+    expect(getPointCloudLocalOriginSummary([NaN, 1, 2, 3, Infinity, 4])).toEqual({
+      origin: [0, 0, 0],
+      skippedPointCount: 2
+    });
+    expect(getPointCloudLocalOriginSummary([]).skippedPointCount).toBe(0);
+    expect(() => getPointCloudLocalOrigin([1, 2])).toThrow(/positions.*complete XYZ triples/);
+    expect(() => makePointCloudLocalPositions([1, 2], [0, 0, 0])).toThrow(
+      /positions.*complete XYZ triples/
+    );
+  });
+
+  it('keeps finite bounds midpoints finite without underflowing subnormal coordinates', () => {
+    expect(getPointCloudLocalOrigin([Number.MAX_VALUE, 1, Number.MIN_VALUE])).toEqual([
+      Number.MAX_VALUE,
+      1,
+      Number.MIN_VALUE
+    ]);
+  });
 
   it('keeps millimetre precision at 1e6 m only when positions are recentered', () => {
     const origin = getPointCloudLocalOrigin(positions);
@@ -89,10 +128,12 @@ describe('point-cloud local origin', () => {
       origin,
       initialTransform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 0, 0, 1],
       iterations: 2,
-      transform: view('float32', 16),
-      history: view('float32x3', 2),
-      inlierMask: view('uint32', 4),
-      status: view('uint32', 1)
+      output: {
+        transform: view('float32', 16),
+        history: view('float32x3', 2),
+        inlierMask: view('uint32', 4),
+        status: view('uint32', 1)
+      }
     });
     // Pure translation is origin independent for identity rotation.
     expect(icp.getAbsoluteTransform([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 0, 0, 1])[12]).toBe(2);
@@ -113,10 +154,12 @@ describe('point-cloud local origin', () => {
           target: view('float32x3', large),
           maximumDistance: 1,
           iterations: 1,
-          transform: view('float32', 16),
-          history: view('float32x3', 1),
-          inlierMask: view('uint32', large),
-          status: view('uint32', 1)
+          output: {
+            transform: view('float32', 16),
+            history: view('float32x3', 1),
+            inlierMask: view('uint32', large),
+            status: view('uint32', 1)
+          }
         })
     ).toThrow();
     expect(
@@ -129,10 +172,12 @@ describe('point-cloud local origin', () => {
           alignment: 'already-aligned',
           radius: 1,
           halfDepth: 1,
-          changes: view('float32x3', large),
-          roughness: view('float32x3', large),
-          counts: view('uint32', large * 2),
-          status: view('uint32', large)
+          output: {
+            changes: view('float32x3', large),
+            roughness: view('float32x3', large),
+            counts: view('uint32', large * 2),
+            status: view('uint32', large)
+          }
         })
     ).toThrow();
   });

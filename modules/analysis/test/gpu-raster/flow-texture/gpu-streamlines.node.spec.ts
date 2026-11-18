@@ -5,7 +5,7 @@
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
-  GPU_STREAMLINES_OVERFLOW_UNCONVERGED,
+  GPU_STREAMLINES_CANDIDATE_UNCONVERGED,
   getGPUStreamlinesParameterValues,
   getGPUStreamlinesUint32ParameterValues,
   GPUStreamlines,
@@ -42,7 +42,11 @@ function createProps(
     output: {
       lines: {
         ids: view('uint32', 6),
-        status: {count: view('uint32', 1), overflow: view('uint32', 1)}
+        status: {
+          count: view('uint32', 1),
+          overflow: view('uint32', 1),
+          candidateOverflow: view('uint32', 1)
+        }
       },
       lineOffsets: view('uint32', 7),
       positions: view('float32x2', 66),
@@ -63,7 +67,8 @@ it('GPUStreamlines validates props and builds deterministic nodes', () => {
   expect(ids[0]).toBe('lines-trace');
   expect(ids).toContain('lines-round-3-decide');
   expect(ids).not.toContain('lines-round-4-claim');
-  expect(ids[ids.length - 1]).toBe('lines-finalize');
+  expect(ids.at(-2)).toBe('lines-finalize');
+  expect(ids.at(-1)).toBe('lines-candidate-status');
   expect(() => new GPUStreamlines(createProps(graph, {seedColumns: 300, seedRows: 300}))).toThrow(
     /at most 65535/
   );
@@ -164,12 +169,19 @@ it('generateStreamlinesOnCPU spaces lines by the grid and orders priorities uniq
   expect(getStreamlineKey(5, 1) & 0xffff).toBe(0xffff - 5);
 });
 
-it('review C-09 and rule 12: undecided lines set the unconverged overflow bit; one gate source', () => {
+it('review C-09 and rule 12: undecided lines have a candidate flag; one gate source', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'streamline-sentinels'});
   const nodes = new GPUStreamlines(createProps(graph, {id: 'flags'})).getCommandNodes(graph);
   const pipelines = getRasterPipelines(nodes);
+  expect(pipelines.find(pipeline => pipeline.id.endsWith('-finalize'))!.source).toContain(
+    'overflowOut[overflowOutOffset] = select(0u, 1u, count < total);'
+  );
   expect(
-    pipelines.some(pipeline => pipeline.source.includes(`${GPU_STREAMLINES_OVERFLOW_UNCONVERGED}u`))
+    pipelines.some(pipeline =>
+      pipeline.source.includes(
+        `candidateOverflowOut[candidateOverflowOutOffset] = select(0u, ${GPU_STREAMLINES_CANDIDATE_UNCONVERGED}u`
+      )
+    )
   ).toBe(true);
   const gates = pipelines.filter(pipeline => /-round-gate-\d+$/.test(pipeline.id));
   expect(gates).toHaveLength(4);

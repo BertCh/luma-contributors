@@ -7,26 +7,44 @@ import {
   validateMaximumCount,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  NETWORK_FLOW_REFERENCE_MAXIMUM_NODE_COUNT,
+  NETWORK_FLOW_REFERENCE_MAXIMUM_EDGE_COUNT,
+  NETWORK_FLOW_REFERENCE_MAXIMUM_TOTAL_CAPACITY,
+  NETWORK_FLOW_PARALLEL_MAXIMUM_NODE_COUNT,
+  NETWORK_FLOW_PARALLEL_MAXIMUM_EDGE_COUNT,
+  NETWORK_FLOW_MAXIMUM_TOTAL_CAPACITY,
+  NETWORK_FLOW_MAXIMUM_UNIT_COST,
+  NETWORK_FLOW_MAXIMUM_DISTANCE
+} from './network-flow-limits';
 
 const ID = 'prepareGPUNetworkFlowDemands';
-/** Largest vertex count: the super source and sink add two vertices to the 128 of `GPUNetworkFlow`. */
-const MAXIMUM_NODE_COUNT = 126;
-/** Largest edge count after the super source and sink edges, the limit of `GPUNetworkFlow`. */
-const MAXIMUM_EDGE_COUNT = 1024;
-/** Largest capacity or demand: the flow kernel keeps totals exact in 24 bits. */
-const MAXIMUM_CAPACITY = 0xffffff;
-/** Largest edge cost: the flow kernel rejects larger costs so its distance sums stay exact. */
-const MAXIMUM_COST = 32767;
 
-/** Explicit static super-source/sink adapter. Positive demand is net inflow, negative is supply. */
+/** Explicit static super-source/sink adapter. Positive demand is net inflow, negative is supply.
+ * Auto resolves reference/parallel against expanded vertex/edge counts and total capacity;
+ * pass the returned solver to GPUNetworkFlow, including for a small graph with wide capacities.
+ * Device binding and command-budget limits still apply when constructing the contributor.
+ */
 export function prepareGPUNetworkFlowDemands(props: {
   nodeCount: number;
   edges: readonly (readonly [number, number])[];
   capacities: ArrayLike<number>;
   demands: ArrayLike<number>;
   costs?: ArrayLike<number>;
+  solver?: 'auto' | 'reference' | 'parallel';
 }) {
-  validateCapacity(ID, 'nodeCount', props.nodeCount, 1, MAXIMUM_NODE_COUNT);
+  validateCapacity(
+    ID,
+    'nodeCount',
+    props.nodeCount,
+    1,
+    NETWORK_FLOW_PARALLEL_MAXIMUM_NODE_COUNT - 2
+  );
+  validateRequirement(
+    ID,
+    props.solver === undefined || ['auto', 'reference', 'parallel'].includes(props.solver),
+    'solver must be auto, reference or parallel'
+  );
   validateRequirement(
     ID,
     props.capacities.length === props.edges.length,
@@ -54,15 +72,21 @@ export function prepareGPUNetworkFlowDemands(props: {
   validateRequirement(
     ID,
     capacities.every(
-      capacity => Number.isInteger(capacity) && capacity >= 0 && capacity <= MAXIMUM_CAPACITY
+      capacity =>
+        Number.isInteger(capacity) &&
+        capacity >= 0 &&
+        capacity <= NETWORK_FLOW_MAXIMUM_TOTAL_CAPACITY
     ),
-    `capacities must be integers in [0, ${MAXIMUM_CAPACITY}]`
+    `capacities must be integers in [0, ${NETWORK_FLOW_MAXIMUM_TOTAL_CAPACITY}]`
   );
   const costs = props.costs ? Array.from(props.costs) : undefined;
   validateRequirement(
     ID,
-    !costs || costs.every(cost => Number.isInteger(cost) && cost >= 0 && cost <= MAXIMUM_COST),
-    `costs must be integers in [0, ${MAXIMUM_COST}]`
+    !costs ||
+      costs.every(
+        cost => Number.isInteger(cost) && cost >= 0 && cost <= NETWORK_FLOW_MAXIMUM_UNIT_COST
+      ),
+    `costs must be integers in [0, ${NETWORK_FLOW_MAXIMUM_UNIT_COST}]`
   );
   let balance = 0;
   let required = 0;
@@ -72,8 +96,8 @@ export function prepareGPUNetworkFlowDemands(props: {
     const demand = props.demands[vertex];
     validateRequirement(
       ID,
-      Number.isInteger(demand) && Math.abs(demand) <= MAXIMUM_CAPACITY,
-      `demands must be integers with magnitude at most ${MAXIMUM_CAPACITY}`
+      Number.isInteger(demand) && Math.abs(demand) <= NETWORK_FLOW_MAXIMUM_TOTAL_CAPACITY,
+      `demands must be integers with magnitude at most ${NETWORK_FLOW_MAXIMUM_TOTAL_CAPACITY}`
     );
     balance += demand;
     if (demand === 0) continue;
@@ -86,20 +110,56 @@ export function prepareGPUNetworkFlowDemands(props: {
     costs?.push(0);
   }
   validateRequirement(ID, balance === 0, 'demands must sum to zero');
+  const nodeCount = props.nodeCount + 2;
+  const totalCapacity = capacities.reduce((total, value) => total + value, 0);
+  const solver: 'reference' | 'parallel' =
+    props.solver === 'parallel' ||
+    ((props.solver ?? 'auto') === 'auto' &&
+      (nodeCount > NETWORK_FLOW_REFERENCE_MAXIMUM_NODE_COUNT ||
+        capacities.length > NETWORK_FLOW_REFERENCE_MAXIMUM_EDGE_COUNT ||
+        totalCapacity > NETWORK_FLOW_REFERENCE_MAXIMUM_TOTAL_CAPACITY))
+      ? 'parallel'
+      : 'reference';
+  validateCapacity(
+    ID,
+    'expanded nodeCount',
+    nodeCount,
+    2,
+    solver === 'reference'
+      ? NETWORK_FLOW_REFERENCE_MAXIMUM_NODE_COUNT
+      : NETWORK_FLOW_PARALLEL_MAXIMUM_NODE_COUNT
+  );
   validateMaximumCount(
     ID,
     'edges including super source and sink edges',
     capacities.length,
-    MAXIMUM_EDGE_COUNT
+    solver === 'reference'
+      ? NETWORK_FLOW_REFERENCE_MAXIMUM_EDGE_COUNT
+      : NETWORK_FLOW_PARALLEL_MAXIMUM_EDGE_COUNT
   );
   validateMaximumCount(
     ID,
     'total capacity',
-    capacities.reduce((total, value) => total + value, 0),
-    MAXIMUM_CAPACITY
+    totalCapacity,
+    solver === 'reference'
+      ? NETWORK_FLOW_REFERENCE_MAXIMUM_TOTAL_CAPACITY
+      : NETWORK_FLOW_MAXIMUM_TOTAL_CAPACITY
+  );
+  const maximumCost =
+    solver === 'reference'
+      ? NETWORK_FLOW_MAXIMUM_UNIT_COST
+      : Math.min(
+          NETWORK_FLOW_MAXIMUM_UNIT_COST,
+          Math.floor(NETWORK_FLOW_MAXIMUM_DISTANCE / nodeCount)
+        );
+  validateRequirement(
+    ID,
+    !costs || costs.every(cost => cost <= maximumCost),
+    `costs must be at most ${maximumCost} for solver ${solver} at expanded nodeCount ${nodeCount}`
   );
   return {
-    nodeCount: props.nodeCount + 2,
+    nodeCount,
+    solver,
     edges: Uint32Array.from(edges),
     capacities: Uint32Array.from(capacities),
     costs: costs ? Uint32Array.from(costs) : undefined,

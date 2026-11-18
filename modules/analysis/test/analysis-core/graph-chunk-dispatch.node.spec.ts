@@ -30,7 +30,7 @@ import {
   getGPUCommandNodePipelineKeys,
   getParsedKernelSources
 } from '../utils/gpu-contributor-test-utils';
-import {createExampleChunkNodes} from './graph-chunk-dispatch.test-utils';
+import {createExampleChunkNodes, ExampleChunkContributor} from './graph-chunk-dispatch.test-utils';
 
 const device = createNullWebGPUDevice();
 afterEach(() => vi.restoreAllMocks());
@@ -50,6 +50,17 @@ function createFields(graph: GPUCommandGraph, lengths: number[]) {
     ])
   );
 }
+
+it('authoring fixture snapshots options before graph declaration', () => {
+  const graph = new GPUCommandGraph(device);
+  const fields = createFields(graph, [3]);
+  const options = {id: 'original', maximumWorkgroupsPerDimension: 2};
+  const producer = new ExampleChunkContributor(fields['input'], fields['output'], options);
+  options.id = 'mutated';
+  options.maximumWorkgroupsPerDimension = 0;
+  expect(producer.options).toEqual({id: 'original', maximumWorkgroupsPerDimension: 2});
+  expect(producer.getCommandNodes(graph).length).toBeGreaterThan(0);
+});
 
 it('plans uneven row-aligned fields and empty chunks without declaring resources', () => {
   const graph = new GPUCommandGraph(device);

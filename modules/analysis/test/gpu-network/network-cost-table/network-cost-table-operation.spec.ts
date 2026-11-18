@@ -40,7 +40,8 @@ for (const overflow of [false, true])
           overflow: 'overflow',
           requiredCount: 'requiredCount',
           converged: 'converged',
-          iterationLimitReached: 'limitReached'
+          iterationLimitReached: 'limitReached',
+          complete: 'complete'
         }
       }
     };
@@ -57,7 +58,8 @@ for (const overflow of [false, true])
       'overflow',
       'requiredCount',
       'converged',
-      'limitReached'
+      'limitReached',
+      'complete'
     ];
     const gpuRows = await runOperationGraph(device, {
       inputs,
@@ -75,5 +77,6 @@ for (const overflow of [false, true])
         expect(gpuRows[output][index] === cpuRows[output][index]).toBe(true);
     expect(cpuRows['limitReached'][0]).toBe(0);
     expect(cpuRows['overflow'][0]).toBe(Number(overflow));
+    expect(cpuRows['complete'][0]).toBe(Number(!overflow));
     expect(cpuRows['requiredCount'][0]).toBe(requiredCount);
   });

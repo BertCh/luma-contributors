@@ -17,7 +17,7 @@ import {
   type GPUCostDistanceProps
 } from '../../../src/raster-analysis/cost-distance/index';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
-import {getRasterGridGeoreference} from '../../../src/analysis-core/raster-grid';
+import {getRasterGridGeoreference} from '../../../src/analysis-core/contracts/raster-grid';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {
   computeCostDistance,
@@ -342,7 +342,7 @@ it('GPUCostDistancePath schedules a walk and publish node and validates props', 
           }
         }
       })
-  ).toThrow(/must not share buffers/);
+  ).toThrow(/^path output\[1\] chunk 0 logical byte ranges must not overlap \(writable storage\)$/);
   const otherGraph = new GPUCommandGraph(device);
   expect(() =>
     new GPUCostDistancePath({

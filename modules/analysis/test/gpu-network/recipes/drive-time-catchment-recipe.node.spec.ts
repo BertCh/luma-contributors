@@ -135,10 +135,10 @@ it('drive-time recipe validates the topology', () => {
 it('drive-time recipe accepts distance frames and rejects equal-area frames', () => {
   const equidistant = createGPULocalFrame({origin: [10, 60]}).spatialContext;
   const {recipe, snappings} = buildRecipe(equidistant);
-  expect(recipe.spatialContext).toBe(equidistant);
+  expect(recipe.spatialContext).toEqual(equidistant);
   expect(equidistant.units).toBe('meters');
   for (const snapping of snappings) {
-    expect(snapping.spatialContext).toBe(equidistant);
+    expect(snapping.spatialContext).toEqual(equidistant);
   }
   const equalArea = createGPULocalFrame({
     origin: [10, 60],
@@ -157,7 +157,7 @@ it('drive-time recipe uses kilometer radii for both longitude/latitude metrics',
       units: 'kilometers'
     };
     const {recipe, snappings} = buildRecipe(context, 4);
-    expect(recipe.spatialContext).toBe(context);
+    expect(recipe.spatialContext).toEqual(context);
     for (const snapping of snappings) {
       expect(snapping.spatialContext).toMatchObject({
         metric: 'great-circle',
@@ -283,6 +283,7 @@ it.each([
         }
       }
     });
+    expect(recipe.contributors).toHaveLength(15);
     const isochrones = recipe.contributors.find(
       contributor => contributor instanceof GPUNetworkIsochrones
     ) as GPUNetworkIsochrones;
@@ -299,12 +300,12 @@ it.each([
     expect(decode).toBeGreaterThan(splat);
     // wgsl_reflect parses reserved identifiers and constant non-finite bitcasts that Dawn
     // rejects. Either error invalidates the submission, including the earlier routing outputs.
-    const sourcePathKernels = [...kernels].filter(([identifier]) =>
+    const sourcePathKernels = kernels.configurations.filter(({id: identifier}) =>
       /-source-path(?:s-splat|-geometry|-topology)$/.test(identifier)
     );
     expect(sourcePathKernels).toHaveLength(3);
-    for (const [identifier, source] of sourcePathKernels) {
-      expect(auditWGSLModule(source), identifier).toEqual([]);
+    for (const {id: identifier, source, constants} of sourcePathKernels) {
+      expect(auditWGSLModule(source, constants), identifier).toEqual([]);
     }
   } finally {
     device.destroy();

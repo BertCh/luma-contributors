@@ -26,11 +26,11 @@ import {
 import {
   GPUDatumGridTransform,
   type GPUDatumGridTransformProps
-} from '../../../src/geospatial-analysis/gpu-datum-grid-transform';
+} from '../../../src/geospatial-analysis/datum-grid-transform/index';
 import {
   GPUPointBuffer,
   type GPUPointBufferProps
-} from '../../../src/geospatial-analysis/gpu-point-buffer';
+} from '../../../src/geospatial-analysis/point-buffer/index';
 import {
   GPUGaussianPredictiveScores,
   type GPUGaussianPredictiveScoresProps

@@ -123,7 +123,7 @@ it('fit and publish pipeline counts stay constant as focal tiles grow, with full
       counts.push(getGPUCommandNodePipelineKeys(nodes, {includeShaderLayout: true}).size);
       // Audit every distinct generated identifier, including the cursor/header paths.
       const sources = getGPUCommandNodeKernelSources(nodes);
-      for (const source of new Map(sources.map(source => [source.source, source])).values()) {
+      for (const source of sources) {
         expect(auditWGSLModule(source.source, source.constants), source.id).toEqual([]);
         const reserved = WGSL_RESERVED_WORDS;
         const identifiers =
@@ -155,7 +155,7 @@ it('candidate and golden-round pipeline counts stay constant and indexed AICc us
       const searchNodes = nodes.filter(node => /-candidate-|search-\d+-iterate/.test(node.id));
       counts.push(getGPUCommandNodePipelineKeys(searchNodes, {includeShaderLayout: true}).size);
       const sources = getGPUCommandNodeKernelSources(searchNodes);
-      for (const source of new Map(sources.map(source => [source.source, source])).values()) {
+      for (const source of sources) {
         expect(auditWGSLModule(source.source, source.constants), source.id).toEqual([]);
         const reserved = WGSL_RESERVED_WORDS;
         const identifiers =
@@ -434,7 +434,7 @@ it('audits all owned generated kernels against the W3C reserved-word list', () =
           .getCommandNodes(context.graph)
           .filter(node => !/-grid-(?!positions)/.test(node.id));
         const sources = getGPUCommandNodeKernelSources(nodes);
-        for (const source of new Map(sources.map(source => [source.source, source])).values()) {
+        for (const source of sources) {
           expect(auditWGSLModule(source.source, source.constants), source.id).toEqual([]);
           const identifiers =
             source.source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '').match(/[A-Za-z_]\w*/g) ?? [];

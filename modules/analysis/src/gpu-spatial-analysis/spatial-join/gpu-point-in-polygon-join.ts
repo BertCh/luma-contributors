@@ -1,6 +1,7 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
 
 import type {
   GPUCandidateStatusPort,
@@ -9,7 +10,7 @@ import type {
 import {
   createLonLatPolygonCheckNode,
   hasLonLatPolygonStatus
-} from '../../analysis-core/lon-lat-ring-wgsl';
+} from '../../analysis-core/kernels/lon-lat-ring-wgsl';
 import {createFillNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
 import {
@@ -49,6 +50,7 @@ import type {
 import type {
   GPUPackedGeometryPort,
   GPUPointGeometryPort,
+  GPUMultipartPointGeometryPort,
   GPUPolygonGeometryPort
 } from '../../analysis-core/contracts/index';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
@@ -67,7 +69,7 @@ import {
   createSpatialJoinChunkNode,
   getPolygonEdgeLayoutLength,
   createSpatialJoinClearNode,
-  createSpatialJoinFinalizeNode,
+  createSpatialJoinFinalizeNodes,
   getSortedFeatureBVHNodes,
   type SpatialSortCurve,
   getDefaultSpatialSort,
@@ -83,6 +85,7 @@ import {
 } from './spatial-join-passes';
 import {
   isSameSpatialJoinGeometry,
+  validateSpatialJoinMultipartGeometry,
   validateSpatialJoinGeometry,
   validateStatusScalars
 } from './spatial-join-geometry';
@@ -169,8 +172,8 @@ export type GPUPointInPolygonJoinOutput<
   featureCounts?: GraphDataView<'uint32'>;
   /**
    * Optional compact stable IDs of joined points in global source-row order across chunks.
-   * As specified by GPUCompactOutput, its overflow flag reports any contributor capacity loss,
-   * including BVH or candidate loss even when the retained matches fit ids.length. requiredCount
+   * Its overflow flag reports final match-capacity loss only; optional candidateOverflow reports
+   * BVH or candidate loss even when the retained matches fit ids.length. requiredCount
    * counts the retained assignments before final compaction; it cannot recover dropped candidates.
    */
   matches?: GPUCompactOutput;
@@ -217,15 +220,23 @@ export type GPUPointInPolygonJoinOutput<
  * `candidateCapacity`, `leafCapacity`, `boundaryRule`, `spatialSort`, and which optional views exist.
  */
 export type GPUPointInPolygonJoinProps<
-  TruncationRows extends GPUUint32Rows = GraphDataView<'uint32'>
+  TruncationRows extends GPUUint32Rows = GraphDataView<'uint32'>,
+  Parameters = unknown,
+  PointGeometry extends GPUPointGeometryPort | GPUMultipartPointGeometryPort = GPUPointGeometryPort
 > = {
   /** Prefix for generated node and transient IDs. Defaults to `'point-in-polygon-join'`. */
   id?: string;
   /**
    * Planar points, possibly chunked. Optional `sourceIds` (same chunk topology) are the IDs
-   * written to `output.matches`.
+   * written to `output.matches`. Constructors infer point branches from join-geometry unions;
+   * known multipart ports are excluded statically and grouping is rejected at construction.
    */
-  points: GPUPointGeometryPort;
+  points: PointGeometry &
+    (0 extends 1 & PointGeometry
+      ? unknown
+      : [PointGeometry] extends [GPUMultipartPointGeometryPort]
+        ? never
+        : unknown);
   /**
    * Polygon or multipolygon features in the four-level layout (ring 0 of a polygon is its shell,
    * later rings are holes; rings close implicitly). Optional `sourceIds` are written to
@@ -238,7 +249,7 @@ export type GPUPointInPolygonJoinProps<
    * it. The handle must be added to the graph before the join. Its `leafCapacity` and
    * `spatialSort` replace this join's. Reuses a build only; assignments are recomputed every encoding.
    */
-  prepared?: GPUSpatialJoinPrepared;
+  prepared?: GPUSpatialJoinPrepared<Parameters>;
   /** Maximum `(point, feature)` bounding-box candidates per encoding. */
   candidateCapacity: number;
   /** Optional scratch page capacity; defaults to the device binding/buffer envelope. Global cutoff and results are unchanged. */
@@ -385,13 +396,16 @@ export type GPUPointInPolygonJoinProps<
  * Row-proportional assignment, probe and compaction scratch still needs
  * one packed storage binding, checked against the device before any nodes are created.
  */
-export class GPUPointInPolygonJoin<TruncationRows extends GPUUint32Rows = GraphDataView<'uint32'>>
-  implements GPUCommandNodeProducer
+export class GPUPointInPolygonJoin<
+  TruncationRows extends GPUUint32Rows = GraphDataView<'uint32'>,
+  Parameters = unknown,
+  PointGeometry extends GPUPointGeometryPort | GPUMultipartPointGeometryPort = GPUPointGeometryPort
+> implements GPUCommandNodeProducer
 {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUPointInPolygonJoinProps<TruncationRows>;
+  readonly props: GPUPointInPolygonJoinProps<TruncationRows, Parameters>;
   /** Number of features, `featureOffsets.length - 1`. */
   readonly featureCount: number;
   /** Resolved BVH leaf capacity. */
@@ -414,15 +428,25 @@ export class GPUPointInPolygonJoin<TruncationRows extends GPUUint32Rows = GraphD
   /** Conservative node upper bound including published primitives. */
   readonly estimatedCommandNodeCount: number;
 
-  constructor(props: GPUPointInPolygonJoinProps<TruncationRows>) {
-    this.id = props.id ?? 'point-in-polygon-join';
-    this.props = props;
+  constructor(inputProps: GPUPointInPolygonJoinProps<TruncationRows, Parameters, PointGeometry>) {
+    this.id = inputProps.id ?? 'point-in-polygon-join';
     const {id} = this;
+    const capturedPoints = snapshotSinglePartGeometryPort(id, 'points', inputProps.points);
+    const props: GPUPointInPolygonJoinProps<TruncationRows, Parameters> = {
+      ...inputProps,
+      points: {
+        kind: capturedPoints.kind,
+        positions: capturedPoints.positions,
+        sourceIds: capturedPoints.sourceIds
+      }
+    };
+    this.props = props;
     const {points, polygons, output} = props;
     const {status} = output;
     if (points.kind !== 'points' || polygons.kind !== 'polygons') {
       throw new Error(`${id} needs point and polygon geometry`);
     }
+    validateSpatialJoinMultipartGeometry(id, 'points', points);
     for (const chunk of getGraphViewChunks(points.positions)) {
       validateSinglePackedView(chunk, ['float32x2'], `${id} points.positions`);
     }
@@ -1167,7 +1191,7 @@ const BOUNDARY_HALF_OPEN: bool = ${this.boundaryRule === 'half-open'};`,
       );
     }
     nodes.push(
-      createSpatialJoinFinalizeNode<Parameters>(graph, {
+      ...createSpatialJoinFinalizeNodes<Parameters>(graph, {
         id: `${id}-finalize`,
         operation: OPERATION,
         state,
@@ -1303,7 +1327,7 @@ fn classifySlabs(point: vec2f, partStart: u32, partEnd: u32) -> u32 {
 }
 
 function getInputs(
-  props: GPUPointInPolygonJoinProps<GPUUint32Rows>,
+  props: GPUPointInPolygonJoinProps<GPUUint32Rows, never>,
   edgeSlabs = true
 ): Record<string, GraphDataView | GraphVectorView | undefined> {
   const {points, polygons} = props;
@@ -1335,7 +1359,7 @@ function getInputs(
 }
 
 function getOutputs(
-  props: GPUPointInPolygonJoinProps<GPUUint32Rows>
+  props: GPUPointInPolygonJoinProps<GPUUint32Rows, never>
 ): Record<string, GraphDataView | GraphVectorView | undefined> {
   const {output} = props;
   const {matches, status} = output;
@@ -1356,6 +1380,7 @@ function getOutputs(
     'output.matches.ids': matches?.ids,
     'output.matches.status.count': matches?.status.count,
     'output.matches.status.overflow': matches?.status.overflow,
-    'output.matches.status.requiredCount': matches?.status.requiredCount
+    'output.matches.status.requiredCount': matches?.status.requiredCount,
+    'output.matches.status.candidateOverflow': matches?.status.candidateOverflow
   };
 }

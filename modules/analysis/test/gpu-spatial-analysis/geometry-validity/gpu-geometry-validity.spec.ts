@@ -23,6 +23,66 @@ import {requireTestDevice} from '../../utils/require-test-device';
 const BIT = GPU_GEOMETRY_VALIDITY_BIT;
 type Point = [number, number];
 
+it('an undersized intersection list leaves a clean zero-code feature unchecked', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const features: OracleSegmentFeature[] = [
+    {
+      kind: 'polygons',
+      polygons: [
+        [
+          [
+            [0, 0],
+            [2, 2],
+            [0, 2],
+            [2, 0]
+          ]
+        ]
+      ]
+    },
+    {
+      kind: 'polygons',
+      polygons: [
+        [
+          [
+            [4, 0],
+            [6, 2],
+            [4, 2],
+            [6, 0]
+          ]
+        ]
+      ]
+    },
+    {
+      kind: 'polygons',
+      polygons: [
+        [
+          [
+            [10, 0],
+            [12, 0],
+            [12, 2],
+            [10, 2]
+          ]
+        ]
+      ]
+    }
+  ];
+  for (const intersectionCapacity of [1, 16]) {
+    const result = await runValidity(device, features, {
+      intersectionCapacity,
+      orientation: 'ignore'
+    });
+    const incomplete = intersectionCapacity === 1;
+    expect(result.overflow).toBe(Number(incomplete));
+    expect(result.mask[2]).toBe(0);
+    expect(result.validity[2]).toBe(Number(!incomplete));
+    // Same zero issue word: the display must say incomplete until the usability port passes.
+    expect(result.validity[2] ? 'valid' : 'incomplete').toBe(incomplete ? 'incomplete' : 'valid');
+    if (incomplete) expect(result.validity).toEqual([0, 0, 0]);
+    else expect(result.mask.slice(0, 2)).toEqual([BIT.selfIntersection, BIT.selfIntersection]);
+  }
+});
+
 /** Expected masks for the Shapely fixture under the default options (implicit, ccw shells). */
 const EXPECTED_MASKS: Record<string, number> = {
   valid_square: 0,
@@ -119,7 +179,7 @@ async function runValidity(
     orientation?: GPUGeometryValidityOrientation;
     intersectionCapacity?: number;
   } = {}
-): Promise<{mask: number[]; overflow: number; intersectionCount: number}> {
+): Promise<{mask: number[]; validity: number[]; overflow: number; intersectionCount: number}> {
   const graph = new GPUCommandGraph(device, {id: 'geometry-validity'});
   const buffers: Buffer[] = [];
   const geometry = createSegmentGeometry(device, graph, 'polygons', features, buffers);
@@ -132,13 +192,15 @@ async function runValidity(
     return {buffer, view: importGraphBuffer(graph, name, buffer, 'uint32', length)};
   };
   const mask = output('mask', features.length);
+  const validity = output('validity', features.length);
   const overflow = output('overflow', 1);
   const intersectionCount = output('intersection-count', 1);
   graph.add(
     new GPUGeometryValidity({
       polygons: geometry,
       output: {
-        mask: mask.view,
+        issueCode: mask.view,
+        validity: validity.view,
         status: {overflow: overflow.view, intersectionCount: intersectionCount.view}
       },
       intersectionCapacity: options.intersectionCapacity ?? 256,
@@ -150,6 +212,7 @@ async function runValidity(
   submitGraph(device, compiled, undefined);
   const result = {
     mask: await readUint32(mask.buffer, features.length),
+    validity: await readUint32(validity.buffer, features.length),
     overflow: (await readUint32(overflow.buffer, 1))[0],
     intersectionCount: (await readUint32(intersectionCount.buffer, 1))[0]
   };
@@ -160,12 +223,41 @@ async function runValidity(
   return result;
 }
 
+it('an explicitly unclosed triangle retains its issue code through intersection finalization', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const result = await runValidity(
+    device,
+    [
+      {
+        kind: 'polygons',
+        polygons: [
+          [
+            [
+              [0, 0],
+              [2, 0],
+              [0, 2]
+            ]
+          ]
+        ]
+      }
+    ],
+    {ringClosure: 'explicit', orientation: 'ignore', intersectionCapacity: 4}
+  );
+  expect(result.mask).toEqual([2]);
+  expect(result.overflow).toBe(0);
+  expect(result.validity).toEqual([0]);
+});
+
 it('GPUGeometryValidity masks match pinned expectations and Shapely validity', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const {names, features} = buildScene();
   const result = await runValidity(device, features);
   expect(result.overflow).toBe(0);
+  expect(result.validity).toEqual(
+    result.mask.map(code => Number((code & GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK) === 0))
+  );
   const byName = (name: string) => result.mask[names.indexOf(name)];
   for (const [name, expected] of Object.entries(EXPECTED_MASKS)) {
     expect(byName(name), `${name} mask`).toBe(expected);
@@ -263,6 +355,7 @@ it('GPUGeometryValidity finds a self-intersection among many valid polygons', as
   // Features that only touch at corners contribute intersections that are allowed (touch kinds).
   const small = await runValidity(device, features, {intersectionCapacity: 1});
   expect(small.overflow).toBe(1);
+  expect(small.validity).toEqual(features.map(() => 0));
   expect(small.intersectionCount).toBeGreaterThan(1);
 });
 
@@ -293,14 +386,14 @@ it('GPUGeometryValidity validates its props', async () => {
     importGraphBuffer(graph, name, createOutputBuffer(device, length), 'uint32', length);
   const base = {
     polygons: geometry,
-    output: {mask: view('mask', 1), status: {overflow: view('overflow', 1)}},
+    output: {issueCode: view('mask', 1), status: {overflow: view('overflow', 1)}},
     intersectionCapacity: 4
   };
   expect(
     () =>
       new GPUGeometryValidity({
         ...base,
-        output: {...base.output, mask: view('wrong-mask', 3)}
+        output: {...base.output, issueCode: view('wrong-mask', 3)}
       })
   ).toThrow(/feature count/);
   expect(() => new GPUGeometryValidity({...base, intersectionCapacity: 0})).toThrow(

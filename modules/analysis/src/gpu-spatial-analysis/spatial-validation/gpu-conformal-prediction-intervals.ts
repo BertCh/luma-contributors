@@ -28,11 +28,14 @@ import {
   createConformalScoreNodes,
   getConformalInputViews,
   GPU_CONFORMAL_PREDICTION_PARAMETER_LENGTH,
-  GPU_CONFORMAL_RANK_SLACK,
   validateConformalInputs,
   type GPUConformalCalibration,
   type GPUConformalQuery
 } from './conformal-prediction-nodes';
+import {
+  CONFORMAL_PREDICTION_RANKS_WGSL,
+  GPU_CONFORMAL_MAXIMUM_CALIBRATION_COUNT
+} from './conformal-prediction-ranks';
 
 /** Interval status bits: the lower bound is unbounded (minus infinity). */
 export const GPU_CONFORMAL_STATUS_LOWER_UNBOUNDED = 1;
@@ -105,12 +108,13 @@ export type GPUConformalPredictionIntervalsProps = {
  *
  * Calibration scores are sorted once by (fold, score) with the shared stable radix sort. Each
  * query finds its exact order statistic by bisecting the float32 keys of the candidate values
- * with one binary search per fold, so no loop runs over the calibration rows. Ranks use a
- * relative slack of 2^-20 so that products that are integers in exact arithmetic round to that
- * integer.
+ * with one binary search per fold, so no loop runs over the calibration rows. Ranks are computed
+ * exactly from the packed float32 alpha and integer count, without snapping decimal boundaries
+ * (see `getConformalPredictionRanks`). The count plus one must fit uint32.
  *
  * Guarantee: for exchangeable data, split intervals cover with probability at least `1 - alpha`
- * and at most `1 - alpha + 1/(n + 1)`; CV+ guarantees at least `1 - 2 alpha`.
+ * and, when calibration and test scores are almost surely distinct, at most
+ * `1 - alpha + 1/(n + 1)`. Ties can increase coverage. CV+ guarantees at least `1 - 2 alpha`.
  */
 export class GPUConformalPredictionIntervals implements GPUCommandNodeProducer {
   readonly id: string;
@@ -125,6 +129,13 @@ export class GPUConformalPredictionIntervals implements GPUCommandNodeProducer {
     validateCapacity(id, 'query rows', props.query.predictions.length / this.foldCount, 1);
     this.queryRows = props.query.predictions.length / this.foldCount;
     validateConformalInputs(id, props.calibration, props.query, this.foldCount, this.queryRows);
+    validateCapacity(
+      id,
+      'calibration rows',
+      props.calibration.observations.length,
+      1,
+      GPU_CONFORMAL_MAXIMUM_CALIBRATION_COUNT
+    );
     validateConformalOutput(id, props.parameters, props.output, this.queryRows);
     validateRegressionOutputDispatches(this.id, props.output, [['intervals', 'status']]);
     validateGraphOutputsDisjointFromInputs(id, Object.values(props.output), [
@@ -179,7 +190,6 @@ export class GPUConformalPredictionIntervals implements GPUCommandNodeProducer {
       'uint32',
       foldCount + 1
     );
-    const slack = GPU_CONFORMAL_RANK_SLACK;
     return [
       ...scored.nodes,
       ...sorted.nodes,
@@ -248,6 +258,7 @@ export class GPUConformalPredictionIntervals implements GPUCommandNodeProducer {
 ${GET_NAN_WGSL}
 ${INFINITY_WGSL}
 ${ORDERED_KEY_WGSL}
+${CONFORMAL_PREDICTION_RANKS_WGSL}
 fn getShifted(prediction: f32, scale: f32, score: f32, sign: f32) -> f32 {
   return prediction + sign * (scale * score);
 }
@@ -303,10 +314,9 @@ fn getOrderStatistic(rank: u32, query: u32, scale: f32, sign: f32) -> f32 {
   } else if (count == 0u) {
     code = ${GPU_CONFORMAL_STATUS_NO_CALIBRATION}u;
   } else {
-    let size = f32(count + 1u);
-    // Slack makes products that are integers in exact arithmetic round to that integer.
-    let upperRank = max(u32(ceil((1.0 - miscoverage) * size * (1.0 - ${slack}))), 1u);
-    let lowerRank = u32(floor(miscoverage * size * (1.0 + ${slack})));
+    let ranks = getConformalPredictionRanks(count, miscoverage);
+    let lowerRank = ranks.x;
+    let upperRank = ranks.y;
     if (upperRank > count) {
       upper = getInfinity();
       code |= ${GPU_CONFORMAL_STATUS_UPPER_UNBOUNDED}u;

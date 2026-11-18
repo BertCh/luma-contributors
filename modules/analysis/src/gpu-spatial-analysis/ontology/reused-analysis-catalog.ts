@@ -3,9 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUAnalysisOperator} from './spatial-analysis-ontology';
+import {freezeCatalog} from './freeze-catalog';
 
 /** Public analysis operations extracted from the Kepler host; arithmetic/upload helpers stay helpers. */
-export const REUSED_ANALYSIS_OPERATORS: readonly GPUAnalysisOperator[] = [
+export const REUSED_ANALYSIS_OPERATORS: readonly GPUAnalysisOperator[] = freezeCatalog([
   {
     summary:
       'Runs parallel packed-word phases for exact wide-column summaries and narrowing diagnostics.',
@@ -258,4 +259,4 @@ export const REUSED_ANALYSIS_OPERATORS: readonly GPUAnalysisOperator[] = [
       contract: 'PreparedPolygonContiguityTopology'
     }
   }
-];
+]);

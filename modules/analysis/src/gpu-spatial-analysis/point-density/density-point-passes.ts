@@ -25,7 +25,7 @@ import {
   validateDisjointWritableViews,
   validateGraphChunkBindingRanges
 } from '../../analysis-core/kernels/graph-chunk-dispatch';
-import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 import type {WGSLKernelProps} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
 /** Sixteen uniform words hold the point count, at most eight binding offsets and row bases. */

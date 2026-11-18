@@ -113,7 +113,7 @@ it.each([
         ),
         output: {
           outputMask: field('uint32', 0, 2),
-          ids: field('uint32', 256),
+          rows: field('uint32', 256),
           status: {
             count: field('uint32', 512),
             overflow: field('uint32', 768),

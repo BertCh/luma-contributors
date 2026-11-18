@@ -11,17 +11,14 @@ Run alone on the GPU, from the repository root:
 
 ```sh
 nvm use
-LUMA_TEST_BROWSER_BENCHMARKS=true \
-VITE_RASTER_PERFORMANCE_BENCHMARK=true \
 VITE_BENCHMARK_REVISION="$(git rev-parse HEAD)" \
 VITE_BENCHMARK_SOURCE_STATE=describe-retained-source-state \
-yarn test-headless --no-coverage --silent=false --maxWorkers=1 \
-  modules/graph/test/gpu-raster/remote-sensing/raster-performance-benchmark.spec.ts
+yarn test-benchmarks modules/analysis/test/gpu-raster/remote-sensing/raster-performance-benchmark.spec.ts
 ```
 
-The shared `run-gpu.py` lock wrapper was used during the recorded multi-agent run. Both flags
-are required: the repository excludes the spec from ordinary tests and the Vite flag opts in
-to measurements. Keep every `RASTER_PERFORMANCE_METADATA` and
+The shared `run-gpu.py` lock wrapper was used during the recorded multi-agent run. The benchmark
+launcher selects the benchmark inventory and enables its workload flags automatically; ordinary
+correctness runs exclude these files. Keep every `RASTER_PERFORMANCE_METADATA` and
 `RASTER_PERFORMANCE_MEASUREMENT` console record and the final passing result. A failed or
 interrupted run supplies partial observations only. Source hashes in the retained JSON identify
 benchmark and raster implementation files; the revision plus dirty-source description prevents

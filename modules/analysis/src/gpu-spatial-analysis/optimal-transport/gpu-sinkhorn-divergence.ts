@@ -50,6 +50,7 @@ import {GPU_SINKHORN_DIVERGENCE_PARAMETER_LENGTH} from './sinkhorn-divergence-pa
 import {
   SINKHORN_DIVERGENCE_STATE_LENGTH,
   SINKHORN_DIVERGENCE_STATE_SLOTS,
+  SINKHORN_MASS_SCALE_WGSL,
   SINKHORN_LOG_SUM_WGSL
 } from './sinkhorn-divergence-wgsl';
 
@@ -70,8 +71,8 @@ export const GPU_SINKHORN_DIVERGENCE_MAXIMUM_ITERATIONS = 1000;
  */
 export const GPU_SINKHORN_DIVERGENCE_MAXIMUM_GRID_SIDE = 2048;
 
-/** Command nodes outside the iterations: mass sums (2), logs, initialize, final sums (2), publications (2). */
-const FIXED_COMMAND_NODE_COUNT = 8;
+/** Fixed nodes: mass maxima (2), scaled mass sums (2), logs, initialize, final sums (2), publications (2). */
+const FIXED_COMMAND_NODE_COUNT = 10;
 /** Command nodes of one iteration: two blurs, error tiles and merge, update, two blurs. */
 const ITERATION_COMMAND_NODE_COUNT = 7;
 
@@ -90,8 +91,9 @@ export type GPUSinkhornDivergenceOutput = {
    */
   components?: GraphDataView<'float32'>;
   /**
-   * Optional one-row L1 distance between the target marginal of the plan and the normalized target
-   * masses, measured in the last executed iteration.
+   * Optional one-row L1 distance between the cross plan's target marginal and the normalized
+   * target masses, measured before the last target-side update. Convergence also requires both
+   * symmetric self plans to meet tolerance.
    */
   marginalError?: GraphDataView<'float32'>;
   /** Optional diagnostic scalars. */
@@ -163,10 +165,11 @@ export type GPUSinkhornDivergenceProps = {
  * is two 1D log-sum-exp passes, one along rows and one along columns (the raster convolution
  * pattern in the log semiring), `O(cells * (width + height))` per update instead of
  * `O(cells^2)`. The three problems `(a, b)`, `(a, a)`, `(b, b)` run in one batch; the symmetric
- * problems use the averaged update `f <- (f + T f) / 2`. After each source-side-to-target-side
- * update a reduction measures the L1 error of the target marginal; a one-thread node tests it
- * against `tolerance`, applies the epsilon schedule (`epsilonStart * scalingFactor^k` down to
- * `epsilon`), and disarms a GPU dispatch gate, so finished iterations launch nothing. When
+ * problems use the averaged update `f <- (f + T f) / 2`. Each source-side-to-target-side pass
+ * measures the L1 marginal errors of all three plans before their updates. A one-thread node
+ * requires each to meet `tolerance` at the final epsilon, applies the epsilon schedule
+ * (`epsilonStart * scalingFactor^k` down to `epsilon`), and disarms a GPU dispatch gate, so
+ * finished iterations launch nothing. When
  * `maximumIterations` is reached first, the latest potentials are used and
  * `status.iterationLimitReached` is set. The divergence is evaluated from the potentials as
  * `sum a (f_ab - f_aa) + sum b (g_ab - g_bb)`, combining the differences before the reduction,
@@ -319,7 +322,7 @@ export class GPUSinkhornDivergence implements GPUCommandNodeProducer {
   }
 
   /**
-   * Returns, in order: the mass sums, the log masses with zeroed potentials, the initialization,
+   * Returns, in order: the mass maxima and scaled sums, log masses with zeroed potentials, initialization,
    * the unrolled iterations (cross-problem and self-problem blurs, marginal error, update, and
    * the second half-update), the final sums, and the publication of values and status.
    */
@@ -339,26 +342,28 @@ export class GPUSinkhornDivergence implements GPUCommandNodeProducer {
     // Four potential blocks and three blur blocks per cell, in single bindings.
     validateMaximumCount(id, 'cells', cellCount, getStorageBindingElementLimit(graph.device, 16));
     const layout = getRegressionTileLayout(cellCount);
-    const [tileShape, singleMergeShape] = getRowTileSumDispatchShapes(layout, 1);
+    const [tileShape, errorMergeShape] = getRowTileSumDispatchShapes(layout, 3);
     const dispatchShapes = [
       [3 * cellCount],
       [3 * cellCount],
       tileShape,
-      singleMergeShape,
+      errorMergeShape,
       [cellCount],
       [cellCount]
     ] as const;
     for (const [name, length] of Object.entries({
       state: SINKHORN_DIVERGENCE_STATE_LENGTH,
+      massMaxima: 2,
       masses: 4,
       logSource: cellCount,
       logTarget: cellCount,
       potentials: 4 * cellCount,
       blurred: 3 * cellCount,
-      errors: cellCount,
+      errors: 3 * cellCount,
       finalSums: 5,
       massPartials: layout.tileCount * 4,
-      errorPartials: layout.tileCount,
+      maximumPartials: layout.tileCount * 2,
+      errorPartials: layout.tileCount * 3,
       finalPartials: layout.tileCount * 5,
       iterationDispatch: dispatchShapes.length * 3
     }))
@@ -373,12 +378,13 @@ export class GPUSinkhornDivergence implements GPUCommandNodeProducer {
     const f32 = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'float32', Math.max(length, 1));
     const state = f32('state', SINKHORN_DIVERGENCE_STATE_LENGTH);
+    const massMaxima = f32('mass-maxima', 2);
     const masses = f32('masses', 4);
     const logSource = f32('log-source', cellCount);
     const logTarget = f32('log-target', cellCount);
     const potentials = f32('potentials', 4 * cellCount);
     const blurred = f32('blurred', 3 * cellCount);
-    const errors = f32('errors', cellCount);
+    const errors = f32('errors', 3 * cellCount);
     const finalSums = f32('final-sums', 5);
     const gate = createWGSLDispatchGate(graph, {
       id: `${id}-iteration-dispatch`,
@@ -411,7 +417,31 @@ const RADIUS: u32 = ${blurRadius}u;`;
     });
     const nodes: GPUCommandNode<Parameters>[] = [];
 
-    // 1. Mass sums and invalid counts of the two inputs.
+    // 1. Each field's finite maximum determines a binary scale before summing. Scaled masses
+    // stay below four, so totals stay finite even when the raw float32 sums would overflow.
+    nodes.push(
+      ...getRowTileSumNodes<Parameters>(graph, {
+        id: `${id}-mass-maxima`,
+        operation: OPERATION,
+        variant: 'mass-maxima',
+        rowCount: cellCount,
+        layout,
+        sumCount: 0,
+        maximumCount: 2,
+        bindings: [read('sourceMasses', props.source), read('targetMasses', props.target)],
+        declarations: `${IS_FINITE_VALUE_WGSL}
+fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
+  let sourceMass = sourceMasses[sourceMassesOffset + row];
+  if (isFiniteValue(sourceMass) && sourceMass > 0.0) { (*terms)[0] = max((*terms)[0], sourceMass); }
+  let targetMass = targetMasses[targetMassesOffset + row];
+  if (isFiniteValue(targetMass) && targetMass > 0.0) { (*terms)[1] = max((*terms)[1], targetMass); }
+}`,
+        partial: f32('maximum-partials', layout.tileCount * 2),
+        output: massMaxima
+      })
+    );
+
+    // Scaled mass sums and unchanged invalid counts of the two inputs.
     nodes.push(
       ...getRowTileSumNodes<Parameters>(graph, {
         id: `${id}-masses`,
@@ -420,13 +450,24 @@ const RADIUS: u32 = ${blurRadius}u;`;
         rowCount: cellCount,
         layout,
         sumCount: 4,
-        bindings: [read('sourceMasses', props.source), read('targetMasses', props.target)],
+        bindings: [
+          read('sourceMasses', props.source),
+          read('targetMasses', props.target),
+          read('massMaxima', massMaxima)
+        ],
         declarations: `${IS_FINITE_VALUE_WGSL}
+${SINKHORN_MASS_SCALE_WGSL}
 fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
   let sourceMass = sourceMasses[sourceMassesOffset + row];
-  if (isFiniteValue(sourceMass) && sourceMass >= 0.0) { (*terms)[0] += sourceMass; } else { (*terms)[2] += 1.0; }
+  let sourceMaximum = massMaxima[massMaximaOffset];
+  if (isFiniteValue(sourceMass) && sourceMass >= 0.0) {
+    (*terms)[0] += scaleSinkhornMass(sourceMass, sourceMaximum);
+  } else { (*terms)[2] += 1.0; }
   let targetMass = targetMasses[targetMassesOffset + row];
-  if (isFiniteValue(targetMass) && targetMass >= 0.0) { (*terms)[1] += targetMass; } else { (*terms)[3] += 1.0; }
+  let targetMaximum = massMaxima[massMaximaOffset + 1u];
+  if (isFiniteValue(targetMass) && targetMass >= 0.0) {
+    (*terms)[1] += scaleSinkhornMass(targetMass, targetMaximum);
+  } else { (*terms)[3] += 1.0; }
 }`,
         partial: f32('mass-partials', layout.tileCount * 4),
         output: masses
@@ -443,6 +484,7 @@ fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
           read('sourceMasses', props.source),
           read('targetMasses', props.target),
           read('masses', masses),
+          read('massMaxima', massMaxima),
           write('logSource', logSource),
           write('logTarget', logTarget),
           write('potentials', potentials)
@@ -450,15 +492,18 @@ fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
         invocationCount: cellCount,
         declarations: `${IS_FINITE_VALUE_WGSL}
 ${SINKHORN_LOG_SUM_WGSL}
+${SINKHORN_MASS_SCALE_WGSL}
 const N: u32 = ${cellCount}u;`,
         body: `let sourceMass = sourceMasses[sourceMassesOffset + index];
   let targetMass = targetMasses[targetMassesOffset + index];
   let sourceTotal = masses[massesOffset];
   let targetTotal = masses[massesOffset + 1u];
+  let sourceMaximum = massMaxima[massMaximaOffset];
+  let targetMaximum = massMaxima[massMaximaOffset + 1u];
   let sourceValid = isFiniteValue(sourceMass) && sourceMass > 0.0 && sourceTotal > 0.0;
   let targetValid = isFiniteValue(targetMass) && targetMass > 0.0 && targetTotal > 0.0;
-  logSource[logSourceOffset + index] = select(MASKED, log(sourceMass / sourceTotal), sourceValid);
-  logTarget[logTargetOffset + index] = select(MASKED, log(targetMass / targetTotal), targetValid);
+  logSource[logSourceOffset + index] = select(MASKED, log(scaleSinkhornMass(sourceMass, sourceMaximum) / sourceTotal), sourceValid);
+  logTarget[logTargetOffset + index] = select(MASKED, log(scaleSinkhornMass(targetMass, targetMaximum) / targetTotal), targetValid);
   potentials[potentialsOffset + index] = 0.0;
   potentials[potentialsOffset + N + index] = 0.0;
   potentials[potentialsOffset + 2u * N + index] = 0.0;
@@ -498,6 +543,8 @@ const N: u32 = ${cellCount}u;`,
   state[stateOffset + S_CONVERGED] = 0.0;
   state[stateOffset + S_ITERATION_LIMIT_REACHED] = 0.0;
   state[stateOffset + S_MARGINAL_ERROR] = select(getNaN(), 0.0, valid);
+  state[stateOffset + S_SOURCE_SELF_ERROR] = select(getNaN(), 0.0, valid);
+  state[stateOffset + S_TARGET_SELF_ERROR] = select(getNaN(), 0.0, valid);
   ${gate.disarmWGSL}
   if (valid) {
     ${gate.armWGSL}
@@ -553,7 +600,7 @@ const N: u32 = ${cellCount}u;`,
         bindings: [
           read('blurred', blurred),
           write('potentials', potentials),
-          read('logTarget', logTarget),
+          ...(stage === 1 ? [read('logSource', logSource), read('logTarget', logTarget)] : []),
           read('state', state),
           read('params', props.parameters),
           ...(stage === 1 ? [write('errors', errors)] : [])
@@ -579,11 +626,24 @@ const N: u32 = ${cellCount}u;`,
       ? `let outputBlock = select(select(1u, 2u, job == 1u), 3u, job == 2u);
   let slot = potentialsOffset + outputBlock * N + cell;
   let previous = potentials[slot];
+  // Each residual is mass * |exp((old - T(old)) / epsilon) - 1|. The symmetric
+  // self plans have equal row and column residuals, measured before damping.
+  let massLog = select(logTarget[logTargetOffset + cell], logSource[logSourceOffset + cell], job == 1u);
+  let mass = select(0.0, exp(massLog), massLog > MASKED_LIMIT);
+  // An empty blur delivers no mass, even if both potentials carry UNREACHABLE.
+  var residual = mass;
+  if (sum > 0.0 && massLog > MASKED_LIMIT) {
+    let delta = (previous - updated) / epsilon;
+    if (delta > 1.0) {
+      // Combine with the log mass before exponentiating: a tiny mass can offset a
+      // large delta. Capping delta alone would undercount the marginal residual.
+      residual = abs(exp(massLog + delta) - mass);
+    } else {
+      residual = mass * abs(exp(delta) - 1.0);
+    }
+  }
+  errors[errorsOffset + job * N + cell] = residual;
   if (job == 0u) {
-    // L1 error of the target marginal the previous potentials implied: b_j |exp((g_old - g_new) / epsilon) - 1|.
-    let targetLog = logTarget[logTargetOffset + cell];
-    let targetMass = select(0.0, exp(targetLog), targetLog > MASKED_LIMIT);
-    errors[errorsOffset + cell] = targetMass * abs(exp(min((previous - updated) / epsilon, 80.0)) - 1.0);
     potentials[slot] = updated;
   } else {
     potentials[slot] = 0.5 * (previous + updated);
@@ -619,12 +679,15 @@ const N: u32 = ${cellCount}u;`,
           variant: 'marginal-error',
           rowCount: cellCount,
           layout,
-          sumCount: 1,
+          sumCount: 3,
           bindings: [read('errors', errors)],
-          declarations: `fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
+          declarations: `const N: u32 = ${cellCount}u;
+fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
   (*terms)[0] += errors[errorsOffset + row];
+  (*terms)[1] += errors[errorsOffset + N + row];
+  (*terms)[2] += errors[errorsOffset + 2u * N + row];
 }`,
-          partial: f32(`${prefix}-error-partials`, layout.tileCount),
+          partial: f32(`${prefix}-error-partials`, layout.tileCount * 3),
           output: state,
           outputSlot: slots.marginalError,
           tileGate: gate.getGate(2),
@@ -646,8 +709,9 @@ const MAXIMUM_ITERATIONS: f32 = ${maximumIterations}.0;`,
   let finalEpsilon = params[paramsOffset + 2u];
   let tolerance = params[paramsOffset + 3u];
   // The error only counts once the regularization has reached its final value.
-  let atFinalEpsilon = state[stateOffset + S_EPSILON] <= finalEpsilon * 1.000001;
-  let converged = atFinalEpsilon && state[stateOffset + S_MARGINAL_ERROR] <= tolerance;
+  let atFinalEpsilon = state[stateOffset + S_EPSILON] == finalEpsilon;
+  let converged = atFinalEpsilon && state[stateOffset + S_MARGINAL_ERROR] <= tolerance &&
+    state[stateOffset + S_SOURCE_SELF_ERROR] <= tolerance && state[stateOffset + S_TARGET_SELF_ERROR] <= tolerance;
   state[stateOffset + S_EPSILON] = max(finalEpsilon, params[paramsOffset + 4u] * pow(params[paramsOffset + 5u], iterations));
   if (converged) {
     state[stateOffset + S_DONE] = 1.0;

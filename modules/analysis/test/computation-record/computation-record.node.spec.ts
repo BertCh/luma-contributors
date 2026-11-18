@@ -41,6 +41,11 @@ describe('computation record validation', () => {
     ['schema', 'other'],
     ['id', undefined],
     ['runId', 4],
+    ['executionId', ''],
+    ['executionId', 4],
+    ['implementationRevision', ''],
+    ['graphs[1].resources[0].ownership', 'made-up'],
+    ['graphs[1].resources[0].bytesKind', 'made-up'],
     ['createdAt', ''],
     ['adapter.backend', undefined],
     ['domains', {}],
@@ -172,6 +177,43 @@ describe('record construction and references', () => {
     domains: record.domains,
     graphs: record.graphs
   };
+  it('separates executions while retaining deterministic run identity and explicit fixture identity', () => {
+    const first = createGPUComputationRecord(props);
+    const second = createGPUComputationRecord(props);
+    expect(first.runId).toBe(second.runId);
+    expect(first.executionId).toEqual(expect.any(String));
+    expect(second.executionId).not.toBe(first.executionId);
+    expect(createGPUComputationRecord({...props, executionId: 'fixture'}).executionId).toBe(
+      'fixture'
+    );
+  });
+  it('includes parameter values, choices, hardware and implementation revision in default run identity', () => {
+    const base = {
+      ...props,
+      parameters: {radius: 1, threshold: 2},
+      implementationRevision: 'before-fix'
+    };
+    const original = createGPUComputationRecord(base);
+    expect(createGPUComputationRecord({...base, parameters: {threshold: 2, radius: 1}}).runId).toBe(
+      original.runId
+    );
+    expect(
+      createGPUComputationRecord({...base, parameters: {radius: 2, threshold: 2}}).runId
+    ).not.toBe(original.runId);
+    expect(
+      createGPUComputationRecord({...base, implementationRevision: 'after-fix'}).runId
+    ).not.toBe(original.runId);
+    expect(
+      createGPUComputationRecord({...base, adapter: {...base.adapter, description: 'other-device'}})
+        .runId
+    ).not.toBe(original.runId);
+    expect(
+      createGPUComputationRecord({
+        ...base,
+        choices: [{stage: 'fit', name: 'radius', value: 3, sweepable: true}]
+      }).runId
+    ).not.toBe(original.runId);
+  });
   it('fills defaults and preserves explicit identity', () => {
     const built = createGPUComputationRecord({...props, graphs: []});
     expect(built.axes).toEqual({axes: [], keySpaces: [], relations: []});
@@ -262,6 +304,51 @@ describe('record construction and references', () => {
 });
 
 describe('metrics and captures', () => {
+  it('rejects sidecars from another execution even with matching run, graph and node ids', () => {
+    const first = createGPUComputationRecord({
+      id: record.id,
+      adapter: record.adapter,
+      domains: record.domains,
+      graphs: record.graphs
+    });
+    const second = createGPUComputationRecord({
+      id: record.id,
+      adapter: record.adapter,
+      domains: record.domains,
+      graphs: record.graphs
+    });
+    const firstMetrics = createGPUComputationMetrics({
+      runId: first.runId,
+      executionId: first.executionId,
+      graph: metrics.graph,
+      encoding: metrics.encoding,
+      timing: {nodes: []}
+    });
+    const firstCaptures = createGPUComputationCaptures({
+      runId: first.runId,
+      executionId: first.executionId
+    });
+    expect(
+      validateGPUComputationSidecars(first, {metrics: [firstMetrics], captures: firstCaptures})
+        .valid
+    ).toBe(true);
+    const rejected = validateGPUComputationSidecars(second, {
+      metrics: [firstMetrics],
+      captures: firstCaptures
+    });
+    expect(rejected.valid).toBe(false);
+    expect(rejected.issues.map(issue => issue.path)).toEqual([
+      'metrics[0].executionId',
+      'captures.executionId'
+    ]);
+    expect(
+      validateGPUComputationSidecars(first, {captures: {...firstCaptures, executionId: undefined}})
+        .valid
+    ).toBe(false);
+    expect(
+      validateGPUComputationSidecars(record, {captures: {...captures, executionId: 'new'}}).valid
+    ).toBe(false);
+  });
   it('normalizes times, preserves CPU times and maps conditional outcomes', () => {
     const built = createGPUComputationMetrics({
       runId: record.runId,

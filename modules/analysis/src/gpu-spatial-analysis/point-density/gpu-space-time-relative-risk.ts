@@ -22,6 +22,7 @@ import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import type {GPUKernelDensityKernelName} from './kernel-density-math';
 import {
   GPUSpaceTimeKernelDensity,
+  validateSpaceTimeKernelDensityBindings,
   type GPUSpaceTimeKernelDensityEdgeCorrection
 } from './gpu-space-time-kernel-density';
 import type {GPUSpaceTimeTemporalKernel} from './space-time-kernel-density-math';
@@ -232,16 +233,22 @@ export class GPUSpaceTimeRelativeRisk implements GPUCommandNodeProducer {
       {dispatchMetadata: false}
     );
     // Both nested index/sort/reduction/table layouts must fit before either pass allocates.
-    this.createDensity(
-      'case',
-      output.caseDensity ?? output.values,
-      output.status?.caseInvalidCount
-    ).validateBindings(graph);
-    this.createDensity(
-      'control',
-      output.controlDensity ?? output.values,
-      output.status?.controlInvalidCount
-    ).validateBindings(graph);
+    validateSpaceTimeKernelDensityBindings(
+      graph,
+      this.createDensity(
+        'case',
+        output.caseDensity ?? output.values,
+        output.status?.caseInvalidCount
+      )
+    );
+    validateSpaceTimeKernelDensityBindings(
+      graph,
+      this.createDensity(
+        'control',
+        output.controlDensity ?? output.values,
+        output.status?.controlInvalidCount
+      )
+    );
     const staged = stageDensityOutputViews(
       graph,
       id,

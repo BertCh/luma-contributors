@@ -36,6 +36,7 @@ export type GPUComputationTimingInput = {
 /** Builds nanosecond metrics relative to the earliest GPU begin timestamp in the report. */
 export function createGPUComputationMetrics(props: {
   runId: string;
+  executionId?: string;
   graph: string;
   timing: GPUComputationTimingInput;
   encoding: GPUComputationEncodingFlags;
@@ -84,6 +85,7 @@ export function createGPUComputationMetrics(props: {
   return {
     schema: GPU_COMPUTATION_METRICS_SCHEMA,
     runId: props.runId,
+    ...(props.executionId !== undefined && {executionId: props.executionId}),
     graph: props.graph,
     timebase: milliseconds ? 'ms' : 'ns',
     encoding: props.encoding,
@@ -96,6 +98,7 @@ export function createGPUComputationMetrics(props: {
 /** Builds a captures sidecar with empty arrays filled in. */
 export function createGPUComputationCaptures(props: {
   runId: string;
+  executionId?: string;
   snapshots?: GPUComputationCaptures['snapshots'];
   stamps?: GPUComputationCaptures['stamps'];
   replays?: GPUComputationCaptures['replays'];
@@ -103,6 +106,7 @@ export function createGPUComputationCaptures(props: {
   return {
     schema: GPU_COMPUTATION_CAPTURES_SCHEMA,
     runId: props.runId,
+    ...(props.executionId !== undefined && {executionId: props.executionId}),
     snapshots: props.snapshots ?? [],
     stamps: props.stamps ?? [],
     replays: props.replays ?? []

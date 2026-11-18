@@ -149,5 +149,64 @@ for (const [mode, strongComponentsMaximumIterations] of [
     expect(result['exhausted']).toEqual(new Uint32Array([Number(!finished)]));
     expect(result['iterations'][0]).toBeGreaterThanOrEqual(1);
     expect(result['iterations'][0]).toBeLessThanOrEqual(strongComponentsMaximumIterations);
+    const cpuResult = await runOperationGraph(device, {
+      inputs: {
+        offsets: {format: 'uint32', values: offsets},
+        neighbors: {format: 'uint32', values: neighbors}
+      },
+      operations: [
+        new CPUNetworkStructureOperation({
+          mode,
+          strongComponentsMaximumIterations,
+          nodeCount: 4,
+          edgeCount: 3,
+          topology: {offsets: 'offsets', neighbors: 'neighbors'},
+          output: {strongComponents: 'labels'},
+          strongComponentsStatus: {
+            converged: 'converged',
+            iterationCount: 'iterations',
+            iterationLimitReached: 'exhausted'
+          }
+        })
+      ],
+      outputs: ['labels', 'converged', 'iterations', 'exhausted']
+    });
+    expect(cpuResult['labels']).toEqual(result['labels']);
+    expect(cpuResult['converged']).toEqual(result['converged']);
+    expect(cpuResult['exhausted']).toEqual(result['exhausted']);
+    expect(cpuResult['iterations'][0]).toBeGreaterThanOrEqual(1);
+    expect(cpuResult['iterations'][0]).toBeLessThanOrEqual(strongComponentsMaximumIterations);
   }, 120000);
 }
+
+it('exact structure twins publish all requested SCC status values', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props: NetworkStructureOperationProps = {
+    mode: 'exact',
+    strongComponentsMaximumIterations: 1,
+    nodeCount: 4,
+    edgeCount: 3,
+    topology: {offsets: 'offsets', neighbors: 'neighbors'},
+    output: {strongComponents: 'labels'},
+    strongComponentsStatus: {
+      converged: 'finished',
+      iterationCount: 'steps',
+      iterationLimitReached: 'limited'
+    }
+  };
+  for (const Operation of [GPUNetworkStructureOperation, CPUNetworkStructureOperation]) {
+    const rows = await runOperationGraph(device, {
+      inputs: {
+        offsets: {format: 'uint32', values: Uint32Array.of(0, 1, 2, 3, 3)},
+        neighbors: {format: 'uint32', values: Uint32Array.of(1, 2, 0)}
+      },
+      operations: [new Operation(props)],
+      outputs: ['labels', 'finished', 'steps', 'limited']
+    });
+    expect(rows['labels']).toEqual(Uint32Array.of(0, 0, 0, 3));
+    expect(rows['finished']).toEqual(Uint32Array.of(1));
+    expect(rows['steps']).toEqual(Uint32Array.of(1));
+    expect(rows['limited']).toEqual(Uint32Array.of(0));
+  }
+});

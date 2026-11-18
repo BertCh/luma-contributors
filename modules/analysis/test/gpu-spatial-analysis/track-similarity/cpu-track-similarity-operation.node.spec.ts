@@ -16,6 +16,52 @@ import {SHAPELY_DENSIFY_CASES} from './track-similarity-shapely-cases';
 
 type Point = readonly [number, number];
 
+it('honors an explicit Frechet cap without suppressing original-vertex measures', () => {
+  const result = computeTrackSimilarityOnCPU(
+    makeInput(
+      [
+        [0, 0],
+        [1, 0]
+      ],
+      [
+        [0, 0],
+        [1, 0]
+      ]
+    ),
+    {maximumFrechetVertexCount: 1, measures: ['frechet', 'hausdorff', 'maximumDistance']}
+  );
+  expect(result.pairStatus[0]).toBe(2);
+  expect(result.frechet[0]).toBeNaN();
+  expect(result.hausdorff[0]).toBe(0);
+  expect(result.maximumDistance[0]).toBe(1);
+});
+
+it('bounds remote antimeridian segment distances by the endpoints in both orientations', () => {
+  for (const segment of [
+    [
+      [100, 0],
+      [-100, 0]
+    ],
+    [
+      [-100, 0],
+      [100, 0]
+    ]
+  ] as const) {
+    const result = computeTrackSimilarityOnCPU(makeInput([[0, 0]], segment), {
+      spatialContext: {
+        coordinateSpace: 'longitude-latitude',
+        metric: 'great-circle',
+        sphereRadius: 180 / Math.PI
+      },
+      measures: ['hausdorff', 'symmetricSegmentPathDistance', 'maximumDistance']
+    });
+    expect(result.pairStatus[0]).toBe(0);
+    expect(result.maximumDistance[0]).toBe(100);
+    expect(result.hausdorff[0]).toBe(100);
+    expect(result.symmetricSegmentPathDistance[0]).toBe(100);
+  }
+});
+
 function makeInput(first: readonly Point[], second: readonly Point[]): CPUTrackSimilarityInput {
   return {
     linesA: {
@@ -31,6 +77,69 @@ function makeInput(first: readonly Point[], second: readonly Point[]): CPUTrackS
     frechetEpsilon: Float32Array.of(1.5)
   };
 }
+
+it('does not densify maximum-distance-only or segment-path-only requests', () => {
+  const input = makeInput(
+    [
+      [0, 0],
+      [2, 0]
+    ],
+    [
+      [0, 1],
+      [2, 1]
+    ]
+  );
+  const originalPush = Array.prototype.push;
+  // Stop the wrong implementation after 32 points, before its billion-point allocation.
+  Array.prototype.push = function (this: unknown[], ...values: unknown[]): number {
+    if (this.length >= 32 && values.some(value => Array.isArray(value) && value.length === 2)) {
+      throw new Error('unexpected dense point allocation');
+    }
+    return originalPush.apply(this, values);
+  };
+  let result: ReturnType<typeof computeTrackSimilarityOnCPU>;
+  try {
+    result = computeTrackSimilarityOnCPU(input, {
+      densify: 1e-9,
+      measures: ['maximumDistance', 'symmetricSegmentPathDistance']
+    });
+  } finally {
+    Array.prototype.push = originalPush;
+  }
+  expect(result.maximumDistance[0]).toBe(Math.fround(Math.sqrt(5)));
+  expect(result.symmetricSegmentPathDistance[0]).toBe(1);
+  expect(result.hausdorff[0]).toBeNaN();
+  expect(result.pairStatus[0]).toBe(0);
+});
+
+it('checks expanded vertex count before allocating points for measures that densify', () => {
+  const originalPush = Array.prototype.push;
+  Array.prototype.push = function (this: unknown[], ...values: unknown[]): number {
+    if (this.length >= 32 && values.some(value => Array.isArray(value) && value.length === 2)) {
+      throw new Error('unexpected dense point allocation');
+    }
+    return originalPush.apply(this, values);
+  };
+  try {
+    expect(() =>
+      computeTrackSimilarityOnCPU(
+        makeInput(
+          [
+            [0, 0],
+            [1, 0]
+          ],
+          [[0, 0]]
+        ),
+        {
+          densify: 1 / 2 ** 32,
+          measures: ['frechet']
+        }
+      )
+    ).toThrow(/densifiedVertexCount/);
+  } finally {
+    Array.prototype.push = originalPush;
+  }
+});
 
 /** Enumerates every complete monotone coupling; no DP table or recurrence is used. */
 function enumerateCouplings(first: readonly Point[], second: readonly Point[], band?: number) {
@@ -240,10 +349,9 @@ it('uses original vertices for SSPD and maximum distance when densification is e
   expect(dense.maximumDistance).toEqual(original.maximumDistance);
 });
 
-it('crosses GPU strip boundaries and drops the shorter-track and densification caps', () => {
+it('crosses GPU strip boundaries when the CPU cap is omitted and drops subdivision limits', () => {
   const first = Array.from({length: 2050}, () => [3, 4] as const);
   const result = computeTrackSimilarityOnCPU(makeInput(first, first), {
-    maximumFrechetVertexCount: 1,
     measures: ['frechet']
   });
   expect(result.frechet[0] === 0).toBe(true);

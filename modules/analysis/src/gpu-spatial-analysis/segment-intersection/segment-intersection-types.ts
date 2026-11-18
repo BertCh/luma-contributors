@@ -49,7 +49,7 @@ export const GPU_SEGMENT_NONE = 0xffffffff;
  * Linestring or polygon geometry whose segments `GPUSegmentIntersection` intersects.
  *
  * The layouts are those of `GPUSpatialPredicateJoin`. A segment is identified by the index of its
- * start vertex in `positions` (its segment ID). Polygon rings close implicitly and rings with fewer
+ * start vertex in `positions` (its segment row). Polygon rings close implicitly and rings with fewer
  * than three vertices are ignored; linestrings need two vertices and have no closing segment. A
  * zero-length segment (equal consecutive vertices) or a segment with a non-finite coordinate is
  * skipped and never intersects anything.
@@ -60,7 +60,7 @@ export type GPUSegmentGeometry =
 
 /**
  * Optional per-pair columns and scalars of `GPUSegmentIntersection`, all aligned with
- * `pairs.leftIds`. Slots `[0, pairs.count)` are valid.
+ * `pairs.leftRows`. Slots `[0, pairs.count)` are valid.
  */
 export type GPUSegmentIntersectionColumns = {
   /** Intersection kind per pair, a {@link GPU_SEGMENT_INTERSECTION_KIND} value. */

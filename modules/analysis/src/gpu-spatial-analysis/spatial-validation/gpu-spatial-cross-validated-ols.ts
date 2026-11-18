@@ -90,9 +90,8 @@ export class GPUSpatialCrossValidatedOLS implements GPUCommandNodeProducer {
         diagnostics: props.folds.design?.diagnostics
       },
       [
-        ['coefficients', 'fitStatus'],
-        {read: ['fold training'], write: ['coefficients', 'fitStatus']},
-        {read: ['coefficients', 'fitStatus'], write: ['predictions']},
+        ['coefficients', 'fitStatus', 'predictions'],
+        {read: ['fold training'], write: ['coefficients', 'fitStatus', 'predictions']},
         {read: ['predictions', 'fold testing'], write: ['metrics', 'metricStatus']}
       ]
     );
@@ -163,6 +162,7 @@ export class GPUSpatialCrossValidatedOLS implements GPUCommandNodeProducer {
           mask,
           output: {
             coefficients,
+            predictions: slice(props.output.predictions, fold * rows, rows),
             standardErrors: createTransientView(
               graph,
               `${id}-errors-${fold}`,
@@ -181,22 +181,6 @@ export class GPUSpatialCrossValidatedOLS implements GPUCommandNodeProducer {
         }).getCommandNodes(graph)
       );
     }
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-predictions`,
-        operation: 'GPUSpatialCrossValidatedOLS',
-        variant: 'held-out-predictions',
-        invocationCount: rows * folds,
-        bindings: [
-          {name: 'predictors', view: props.predictors, type: 'f32', access: 'read'},
-          {name: 'coefficients', view: props.output.coefficients, type: 'f32', access: 'read'},
-          {name: 'status', view: props.output.fitStatus, type: 'u32', access: 'read'},
-          {name: 'predictions', view: props.output.predictions, type: 'f32', access: 'read_write'}
-        ],
-        declarations: GET_NAN_WGSL,
-        body: `let fold=index/${rows}u;let row=index%${rows}u;var value=getNaN();if(status[statusOffset+fold]==0u){value=coefficients[coefficientsOffset+fold*${columns + 1}u];for(var column=0u;column<${columns}u;column++){value+=predictors[predictorsOffset+row*${columns}u+column]*coefficients[coefficientsOffset+fold*${columns + 1}u+column+1u];}}predictions[predictionsOffset+index]=value;`
-      })
-    );
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-metrics`,

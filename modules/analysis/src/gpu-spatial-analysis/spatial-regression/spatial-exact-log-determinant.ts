@@ -5,6 +5,68 @@
 import {validateSinglePackedView} from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
+import {MULTIPLICATION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/multiplication-rounding-error-wgsl';
+
+/** Magnitude as an integer significand times a power of two, including subnormals. */
+function getSpatialFloat64Parts(value: number): {significand: number; exponent: number} {
+  const view = new DataView(new ArrayBuffer(8));
+  view.setFloat64(0, Math.abs(value));
+  const high = view.getUint32(0);
+  const low = view.getUint32(4);
+  const exponent = (high >>> 20) & 0x7ff;
+  return {
+    significand: (high & 0xfffff) * 2 ** 32 + low + (exponent === 0 ? 0 : 2 ** 52),
+    exponent: exponent === 0 ? -1074 : exponent - 1075
+  };
+}
+
+/** Spatial similarity products whose final result may survive an overflowing intermediate. */
+function getSpatialScaledProductQuotient(first: number, second: number, divisor: number): number {
+  const product = first * second;
+  const quotient = product / divisor;
+  if (Number.isFinite(product) && product !== 0 && Number.isFinite(quotient) && quotient !== 0) {
+    return quotient;
+  }
+  if (
+    !Number.isFinite(first) ||
+    !Number.isFinite(second) ||
+    !Number.isFinite(divisor) ||
+    first === 0 ||
+    second === 0 ||
+    divisor === 0
+  )
+    return quotient;
+  const firstParts = getSpatialFloat64Parts(first);
+  const secondParts = getSpatialFloat64Parts(second);
+  const divisorParts = getSpatialFloat64Parts(divisor);
+  const bounded =
+    ((firstParts.significand / 2 ** 52) * (secondParts.significand / 2 ** 52)) /
+    (divisorParts.significand / 2 ** 52);
+  const boundedParts = getSpatialFloat64Parts(bounded);
+  const exponent =
+    firstParts.exponent +
+    secondParts.exponent -
+    divisorParts.exponent +
+    boundedParts.exponent +
+    104;
+  const normalized = boundedParts.significand / 2 ** 52;
+  const magnitude =
+    exponent < -1022
+      ? normalized * 2 ** -1022 * 2 ** (exponent + 1022)
+      : normalized * 2 ** exponent;
+  return Math.sign(first) * Math.sign(second) * Math.sign(divisor) * magnitude;
+}
+
+/** Recover `log(abs(1 - first * second))` when the rounded product is one. */
+function getSpatialRoundedUnitProductLog(first: number, second: number): number {
+  const firstParts = getSpatialFloat64Parts(first);
+  const secondParts = getSpatialFloat64Parts(second);
+  const exponent = firstParts.exponent + secondParts.exponent;
+  const difference =
+    (1n << BigInt(-exponent)) - BigInt(firstParts.significand) * BigInt(secondParts.significand);
+  if (difference === 0n) return -Infinity;
+  return Math.log(Number(difference < 0n ? -difference : difference)) + exponent * Math.LN2;
+}
 
 /**
  * Largest row count of `logDeterminant: 'exact'`. The eigenvalues of `W` come from a dense
@@ -25,7 +87,9 @@ export type GPUSpatialLogDeterminantMode = 'series' | 'exact';
  * with the same real eigenvalues, and they are returned ascending (float64).
  *
  * Throws when a link has no reverse link or the matrix is not similar to a symmetric one (relative
- * tolerance 1e-4). Upload the result as a float32 view for `eigenvalues`.
+ * tolerance 1e-4 relative to each transformed pair's magnitude, with no absolute floor), or
+ * when the recovered similarity scales are not positive finite numbers. Upload the result as a
+ * float32 view for `eigenvalues`.
  */
 export function getSpatialWeightsEigenvalues(
   offsets: ArrayLike<number>,
@@ -57,7 +121,12 @@ export function getSpatialWeightsEigenvalues(
         if (reverse === 0) throw new Error('getSpatialWeightsEigenvalues: asymmetric pattern');
         if (!visited[column]) {
           visited[column] = 1;
-          scale[column] = (scale[row] * weights[slot]) / reverse;
+          scale[column] = getSpatialScaledProductQuotient(scale[row], weights[slot], reverse);
+          if (!(scale[column] > 0 && Number.isFinite(scale[column]))) {
+            throw new Error(
+              'getSpatialWeightsEigenvalues: similarity scales must be positive finite numbers'
+            );
+          }
           queue.push(column);
         }
       }
@@ -68,28 +137,51 @@ export function getSpatialWeightsEigenvalues(
     for (let slot = offsets[row]; slot < offsets[row + 1]; slot++) {
       const column = neighbors[slot];
       if (column >= n) continue;
-      matrix[row][column] += Math.sqrt(scale[row] / scale[column]) * weights[slot];
+      matrix[row][column] += getSpatialScaledProductQuotient(
+        Math.sqrt(scale[row]),
+        weights[slot],
+        Math.sqrt(scale[column])
+      );
     }
   }
   for (let row = 0; row < n; row++) {
     for (let column = 0; column < row; column++) {
-      const a = matrix[row][column];
-      const b = matrix[column][row];
+      const forward = matrix[row][column];
+      const reverse = matrix[column][row];
+      const magnitude = Math.max(Math.abs(forward), Math.abs(reverse));
       // Not reversible (d_i w_ij != d_j w_ji): the eigenvalues need not be real.
-      if (Math.abs(a - b) > 1e-4 * Math.max(1, Math.abs(a), Math.abs(b))) {
+      if (
+        !Number.isFinite(magnitude) ||
+        (magnitude > 0 && Math.abs(forward / magnitude - reverse / magnitude) > 1e-4)
+      ) {
         throw new Error('getSpatialWeightsEigenvalues: not similar to a symmetric matrix');
       }
-      matrix[row][column] = matrix[column][row] = 0.5 * (a + b);
+      matrix[row][column] = matrix[column][row] = 0.5 * forward + 0.5 * reverse;
     }
   }
   return getSymmetricEigenvalues(matrix);
 }
 
-/** `ln|I - rho W| = sum ln(1 - rho lambda_i)` (float64 mirror of the exact WGSL path). */
+/**
+ * `ln|I - rho W| = sum ln|1 - rho lambda_i|`. Negative factors are permitted; a zero
+ * factor returns `-Infinity`. Uses `log1p` for positive factors to retain small terms,
+ * exact significands when a product rounds to one, and operand logs when a finite product
+ * overflows. A true zero factor takes priority over every other factor.
+ */
 export function getSpatialExactLogDeterminant(rho: number, eigenvalues: ArrayLike<number>): number {
   let sum = 0;
   for (let index = 0; index < eigenvalues.length; index++) {
-    sum += Math.log(1 - rho * eigenvalues[index]);
+    const eigenvalue = eigenvalues[index];
+    const product = rho * eigenvalue;
+    if (product === 1) {
+      const logarithm = getSpatialRoundedUnitProductLog(rho, eigenvalue);
+      if (logarithm === -Infinity) return -Infinity;
+      sum += logarithm;
+    } else if (!Number.isFinite(product) && Number.isFinite(rho) && Number.isFinite(eigenvalue)) {
+      sum += Math.log(Math.abs(rho)) + Math.log(Math.abs(eigenvalue));
+    } else {
+      sum += product < 1 ? Math.log1p(-product) : Math.log(Math.abs(1 - product));
+    }
   }
   return sum;
 }
@@ -223,7 +315,7 @@ export function validateExactLogDeterminant(
 /**
  * WGSL defining the same functions as the trace series, exactly, from the f32 binding
  * `bindingName` of the `rowCount` eigenvalues of `W`: `getSpatialLogDeterminant(rho) = sum
- * ln(1 - rho lambda)`, `getTraceOne(rho) = sum lambda / (1 - rho lambda)`,
+ * ln|1 - rho lambda|`, `getTraceOne(rho) = sum lambda / (1 - rho lambda)`,
  * `getLogDeterminantDerivative(rho) = -getTraceOne(rho)` and `getTraceTwo(rho) = sum (lambda /
  * (1 - rho lambda))^2`. Each is a fixed pairwise sum over the eigenvalues (`getPairwiseSumWGSL`).
  */
@@ -237,8 +329,34 @@ export function getExactLogDeterminantWGSL(bindingName: string, rowCount: number
   })}
   return total;`;
   return /* wgsl */ `
+${MULTIPLICATION_ROUNDING_ERROR_WGSL}
+fn getSpatialLogAbsoluteFactor(rho: f32, eigenvalue: f32) -> f32 {
+  let product = rho * eigenvalue;
+  if (product == 1.0) {
+    // Rebalance exact powers of two so even very unequal operands are normal and bounded.
+    let first = frexp(rho);
+    let second = frexp(eigenvalue);
+    let residual = getMultiplicationRoundingError(
+      ldexp(first.fract, first.exp + second.exp), second.fract, product);
+    if (residual != 0.0) { return log(abs(residual)); }
+    // Nonfinite constant expressions are shader-creation errors in WGSL.
+    var negativeInfinityBits = 0xff800000u;
+    return bitcast<f32>(negativeInfinityBits);
+  }
+  // The log magnitude is representable even when finite operands overflow on multiplication.
+  if ((bitcast<u32>(product) & 0x7fffffffu) == 0x7f800000u) {
+    return log(abs(rho)) + log(abs(eigenvalue));
+  }
+  // WGSL has no log1p. Near zero this series retains terms lost by subtracting from 1.
+  // At |product| < 0.01 the omitted term is below 2.1e-11.
+  if (abs(product) < 0.01) {
+    return -product * (1.0 + product * (0.5 + product * (1.0 / 3.0 + product * 0.25)));
+  }
+  return log(abs(1.0 - product));
+}
+
 fn getSpatialLogDeterminant(rho: f32) -> f32 {
-  ${sum('log(1.0 - rho * lambda)')}
+  ${sum('getSpatialLogAbsoluteFactor(rho, lambda)')}
 }
 
 fn getTraceOne(rho: f32) -> f32 {

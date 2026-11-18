@@ -4,11 +4,17 @@
 
 import {expect, it} from 'vitest';
 import {
+  getExactLogDeterminantWGSL,
   getSpatialExactLogDeterminant,
   getSpatialWeightsEigenvalues,
   getSymmetricEigenvalues
 } from '../../../src/gpu-spatial-analysis/spatial-regression/spatial-exact-log-determinant';
+import {findConstantNonFiniteBitcasts} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 import {createLatticeWeights} from './spatial-regression-diagnostics-oracle';
+
+it('exact determinant WGSL creates nonfinite values at runtime without invalid constant expressions', () => {
+  expect(findConstantNonFiniteBitcasts(getExactLogDeterminantWGSL('eigenvalues', 2))).toEqual([]);
+});
 
 /** Brute-force `ln|A|` by LU decomposition with partial pivoting (float64). */
 function getBruteForceLogDeterminant(matrix: number[][]): number {
@@ -101,4 +107,119 @@ it('getSymmetricEigenvalues matches a known spectrum', () => {
     (_, index) => 2 * Math.cos(((index + 1) * Math.PI) / (n + 1))
   ).sort((a, b) => a - b);
   values.forEach((value, index) => expect(value).toBeCloseTo(expected[index], 10));
+});
+
+it('rejects nonreversible weights independently of their magnitude', () => {
+  for (const magnitude of [1, 1e-3, 1e-6, 1e6]) {
+    expect(() =>
+      getSpatialWeightsEigenvalues(
+        [0, 2, 4, 6],
+        [1, 2, 0, 2, 0, 1],
+        [0.5, 0.5, 0.9, 0.1, 0.2, 0.8].map(value => value * magnitude),
+        3
+      )
+    ).toThrow(/similar to a symmetric/);
+  }
+});
+
+it('preserves the determinant of reversible weights under joint weight and rho rescaling', () => {
+  const offsets = [0, 2, 4, 6];
+  const neighbors = [1, 2, 0, 2, 0, 1];
+  // W = D^-1 C, C symmetric, D = diag(2, 4, 8).
+  const weights = [0.5, 1, 0.25, 0.75, 0.25, 0.375];
+  const expected = Math.log(0.8125); // det(I - 0.5 W), expanded directly.
+  for (const magnitude of [1, 1e-6, 1e6]) {
+    const eigenvalues = getSpatialWeightsEigenvalues(
+      offsets,
+      neighbors,
+      weights.map(value => value * magnitude),
+      3
+    );
+    const actual = getSpatialExactLogDeterminant(0.5 / magnitude, eigenvalues);
+    expect(Number.isFinite(actual)).toBe(true);
+    expect(actual).toBeCloseTo(expected, 12);
+  }
+});
+
+it('rejects nonpositive or nonfinite similarity scales', () => {
+  for (const weights of [
+    [1, -1],
+    [1, Infinity],
+    [1, NaN],
+    [1e308, 1e-308]
+  ]) {
+    expect(() => getSpatialWeightsEigenvalues([0, 1, 2], [1, 0], weights, 2)).toThrow(
+      /positive finite/
+    );
+  }
+});
+
+it('computes the log absolute determinant for negative factors and singular matrices', () => {
+  expect(getSpatialExactLogDeterminant(2, [1, -1])).toBeCloseTo(Math.log(3), 14);
+  expect(getSpatialExactLogDeterminant(1, [1, -1])).toBe(-Infinity);
+  expect(getSpatialExactLogDeterminant(2, [1, 1])).toBe(0);
+});
+
+it('retains small nonzero log determinant terms', () => {
+  expect(getSpatialExactLogDeterminant(1e-20, [1])).toBeCloseTo(-1e-20, 30);
+});
+
+it('retains a nonzero determinant when the rounded product equals one (R1)', () => {
+  const actual = getSpatialExactLogDeterminant(1 + 2 ** -27, [1 - 2 ** -27]);
+  expect(Number.isFinite(actual)).toBe(true);
+  expect(actual).toBeCloseTo(-54 * Math.LN2, 12);
+  expect(getSpatialExactLogDeterminant(2, [0.5])).toBe(-Infinity);
+});
+
+it('preserves representable similarity scales across overflowing intermediate products (R2)', () => {
+  for (const magnitude of [1, 2 ** 24]) {
+    const eigenvalues = getSpatialWeightsEigenvalues(
+      [0, 1, 3, 4],
+      [1, 0, 2, 1],
+      [1, 2 ** -1000, 1, 1].map(value => magnitude * value),
+      3
+    );
+    const actual = getSpatialExactLogDeterminant(0.5 / magnitude, eigenvalues);
+    expect(Number.isFinite(actual)).toBe(true);
+    expect(actual).toBeCloseTo(Math.log(0.75), 12);
+  }
+});
+
+it('keeps joint rescaling invariant on a twelve-row path of float32 weights (R2)', () => {
+  const offsets = [0];
+  const neighbors: number[] = [];
+  const weights: number[] = [];
+  for (let row = 0; row < 12; row++) {
+    if (row > 0) {
+      neighbors.push(row - 1);
+      weights.push(row === 11 ? 1 : 2 ** -100);
+    }
+    if (row < 11) {
+      neighbors.push(row + 1);
+      weights.push(1);
+    }
+    offsets.push(neighbors.length);
+  }
+  for (const magnitude of [1, 2 ** 24]) {
+    const eigenvalues = getSpatialWeightsEigenvalues(
+      offsets,
+      neighbors,
+      Float32Array.from(weights, value => magnitude * value),
+      12
+    );
+    const actual = getSpatialExactLogDeterminant(0.5 / magnitude, eigenvalues);
+    // Tridiagonal determinant recurrence: the first ten edge products are 2^-100,
+    // below float64 spacing at one; the final edge contributes 1 - rho^2 = 3/4.
+    expect(Number.isFinite(actual)).toBe(true);
+    expect(actual).toBeCloseTo(Math.log(0.75), 12);
+  }
+});
+
+it('evaluates overflowing finite factors and gives true singularity priority in either order (R3)', () => {
+  const largestPower = 2 ** 1023;
+  const actual = getSpatialExactLogDeterminant(2, [largestPower]);
+  expect(Number.isFinite(actual)).toBe(true);
+  expect(actual).toBeCloseTo(1024 * Math.LN2, 12);
+  expect(getSpatialExactLogDeterminant(2, [0.5, largestPower])).toBe(-Infinity);
+  expect(getSpatialExactLogDeterminant(2, [largestPower, 0.5])).toBe(-Infinity);
 });

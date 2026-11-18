@@ -7,6 +7,7 @@ import {
   type GPUContributorOperationOutput
 } from '../../analysis-core/operations/gpu-contributor-operation';
 import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {snapshotWeightsAlgebraProps} from './weights-construction-snapshot';
 import {
   GPUSpatialWeightsAlgebra,
   type GPUSpatialWeightsAlgebraProps,
@@ -30,6 +31,11 @@ export type SpatialWeightsAlgebraGraphInput = Omit<
   neighbors: string;
   weights: string;
   distances?: string;
+};
+
+/** Graph input used by algebra, including optional upstream loss values. */
+type LossAwareAlgebraGraphInput = SpatialWeightsAlgebraGraphInput & {
+  status?: {overflow?: string; candidateOverflow?: string};
 };
 
 /** Validates declared weights metadata before CPU graph execution. @internal */
@@ -69,28 +75,28 @@ export type SpatialWeightsAlgebraOperationProps = {
     neighbors: string;
     weights: string;
     distances?: string;
-    status: {overflow: string; requiredCount?: string};
+    status: {overflow: string; requiredCount?: string; candidateOverflow?: string};
   };
 } & (
   | {
       operation: 'union' | 'intersection' | 'difference' | 'symmetricDifference';
-      left: SpatialWeightsAlgebraGraphInput;
-      right: SpatialWeightsAlgebraGraphInput;
+      left: LossAwareAlgebraGraphInput;
+      right: LossAwareAlgebraGraphInput;
       weightRule?: GPUSpatialWeightsCombineRule;
     }
   | {
       operation: 'higherOrder';
-      weights: SpatialWeightsAlgebraGraphInput;
+      weights: LossAwareAlgebraGraphInput;
       order: number;
       cumulative?: boolean;
       workCapacity?: number;
     }
-  | {operation: 'selfWeight'; weights: SpatialWeightsAlgebraGraphInput; selfWeight: number | string}
-  | {operation: 'subgraph'; weights: SpatialWeightsAlgebraGraphInput; mask: string}
+  | {operation: 'selfWeight'; weights: LossAwareAlgebraGraphInput; selfWeight: number | string}
+  | {operation: 'subgraph'; weights: LossAwareAlgebraGraphInput; mask: string}
   | {operation: 'block'; groupIds: string; groupCount: number}
   | {
       operation: 'spaceTime';
-      weights: SpatialWeightsAlgebraGraphInput;
+      weights: LossAwareAlgebraGraphInput;
       periodCount: number;
       layout: GPUSpaceTimeWeightsLayout;
       lags: readonly GPUSpatialWeightsSpaceTimeLag[];
@@ -99,14 +105,32 @@ export type SpatialWeightsAlgebraOperationProps = {
 
 /**
  * Vector operation form; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING.
- * Every prop is compile-time except graph values. Operand status is caller-checked metadata,
- * not an input port. candidateOverflow is omitted: the contributor never writes that optional
- * port. As on the contributor, offsets[rowCount] is the clamped slot count (there is no count port).
+ * Every prop is compile-time except graph values. Optional operand loss ports are read and
+ * propagated to candidateOverflow, which must have a named destination whenever input loss
+ * ports or higher-order intermediate work are present. Overflow is destination truncation only.
+ * As on the contributor,
+ * offsets[rowCount] is the clamped slot count (there is no count port).
  */
 export class GPUSpatialWeightsAlgebraOperation extends GPUContributorOperation {
   constructor(props: SpatialWeightsAlgebraOperationProps) {
+    props = snapshotWeightsAlgebraProps(props);
+    const operands =
+      'left' in props ? [props.left, props.right] : 'weights' in props ? [props.weights] : [];
+    validateRequirement(
+      props.id ?? 'spatial-weights-algebra',
+      Boolean(props.output.status.candidateOverflow) ||
+        !(
+          (props.operation === 'higherOrder' && props.order > 1) ||
+          operands.some(operand => operand.status?.overflow || operand.status?.candidateOverflow)
+        ),
+      'output.status.candidateOverflow is required for operand loss or bounded intermediate work'
+    );
     const inputs: Record<string, string> = {};
-    const addWeights = (prefix: string, weights: SpatialWeightsAlgebraGraphInput) => {
+    const addWeights = (prefix: string, weights: LossAwareAlgebraGraphInput) => {
+      for (const name of ['overflow', 'candidateOverflow'] as const)
+        if (weights.status?.[name]) {
+          inputs[`${prefix}${name[0].toUpperCase()}${name.slice(1)}`] = weights.status[name]!;
+        }
       for (const field of ['offsets', 'neighbors', 'weights', 'distances'] as const) {
         const value = weights[field];
         if (value !== undefined)
@@ -139,6 +163,12 @@ export class GPUSpatialWeightsAlgebraOperation extends GPUContributorOperation {
         format: 'uint32',
         length: 1
       };
+    if (props.output.status.candidateOverflow)
+      outputs['candidateOverflow'] = {
+        value: props.output.status.candidateOverflow,
+        format: 'uint32',
+        length: 1
+      };
     super({
       id: props.id ?? 'spatial-weights-algebra',
       inputs,
@@ -146,14 +176,20 @@ export class GPUSpatialWeightsAlgebraOperation extends GPUContributorOperation {
       createContributor: getView => {
         const getWeights = (
           prefix: string,
-          weights: SpatialWeightsAlgebraGraphInput
+          weights: LossAwareAlgebraGraphInput
         ): GPUSpatialWeights => ({
           ...weights,
           offsets: getView<'uint32'>(`${prefix}Offsets`),
           neighbors: getView<'uint32'>(`${prefix}Neighbors`),
           weights: getView<'float32'>(`${prefix}Weights`),
           distances:
-            weights.distances === undefined ? undefined : getView<'float32'>(`${prefix}Distances`)
+            weights.distances === undefined ? undefined : getView<'float32'>(`${prefix}Distances`),
+          status: {
+            overflow: weights.status?.overflow ? getView<'uint32'>(`${prefix}Overflow`) : undefined,
+            candidateOverflow: weights.status?.candidateOverflow
+              ? getView<'uint32'>(`${prefix}CandidateOverflow`)
+              : undefined
+          }
         });
         let operation: AlgebraInputs;
         if ('left' in props)
@@ -190,6 +226,9 @@ export class GPUSpatialWeightsAlgebraOperation extends GPUContributorOperation {
               props.output.distances === undefined ? undefined : getView<'float32'>('distances'),
             status: {
               overflow: getView<'uint32'>('overflow'),
+              candidateOverflow: props.output.status.candidateOverflow
+                ? getView<'uint32'>('candidateOverflow')
+                : undefined,
               requiredCount:
                 props.output.status.requiredCount === undefined
                   ? undefined

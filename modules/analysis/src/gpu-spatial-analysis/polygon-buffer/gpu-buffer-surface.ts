@@ -1,6 +1,7 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
 
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
@@ -177,6 +178,10 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
       props.spatialContext,
       SPATIAL_CONTEXT_SUPPORT
     );
+    props = {
+      ...props,
+      geometry: snapshotSinglePartGeometryPort(this.id, 'geometry', props.geometry)
+    };
     this.props = props;
     validateFiniteNumber(
       this.id,

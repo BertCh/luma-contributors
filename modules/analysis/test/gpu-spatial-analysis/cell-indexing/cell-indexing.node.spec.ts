@@ -110,7 +110,7 @@ it('GPUPointToCell validates props', () => {
       mask: shared,
       output: {cells: createTransientView(graph, 'cells-c', 'uint32x2', 8), validity: shared}
     },
-    /outputs must not share buffers with inputs/
+    /outputs(?:\[1\])? must not share buffers with inputs(?:\[1\])?/
   );
   // Views from another graph are rejected when the nodes are created.
   const other = new GPUCommandGraph(device);

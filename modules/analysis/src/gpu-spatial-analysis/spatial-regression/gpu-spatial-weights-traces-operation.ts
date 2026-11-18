@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotRegressionOperationProps} from './regression-construction-snapshot';
+
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {validateCompleteRegressionWeights} from './cpu-regression-weights';
 import {
   GPUSpatialWeightsTraces,
   type GPUSpatialWeightsTracesProps
@@ -45,7 +48,9 @@ export type SpatialWeightsTracesOperationProps = Pick<
 /** GPU trace operation; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUSpatialWeightsTracesOperation extends GPUContributorOperation {
   constructor(props: SpatialWeightsTracesOperationProps) {
+    props = snapshotRegressionOperationProps(props);
     const id = props.id ?? 'spatial-weights-traces';
+    validateCompleteRegressionWeights(id, props.weights);
     super({
       id,
       inputs: {

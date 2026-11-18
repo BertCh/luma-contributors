@@ -4,6 +4,11 @@
 
 import type {Device} from '@luma.gl/core';
 import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotJoinGeometry, snapshotJoinPairs} from './spatial-join-construction-snapshot';
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -18,6 +23,7 @@ import {
   getStorageBindingElementLimit,
   validatePowerOfTwo,
   validateCapacity,
+  validateRequirement,
   validateFiniteNumber,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -61,7 +67,7 @@ const OPERATION = 'GPUSpatialJoinCandidates';
 const GPU_SPATIAL_JOIN_CANDIDATES_MAXIMUM_DISTANCE = 3.4028234663852886e38;
 
 /**
- * Largest candidate pair capacity (`output.leftIds.length`) of {@link GPUSpatialJoinCandidates} on
+ * Largest candidate pair capacity (`output.leftRows.length`) of {@link GPUSpatialJoinCandidates} on
  * `device`: the scratch table of pairs holds one `uint32x2` (8 bytes) per pair in one storage
  * binding, so 2^24 on a default device (128 MiB bindings).
  */
@@ -76,7 +82,7 @@ export function getGPUSpatialJoinCandidatesMaximumPairCapacity(device: Device): 
  * view lengths, whether `distance` is a number or view, `leafCapacity`, the pair capacity and the
  * presence of `prepared`.
  */
-export type GPUSpatialJoinCandidatesProps = {
+export type GPUSpatialJoinCandidatesProps<Parameters = unknown> = {
   /** Prefix for generated node and transient IDs. Defaults to `'spatial-join-candidates'`. */
   id?: string;
   /**
@@ -99,7 +105,7 @@ export type GPUSpatialJoinCandidatesProps = {
    * Optional prepared right-hand side over the same views as `right`. It must be added to the
    * graph before this contributor. Spatially sorted candidates are restored to source row order.
    */
-  prepared?: GPUSpatialJoinPrepared;
+  prepared?: GPUSpatialJoinPrepared<Parameters>;
   /**
    * Expand each left box by this planar distance before probing, which makes the candidates
    * of a `dwithin` join. A one-row float32 view is read every encoding; negative, NaN and infinite
@@ -109,9 +115,11 @@ export type GPUSpatialJoinCandidatesProps = {
   /** Power-of-two BVH leaf slots when no `prepared` handle is given. Defaults to the next power of two. */
   leafCapacity?: number;
   /**
-   * Caller-owned candidate pairs sorted by `(left, right)`. `output.leftIds.length` is the
+   * Caller-owned candidate pairs sorted by `(left, right)`. `output.leftRows.length` is the
    * candidate capacity; `count` is clamped to it, `requiredCount` is the unclamped number and
-   * `overflow` is set when candidates were dropped or the BVH overflowed. The capacity is at most
+   * `overflow` reports only pair-capacity loss. `candidateOverflow` reports BVH leaf loss and is
+   * required when leafCapacity is below the right feature count. Both flags are rewritten on reuse.
+   * The capacity is at most
    * {@link getGPUSpatialJoinCandidatesMaximumPairCapacity} (2^24 on a default device).
    */
   output: GPUCompactPairPort;
@@ -128,30 +136,53 @@ export type GPUSpatialJoinCandidatesProps = {
  * It is conservative: a candidate pair may not intersect, and no intersecting pair is missing.
  * Features that are empty, or have non-finite coordinates, have inverted bounds and never match.
  */
-export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
+export class GPUSpatialJoinCandidates<Parameters = unknown> implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUSpatialJoinCandidatesProps;
+  readonly props: GPUSpatialJoinCandidatesProps<Parameters>;
   /** Number of left features. */
   readonly leftCount: number;
   /** Number of right features. */
   readonly rightCount: number;
-  /** Candidate pair capacity, `output.leftIds.length`. */
+  /** Candidate pair capacity, `output.leftRows.length`. */
   readonly candidateCapacity: number;
   /** Resolved BVH leaf capacity. */
   readonly leafCapacity: number;
   /** Resolved spatial context: native planar coordinates. */
   readonly spatialContext: GPUSpatialContext;
 
-  constructor(props: GPUSpatialJoinCandidatesProps) {
+  constructor(props: GPUSpatialJoinCandidatesProps<Parameters>) {
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'rightSpatialContext',
+      'left',
+      'right',
+      'prepared',
+      'distance',
+      'leafCapacity',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...snapshot,
+      left: snapshotJoinGeometry(snapshot.left),
+      right: snapshotJoinGeometry(snapshot.right),
+      output: snapshotJoinPairs(snapshot.output),
+      ...(snapshot.spatialContext
+        ? {spatialContext: snapshotConstructionSpatialContext(snapshot.spatialContext)}
+        : {}),
+      ...(snapshot.rightSpatialContext
+        ? {rightSpatialContext: snapshotConstructionSpatialContext(snapshot.rightSpatialContext)}
+        : {})
+    });
     this.id = props.id ?? 'spatial-join-candidates';
     this.props = props;
     const {id} = this;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     resolveGPUSecondarySpatialContext(id, 'right', props.rightSpatialContext, this.spatialContext);
-    validateSpatialJoinGeometry(id, 'left', props.left);
-    validateSpatialJoinGeometry(id, 'right', props.right);
+    validateSpatialJoinGeometry(id, 'left', props.left, {allowMultipart: true});
+    validateSpatialJoinGeometry(id, 'right', props.right, {allowMultipart: true});
     this.leftCount = getSpatialJoinFeatureCount(props.left);
     this.rightCount = getSpatialJoinFeatureCount(props.right);
     if (
@@ -178,24 +209,30 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
     const {output: pairs, prepared} = props;
     validateGPUCompactPairPort(id, pairs);
     for (const view of [
-      pairs.leftIds,
-      pairs.rightIds,
+      pairs.leftRows,
+      pairs.rightRows,
       pairs.status.count,
       pairs.status.overflow,
+      pairs.status.candidateOverflow,
       pairs.status.requiredCount
     ]) {
       if (view) {
         validateSinglePackedView(view, ['uint32'], `${id} output`);
       }
     }
-    if (pairs.leftIds.length < 1) {
-      throw new Error(`${id} output.leftIds needs at least one row`);
+    if (pairs.leftRows.length < 1) {
+      throw new Error(`${id} output.leftRows needs at least one row`);
     }
-    this.candidateCapacity = pairs.leftIds.length;
+    this.candidateCapacity = pairs.leftRows.length;
     this.leafCapacity = prepared
       ? prepared.leafCapacity
       : (props.leafCapacity ?? getNextPowerOfTwo(Math.max(this.rightCount, 1)));
     validatePowerOfTwo(id, 'leafCapacity', this.leafCapacity);
+    validateRequirement(
+      id,
+      this.leafCapacity >= this.rightCount || pairs.status.candidateOverflow !== undefined,
+      'output.status.candidateOverflow is required when leafCapacity is below the right feature count'
+    );
     if (prepared) {
       if (!isSameSpatialJoinGeometry(prepared.geometry, props.right)) {
         throw new Error(`${id} prepared must index the same geometry views as right`);
@@ -214,11 +251,22 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
         )
       ],
       [
-        pairs.leftIds,
-        pairs.rightIds,
+        pairs.leftRows,
+        pairs.rightRows,
         pairs.status.count,
         pairs.status.overflow,
+        pairs.status.candidateOverflow,
         pairs.status.requiredCount
+      ],
+      [
+        {
+          leftRows: pairs.leftRows,
+          rightRows: pairs.rightRows,
+          count: pairs.status.count,
+          overflow: pairs.status.overflow,
+          requiredCount: pairs.status.requiredCount
+        },
+        {candidateOverflow: pairs.status.candidateOverflow}
       ]
     );
     if (prepared)
@@ -231,10 +279,11 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
           )?.overflow
         ],
         [
-          pairs.leftIds,
-          pairs.rightIds,
+          pairs.leftRows,
+          pairs.rightRows,
           pairs.status.count,
           pairs.status.overflow,
+          pairs.status.candidateOverflow,
           pairs.status.requiredCount
         ]
       );
@@ -251,7 +300,7 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
     // Keep the public pair-capacity diagnostic before checking the allocation envelope.
     validateCapacity(
       id,
-      'output.leftIds.length',
+      'output.leftRows.length',
       candidateCapacity,
       1,
       getGPUSpatialJoinCandidatesMaximumPairCapacity(graph.device)
@@ -260,10 +309,11 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
       ...getSpatialJoinGeometryViews(left),
       ...getSpatialJoinGeometryViews(right),
       typeof props.distance === 'number' ? undefined : props.distance,
-      pairs.leftIds,
-      pairs.rightIds,
+      pairs.leftRows,
+      pairs.rightRows,
       pairs.status.count,
       pairs.status.overflow,
+      pairs.status.candidateOverflow,
       pairs.status.requiredCount,
       ...Object.values(prepared?.storage ?? {})
     ];
@@ -408,10 +458,9 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
     ];
     const bindings: WGSLKernelBinding[] = [
       {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read'},
-      {name: 'leftIds', view: pairs.leftIds, type: 'u32', access: 'read_write'},
-      {name: 'rightIds', view: pairs.rightIds, type: 'u32', access: 'read_write'},
-      {name: 'state', view: state, type: 'u32', access: 'read'},
-      {name: 'bvhOverflow', view: bvhOverflow, type: 'u32', access: 'read'}
+      {name: 'leftRows', view: pairs.leftRows, type: 'u32', access: 'read_write'},
+      {name: 'rightRows', view: pairs.rightRows, type: 'u32', access: 'read_write'},
+      {name: 'state', view: state, type: 'u32', access: 'read'}
     ];
     for (const [name, view] of scalars) {
       if (view) {
@@ -427,17 +476,37 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
         bindings,
         invocationCount: candidateCapacity,
         declarations: `const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;`,
-        body: `leftIds[leftIdsOffset + index] = candidatePairs[candidatePairsOffset + index * 2u];
-  rightIds[rightIdsOffset + index] = candidatePairs[candidatePairsOffset + index * 2u + 1u];
+        body: `leftRows[leftRowsOffset + index] = candidatePairs[candidatePairsOffset + index * 2u];
+  rightRows[rightRowsOffset + index] = candidatePairs[candidatePairsOffset + index * 2u + 1u];
   if (index == 0u) {
     let total = state[stateOffset];
-    let overflowValue = select(0u, 1u, bvhOverflow[bvhOverflowOffset] != 0u || total > CANDIDATE_CAPACITY);
+    let overflowValue = select(0u, 1u, total > CANDIDATE_CAPACITY);
     ${has('pairsCount') ? 'pairsCount[pairsCountOffset] = min(total, CANDIDATE_CAPACITY);' : ''}
     ${has('pairsOverflow') ? 'pairsOverflow[pairsOverflowOffset] = overflowValue;' : ''}
     ${has('pairsTotal') ? 'pairsTotal[pairsTotalOffset] = total;' : ''}
   }`
       })
     );
+    if (pairs.status.candidateOverflow) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-candidate-status`,
+          operation: OPERATION,
+          variant: 'candidate-status',
+          bindings: [
+            {name: 'bvhOverflow', view: bvhOverflow, type: 'u32', access: 'read'},
+            {
+              name: 'candidateOverflow',
+              view: pairs.status.candidateOverflow,
+              type: 'u32',
+              access: 'read_write'
+            }
+          ],
+          invocationCount: 1,
+          body: 'candidateOverflow[candidateOverflowOffset] = select(0u, 1u, bvhOverflow[bvhOverflowOffset] != 0u);'
+        })
+      );
+    }
     return nodes;
   }
 }

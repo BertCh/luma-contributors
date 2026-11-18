@@ -24,7 +24,7 @@ import {
 import {
   validateGPUNetworkTopology,
   type GPUNetworkTopology
-} from '../../analysis-core/network-topology';
+} from '../../analysis-core/contracts/network-topology';
 import {
   GPUNetworkReachability,
   GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS,
@@ -329,6 +329,7 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
    * range, `estimatedCommandNodeCount` exceeds the 32,768 command node cap, or conflicting output
    * or input byte ranges overlap. Fields used in separate dispatches may share aligned prefixes.
    */
+  constructor(props: GPUNetworkCentralityProps);
   constructor(
     props: GPUNetworkCentralityProps,
     /** @internal Metadata validation for schedulers that publish each scalar status separately. */
@@ -856,7 +857,7 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
   }
 
   /** Allocation-free device binding preflight, also used by host-scheduled centrality. @internal */
-  validateGraphBindings<Parameters>(graph: GPUCommandGraph<Parameters>): void {
+  private validateGraphBindings<Parameters>(graph: GPUCommandGraph<Parameters>): void {
     const {id, props, nodeCount, laneCount, batchCount} = this;
     const {output} = props;
     const views = {
@@ -936,6 +937,21 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
       );
     }
   }
+}
+
+/** Runs the private allocation-free preflight for scheduler composition. @internal */
+export function validateNetworkCentralityBindings<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  contributor: GPUNetworkCentrality
+): void {
+  Reflect.apply(Reflect.get(contributor, 'validateGraphBindings'), contributor, [graph]);
+}
+
+/** Validates a scheduler whose status scalars are published in separate dispatches. @internal */
+export function createNetworkCentralityForComposition(
+  props: GPUNetworkCentralityProps
+): GPUNetworkCentrality {
+  return Reflect.construct(GPUNetworkCentrality, [props, true]) as GPUNetworkCentrality;
 }
 
 /** Scalar statuses of the direct contributor are bound together; schedulers merge them separately. */

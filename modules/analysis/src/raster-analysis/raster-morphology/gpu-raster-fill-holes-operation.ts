@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {captureRasterMorphologyOperationProps} from './raster-morphology-operation-utils';
 import {GPURasterFillHoles, type GPURasterFillHolesProps} from '../gpu-raster-reconstruction';
 
 /** Graph-value properties shared by both hole-fill operations. */
@@ -20,6 +21,7 @@ export type RasterFillHolesOperationProps = Pick<
 /** GPU hole filling as a vector operation; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPURasterFillHolesOperation extends GPUContributorOperation {
   constructor(props: RasterFillHolesOperationProps) {
+    props = captureRasterMorphologyOperationProps(props);
     super({
       id: props.id ?? 'raster-fill-holes',
       inputs: {input: props.input},

@@ -32,6 +32,7 @@ import {getMakeValidSegmentIndexNodes} from './make-valid-segment-index';
 import {getBinarySearchWGSL} from '../../analysis-core/kernels/binary-search-wgsl';
 import {validateLineNodingBounds} from './gpu-line-noding';
 import {GPUPolygonize, type GPUPolygonizeProps} from './gpu-polygonize';
+import {validatePolygonizeStatus} from './topology-status';
 import {
   GPU_TOPOLOGY_NONE,
   type GPUPolygonizeOutput,
@@ -105,9 +106,11 @@ export type GPUMakeValidProps = {
  * the height BVH, so unrelated groups are pruned independently of their IDs' numeric spacing.
  * Inclusive height bounds retain edges touching the symbolic ray.
  *
- * Status: `count` is the number of kept polygons, `requiredCount` the unclamped ring-assembly
+ * Status: `count` is the number of kept features, `requiredRingCount` the unclamped ring-assembly
  * requirement (the ring capacity needed, an upper bound on the polygons written), `overflow` flags
- * noding or ring capacity loss and `candidateOverflow` only an incomplete noding candidate list.
+ * final ring/vertex capacity loss and `candidateOverflow` any upstream noding loss. Internal
+ * groups are feature rows; every uint32 caller identity, including 0xffffffff, is preserved in
+ * the active output provenance prefix.
  * If an orientation cannot be certified (non-finite coordinates or a span of more than 200 binary
  * orders of magnitude) the face is kept. Open and cut remnants stay in `output.diagnostics`.
  */
@@ -121,6 +124,7 @@ export class GPUMakeValid implements GPUCommandNodeProducer {
     this.id = props.id ?? 'make-valid';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
+    validatePolygonizeStatus(this.id, props.output.status);
     if (props.polygons.kind !== 'polygons') {
       throw new Error(`${this.id} polygons.kind must be polygons`);
     }
@@ -182,6 +186,12 @@ export class GPUMakeValid implements GPUCommandNodeProducer {
     );
     const ringCount = polygons.ringOffsets.length - 1;
     const ringSourceIds = createTransientView(graph, `${id}-ring-source-ids`, 'uint32', ringCount);
+    const ringFeatureRows = createTransientView(
+      graph,
+      `${id}-ring-feature-rows`,
+      'uint32',
+      ringCount
+    );
     const sourceBinding = polygons.sourceIds
       ? [
           {
@@ -201,7 +211,8 @@ export class GPUMakeValid implements GPUCommandNodeProducer {
           {name: 'featureOffsets', view: polygons.featureOffsets, type: 'u32', access: 'read'},
           {name: 'polygonOffsets', view: polygons.polygonOffsets, type: 'u32', access: 'read'},
           ...sourceBinding,
-          {name: 'ringSourceIds', view: ringSourceIds, type: 'u32', access: 'read_write'}
+          {name: 'ringSourceIds', view: ringSourceIds, type: 'u32', access: 'read_write'},
+          {name: 'ringFeatureRows', view: ringFeatureRows, type: 'u32', access: 'read_write'}
         ],
         invocationCount: ringCount,
         declarations: `const FEATURE_COUNT: u32 = ${polygons.featureOffsets.length - 1}u;
@@ -218,7 +229,8 @@ const POLYGON_COUNT: u32 = ${polygons.polygonOffsets.length - 1}u;`,
     let middle = (featureLow + featureHigh) / 2u;
     if (featureOffsets[featureOffsetsOffset + middle] <= polygonLow) { featureLow = middle; } else { featureHigh = middle; }
   }
-  ringSourceIds[ringSourceIdsOffset + index] = ${polygons.sourceIds ? 'inputSourceIds[inputSourceIdsOffset + featureLow]' : 'featureLow'};`
+  ringSourceIds[ringSourceIdsOffset + index] = ${polygons.sourceIds ? 'inputSourceIds[inputSourceIdsOffset + featureLow]' : 'featureLow'};
+  ringFeatureRows[ringFeatureRowsOffset + index] = featureLow;`
       })
     ];
     const {output} = props;
@@ -357,7 +369,7 @@ const VERTEX_COUNT: u32 = ${vertexCount}u;`,
         lineOffsets: closedOffsets,
         sourceIds: ringSourceIds
       },
-      groupIds: ringSourceIds,
+      groupIds: ringFeatureRows,
       intersectionCapacity: props.intersectionCapacity,
       precision: props.precision,
       snapRounding: props.snapRounding,
@@ -449,7 +461,7 @@ const VERTEX_COUNT: u32 = ${vertexCount}u;`,
           read('count', output.nodedSegments.status.count),
           read('endpoints', output.nodedSegments.endpoints, 'f32'),
           read('nodedRings', output.nodedSegments.sourceRingIds),
-          read('ringSourceIds', ringSourceIds),
+          read('ringFeatureRows', ringFeatureRows),
           write('records', nodedRecords)
         ],
         segmentCapacity,
@@ -457,7 +469,7 @@ const VERTEX_COUNT: u32 = ${vertexCount}u;`,
   var first = vec2f(0.0);
   var second = vec2f(0.0);
   if (index < count[countOffset]) {
-    group = ringSourceIds[ringSourceIdsOffset + nodedRings[nodedRingsOffset + index]];
+    group = ringFeatureRows[ringFeatureRowsOffset + nodedRings[nodedRingsOffset + index]];
     first = vec2f(endpoints[endpointsOffset + 4u * index], endpoints[endpointsOffset + 4u * index + 1u]);
     second = vec2f(endpoints[endpointsOffset + 4u * index + 2u], endpoints[endpointsOffset + 4u * index + 3u]);
   }
@@ -719,6 +731,31 @@ ${EXACT_GEOMETRY_WGSL}`
         `count[countOffset] = keepScan[keepScanOffset + ${last}u];`
       )
     );
+    if (polygons.sourceIds) {
+      nodes.push(
+        kernel(
+          'publish-source-ids',
+          [
+            read('keepScan', keepScan),
+            read('ringFeatureRows', ringFeatureRows),
+            read('ringSourceIds', ringSourceIds),
+            write('sourceIds', output.polygons.sourceIds)
+          ],
+          ringCapacity,
+          `if (index < keepScan[keepScanOffset + ${last}u]) {
+  let feature = sourceIds[sourceIdsOffset + index];
+  var low = 0u;
+  var high = ${ringCount}u;
+  while (low < high) {
+    let middle = low + (high - low) / 2u;
+    if (ringFeatureRows[ringFeatureRowsOffset + middle] < feature) { low = middle + 1u; }
+    else { high = middle; }
+  }
+  sourceIds[sourceIdsOffset + index] = ringSourceIds[ringSourceIdsOffset + low];
+}`
+        )
+      );
+    }
     return nodes;
   }
 }

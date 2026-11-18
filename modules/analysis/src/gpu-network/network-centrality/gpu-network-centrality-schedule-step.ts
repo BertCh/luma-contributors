@@ -20,7 +20,12 @@ import {
   validateGraphChunkBindingRanges
 } from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {GPUNetworkCentrality, type GPUNetworkCentralityProps} from './gpu-network-centrality';
+import {
+  GPUNetworkCentrality,
+  createNetworkCentralityForComposition,
+  validateNetworkCentralityBindings,
+  type GPUNetworkCentralityProps
+} from './gpu-network-centrality';
 import {validateCentralityLogicalRanges} from './network-centrality-bindings';
 
 /** Pivot row counts and row bases retain the uint32 indexing envelope of network inputs. */
@@ -35,7 +40,7 @@ export type NetworkCentralityScheduleStep = {
   /** Fixed pivot buffer length and lane count for every submission. */
   laneCount: number;
   /** Write this value into the contributor's reset view before submitting the step. */
-  reset: number;
+  reset: 0 | 1;
 };
 
 /**
@@ -69,13 +74,13 @@ export function planNetworkCentralitySchedule(props: {
   const {pivotCount, laneCount} = props;
   return {
     stepCount: Math.ceil(pivotCount / laneCount),
-    *[Symbol.iterator]() {
+    *[Symbol.iterator](): Generator<NetworkCentralityScheduleStep> {
       for (let pivotOffset = 0; pivotOffset < pivotCount; pivotOffset += laneCount) {
         yield {
           pivotOffset,
           pivotCount: Math.min(laneCount, pivotCount - pivotOffset),
           laneCount,
-          reset: Number(pivotOffset === 0)
+          reset: pivotOffset === 0 ? 1 : 0
         };
       }
     }
@@ -118,14 +123,11 @@ export class GPUNetworkCentralityScheduleStep implements GPUCommandNodeProducer 
       props.laneCount === undefined || props.laneCount === props.pivotNodes.length,
       'laneCount must equal pivotNodes.length (one fixed-capacity batch per encoding)'
     );
-    this.contributor = new GPUNetworkCentrality(
-      {
-        ...props,
-        id: this.id,
-        laneCount: props.pivotNodes.length
-      },
-      true
-    );
+    this.contributor = createNetworkCentralityForComposition({
+      ...props,
+      id: this.id,
+      laneCount: props.pivotNodes.length
+    });
     const accumulated = [
       props.output.betweenness,
       props.output.edgeBetweenness,
@@ -163,7 +165,7 @@ export class GPUNetworkCentralityScheduleStep implements GPUCommandNodeProducer 
     const {props, id} = this;
     // All checks precede even the partial-output allocations. The inner contributor has exactly
     // these shapes, with zero-offset fresh scratch replacing the accumulated output bindings.
-    this.contributor.validateGraphBindings(graph);
+    validateNetworkCentralityBindings(graph, this.contributor);
     validateGraphChunkBindingRanges(graph, id, {reset: props.reset});
     const output = {...props.output, status: {...props.output.status}};
     const merges: GPUCommandNode<Parameters>[] = [];

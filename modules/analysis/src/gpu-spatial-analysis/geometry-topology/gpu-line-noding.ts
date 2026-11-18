@@ -1,6 +1,7 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
 
 import {
   createTransientView,
@@ -105,12 +106,10 @@ export function validateLineNodingBounds(
  * consecutive distinct noded vertices (a repeated vertex yields no zero-length row). Crossings, touches and both ends of collinear overlaps reuse the
  * exact-or-uncertain predicates of `GPUSegmentIntersection` through `GPULineSplit`.
  *
- * `requiredCount` is exact when `candidateOverflow` is zero. A candidate overflow (the
- * intersection pair list exceeded `intersectionCapacity`) marks both `candidateOverflow` and final
- * `overflow`; callers must grow `intersectionCapacity` and rerun before treating the requirement or
- * geometry as complete. `overflow` alone (with `candidateOverflow` clear and `requiredCount` within
- * capacity) means the input had segment pairs the exact predicates could not certify, or
- * non-finite vertices: no capacity fixes that.
+ * `overflow` reports only final segment capacity. `candidateOverflow` reports incomplete split
+ * input (intersection capacity, uncertifiable pairs or non-finite vertices). `requiredCount` is
+ * exact only when `candidateOverflow` is zero. Inspect `uncertainCount` to distinguish uncertainty
+ * from a capacity that can be increased.
  */
 export class GPULineNoding implements GPUCommandNodeProducer {
   readonly id: string;
@@ -121,6 +120,7 @@ export class GPULineNoding implements GPUCommandNodeProducer {
   constructor(props: GPULineNodingProps) {
     this.id = props.id ?? 'line-noding';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    props = {...props, lines: snapshotSinglePartGeometryPort(this.id, 'lines', props.lines)};
     this.props = props;
     const {id} = this;
     const {lines, output} = props;
@@ -528,7 +528,7 @@ fn piecePoint(vertex: u32) -> vec2f {
             name: 'candidateOverflow',
             view: output.status.candidateOverflow,
             type: 'u32',
-            access: 'read'
+            access: 'read_write'
           },
           {name: 'splitIncomplete', view: splitIncomplete, type: 'u32', access: 'read'},
           {name: 'count', view: output.status.count, type: 'u32', access: 'read_write'},
@@ -543,11 +543,10 @@ fn piecePoint(vertex: u32) -> vec2f {
         invocationCount: 1,
         declarations: `const OUTPUT_CAPACITY: u32 = ${outputCapacity}u;`,
         body: `let required = scan[scanOffset + ${pieceVertexCapacity - 1}u];
-  let candidateIncomplete = candidateOverflow[candidateOverflowOffset];
+  candidateOverflow[candidateOverflowOffset] |= splitIncomplete[splitIncompleteOffset];
   requiredCount[requiredCountOffset] = required;
   count[countOffset] = min(required, OUTPUT_CAPACITY);
-  overflow[overflowOffset] = select(0u, 1u,
-    required > OUTPUT_CAPACITY || candidateIncomplete != 0u || splitIncomplete[splitIncompleteOffset] != 0u);`
+  overflow[overflowOffset] = select(0u, 1u, required > OUTPUT_CAPACITY);`
       })
     );
     return nodes;

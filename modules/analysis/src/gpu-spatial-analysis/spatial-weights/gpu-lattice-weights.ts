@@ -283,6 +283,24 @@ const QUEEN: bool = ${props.criterion === 'queen'};`;
   }`;
     const scanTotal = createTransientView(graph, `${id}-scan-total`, 'uint32', 1);
     return [
+      ...(weights.status.candidateOverflow
+        ? [
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-candidate-status`,
+              operation: OPERATION,
+              invocationCount: 1,
+              bindings: [
+                {
+                  name: 'candidateOverflow',
+                  view: weights.status.candidateOverflow,
+                  type: 'u32',
+                  access: 'read_write'
+                }
+              ],
+              body: 'candidateOverflow[candidateOverflowOffset] = 0u;'
+            })
+          ]
+        : []),
       ...(runtime?.nodes ?? []),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-counts`,
@@ -393,10 +411,10 @@ const CAPACITY: u32 = ${capacity}u;`,
   }
 }
 
-/** Lattices have no candidate stage, so candidateOverflow is not bound or written. */
+/** Every declared loss view is a writable result, including the always-zero candidate flag. */
 function getLatticeWritableOutput(output: GPUSpatialWeightsOutput): GPUSpatialWeightsOutput {
   return {
     ...output,
-    status: {overflow: output.status.overflow, requiredCount: output.status.requiredCount}
+    status: output.status
   };
 }

@@ -139,7 +139,13 @@ export class GPURasterSpectralUnmixing implements GPUCommandNodeProducer {
     validateRasterViews(
       this.id,
       [props.values, props.endmembers, ...(props.mask ? [props.mask] : [])],
-      Object.values(props.output)
+      Object.values(props.output),
+      [
+        {
+          inputs: [props.values, props.endmembers, ...(props.mask ? [props.mask] : [])],
+          outputs: Object.values(props.output)
+        }
+      ]
     );
   }
   getCommandNodes<Parameters>(

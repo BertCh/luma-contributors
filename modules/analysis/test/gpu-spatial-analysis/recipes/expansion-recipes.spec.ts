@@ -25,6 +25,7 @@ import {addClusterAndOutlineRecipe} from '../../../src/gpu-spatial-analysis/reci
 import {getGPUSpatialClusteringParameterValues} from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
 import {getGPUGeographicDistributionParameterValues} from '../../../src/gpu-spatial-analysis/geographic-distribution/index';
 import {addTrackQualityRecipe} from '../../../src/gpu-network/recipes/track-quality-recipe';
+import {GPUTrajectoryMetrics} from '../../../src/gpu-spatial-analysis/trajectory-analysis/gpu-trajectory-metrics';
 import {addInterpolationDiagnosticsRecipe} from '../../../src/gpu-spatial-analysis/recipes/interpolation-diagnostics-recipe';
 import {getGPUKrigingParameterValues} from '../../../src/gpu-spatial-analysis/spatial-interpolation/index';
 import {getGPUChangeDetectionParameterValues} from '../../../src/raster-analysis/change-detection/index';
@@ -317,9 +318,22 @@ it('track quality flags duplicate timestamps, gaps and speed independently', asy
           4
         ),
         timestamps: fixture.input('times', new Float32Array([0, 0, 1, 10]), 'float32', 4),
+        temporalContext: {
+          encoding: 'float32-relative',
+          unit: 'millisecond',
+          epoch: 0n,
+          axis: {kind: 'irregular'}
+        },
         trackOffsets: fixture.input('offsets', new Uint32Array([0, 4]), 'uint32', 2)
       },
       thresholds: fixture.input('thresholds', new Float32Array([1.5, 5]), 'float32', 2)
+    });
+    const metrics = result.contributors.find(
+      contributor => contributor instanceof GPUTrajectoryMetrics
+    );
+    expect(metrics?.props.temporalContext).toMatchObject({
+      encoding: 'float32-relative',
+      unit: 'millisecond'
     });
     const flags = publish(fixture, 'flags-out', result.outputs.flags);
     const counts = publish(fixture, 'counts-out', result.outputs.flaggedCounts);

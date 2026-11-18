@@ -13,6 +13,7 @@ import {GPU_MINIMUM_SPANNING_TREE_STATUS} from './gpu-spatial-weights-minimum-sp
 import {validateSpatialWeightsOperationInformation} from '../spatial-weights/gpu-spatial-weights-algebra-operation';
 import {
   GPUSkaterRegionsOperation,
+  snapshotSkaterOperationProps,
   type SkaterRegionsOperationProps
 } from './gpu-skater-regions-operation';
 
@@ -27,6 +28,8 @@ export type CPUSkaterRegionsInput = {
   values: Float32Array;
   parameters: Uint32Array;
   treeStatus?: Uint32Array;
+  /** Weights loss scalars: either nonzero flag suppresses the whole partition and cut log. */
+  status?: {overflow?: Uint32Array; candidateOverflow?: Uint32Array};
 };
 /** CPU dimensions. maximumRegionCount retains the cut-log layout and per-frame target clamp. */
 export type CPUSkaterRegionsOptions = {columnCount?: number; maximumRegionCount: number};
@@ -50,6 +53,8 @@ type TreeEdge = {first: number; second: number; slot: number; child: number; liv
  * Zero-gain cuts are allowed, minimum sizes are inclusive, and exact ties use the lowest edge
  * slot (the lesser of its two CSR slots). The parameter layout is the two uint32 words packed
  * by getGPUSkaterRegionsParameterValues: regionCount, minimumRegionSize.
+ * Either nonzero input.status loss word suppresses labels/cut IDs to 0xffffffff, regionCount
+ * to zero/unavailable and cut gains to NaN, including when the upstream forest is suppressed.
  *
  * What differs from the GPU contributor:
  * - Direct float64 side sums replace compensated float32 tour sums and repeated subtraction.
@@ -73,6 +78,28 @@ export function computeSkaterRegionsOnCPU(
   const {offsets, neighbors, values, componentLabels, treeEdgeFlags, parameters} = input;
   const rowCount = offsets.length - 1;
   const columnCount = options.columnCount ?? 1;
+  if (input.treeStatus && input.treeStatus.length < GPU_MINIMUM_SPANNING_TREE_STATUS.length)
+    throw new Error('treeStatus must hold GPU_MINIMUM_SPANNING_TREE_STATUS.length words');
+  for (const name of ['overflow', 'candidateOverflow'] as const)
+    if (input.status?.[name])
+      validateCapacity(
+        'skater-regions',
+        `weights.status.${name} length`,
+        input.status[name]!.length,
+        1
+      );
+  if (
+    rowCount > 0 &&
+    ((input.status?.overflow?.[0] ?? 0) !== 0 ||
+      (input.status?.candidateOverflow?.[0] ?? 0) !== 0 ||
+      (input.treeStatus?.[GPU_MINIMUM_SPANNING_TREE_STATUS.candidateOverflow] ?? 0) !== 0)
+  )
+    return {
+      labels: new Uint32Array(rowCount).fill(GPU_SKATER_NO_CUT),
+      regionCount: Uint32Array.of(0),
+      cutEdges: new Uint32Array(options.maximumRegionCount - 1).fill(GPU_SKATER_NO_CUT),
+      cutGains: new Float32Array(options.maximumRegionCount - 1).fill(Number.NaN)
+    };
   if (
     rowCount < 1 ||
     offsets[0] !== 0 ||
@@ -95,8 +122,6 @@ export function computeSkaterRegionsOnCPU(
     throw new Error('values length must equal row count * columnCount');
   if (parameters.length < GPU_SKATER_REGIONS_PARAMETER_LENGTH)
     throw new Error('parameters must hold the getGPUSkaterRegionsParameterValues layout');
-  if (input.treeStatus && input.treeStatus.length < GPU_MINIMUM_SPANNING_TREE_STATUS.length)
-    throw new Error('treeStatus must hold GPU_MINIMUM_SPANNING_TREE_STATUS.length words');
   const rowSlots = Array.from({length: rowCount}, () => new Map<number, number>());
   for (let row = 0; row < rowCount; row++)
     for (let slot = offsets[row]; slot < offsets[row + 1]; slot++) {
@@ -216,6 +241,7 @@ export function computeSkaterRegionsOnCPU(
 /** CPU twin, with fresh float64 side sums and no GPU column or storage-binding cap. */
 export class CPUSkaterRegionsOperation extends GPUCPUOperation {
   constructor(props: SkaterRegionsOperationProps) {
+    props = snapshotSkaterOperationProps(props);
     const id = props.id ?? 'skater-regions';
     validateOptions(id, props);
     validateCapacity(id, 'rowCount', props.rowCount);
@@ -247,6 +273,16 @@ export class CPUSkaterRegionsOperation extends GPUCPUOperation {
           {
             offsets,
             neighbors,
+            status: {
+              overflow:
+                props.weights.status?.overflow === undefined
+                  ? undefined
+                  : getCPUOperationUint32Rows(id, inputs, 'weightsOverflow'),
+              candidateOverflow:
+                props.weights.status?.candidateOverflow === undefined
+                  ? undefined
+                  : getCPUOperationUint32Rows(id, inputs, 'weightsCandidateOverflow')
+            },
             weights: getCPUOperationFloat32Rows(id, inputs, 'weights'),
             distances:
               props.weights.distances === undefined

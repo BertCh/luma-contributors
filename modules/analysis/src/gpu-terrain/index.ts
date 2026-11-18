@@ -21,4 +21,7 @@ export * from './topographic-position/index';
 
 // Top-level files. The contributor contract is exported from
 // '@luma-contributors/analysis/analysis-core', not from this entry point.
-export type {GPURasterCellSizeMode, GPURasterRowDirection} from '../analysis-core/raster-grid';
+export type {
+  GPURasterCellSizeMode,
+  GPURasterRowDirection
+} from '../analysis-core/contracts/raster-grid';

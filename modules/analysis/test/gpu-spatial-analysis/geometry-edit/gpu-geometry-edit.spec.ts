@@ -30,6 +30,7 @@ import cleanupFixtureJSON from '../../oracles/fixtures/geometry-cleanup.json';
 import {createSeededRandom} from '../neighbor-search/neighbor-search-oracle';
 import {GEOMETRY_EDIT_FIXTURES} from './geometry-edit-fixtures';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {createGeometryCleanupForTesting} from '../../../src/gpu-spatial-analysis/geometry-edit/gpu-geometry-cleanup';
 
 type Ring = number[][];
 type Polygon = Ring[];
@@ -640,32 +641,34 @@ async function runCleanupFrames(
     overflow: overflow.view as GraphDataView<'uint32'>
   };
   run.graph.add(
-    new GPUGeometryCleanup({
-      positions: run.views['positions'] as GraphDataView<'float32x2'>,
-      parameters: run.parameters,
-      forceSequentialRepeatRemoval: forceSequential,
-      ...(geometryType === 'lines'
-        ? {
-            geometryType,
-            lineOffsets: run.views['ringOffsets'] as GraphDataView<'uint32'>,
-            output: {
-              positions: positionsOutput.view as GraphDataView<'float32x2'>,
-              lineOffsets: offsetsOutput.view as GraphDataView<'uint32'>,
-              status
+    createGeometryCleanupForTesting(
+      {
+        positions: run.views['positions'] as GraphDataView<'float32x2'>,
+        parameters: run.parameters,
+        ...(geometryType === 'lines'
+          ? {
+              geometryType,
+              lineOffsets: run.views['ringOffsets'] as GraphDataView<'uint32'>,
+              output: {
+                positions: positionsOutput.view as GraphDataView<'float32x2'>,
+                lineOffsets: offsetsOutput.view as GraphDataView<'uint32'>,
+                status
+              }
             }
-          }
-        : {
-            geometryType,
-            ringOffsets: run.views['ringOffsets'] as GraphDataView<'uint32'>,
-            polygonOffsets: run.views['polygonOffsets'] as GraphDataView<'uint32'>,
-            featureOffsets: run.views['featureOffsets'] as GraphDataView<'uint32'>,
-            output: {
-              positions: positionsOutput.view as GraphDataView<'float32x2'>,
-              ringOffsets: offsetsOutput.view as GraphDataView<'uint32'>,
-              status: {...status, collapsedCount: collapsed.view as GraphDataView<'uint32'>}
-            }
-          })
-    })
+          : {
+              geometryType,
+              ringOffsets: run.views['ringOffsets'] as GraphDataView<'uint32'>,
+              polygonOffsets: run.views['polygonOffsets'] as GraphDataView<'uint32'>,
+              featureOffsets: run.views['featureOffsets'] as GraphDataView<'uint32'>,
+              output: {
+                positions: positionsOutput.view as GraphDataView<'float32x2'>,
+                ringOffsets: offsetsOutput.view as GraphDataView<'uint32'>,
+                status: {...status, collapsedCount: collapsed.view as GraphDataView<'uint32'>}
+              }
+            })
+      },
+      {forceSequentialRepeatRemoval: forceSequential}
+    )
   );
   const compiled = run.graph.compile();
   const results: CleanupRunResult[] = [];

@@ -101,7 +101,7 @@ it('rejects non-f32 shader constants at construction', () => {
   ).toThrow(/inverse-distance-weighting indexGridSize\[0\]/);
   const weights = new GPUNearestFeatureWeights({
     slotCapacity: 65,
-    neighborIds: view('uint32', 65),
+    neighborRows: view('uint32', 65),
     neighborCounts: view('uint32', 1),
     output: {
       offsets: view('uint32', 2),
@@ -244,7 +244,7 @@ it.each([64, 65, 256, 1024])('weights compiles storage sorting above 64 slots (%
   const view = createViews(graph);
   const contributor = new GPUNearestFeatureWeights({
     slotCapacity: capacity,
-    neighborIds: view('uint32', capacity * 2),
+    neighborRows: view('uint32', capacity * 2),
     neighborCounts: view('uint32', 2),
     neighborDistances: view('float32', capacity * 2),
     output: {
@@ -314,16 +314,16 @@ it('rejects overlapping writable weights fields and bounds the count scan total 
   const view = createViews(graph);
   const backing = view('uint32', 300);
   const output = {
-    offsets: graph.createDataView(backing.buffer, {format: 'uint32', length: 2}),
-    neighbors: graph.createDataView(backing.buffer, {format: 'uint32', byteOffset: 4, length: 256}),
-    weights: view('float32', 256),
+    offsets: view('uint32', 2),
+    neighbors: graph.createDataView(backing.buffer, {format: 'uint32', length: 256}),
+    weights: graph.createDataView(backing.buffer, {format: 'float32', byteOffset: 4, length: 256}),
     status: {overflow: view('uint32', 1)}
   };
   expect(
     () =>
       new GPUNearestFeatureWeights({
         slotCapacity: 256,
-        neighborIds: view('uint32', 256),
+        neighborRows: view('uint32', 256),
         neighborCounts: view('uint32', 1),
         output
       })
@@ -332,7 +332,7 @@ it('rejects overlapping writable weights fields and bounds the count scan total 
     () =>
       new GPUNearestFeatureWeights({
         slotCapacity: 65536,
-        neighborIds: view('uint32', 1),
+        neighborRows: view('uint32', 1),
         neighborCounts: view('uint32', 65536),
         output
       })
@@ -458,25 +458,58 @@ it('rejects aligned aliases for IDW and weights before any node declaration', ()
     () =>
       new GPUNearestFeatureWeights({
         slotCapacity: 65,
-        neighborIds: view('uint32', 65),
+        neighborRows: view('uint32', 65),
         neighborCounts: view('uint32', 1),
         output: {
-          offsets: graph.createDataView(backing.buffer, {
-            format: 'uint32',
-            byteOffset: 0,
-            length: 2
-          }),
+          offsets: view('uint32', 2),
           neighbors: graph.createDataView(backing.buffer, {
             format: 'uint32',
-            byteOffset: 8,
+            byteOffset: 0,
             length: 65
           }),
-          weights: view('float32', 65),
+          weights: graph.createDataView(backing.buffer, {
+            format: 'float32',
+            // Disjoint logical rows; the 256-byte-aligned bindings overlap by four bytes.
+            byteOffset: 260,
+            length: 65
+          }),
           status: {overflow: view('uint32', 1)}
         }
       })
   ).toThrow(/aligned binding byte ranges must not overlap/);
   device.destroy();
+});
+
+it.each([
+  4, 8, 256
+])('weights reject mixed-access physical aliases at byte %i before declarations', byteOffset => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const view = createViews(graph);
+  const backing = view('uint32', 512);
+  const props = {
+    slotCapacity: 65,
+    neighborRows: view('uint32', 65),
+    neighborCounts: view('uint32', 1),
+    output: {
+      offsets: graph.createDataView(backing.buffer, {format: 'uint32', length: 2}),
+      neighbors: graph.createDataView(backing.buffer, {format: 'uint32', byteOffset, length: 65}),
+      weights: view('float32', 65),
+      status: {overflow: view('uint32', 1)}
+    }
+  };
+  const declare = vi.spyOn(graph, 'createTransientBuffer');
+  try {
+    expect(() => new GPUNearestFeatureWeights(props)).toThrowError(
+      new Error(
+        'nearest-feature-weights one physical buffer must not be bound read-only and writable in the same dispatch'
+      )
+    );
+    expect(declare).not.toHaveBeenCalled();
+  } finally {
+    declare.mockRestore();
+    device.destroy();
+  }
 });
 
 it('nearest rejects aligned writable aliases across fields and chunks', () => {

@@ -202,7 +202,8 @@ it('coarsening oracle helpers quantize, wrap and order deterministically', () =>
     intraEdgeCount: 2,
     groupCount: 2
   });
-  expect(result.overflow).toBe(true);
+  expect(result.overflow).toBe(false);
+  expect(result.candidateOverflow).toBe(true);
   expect(() => decodeGPUNetworkCoarseningSummary([1, 2])).toThrow(/eight words/);
 });
 

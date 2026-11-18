@@ -9,7 +9,7 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {createGroupStatisticsKernelNode} from './group-statistics-kernel';
-import {getFixedPointWGSL, ORDERED_KEY_WGSL} from '../../analysis-core/cell-key-wgsl';
+import {getFixedPointWGSL, ORDERED_KEY_WGSL} from '../../analysis-core/kernels/cell-key-wgsl';
 import {
   FIXED_POINT_WGSL,
   FIXED_POINT_WORD_COUNT,

@@ -3,6 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
+
+it('suppresses tracking quality when supplied tripleg status reports loss', () => {
+  const fixture = getMobilityFixture();
+  const input = {...fixture, triplegs: {...fixture.triplegs!, overflow: Uint32Array.of(1)}};
+  const result = computeMobilityIndicatorsOnCPU(input, {trackCount: 2});
+  expect(Array.from(result.trackingQuality)).toEqual([NaN, NaN]);
+});
 import {
   computeMobilityIndicatorsOnCPU,
   CPUMobilityIndicatorsOperation
@@ -10,6 +17,59 @@ import {
 import {GPUMobilityIndicatorsOperation} from '../../../src/gpu-spatial-analysis/trajectory-mobility/gpu-mobility-indicators-operation';
 import scikitMobility from '../../oracles/fixtures/movement-scikit-mobility.json';
 import {getMobilityFixture, getMobilityProps} from './mobility-indicators-operation-fixture';
+import {computeTrajectoryStaypointsOnCPU} from '../../../src/gpu-spatial-analysis/trajectory-staypoints/cpu-trajectory-staypoints-operation';
+
+it('suppresses truncated staypoint indicators and recovers both complete compositions', () => {
+  for (const coordinates of [
+    [0, 10, 20],
+    [0, 0, 10, 10, 20, 20]
+  ]) {
+    const total = coordinates.length === 3 ? 2 : 3;
+    const timestamps = Float32Array.from(coordinates, (_, row) => row);
+    for (const capacity of [total - 1, total]) {
+      const stays = computeTrajectoryStaypointsOnCPU(
+        {
+          positions: Float32Array.from(coordinates.flatMap(x => [x, 0])),
+          timestamps,
+          trackOffsets: Uint32Array.of(0, coordinates.length),
+          parameters: Float32Array.of(1, 1, 0, Number(total === 3))
+        },
+        {capacity}
+      );
+      expect(stays.requiredCount[0]).toBe(total);
+      expect(stays.overflow[0]).toBe(Number(capacity < total));
+      const input = {
+        timestamps,
+        staypoints: {
+          tracks: stays.ids,
+          centroids: stays.centroids,
+          startRows: stays.startRows,
+          durations: stays.durations,
+          locationIds: Uint32Array.from({length: capacity}, (_, row) => row),
+          count: stays.count,
+          overflow: stays.overflow,
+          candidateOverflow: stays.candidateOverflow
+        }
+      };
+      const result = computeMobilityIndicatorsOnCPU(input, {trackCount: 1});
+      if (capacity < total) {
+        expect(Array.from(result.radiusOfGyration)).toEqual([NaN]);
+        expect(Array.from(result.randomEntropy)).toEqual([NaN]);
+        expect(Array.from(result.homeLocations)).toEqual([0xffffffff]);
+        expect(result.candidateOverflow[0]).toBe(1);
+      } else {
+        expect(result.radiusOfGyration[0]).toBeCloseTo(total === 2 ? 5 : Math.sqrt(200 / 3), 5);
+        expect(result.randomEntropy[0]).toBeCloseTo(Math.log2(total), 6);
+        expect(result.candidateOverflow[0]).toBe(0);
+      }
+      input.staypoints.overflow[0] = 0;
+      input.staypoints.candidateOverflow[0] = 1;
+      expect(
+        Array.from(computeMobilityIndicatorsOnCPU(input, {trackCount: 1}).randomEntropy)
+      ).toEqual([NaN]);
+    }
+  }
+});
 
 it('requires distance-compatible contexts in both the pure function and CPU constructor', () => {
   const input = {

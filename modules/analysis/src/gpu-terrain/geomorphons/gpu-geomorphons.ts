@@ -42,7 +42,7 @@ import {
   type GPURasterRowDirection,
   RASTER_DEGREES_TO_RADIANS_WGSL,
   validateRasterCellSizeMode
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 
 /**
  * How the zenith and nadir lines of sight of one direction are reduced to a ternary pattern digit.
@@ -191,7 +191,7 @@ export type GPUGeomorphonsProps = {
  * which `anglev2` reads as a tie and turns into +1; here no sample means no relief evidence, so the
  * digit stays 0 in every comparison mode.
  *
- * `requiredHalo` is the nominal row-based `searchRadius`, not a complete source-pixel bound.
+ * `searchRadius` is the nominal row-based search radius, not a complete source-pixel bound.
  * Search distance is `searchRadius * groundCellY` at the centre row; east-west reach can exceed
  * it whenever `groundCellY > groundCellX`, including projected grids. Cell sizes are per-frame,
  * so construction cannot bound every allowed update. This class does not implement
@@ -204,7 +204,7 @@ export class GPUGeomorphons implements GPUCommandNodeProducer {
   /** Validated properties. */
   readonly props: GPUGeomorphonsProps;
   /** Nominal row-based search radius; does not bound east-west source-pixel reach. */
-  readonly requiredHalo: number;
+  readonly searchRadius: number;
   /** Row direction the kernel uses: the prop, or the direction the grid affine states. */
   readonly rowDirection: GPURasterRowDirection;
 
@@ -252,7 +252,7 @@ export class GPUGeomorphons implements GPUCommandNodeProducer {
       [output.forms, output.ternary, output.pattern, output.outputValidity],
       [...getRasterBandViews(props.elevation), props.parameters]
     );
-    this.requiredHalo = props.searchRadius;
+    this.searchRadius = props.searchRadius;
   }
 
   /** Returns the optional elevation canonicalization nodes and the fused geomorphon kernel. */

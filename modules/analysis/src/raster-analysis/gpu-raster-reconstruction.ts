@@ -7,6 +7,7 @@ import {
   getRasterIterationSlotByteLength
 } from './raster-grid/raster-storage-preflight';
 import {validateGPUStatusPort} from '../analysis-core/contracts/status';
+import {snapshotConstructionFields} from '../analysis-core/kernels/construction-snapshot';
 import {
   getGraphOutputViews,
   validateCommandNodeBudget,
@@ -68,8 +69,10 @@ export type GPURasterReconstructionProps = {
     values: GraphDataView<'float32'>;
     validity: GraphDataView<'uint32'>;
     /**
-     * `converged` is 1 when a round changed nothing before the iteration limit. The optional
+     * `converged` is 1 when the published iterate is a fixed point. The optional
      * `iterationLimitReached` and `iterationCount` words are published when present.
+     * `iterationCount` includes the final verification pass, which never advances the output
+     * beyond `maximumIterations` rounds (so the count can be maximumIterations + 1).
      */
     status: RasterIterationStatusOutputs;
   };
@@ -81,6 +84,8 @@ export type GPURasterReconstructionProps = {
  * the mask; the fixed point is the reconstruction of `skimage.morphology.reconstruction`. Rounds
  * after convergence dispatch no work, and the current values are always published; check
  * `status.converged` to know whether they are final.
+ * The grid, round budget, band metadata and output port maps are captured at construction;
+ * GPU view identities are retained so their contents can change per frame.
  */
 export class GPURasterReconstruction implements GPUCommandNodeProducer {
   readonly id: string;
@@ -88,6 +93,32 @@ export class GPURasterReconstruction implements GPUCommandNodeProducer {
   /** Command nodes `getCommandNodes` returns; checked against the node budget. */
   readonly estimatedCommandNodeCount: number;
   constructor(props: GPURasterReconstructionProps) {
+    props = Object.freeze({
+      ...snapshotConstructionFields(props, [
+        'id',
+        'grid',
+        'marker',
+        'mask',
+        'method',
+        'connectivity',
+        'maximumIterations',
+        'output'
+      ]),
+      grid: Object.freeze({
+        ...props.grid,
+        affine: Object.freeze([...props.grid.affine]) as GPURasterMetadata['affine']
+      }),
+      marker: captureReconstructionInput(props.marker),
+      mask: captureReconstructionInput(props.mask),
+      output: Object.freeze({
+        ...snapshotConstructionFields(props.output, ['values', 'validity', 'status']),
+        status: snapshotConstructionFields(props.output.status, [
+          'converged',
+          'iterationLimitReached',
+          'iterationCount'
+        ])
+      })
+    });
     this.id = props.id ?? 'raster-reconstruction';
     this.props = props;
     const {id} = this;
@@ -182,18 +213,22 @@ export class GPURasterReconstruction implements GPUCommandNodeProducer {
         roundCount: (props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS) + 1,
         status: output.status,
         createRound: (
-          {nodeId, slotBinding, markChangedWGSL, condition, extraResources},
+          {nodeId, iteration, slotBinding, markChangedWGSL, condition, extraResources},
           status
         ) => {
+          const verification =
+            iteration === (props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS);
           const round = createWGSLKernelNode(graph, {
             id: nodeId,
             operation: 'GPURasterReconstruction',
-            variant: 'reconstruction-round',
+            variant: verification ? 'reconstruction-verification' : 'reconstruction-round',
             invocationCount: count,
             bindings: [
               {name: 'previous', view: previous, type: 'f32', access: 'read'},
               {name: 'mask', view: mask.values, type: 'f32', access: 'read'},
-              {name: 'next', view: next, type: 'f32', access: 'read_write'},
+              ...(!verification
+                ? [{name: 'next', view: next, type: 'f32', access: 'read_write'} as const]
+                : []),
               {name: 'status', view: status, type: 'atomic<u32>', access: 'read_write'},
               slotBinding
             ],
@@ -217,12 +252,12 @@ const HEIGHT: u32 = ${grid.height}u;`,
     }
     value = ${dilation ? 'min' : 'max'}(value, mask[maskOffset + index]);
   }
-  next[nextOffset + index] = value;
+  ${verification ? '' : 'next[nextOffset + index] = value;'}
   if (isFiniteValue(original) && value != original) { ${markChangedWGSL} }`,
             condition,
             extraResources
           });
-          [previous, next] = [next, previous];
+          if (!verification) [previous, next] = [next, previous];
           return round;
         }
       }),
@@ -272,6 +307,28 @@ export class GPURasterFillHoles implements GPUCommandNodeProducer {
   /** Command nodes `getCommandNodes` returns; checked against the node budget. */
   readonly estimatedCommandNodeCount: number;
   constructor(props: GPURasterFillHolesProps) {
+    props = Object.freeze({
+      ...snapshotConstructionFields(props, [
+        'id',
+        'grid',
+        'input',
+        'connectivity',
+        'maximumIterations',
+        'output'
+      ]),
+      grid: Object.freeze({
+        ...props.grid,
+        affine: Object.freeze([...props.grid.affine]) as GPURasterMetadata['affine']
+      }),
+      output: Object.freeze({
+        ...snapshotConstructionFields(props.output, ['values', 'status']),
+        status: snapshotConstructionFields(props.output.status, [
+          'converged',
+          'iterationLimitReached',
+          'iterationCount'
+        ])
+      })
+    });
     this.id = props.id ?? 'raster-fill-holes';
     this.props = props;
     const {id} = this;
@@ -366,4 +423,24 @@ export class GPURasterFillHoles implements GPUCommandNodeProducer {
       })
     ];
   }
+}
+
+/** Captures band metadata while keeping GPU view identities and per-frame contents. */
+function captureReconstructionInput(
+  input: GraphDataView<'float32'> | GPURasterBand
+): GraphDataView<'float32'> | GPURasterBand {
+  return isRasterAlgebraBand(input)
+    ? (Object.freeze({
+        ...snapshotConstructionFields(input, [
+          'id',
+          'format',
+          'storage',
+          'validity',
+          'noDataValue',
+          'scale',
+          'offset'
+        ]),
+        storage: Object.freeze({...input.storage})
+      }) as GPURasterBand)
+    : input;
 }

@@ -175,7 +175,7 @@ it('GPUCellCover scanline kernels parse and bind at most 8 storage buffers', () 
       const sources = getParsedKernelSources(nodes);
       const scanline = [...sources].filter(([id]) => id.includes('-scanline-'));
       expect(scanline.length).toBeGreaterThanOrEqual(SCANLINE_NODE_NAMES.length);
-      for (const [id, source] of sources) {
+      for (const {id, source} of sources.configurations) {
         expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
       }
       // No loop index, round or chunk reaches the WGSL (rule 12): the shared module does not

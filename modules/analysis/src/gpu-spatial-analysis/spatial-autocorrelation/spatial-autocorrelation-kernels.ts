@@ -32,6 +32,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-common';
 import {
   validateCapacity,
+  validateRequirement,
   validateSinglePackedView,
   validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -132,6 +133,15 @@ export function validateSpatialAutocorrelationInputs(
 ): number {
   const {id} = props;
   const rows = validateGPUSpatialWeightsOrChunks(id, props.weights);
+  if ('chunks' in props.weights) {
+    for (const [index, chunk] of props.weights.chunks.entries()) {
+      validateRequirement(
+        id,
+        !chunk.weights.status?.overflow && !chunk.weights.status?.candidateOverflow,
+        `weights.chunks[${index}].weights.status loss flags must be aggregated on the outer weights.status port`
+      );
+    }
+  }
   validateFloat32OrUint32Values(props.values, `${id} values`);
   validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
   if (props.islands !== undefined) {
@@ -139,6 +149,19 @@ export function validateSpatialAutocorrelationInputs(
   }
   if (props.weights.status?.overflow) {
     validatePackedUint32View(props.weights.status.overflow, `${id} weights.status.overflow`);
+  }
+  if (props.weights.status?.candidateOverflow) {
+    validateSinglePackedView(
+      props.weights.status.candidateOverflow,
+      ['uint32'],
+      `${id} weights.status.candidateOverflow`
+    );
+    validateCapacity(
+      id,
+      'weights.status.candidateOverflow length',
+      props.weights.status.candidateOverflow.length,
+      1
+    );
   }
   // Counts reduce in uint32. Conversion to f32 happens only for statistical arithmetic and the
   // existing float32 summary layout; no rank or row address goes through f32.
@@ -188,6 +211,7 @@ export function validateSpatialAutocorrelationBindings<Parameters>(
       [
         ...getGPUSpatialWeightsOrChunksViews(props.weights),
         props.weights.status?.overflow,
+        props.weights.status?.candidateOverflow,
         props.values,
         props.parameters,
         props.mask,
@@ -301,8 +325,8 @@ export function getSpatialWeightsNeighborLoopWGSL(action: string, rowStart?: str
  * `GPUGlobalSpatialStatistics`; subtracting the corrected mean, rounded to one f32, from the raw
  * value would round every centered value to the f32 grid of the raw values). Then the sum of
  * squared centered values, so the variance never subtracts two large numbers. Fixed moments in the parameters replace the count, mean and variance. When
- * `weights.status.overflow` is nonzero the weights are truncated and the mean becomes NaN, which
- * makes every output NaN.
+ * either `weights.status.overflow` or `weights.status.candidateOverflow` is nonzero the weights
+ * are incomplete and the mean becomes NaN, which suppresses statistics and inference.
  *
  * With `props.islands` given, a row-state kernel marks islands (included rows without an active
  * neighbor) first. `'exclude'` leaves them out of the moments (their `statistics` entry is NaN);
@@ -325,6 +349,7 @@ export function getSpatialAutocorrelationInputNodes<Parameters>(
   const hasIslandPass = props.islands !== undefined;
   const keepIslands = props.islands === 'keep';
   const overflow = weights.status?.overflow;
+  const candidateOverflow = weights.status?.candidateOverflow;
   const dispatches = getGPUSpatialWeightsChunkDispatches(weights);
 
   const valuePartials = createTransientView(graph, `${id}-value-partials`, 'float32', blockCount);
@@ -581,6 +606,16 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
         {name: 'counts', view: counts, type: 'u32', access: 'read_write'},
         ...(overflow
           ? [{name: 'overflow', view: overflow, type: 'u32' as const, access: 'read' as const}]
+          : []),
+        ...(candidateOverflow
+          ? [
+              {
+                name: 'candidateOverflow',
+                view: candidateOverflow,
+                type: 'u32' as const,
+                access: 'read' as const
+              }
+            ]
           : [])
       ],
       workgroupSize: MOMENT_WORKGROUP_SIZE,
@@ -623,9 +658,14 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
       mean += residualMean;
     }
     ${
-      overflow
-        ? `// Truncated weights: no statistic from them is trustworthy, so every output becomes NaN.
-    if (overflow[overflowOffset] != 0u) {
+      overflow || candidateOverflow
+        ? `// Incomplete weights: suppress statistics and inference.
+    if (${[
+      overflow ? 'overflow[overflowOffset] != 0u' : undefined,
+      candidateOverflow ? 'candidateOverflow[candidateOverflowOffset] != 0u' : undefined
+    ]
+      .filter(Boolean)
+      .join(' || ')}) {
       mean = getQuietNaN(index);
       residualMean = getQuietNaN(index);
     }`

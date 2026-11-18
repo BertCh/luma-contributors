@@ -6,6 +6,8 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import type {Device} from '@luma.gl/core';
 import {expect, it} from 'vitest';
 import {
+  decodeGPUSpaceTimeInferenceMetadata,
+  type GPUSpaceTimeInferenceMetadata,
   getGPUSpaceTimeParameterValues,
   GPUKnoxTest,
   GPUMantelTest,
@@ -16,9 +18,65 @@ import {AnalysisRig, type CPUWeights} from '../catchment-accessibility/rig';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {computeKnoxOracle, computeSequentialStop} from './space-time-oracle';
 import {buildBand, createEvents, createStoppingEvents, uploadPairs} from './space-time-scenes';
+import {GPUParameterBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
+import {submitGraph} from '../../utils/gpu-contributor-test-utils';
+
+it('decodes unavailable zero-draw Mantel inference and recovers with seven complete draws', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new AnalysisRig(device);
+  const loss = new GPUParameterBuffer(device, {
+    id: 'stopping-loss',
+    format: 'uint32',
+    length: 1,
+    values: Uint32Array.of(1)
+  });
+  let compiled: ReturnType<typeof rig.graph.compile> | undefined;
+  try {
+    const summary = rig.output('float32', 12),
+      used = rig.output('uint32', 1);
+    const settings = {seed: 17, permutationCount: 7};
+    const contributor = new GPUMantelTest({
+      pairs: {
+        offsets: rig.input(Uint32Array.of(0, 2, 3, 3), 'uint32'),
+        neighbors: rig.input(Uint32Array.of(1, 2, 2), 'uint32'),
+        weights: rig.input(Float32Array.of(1, 1, 1), 'float32'),
+        distances: rig.input(Float32Array.of(1, 2, 4), 'float32'),
+        status: {candidateOverflow: loss.importToGraph(rig.graph)}
+      },
+      times: rig.input(Float32Array.of(0, 1, 3), 'float32'),
+      parameters: rig.input(getGPUSpaceTimeParameterValues(settings), 'uint32'),
+      maximumPermutations: 9,
+      stopAfterExceedances: 9,
+      output: {statistics: rig.output('float32', 10), summary, permutationCount: used}
+    });
+    const metadata = contributor.getInferenceMetadata(settings);
+    rig.graph.add(contributor);
+    compiled = rig.graph.compile();
+    for (const flag of [1, 0]) {
+      loss.write(Uint32Array.of(flag));
+      submitGraph(device, compiled, undefined);
+      const count = (await rig.readUint(used))[0];
+      expect(count).toBe(flag ? 0 : 7);
+      expect(decodeGPUSpaceTimeInferenceMetadata(metadata, count)).toMatchObject({
+        permutationCount: count,
+        available: !flag
+      });
+      const values = await rig.readFloat(summary);
+      if (flag) expect(values.every(Number.isNaN)).toBe(true);
+      else expect(values[GPU_SPACE_TIME_SUMMARY.observed]).toBeCloseTo(Math.sqrt(3 / 28), 5);
+    }
+    expect(() => decodeGPUSpaceTimeInferenceMetadata(metadata, 1)).toThrow(/permutationCount/);
+  } finally {
+    compiled?.destroy();
+    rig.destroy();
+    loss.destroy();
+  }
+});
 
 type Scene = {csr: CPUWeights & {distances: number[]}; times: Float32Array};
 type Run = {
+  inference: GPUSpaceTimeInferenceMetadata;
   statistics: number[];
   summary: number[];
   permutationCount?: number;
@@ -36,6 +94,7 @@ async function runTest(
     maximumPermutations: number;
     threshold?: number;
     stopAfterExceedances?: number;
+    mutateCompileTimeProps?: boolean;
   }
 ): Promise<Run> {
   const rig = new AnalysisRig(device);
@@ -58,32 +117,48 @@ async function runTest(
   };
   const start = performance.now();
   let statistics: number[];
+  let inference: GPUSpaceTimeInferenceMetadata;
+  const inferenceSettings = {
+    seed: settings.seed,
+    permutationCount: settings.permutations,
+    timeThreshold: settings.threshold
+  };
   if (kind === 'knox') {
     const output = rig.output('uint32', maximumPermutations + 1);
-    rig.run(
-      new GPUKnoxTest({
-        ...common,
-        pairs: rig.weights(scene.csr, 4),
-        output: {statistics: output, summary, permutationCount}
-      })
-    );
+    const callerProps = {
+      ...common,
+      pairs: rig.weights(scene.csr, 4),
+      output: {statistics: output, summary, permutationCount}
+    };
+    const contributor = new GPUKnoxTest(callerProps);
+    rig.run(contributor);
+    if (settings.mutateCompileTimeProps) {
+      delete callerProps.stopAfterExceedances;
+      callerProps.maximumPermutations = 1;
+    }
+    inference = contributor.getInferenceMetadata(inferenceSettings);
     statistics = await rig.readUint(output);
   } else {
     const output = rig.output('float32', maximumPermutations + 1);
-    rig.run(
-      new GPUMantelTest({
-        ...common,
-        pairs: uploadPairs(rig, scene.csr),
-        output: {statistics: output, summary, permutationCount}
-      })
-    );
+    const callerProps = {
+      ...common,
+      pairs: uploadPairs(rig, scene.csr),
+      output: {statistics: output, summary, permutationCount}
+    };
+    const contributor = new GPUMantelTest(callerProps);
+    rig.run(contributor);
+    if (settings.mutateCompileTimeProps) {
+      delete callerProps.stopAfterExceedances;
+      callerProps.maximumPermutations = 1;
+    }
+    inference = contributor.getInferenceMetadata(inferenceSettings);
     statistics = await rig.readFloat(output);
   }
   const summaryValues = await rig.readFloat(summary);
   const milliseconds = performance.now() - start;
   const used = permutationCount ? (await rig.readUint(permutationCount))[0] : undefined;
   rig.destroy();
-  return {statistics, summary: summaryValues, permutationCount: used, milliseconds};
+  return {statistics, summary: summaryValues, permutationCount: used, milliseconds, inference};
 }
 
 const index = GPU_SPACE_TIME_SUMMARY;
@@ -186,9 +261,18 @@ for (const kind of ['knox', 'mantel'] as const) {
       permutations: 150,
       maximumPermutations: 191,
       threshold: 1,
-      stopAfterExceedances: 10
+      stopAfterExceedances: 10,
+      mutateCompileTimeProps: true
     });
     expect(run.permutationCount).toBe(10);
+    expect(run.inference.permutationCount).toBeUndefined();
+    expect(decodeGPUSpaceTimeInferenceMetadata(run.inference, run.permutationCount!)).toMatchObject(
+      {
+        permutationCount: 10,
+        requestedPermutationCount: 150,
+        stoppingRule: {method: 'besag-clifford', stopAfterExceedances: 10}
+      }
+    );
     expect(run.summary[index.pseudoPGreater]).toBe(1);
     expect(run.statistics.slice(11).every(value => value === 0)).toBe(true);
   });

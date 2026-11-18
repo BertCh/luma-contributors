@@ -12,7 +12,14 @@ import {
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 
-for (const fixture of ['affine', 'piecewise', 'invalid', 'no-transitions'] as const) {
+for (const fixture of [
+  'affine',
+  'piecewise',
+  'invalid',
+  'no-transitions',
+  'zero-budget',
+  'one-sweep'
+] as const) {
   it(`routing twins compare all arrivals, predecessors and summary words: ${fixture}`, async () => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
@@ -27,6 +34,7 @@ for (const fixture of ['affine', 'piecewise', 'invalid', 'no-transitions'] as co
       departure: 'departure',
       costModel: piecewise ? 'piecewise-arrival' : 'affine-duration',
       samplesPerTransition: piecewise ? 2 : undefined,
+      maximumRelaxations: fixture === 'zero-budget' ? 0 : fixture === 'one-sweep' ? 1 : undefined,
       output: {
         arrivals: 'arrivals',
         predecessorTransitions: 'predecessors',
@@ -80,6 +88,17 @@ for (const fixture of ['affine', 'piecewise', 'invalid', 'no-transitions'] as co
     expect(results[0]['summary']).toEqual(results[1]['summary']);
     for (const field of ['invalidCount', 'converged', 'iterationCount', 'iterationLimitReached'])
       expect(results[0][field]).toEqual(results[1][field]);
+    if (fixture === 'zero-budget' || fixture === 'one-sweep') {
+      const hasSwept = fixture === 'one-sweep';
+      for (const result of results) {
+        expect(Array.from(result['arrivals'])).toEqual(
+          hasSwept ? [4, 8, 24, Infinity] : [4, Infinity, Infinity, Infinity]
+        );
+        expect(Array.from(result['converged'])).toEqual([0]);
+        expect(Array.from(result['iterationCount'])).toEqual([Number(hasSwept)]);
+        expect(Array.from(result['iterationLimitReached'])).toEqual([1]);
+      }
+    }
     for (let state = 0; state < 4; state++) {
       const expected = results[1]['arrivals'][state];
       if (!Number.isFinite(expected)) expect(results[0]['arrivals'][state]).toBe(expected);

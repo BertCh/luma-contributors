@@ -19,7 +19,7 @@ export function getRasterZoneDictionaryNodes<Parameters>(
     dictionary: GraphDataView<'uint32'>;
     ignoredZone: number;
     sourceZoneIds: GraphDataView<'uint32'>;
-    denseZoneIds: GraphDataView<'uint32'>;
+    denseZoneRows: GraphDataView<'uint32'>;
     invalidCount: GraphDataView<'uint32'>;
   }
 ): {nodes: GPUCommandNode<Parameters>[]; zones: GraphDataView<'uint32'>} {
@@ -61,11 +61,11 @@ export function getRasterZoneDictionaryNodes<Parameters>(
           {name: 'dictionary', view: dictionary, type: 'u32', access: 'read'},
           {name: 'invalidDictionary', view: invalidDictionary, type: 'u32', access: 'read'},
           {name: 'sourceZoneIds', view: props.sourceZoneIds, type: 'u32', access: 'read_write'},
-          {name: 'denseZoneIds', view: props.denseZoneIds, type: 'u32', access: 'read_write'},
+          {name: 'denseZoneRows', view: props.denseZoneRows, type: 'u32', access: 'read_write'},
           {name: 'invalidCount', view: invalidCount, type: 'u32', access: 'read_write'}
         ],
         body: `sourceZoneIds[sourceZoneIdsOffset + index] = dictionary[dictionaryOffset + index];
-  denseZoneIds[denseZoneIdsOffset + index] = select(index, 0xffffffffu, invalidDictionary[invalidDictionaryOffset] != 0u);
+  denseZoneRows[denseZoneRowsOffset + index] = select(index, 0xffffffffu, invalidDictionary[invalidDictionaryOffset] != 0u);
   if (index == 0u) { invalidCount[invalidCountOffset] = invalidDictionary[invalidDictionaryOffset]; }`
       }),
       createWGSLKernelNode(graph, {

@@ -131,6 +131,20 @@ export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS = {
   EXCLUDED: 2
 } as const;
 
+/** Decode one GWR `localStatus` word; this describes the local fit, not bandwidth-search convergence. */
+export function decodeGPUGeographicallyWeightedRegressionStatus(code: number) {
+  switch (code) {
+    case GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.OK:
+      return 'ok';
+    case GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.SINGULAR:
+      return 'singular';
+    case GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.EXCLUDED:
+      return 'excluded';
+    default:
+      return 'unknown';
+  }
+}
+
 /**
  * Float32 slots of the `summary` output. Statistics are taken over the rows whose local fit at the
  * selected bandwidth succeeded (all included rows unless some are singular).
@@ -252,8 +266,8 @@ export type GPUGeographicallyWeightedRegressionSettings = {
    */
   bandwidths: ArrayLike<number>;
   /**
-   * Two-sided significance level of the adjusted alpha and critical t value, in (0, 1). Defaults to
-   * 0.05. Per frame.
+   * Two-sided significance level of the adjusted alpha and critical t value. Its float32
+   * representation must be in (0, 1). Defaults to 0.05. Per frame.
    */
   significanceLevel?: number;
 };
@@ -278,8 +292,10 @@ export function getGPUGeographicallyWeightedRegressionParameterLength(
  * @param settings Kernel, bandwidth mode and ladder.
  * @param maximumBandwidthCount Ladder capacity of the contributor (its `maximumBandwidthCount`).
  * @param target Optional destination of at least the parameter length.
- * @throws If the ladder is empty, longer than the capacity, or has a non-finite value, or a name is
- * not recognized, or `significanceLevel` is outside (0, 1), or `target` is too short.
+ * Validates all float32 representations before modifying `target`.
+ *
+ * @throws If the ladder is empty, longer than the capacity, or has a non-finite float32 value, or a name is
+ * not recognized, or float32 `significanceLevel` is outside (0, 1), or `target` is too short.
  */
 export function getGPUGeographicallyWeightedRegressionParameterValues(
   settings: GPUGeographicallyWeightedRegressionSettings,
@@ -293,7 +309,12 @@ export function getGPUGeographicallyWeightedRegressionParameterValues(
     throw new Error(`GWR parameter target must hold ${length} elements`);
   }
   const {bandwidths} = settings;
-  if (bandwidths.length < 1 || bandwidths.length > maximumBandwidthCount) {
+  const bandwidthCount = bandwidths.length;
+  if (
+    !Number.isInteger(bandwidthCount) ||
+    bandwidthCount < 1 ||
+    bandwidthCount > maximumBandwidthCount
+  ) {
     throw new Error(`GWR bandwidths must hold 1 to ${maximumBandwidthCount} values`);
   }
   const kernel = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_KERNEL[settings.kernel ?? 'bisquare'];
@@ -302,30 +323,32 @@ export function getGPUGeographicallyWeightedRegressionParameterValues(
   if (kernel === undefined || mode === undefined) {
     throw new Error('GWR kernel or bandwidth mode is not recognized');
   }
-  target.fill(0, 0, length);
-  target[0] = kernel;
-  target[1] = mode;
-  target[2] = bandwidths.length;
-  const level = settings.significanceLevel;
+  const level =
+    settings.significanceLevel === undefined ? undefined : Math.fround(settings.significanceLevel);
   if (level !== undefined) {
     if (!(level > 0 && level < 1)) {
-      throw new Error('GWR significanceLevel must be in (0, 1)');
+      throw new Error('GWR significanceLevel must be in (0, 1) after float32 packing');
     }
-    target[3] = level;
   }
-  for (let index = 0; index < bandwidths.length; index++) {
-    if (!Number.isFinite(bandwidths[index])) {
-      throw new Error('GWR bandwidths must be finite');
+  const packedBandwidths = new Float32Array(bandwidthCount);
+  for (let index = 0; index < packedBandwidths.length; index++) {
+    packedBandwidths[index] = bandwidths[index];
+    if (!Number.isFinite(packedBandwidths[index])) {
+      throw new Error('GWR bandwidths must be finite after float32 packing');
     }
     if (mode === GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_BANDWIDTH_MODE.fixed) {
       warnGPUShortLongitudeLatitudeDistance(
         'GPUGeographicallyWeightedRegression',
         settings.spatialContext,
-        bandwidths[index]
+        packedBandwidths[index]
       );
     }
-    target[GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_PARAMETER_HEADER_LENGTH + index] =
-      bandwidths[index];
   }
+  target.fill(0, 0, length);
+  target[0] = kernel;
+  target[1] = mode;
+  target[2] = packedBandwidths.length;
+  target[3] = level ?? 0;
+  target.set(packedBandwidths, GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_PARAMETER_HEADER_LENGTH);
   return target;
 }

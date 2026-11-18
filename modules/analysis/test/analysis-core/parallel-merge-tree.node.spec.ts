@@ -30,9 +30,9 @@ it('resumes ranked-edge splicing in gated rounds with a constant per-endpoint wo
     expect(node.condition).toBeDefined();
     expect(node.workload?.maximumInvocationCount).toBe(2048);
   }
-  for (const [name, source] of getParsedKernelSources(nodes)) {
+  for (const {id: name, source, constants} of getParsedKernelSources(nodes).configurations) {
     expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
-    expect(auditWGSLModule(source), name).toEqual([]);
+    expect(auditWGSLModule(source, constants), name).toEqual([]);
     if (/-splice-round-/.test(name)) {
       expect(source).not.toMatch(/\bloop\s*\{/);
       expect(source).toContain('attempt < 2048u');

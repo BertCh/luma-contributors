@@ -101,10 +101,12 @@ it('GPUWardRegions mutual-nearest gates its rounds (rule 13) and stays within co
     // The finish kernel writes the gate, so it stays ungated.
     expect(node?.condition?.mode, stage).toBe(ungated.has(stage) ? undefined : 'indirect');
   }
-  for (const {id, source} of getGPUCommandNodeKernelSources(nodes)) {
+  for (const {id, source, constants} of getGPUCommandNodeKernelSources(nodes)) {
     expect(() => new WgslReflect(source), id).not.toThrow();
-    expect(getPrivateMemoryBytes(source), id).toBeLessThanOrEqual(CORE_PRIVATE_MEMORY_LIMIT_BYTES);
-    expect(getWorkgroupMemoryBytes(source), id).toBeLessThanOrEqual(
+    expect(getPrivateMemoryBytes(source, constants), id).toBeLessThanOrEqual(
+      CORE_PRIVATE_MEMORY_LIMIT_BYTES
+    );
+    expect(getWorkgroupMemoryBytes(source, constants), id).toBeLessThanOrEqual(
       CORE_WORKGROUP_STORAGE_LIMIT_BYTES
     );
     expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
@@ -288,10 +290,12 @@ it('large Ward inputs distribute exact reciprocal-pair selection with bounded sc
   const kernels = getGPUCommandNodeKernelSources(nodes);
   expect(kernels.some(kernel => kernel.id.includes('selection-count-11'))).toBe(true);
   expect(kernels.filter(kernel => kernel.id.includes('contract-0-costs'))).toHaveLength(1);
-  for (const {id, source} of kernels) {
+  for (const {id, source, constants} of kernels) {
     expect(() => new WgslReflect(source), id).not.toThrow();
-    expect(getPrivateMemoryBytes(source), id).toBeLessThanOrEqual(CORE_PRIVATE_MEMORY_LIMIT_BYTES);
-    expect(getWorkgroupMemoryBytes(source), id).toBeLessThanOrEqual(
+    expect(getPrivateMemoryBytes(source, constants), id).toBeLessThanOrEqual(
+      CORE_PRIVATE_MEMORY_LIMIT_BYTES
+    );
+    expect(getWorkgroupMemoryBytes(source, constants), id).toBeLessThanOrEqual(
       CORE_WORKGROUP_STORAGE_LIMIT_BYTES
     );
     expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);

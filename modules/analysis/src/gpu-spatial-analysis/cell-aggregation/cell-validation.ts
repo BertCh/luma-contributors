@@ -18,6 +18,46 @@ import {
   validateCapacity,
   validateMaximumCount
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import type {GPUCellTable} from './cell-table';
+import {
+  validateCellDispatchOutputs,
+  validateCellReadWriteDispatch
+} from '../cell-indexing/cell-dispatch-validation';
+
+/** Validate logical separation globally and aligned ranges within each table publisher. @internal */
+export function validateCellTableWritableViews(
+  id: string,
+  table: GPUCellTable,
+  extraCounts: readonly GraphDataView<'uint32'>[] = [],
+  options: {separateColumns?: boolean; rollup?: boolean} = {}
+): void {
+  const columns = {
+    cells: table.cells,
+    counts: table.counts,
+    sums: table.sums,
+    sumValues: table.sumValues,
+    minimums: table.minimums,
+    maximums: table.maximums
+  };
+  const finalStatus = {
+    count: table.status.count,
+    overflow: table.status.overflow,
+    requiredCount: table.status.requiredCount
+  };
+  const candidateOverflow = table.status.candidateOverflow;
+  const counts = Object.fromEntries(
+    extraCounts.map((view, index) => [`extraCounts[${index}]`, view])
+  );
+  const finish = {sumValues: table.sumValues, minimums: table.minimums, maximums: table.maximums};
+  validateCellDispatchOutputs(id, {...columns, ...finalStatus, candidateOverflow, ...counts}, [
+    ...(options.separateColumns ? [] : [{cells: table.cells, counts: table.counts}, finish]),
+    ...(options.rollup && table.sums ? [{counts: table.counts, sums: table.sums}] : []),
+    {...finalStatus, ...counts},
+    {candidateOverflow}
+  ]);
+  if (!options.separateColumns && table.sumValues && table.sums)
+    validateCellReadWriteDispatch(id, {sums: table.sums}, finish);
+}
 
 /** Rejects writable cell-column aliases, including aliases between separate dispatches. @internal */
 export function validateCellWritableViews(

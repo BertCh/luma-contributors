@@ -52,7 +52,7 @@ export type CPUTrackSimilarityResult = {
   pairStatus: Uint32Array;
 };
 
-/** Numeric options have the contributor's meanings; the GPU-only Frechet cap is ignored. */
+/** Numeric options have the contributor's meanings; an explicit shorter-track cap is honored. */
 export type CPUTrackSimilarityOptions = Pick<
   TrackSimilarityOperationProps,
   | 'spatialContext'
@@ -69,6 +69,9 @@ export type CPUTrackSimilarityOptions = Pick<
 };
 
 type TrackPoint = readonly [number, number];
+
+// JavaScript arrays and the contributor's densified row indices both have a uint32 length.
+const MAXIMUM_DENSIFIED_VERTEX_COUNT = 0xffffffff;
 
 function validateOptions(id: string, options: CPUTrackSimilarityOptions): void {
   const densify = options.densify ?? 0;
@@ -158,18 +161,16 @@ function computeTrackSegmentDistance(
 ): number {
   let startLongitude = start[0] - point[0];
   const startLatitude = start[1] - point[1];
-  let endLongitude = end[0] - point[0];
-  const endLatitude = end[1] - point[1];
   const radians = Math.PI / 180;
   const cosine = radius === undefined ? 1 : Math.sin((90 - Math.abs(point[1])) * radians);
   if (radius !== undefined) {
     startLongitude = getCPUTrajectoryLongitudeDelta(point[0], start[0]);
-    endLongitude = getCPUTrajectoryLongitudeDelta(point[0], end[0]);
   }
   const startEast = startLongitude * cosine;
-  const directionEast =
-    radius === undefined ? end[0] - start[0] : endLongitude * cosine - startEast;
-  const directionNorth = radius === undefined ? end[1] - start[1] : endLatitude - startLatitude;
+  const longitudeDelta =
+    radius === undefined ? end[0] - start[0] : getCPUTrajectoryLongitudeDelta(start[0], end[0]);
+  const directionEast = longitudeDelta * cosine;
+  const directionNorth = end[1] - start[1];
   const denominator = directionEast * directionEast + directionNorth * directionNorth;
   const fraction =
     denominator > 0 && (start[0] !== end[0] || start[1] !== end[1])
@@ -184,15 +185,18 @@ function computeTrackSegmentDistance(
       startLatitude + fraction * directionNorth
     );
   }
-  const longitudeOffset =
-    startLongitude + fraction * getCPUTrajectoryLongitudeDelta(start[0], end[0]);
+  const longitudeOffset = startLongitude + fraction * longitudeDelta;
   const latitudeOffset = startLatitude + fraction * (end[1] - start[1]);
   const term =
     Math.sin(0.5 * latitudeOffset * radians) ** 2 +
     Math.sin((90 - Math.abs(point[1])) * radians) *
       Math.sin((90 - Math.abs(point[1] + latitudeOffset)) * radians) *
       Math.sin(0.5 * longitudeOffset * radians) ** 2;
-  return 2 * radius * Math.asin(Math.sqrt(Math.max(0, Math.min(1, term))));
+  return Math.min(
+    2 * radius * Math.asin(Math.sqrt(Math.max(0, Math.min(1, term)))),
+    computeTrackPointDistance(point, start, radius),
+    computeTrackPointDistance(point, end, radius)
+  );
 }
 
 function computeTrackPointDistance(
@@ -297,8 +301,10 @@ function computeTrackProgram(
  * - All arithmetic uses float64 and rounds once to float32 output. Near-threshold Frechet, EDR
  *   and LCSS decisions can differ; compare noninteger distances with relative tolerance 3e-5.
  *   Numeric match tolerances and the ERP gap point are converted to float32 as GPU constants are.
- * - The shorter-track, densification, pair-dispatch and band-index GPU limits are dropped.
- *   maximumFrechetVertexCount is accepted but ignored; frechetCapExceeded is never set.
+ * - The shorter-track, subdivision, pair-dispatch and band-index GPU limits are dropped.
+ *   An explicit maximumFrechetVertexCount bounds dynamic-program measures, setting
+ *   frechetCapExceeded and leaving their outputs unavailable when exceeded.
+ *   Measures that densify reject expanded tracks above 2^32 - 1 vertices before allocation.
  * - Dynamic programs compute the complete documented method without GPU strips or early exits.
  *   DTW costs are not saturated at the largest finite float32; output overflow becomes Infinity.
  * - Inconsistent arrays and decreasing/out-of-range lineOffsets throw an Error naming the array.
@@ -352,6 +358,9 @@ export function computeTrackSimilarityOnCPU(
   });
   const radius = getGPUGreatCircleRadius(context);
   const subdivisions = options.densify ? Math.round(1 / options.densify) : 1;
+  const requiresDensification = [...measures].some(
+    measure => measure !== 'maximumDistance' && measure !== 'symmetricSegmentPathDistance'
+  );
   const linesB = input.linesB ?? input.linesA;
   for (let pair = 0; pair < count; pair++) {
     const firstTrack = input.pairA[pair];
@@ -379,8 +388,36 @@ export function computeTrackSimilarityOnCPU(
       )
     )
       continue;
-    const denseFirst = densifyTrack(first, subdivisions, radius !== undefined);
-    const denseSecond = densifyTrack(second, subdivisions, radius !== undefined);
+    const capExceeded =
+      options.maximumFrechetVertexCount !== undefined &&
+      Math.min((first.length - 1) * subdivisions + 1, (second.length - 1) * subdivisions + 1) >
+        options.maximumFrechetVertexCount &&
+      [...measures].some(
+        measure =>
+          measure !== 'hausdorff' &&
+          measure !== 'maximumDistance' &&
+          measure !== 'symmetricSegmentPathDistance'
+      );
+    if (capExceeded) result.pairStatus[pair] = GPU_TRACK_SIMILARITY_STATUS.frechetCapExceeded;
+    const densifyPair = requiresDensification && (!capExceeded || measures.has('hausdorff'));
+    if (densifyPair) {
+      // Preflight both tracks before allocating either dense point array.
+      for (const track of [first, second]) {
+        validateCapacity(
+          'computeTrackSimilarityOnCPU',
+          'densifiedVertexCount',
+          (track.length - 1) * subdivisions + 1,
+          1,
+          MAXIMUM_DENSIFIED_VERTEX_COUNT
+        );
+      }
+    }
+    const denseFirst = densifyPair
+      ? densifyTrack(first, subdivisions, radius !== undefined)
+      : first;
+    const denseSecond = densifyPair
+      ? densifyTrack(second, subdivisions, radius !== undefined)
+      : second;
     if (measures.has('hausdorff')) {
       let largest = 0;
       for (const [points, target] of [
@@ -419,6 +456,7 @@ export function computeTrackSimilarityOnCPU(
       'editDistanceWithRealPenalty',
       'longestCommonSubsequence'
     ] as const) {
+      if (capExceeded) continue;
       if (!measures.has(kind) && !(kind === 'frechet' && measures.has('frechetWithin'))) continue;
       const value = computeTrackProgram(denseFirst, denseSecond, kind, radius, options);
       if (measures.has(kind)) result[kind][pair] = value;

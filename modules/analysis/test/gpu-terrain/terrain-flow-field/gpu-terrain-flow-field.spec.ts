@@ -24,7 +24,7 @@ import {
   advanceParticlesOnCPU,
   createParticleAdvectionCPUState
 } from '../../oracles/particle-advection-cpu';
-import type {GPURasterCellSizeMode} from '../../../src/analysis-core/raster-grid';
+import type {GPURasterCellSizeMode} from '../../../src/analysis-core/contracts/raster-grid';
 import {
   GPUTerrainFlowField,
   getGPUTerrainFlowFieldParameterValues,

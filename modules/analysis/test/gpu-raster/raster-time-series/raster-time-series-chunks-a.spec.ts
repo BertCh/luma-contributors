@@ -51,6 +51,100 @@ const FAMILIES = [
 
 type RecordedOutput = {buffer: Buffer; prefix: number; length: number; integer: boolean};
 
+it('harmonic reference fits a constant series identically with pooled and separate outputs', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const graph = new GPUCommandGraph(device);
+  const buffers: Buffer[] = [];
+  const input = <Format extends 'float32' | 'uint32x2'>(
+    name: string,
+    format: Format,
+    data: Float32Array | Uint32Array
+  ) => {
+    const buffer = createInputBuffer(device, data);
+    buffers.push(buffer);
+    return importGraphBuffer(
+      graph,
+      name,
+      buffer,
+      format,
+      format === 'uint32x2' ? data.length / 2 : data.length
+    );
+  };
+  const allocate = (length: number) => {
+    const buffer = createOutputBuffer(device, length);
+    buffers.push(buffer);
+    return buffer;
+  };
+  const values = input('constant', 'float32', new Float32Array(16).fill(3));
+  const parameters = input('period', 'float32', Float32Array.of(1));
+  const dates = BigInt64Array.from({length: 16}, (_, slice) => BigInt(slice) * 7_889_238n);
+  const dateAxis = {
+    acquisitionTimes: input('dates', 'uint32x2', new Uint32Array(dates.buffer)),
+    temporalContext: {
+      encoding: 'int64-words',
+      unit: 'second',
+      epoch: 0n,
+      axis: {kind: 'irregular'}
+    } as const
+  };
+  const pooled = allocate(256);
+  const pooledView = importGraphBuffer(graph, 'pooled', pooled, 'float32', 256);
+  const coefficients = allocate(4);
+  const fitted = allocate(16);
+  const summaries = [allocate(2), allocate(2)];
+  for (const [index, output] of [
+    {
+      coefficients: graph.createDataView(pooledView.buffer, {format: 'float32', length: 4}),
+      fitted: graph.createDataView(pooledView.buffer, {
+        format: 'float32',
+        length: 16,
+        byteOffset: 256
+      })
+    },
+    {
+      coefficients: importGraphBuffer(graph, 'coefficients', coefficients, 'float32', 4),
+      fitted: importGraphBuffer(graph, 'fitted', fitted, 'float32', 16)
+    }
+  ].entries()) {
+    graph.add(
+      new GPURasterHarmonicRegression({
+        id: `constant-${index}`,
+        mode: 'reference',
+        cellCount: 1,
+        sliceCount: 16,
+        harmonicCount: 1,
+        values,
+        parameters,
+        dateAxis,
+        output: {
+          ...output,
+          summary: importGraphBuffer(graph, `summary-${index}`, summaries[index], 'uint32', 2)
+        }
+      })
+    );
+  }
+  const compiled = graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    const packed = await readFloat32(pooled, 80);
+    const separateCoefficients = await readFloat32(coefficients, 4);
+    const separateFitted = await readFloat32(fitted, 16);
+    for (const [index, value] of separateCoefficients.entries()) {
+      expect(value).toBeCloseTo(index === 0 ? 3 : 0, 5);
+      expect(packed[index]).toBeCloseTo(value, 5);
+    }
+    for (const [index, value] of separateFitted.entries()) {
+      expect(value).toBeCloseTo(3, 5);
+      expect(packed[64 + index]).toBeCloseTo(value, 5);
+    }
+    for (const summary of summaries) expect(await readUint32(summary, 2)).toEqual([0, 16]);
+  } finally {
+    compiled.destroy();
+    for (const buffer of buffers) buffer.destroy();
+  }
+});
+
 // Gaussian elimination of the normal equations is independent of the contributor's QR solver.
 function fitBFASTConstantWithNoise(cell: number): number[] {
   const design = Array.from({length: 12}, (_, slice) => {

@@ -113,7 +113,7 @@ it('every tour kernel parses as WGSL within the core binding limit', () => {
   for (const nodes of [buildFlow(6, 5, false), buildOrder(6, 5), buildOrder(40, 36)]) {
     const sources = getParsedKernelSources(nodes);
     expect(sources.size).toBeGreaterThan(5);
-    for (const [id, source] of sources) {
+    for (const {id, source} of sources.configurations) {
       expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
       // A loop or round index never reaches the WGSL text.
       expect(source, id).not.toMatch(/-round-\d+|level-\d+/);

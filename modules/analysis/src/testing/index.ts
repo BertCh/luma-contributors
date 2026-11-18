@@ -8,6 +8,8 @@
  * Import only from test code: it depends on `vitest` and `wgsl_reflect`.
  */
 export * from './gpu-contributor-test-utils';
+export {expectNumericArrayClose} from './expect-numeric-array-close';
+export type {NumericArrayTolerance} from './expect-numeric-array-close';
 export {requireTestDevice} from './require-test-device';
 
 // Internals that dependent packages' tests exercise directly.

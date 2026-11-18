@@ -11,6 +11,184 @@ import {
 } from '../../../src/gpu-spatial-analysis/geometry-refinement/gpu-segment-snap-operation';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUSegmentSnap} from '../../../src/gpu-spatial-analysis/geometry-refinement/gpu-segment-snap';
+import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
+
+it('refuses silent suppression with required outputs only and accepts a genuinely empty input', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props: SegmentSnapOperationProps = {
+    positions: 'positions',
+    lineOffsets: 'offsets',
+    referencePositions: 'references',
+    rowCount: 2,
+    referenceCount: 2,
+    lineCount: 1,
+    tolerance: 0,
+    maximumVerticesPerLine: 8,
+    candidateCapacity: 1,
+    candidateOverflowPolicy: 'incomplete',
+    output: {positions: 'snapped', sourceEdges: 'edges', counts: 'counts'}
+  };
+  for (const Operation of [GPUSegmentSnapOperation, CPUSegmentSnapOperation]) {
+    expect(() => new Operation(props)).toThrow(/output.*(validity|issueCode|candidateOverflow)/);
+    const empty = await runOperationGraph(device, {
+      inputs: {
+        positions: {format: 'float32x2', values: new Float32Array()},
+        offsets: {format: 'uint32', values: Uint32Array.of(0, 0)},
+        references: {format: 'float32x2', values: Float32Array.of(1, 0, 2, 0)}
+      },
+      operations: [new Operation({...props, rowCount: 0})],
+      outputs: ['snapped', 'edges', 'counts']
+    });
+    expect(Array.from(empty['counts'])).toEqual([0, 0, 0, 0]);
+    expect(Array.from(empty['snapped'])).toEqual(Array(16).fill(0));
+    expect(Array.from(empty['edges'])).toEqual(Array(8).fill(0));
+  }
+});
+
+it.each([
+  {candidateCapacity: 1, maximumVerticesPerLine: 8, counts: [0, 0, 0, 0], candidate: 1},
+  {candidateCapacity: 2, maximumVerticesPerLine: 2, counts: [2, 4, 1, 0], candidate: 0}
+])('operation forms separate candidate and vertex capacity: %o', async options => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const Operation of [GPUSegmentSnapOperation, CPUSegmentSnapOperation]) {
+    const result = await runOperationGraph(device, {
+      inputs: {
+        positions: {format: 'float32x2', values: Float32Array.of(0, 0, 3, 0)},
+        offsets: {format: 'uint32', values: Uint32Array.of(0, 2)},
+        references: {format: 'float32x2', values: Float32Array.of(1, 0, 2, 0)}
+      },
+      operations: [
+        new Operation({
+          positions: 'positions',
+          lineOffsets: 'offsets',
+          referencePositions: 'references',
+          rowCount: 2,
+          referenceCount: 2,
+          lineCount: 1,
+          tolerance: 0,
+          candidateCapacity: options.candidateCapacity,
+          maximumVerticesPerLine: options.maximumVerticesPerLine,
+          candidateOverflowPolicy: 'incomplete',
+          output: {
+            positions: 'output',
+            sourceEdges: 'edges',
+            counts: 'counts',
+            issueCode: 'issues',
+            validity: 'validity',
+            status: {candidateOverflow: 'candidateOverflow'}
+          }
+        })
+      ],
+      outputs: ['counts', 'issues', 'validity', 'candidateOverflow']
+    });
+    expect(Array.from(result['counts'])).toEqual(options.counts);
+    expect(Array.from(result['candidateOverflow'])).toEqual([options.candidate]);
+    expect(Array.from(result['issues'])).toEqual([4]);
+    expect(Array.from(result['validity'])).toEqual([0]);
+  }
+});
+
+it('NaN query lines agree on candidate capacity, counts, issue codes and usability', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props: SegmentSnapOperationProps = {
+    positions: 'positions',
+    lineOffsets: 'offsets',
+    referencePositions: 'references',
+    rowCount: 2,
+    referenceCount: 3,
+    lineCount: 1,
+    tolerance: 0,
+    candidateCapacity: 1,
+    candidateOverflowPolicy: 'incomplete',
+    maximumVerticesPerLine: 2,
+    output: {
+      positions: 'output',
+      sourceEdges: 'edges',
+      counts: 'counts',
+      issueCode: 'issues',
+      validity: 'validity',
+      status: {candidateOverflow: 'candidateOverflow'}
+    }
+  };
+  for (const Operation of [GPUSegmentSnapOperation, CPUSegmentSnapOperation]) {
+    const result = await runOperationGraph(device, {
+      inputs: {
+        positions: {format: 'float32x2', values: Float32Array.of(0, 0, NaN, 0)},
+        offsets: {format: 'uint32', values: Uint32Array.of(0, 2)},
+        references: {format: 'float32x2', values: Float32Array.of(0, 0, 4, 0, 6, 0)}
+      },
+      operations: [new Operation(props)],
+      outputs: ['counts', 'issues', 'validity', 'candidateOverflow']
+    });
+    expect(Array.from(result['counts'])).toEqual([0, 0, 0, 1]);
+    expect(Array.from(result['candidateOverflow'])).toEqual([0]);
+    expect(Array.from(result['issues'])).toEqual([2]);
+    expect(Array.from(result['validity'])).toEqual([0]);
+  }
+});
+
+it('submits aligned counts, issue code and validity views in one buffer', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const graph = new GPUCommandGraph(device);
+  const positions = createInputBuffer(device, Float32Array.of(0, 0, 2, 0));
+  const offsets = createInputBuffer(device, Uint32Array.of(0, 2));
+  const references = createInputBuffer(device, Float32Array.of(0, 0));
+  const output = createOutputBuffer(device, 4);
+  const edges = createOutputBuffer(device, 2);
+  const packed = createOutputBuffer(device, 129);
+  const packedView = importGraphBuffer(graph, 'packed', packed, 'uint32', 129);
+  graph.add(
+    new GPUSegmentSnap({
+      positions: importGraphBuffer(graph, 'positions', positions, 'float32x2', 2),
+      lineOffsets: importGraphBuffer(graph, 'offsets', offsets, 'uint32', 2),
+      referencePositions: importGraphBuffer(graph, 'references', references, 'float32x2', 0),
+      tolerance: 0,
+      maximumVerticesPerLine: 2,
+      output: {
+        positions: importGraphBuffer(graph, 'output', output, 'float32x2', 2),
+        sourceEdges: importGraphBuffer(graph, 'edges', edges, 'uint32', 2),
+        counts: graph.createDataView(packedView.buffer, {
+          format: 'uint32x4',
+          length: 1,
+          byteOffset: 0
+        }),
+        validity: graph.createDataView(packedView.buffer, {
+          format: 'uint32',
+          length: 1,
+          byteOffset: 256
+        }),
+        issueCode: graph.createDataView(packedView.buffer, {
+          format: 'uint32',
+          length: 1,
+          byteOffset: 512
+        })
+      }
+    })
+  );
+  const compiled = graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    const words = await readUint32(packed, 129);
+    expect(words.slice(0, 4)).toEqual([2, 2, 0, 0]);
+    expect(words[64]).toBe(1);
+    expect(words[128]).toBe(0);
+  } finally {
+    compiled.destroy();
+    for (const buffer of [positions, offsets, references, output, edges, packed]) buffer.destroy();
+  }
+});
 
 for (const invalid of [false, true])
   it(`compares every segment-snap output (${invalid ? 'invalid reference' : 'two lines, ties, insertions and overflow'})`, async () => {
@@ -30,12 +208,13 @@ for (const invalid of [false, true])
         sourceEdges: 'edges',
         counts: 'counts',
         validity: 'validity',
+        issueCode: 'issues',
         candidateOverflow: 'candidateOverflow'
       }
     };
     const references = new Float32Array([0, 0, 2, 0.5, 2, -0.5, 6, 0, 8, 0, 10, 0, 2, 0.5]);
     if (invalid) references[0] = NaN;
-    const outputs = ['snapped', 'edges', 'counts', 'validity', 'candidateOverflow'];
+    const outputs = ['snapped', 'edges', 'counts', 'validity', 'issues', 'candidateOverflow'];
     const results = [];
     for (const Operation of [GPUSegmentSnapOperation, CPUSegmentSnapOperation])
       results.push(
@@ -52,6 +231,8 @@ for (const invalid of [false, true])
           outputs
         })
       );
+    expect(Array.from(results[0]['validity'])).toEqual(invalid ? [0, 0] : [1, 0]);
+    expect(Array.from(results[0]['issues'])).toEqual(invalid ? [2, 2] : [0, 4]);
     // All coordinates are copied from input/reference rows and all other fields are integer:
     // compare exactly, numerically (including zeros). No floating-point tolerance is needed.
     for (const port of outputs) {
@@ -214,6 +395,7 @@ it('keeps candidate-overflow parity when all default lists would exceed 128 MiB 
       sourceEdges: 'edges',
       counts: 'counts',
       validity: 'validity',
+      issueCode: 'issues',
       status: {candidateOverflow: 'candidateOverflow'}
     }
   };
@@ -228,17 +410,19 @@ it('keeps candidate-overflow parity when all default lists would exceed 128 MiB 
         references: {format: 'float32x2', values: references}
       },
       operations: [new Operation(props)],
-      outputs: ['counts', 'validity', 'candidateOverflow']
+      outputs: ['counts', 'validity', 'issues', 'candidateOverflow']
     });
     expect(Array.from(result['candidateOverflow'])).toEqual([1, ...Array(lineCount - 1).fill(0)]);
+    // Candidate loss suppresses the line without exhausting its final vertex slots.
     expect(Array.from(result['counts'])).toEqual([
       0,
       0,
-      1,
+      0,
       0,
       ...Array((lineCount - 1) * 4).fill(0)
     ]);
-    expect(Array.from(result['validity'])).toEqual([4, ...Array(lineCount - 1).fill(0)]);
+    expect(Array.from(result['issues'])).toEqual([4, ...Array(lineCount - 1).fill(0)]);
+    expect(Array.from(result['validity'])).toEqual([0, ...Array(lineCount - 1).fill(1)]);
   }
 });
 

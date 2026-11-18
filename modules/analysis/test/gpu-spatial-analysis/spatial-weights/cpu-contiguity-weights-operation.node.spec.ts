@@ -16,6 +16,52 @@ import {
 } from '../../../src/gpu-spatial-analysis/spatial-weights/cpu-contiguity-weights-operation';
 import {GPUContiguityWeightsOperation} from '../../../src/gpu-spatial-analysis/spatial-weights/gpu-contiguity-weights-operation';
 import {flattenFeatures, flattenPolygons} from './spatial-weights-oracle';
+import {createPairStarvedContiguityFixture} from './contiguity-loss.test-utils';
+
+for (const Operation of [GPUContiguityWeightsOperation, CPUContiguityWeightsOperation])
+  it(`${Operation.name} validates scalar props before a missing candidate destination`, () => {
+    const props = {
+      id: 'negative-tolerance',
+      criterion: 'queen' as const,
+      featureCount: 1,
+      capacity: 1,
+      snapTolerance: -Number.MIN_VALUE,
+      polygons: {
+        positions: 'positions',
+        ringOffsets: 'ringOffsets',
+        polygonOffsets: 'polygonOffsets',
+        featureOffsets: 'featureOffsets'
+      },
+      output: {
+        offsets: 'offsets',
+        neighbors: 'neighbors',
+        weights: 'weights',
+        status: {overflow: 'overflow'}
+      }
+    };
+    expect(() => new Operation(props as never)).toThrow(
+      /^negative-tolerance snapTolerance must be >= 0$/
+    );
+    expect(() => new Operation({...props, snapTolerance: 0} as never)).toThrow(
+      /^negative-tolerance output.status.candidateOverflow/
+    );
+  });
+
+it('final1 explicit pairCapacity binds the CPU twin while final slots remain sufficient', () => {
+  const fixture = createPairStarvedContiguityFixture();
+  const partial = computeContiguityWeightsOnCPU(fixture.input, fixture.options);
+  expect(Array.from(partial.candidateOverflow)).toEqual([1]);
+  expect(Array.from(partial.overflow)).toEqual([0]);
+  expect(Array.from(partial.requiredCount)).toEqual([1]);
+  expect(Array.from(partial.offsets)).toEqual([0, 1, 1]);
+  expect(partial.neighbors[0]).toBe(1);
+  const complete = computeContiguityWeightsOnCPU(fixture.input, {
+    ...fixture.options,
+    pairCapacity: 4
+  });
+  expect(Array.from(complete.candidateOverflow)).toEqual([0]);
+  expect(Array.from(complete.requiredCount)).toEqual([2]);
+});
 
 it('checks adjacency-changing snaps and signed half-cells at a nonzero origin', () => {
   const scenes: {
@@ -133,7 +179,7 @@ it('checks adjacency-changing snaps and signed half-cells at a nonzero origin', 
   }
 });
 
-it('delegates GPU criterion validation to contributor construction at lowering', () => {
+it('rejects an invalid GPU criterion before lowering', () => {
   const device = createNullWebGPUDevice();
   try {
     const graph = new GPUCommandGraph(device);
@@ -144,31 +190,32 @@ it('delegates GPU criterion validation to contributor construction at lowering',
         port === 'positions' ? 'float32x2' : port === 'weights' ? 'float32' : 'uint32',
         2
       ) as GraphDataView<Format>;
-    const operation = new GPUContiguityWeightsOperation({
-      id: 'gpu-contiguity',
-      criterion: 'invalid' as 'queen',
-      featureCount: 1,
-      capacity: 2,
-      polygons: {
-        positions: 'positions',
-        ringOffsets: 'ringOffsets',
-        polygonOffsets: 'polygonOffsets',
-        featureOffsets: 'featureOffsets'
-      },
-      output: {
-        offsets: 'offsets',
-        neighbors: 'neighbors',
-        weights: 'weights',
-        status: {overflow: 'overflow'}
-      }
-    });
-    expect(() => operation.createContributor(getView)).toThrow(/gpu-contiguity criterion/);
+    const construct = () =>
+      new GPUContiguityWeightsOperation({
+        id: 'gpu-contiguity',
+        criterion: 'invalid' as 'queen',
+        featureCount: 1,
+        capacity: 2,
+        polygons: {
+          positions: 'positions',
+          ringOffsets: 'ringOffsets',
+          polygonOffsets: 'polygonOffsets',
+          featureOffsets: 'featureOffsets'
+        },
+        output: {
+          offsets: 'offsets',
+          neighbors: 'neighbors',
+          weights: 'weights',
+          status: {overflow: 'overflow', candidateOverflow: 'candidate'}
+        }
+      });
+    expect(() => construct().createContributor(getView)).toThrow(/gpu-contiguity criterion/);
   } finally {
     device.destroy();
   }
 });
 
-it('the GPU contributor rejects a negative tolerance even when float32 would round it to zero', () => {
+it('the GPU operation rejects a negative tolerance even when float32 would round it to zero', () => {
   const device = createNullWebGPUDevice();
   try {
     const graph = new GPUCommandGraph(device);
@@ -179,27 +226,28 @@ it('the GPU contributor rejects a negative tolerance even when float32 would rou
         port === 'positions' ? 'float32x2' : port === 'weights' ? 'float32' : 'uint32',
         2
       ) as GraphDataView<Format>;
-    const operation = new GPUContiguityWeightsOperation({
-      id: 'negative-tolerance',
-      criterion: 'queen',
-      featureCount: 1,
-      capacity: 1,
-      snapTolerance: -Number.MIN_VALUE,
-      polygons: {
-        positions: 'positions',
-        ringOffsets: 'ringOffsets',
-        polygonOffsets: 'polygonOffsets',
-        featureOffsets: 'featureOffsets'
-      },
-      output: {
-        offsets: 'offsets',
-        neighbors: 'neighbors',
-        weights: 'weights',
-        status: {overflow: 'overflow'}
-      }
-    });
-    expect(() => operation.createContributor(getView)).toThrow(
-      /^negative-tolerance snapTolerance must be finite and >= 0$/
+    const construct = () =>
+      new GPUContiguityWeightsOperation({
+        id: 'negative-tolerance',
+        criterion: 'queen',
+        featureCount: 1,
+        capacity: 1,
+        snapTolerance: -Number.MIN_VALUE,
+        polygons: {
+          positions: 'positions',
+          ringOffsets: 'ringOffsets',
+          polygonOffsets: 'polygonOffsets',
+          featureOffsets: 'featureOffsets'
+        },
+        output: {
+          offsets: 'offsets',
+          neighbors: 'neighbors',
+          weights: 'weights',
+          status: {overflow: 'overflow', candidateOverflow: 'candidate'}
+        }
+      });
+    expect(() => construct().createContributor(getView)).toThrow(
+      /^negative-tolerance snapTolerance must be >= 0$/
     );
   } finally {
     device.destroy();
@@ -411,7 +459,7 @@ it('validates construction and keeps both graph output contracts identical', () 
     () => new CPUContiguityWeightsOperation({...props, criterion: 'other' as 'queen'})
   ).toThrow(/contiguity-test criterion/);
   expect(() => new GPUContiguityWeightsOperation({...props, capacity: 0})).toThrow(
-    /contiguity-test outputs.neighbors.length/
+    /^contiguity-test capacity/
   );
   expect(new CPUContiguityWeightsOperation(props).contract.outputs).toEqual(
     new GPUContiguityWeightsOperation(props).contract.outputs

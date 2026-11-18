@@ -41,6 +41,10 @@ import {
 import {type WGSLKernelBinding} from './wgsl-kernel-nodes';
 import {IS_FINITE_VALUE_WGSL} from './wgsl-common';
 import {FITTING_SPHERICAL_HARMONIC_WGSL} from './fitting-coordinate-encoding-wgsl';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from './construction-snapshot';
 
 /** Flat scalar indexing within each chunk uses uint32, even on larger-binding devices. */
 const MAXIMUM_ELEMENT_COUNT = 0xffffffff;
@@ -123,6 +127,27 @@ export class GPUFittingCoordinateEncoder<
   private readonly chunkPlan: GraphChunkDispatchPlan;
 
   constructor(props: Props) {
+    props = Object.freeze({
+      ...snapshotConstructionFields(props, [
+        'id',
+        'rowCount',
+        'coordinates',
+        'spatialContext',
+        'mask',
+        'output',
+        'encoding'
+      ]),
+      ...(props.encoding === 'fourier'
+        ? {
+            dimensions: props.dimensions,
+            frequencies: props.frequencies,
+            frequencyCount: props.frequencyCount
+          }
+        : {maximumDegree: props.maximumDegree}),
+      spatialContext:
+        props.spatialContext && snapshotConstructionSpatialContext(props.spatialContext),
+      output: snapshotConstructionFields(props.output, ['features', 'validity'])
+    }) as Props;
     this.id = props.id ?? 'fitting-coordinate-encoder';
     this.props = props as Props & GPUFittingCoordinateEncoderProps<Props['coordinates']>;
     const {id} = this;
@@ -132,10 +157,12 @@ export class GPUFittingCoordinateEncoder<
       props.encoding === 'fourier' || props.encoding === 'spherical-harmonics',
       'encoding must be fourier or spherical-harmonics'
     );
-    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext, {
-      coordinateSpaces: [props.encoding === 'fourier' ? 'planar' : 'longitude-latitude'],
-      metrics: props.encoding === 'fourier' ? ['none', 'native'] : ['none', 'great-circle']
-    });
+    this.spatialContext = snapshotConstructionSpatialContext(
+      resolveGPUSpatialContext(id, props.spatialContext, {
+        coordinateSpaces: [props.encoding === 'fourier' ? 'planar' : 'longitude-latitude'],
+        metrics: props.encoding === 'fourier' ? ['none', 'native'] : ['none', 'great-circle']
+      })
+    );
     let dimensions: number;
     if (props.encoding === 'fourier') {
       dimensions = props.dimensions;

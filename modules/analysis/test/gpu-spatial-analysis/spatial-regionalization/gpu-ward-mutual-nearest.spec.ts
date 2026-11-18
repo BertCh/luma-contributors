@@ -302,10 +302,12 @@ it('GPUWardRegions mutual-nearest reports exhausted merges on disconnected weigh
   expect(result.status[GPU_WARD_ROUND_COUNT_STATUS_WORD]).toBe(2);
 });
 
-it('GPUWardRegions A/B: sequential vs mutual-nearest on a 4096-row lattice to 16 regions', async () => {
+it('GPUWardRegions A/B: sequential vs mutual-nearest on a 1024-row lattice to 16 regions', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  const width = 64;
+  // Keep the sequential graph below the shared 32,768-node admission limit: at 4,096 rows
+  // its 4,080 rounds need 53,040 nodes before the prologue and publication.
+  const width = 32;
   const rowCount = width * width;
   const targetRegionCount = 16;
   const {offsets, neighbors} = createRookLattice(width, width);
@@ -320,7 +322,7 @@ it('GPUWardRegions A/B: sequential vs mutual-nearest on a 4096-row lattice to 16
       targetRegionCount,
       mergeSchedule,
       // Sequential unrolls one iteration per merge; mutual-nearest needs far fewer rounds.
-      maximumIterations: mergeSchedule === 'sequential' ? rowCount - targetRegionCount : 256
+      maximumIterations: rowCount - targetRegionCount
     });
     const run = runs[mergeSchedule];
     const exact = evaluatePartition(values, 2, run.labels).withinSsd;

@@ -77,7 +77,7 @@ it('RS05 maximal output shaders parse within default binding limits and declare 
       expect(contributor.requiredHalo).toBe(8);
       const sources = getParsedKernelSources(contributor.getCommandNodes(graph));
       expect(sources.size).toBe(4);
-      for (const source of sources.values())
+      for (const {source} of sources.configurations)
         expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
     }
   } finally {

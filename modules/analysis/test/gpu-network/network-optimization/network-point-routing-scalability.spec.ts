@@ -309,13 +309,28 @@ it('keeps zero-cost plateau predecessors acyclic, including a legal same-edge re
 
 it('resets invalid-network status and scratch on repeated encodings', async () => {
   const input = getPointRoutingInput();
-  const invalid = {...input, costs: Float32Array.of(8, -1, 6, 2, 3, 5)};
+  const turns = input.turns.slice();
+  turns[1] = 99;
+  const invalid = {...input, turns};
   const [first, second] = await runPointRouting(invalid, {}, input);
   expect(first.status).toEqual([1, 1, 1, 1, 1]);
   expect(first.costs).toEqual(Array(5).fill(Infinity));
   expect(first.predecessorEdges).toEqual(Array(30).fill(0xffffffff));
   expect(second.status).toEqual([0, 0, 0, 0, 0]);
   expect(second.costs).toEqual(Array.from(enumeratePointRoutingCosts(input)));
+});
+
+it('rewrites closed-edge availability and endpoint status on repeated encodings', async () => {
+  const input = getPointRoutingInput();
+  const closed = {...input, costs: Float32Array.of(8, -1, 6, 2, 3, 5)};
+  const [first, second] = await runPointRouting(closed, {}, input);
+  expect(first.status).toEqual([0, 0, 0, 1, 0]);
+  expect(first.costs).toEqual([11, 12, 4, Infinity, Infinity]);
+  expect(first.predecessorEdges[1]).toBe(0xffffffff);
+  expect(first.predecessorEdges.slice(18, 24)).toEqual(new Array(6).fill(0xffffffff));
+  expect(second.status).toEqual([0, 0, 0, 0, 0]);
+  expect(second.costs).toEqual([11, 12, 4, 19, Infinity]);
+  expect(second.predecessorEdges[1]).toBe(0);
 });
 
 it('preserves invalid queries, malformed turns, overflowing full labels, and zero-round results', async () => {

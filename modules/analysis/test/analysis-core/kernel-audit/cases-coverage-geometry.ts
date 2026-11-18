@@ -157,7 +157,8 @@ add(
           positions: context.view('float32x2', 2048),
           sourceEdges: context.view('uint32', 2048),
           counts: context.view('uint32x4', 16),
-          validity: context.view('uint32', 16)
+          validity: context.view('uint32', 16),
+          issueCode: context.view('uint32', 16)
         }
       })
     );

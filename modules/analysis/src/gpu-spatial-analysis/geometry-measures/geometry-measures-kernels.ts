@@ -9,7 +9,7 @@ import {
   getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {LON_LAT_RING_WGSL} from '../../analysis-core/lon-lat-ring-wgsl';
+import {LON_LAT_RING_WGSL} from '../../analysis-core/kernels/lon-lat-ring-wgsl';
 import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
 import {GEODESIC_WGSL} from './geodesic-wgsl';
 import {

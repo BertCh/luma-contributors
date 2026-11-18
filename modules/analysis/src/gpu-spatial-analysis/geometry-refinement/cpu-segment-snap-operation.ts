@@ -16,6 +16,7 @@ import {
 } from '../../analysis-core/operations/cpu-operation-rows';
 import {
   GPUSegmentSnapOperation,
+  snapshotSegmentSnapOperationProps,
   type SegmentSnapOperationProps
 } from './gpu-segment-snap-operation';
 
@@ -50,6 +51,7 @@ export type CPUSegmentSnapResult = {
   sourceEdges: Uint32Array;
   counts: Uint32Array;
   validity: Uint32Array;
+  issueCode: Uint32Array;
   candidateOverflow: Uint32Array;
 };
 type Point = {x: number; y: number; row: number};
@@ -85,7 +87,8 @@ function snapPoint(point: Point, references: Point[], tolerance: number): Point 
  *   written prefix is meaningful. Out-of-range offsets are clamped and reversed intervals are
  *   empty, as explicitly defined by the current kernel.
  * - Nothing else: nonfinite references invalidate every line, including empty lines; nonfinite
- *   input vertices invalidate their line. An empty line has validity=0; a collapsed line has bit 1.
+ *   input vertices invalidate their line. An empty line has validity=1; a collapsed line has
+ *   issueCode bit 1 and validity=0.
  *
  * @throws If arrays are not packed, lineOffsets is too short, options are invalid, or the
  * uint32 required-count/output-indexing bounds would be exceeded.
@@ -137,7 +140,8 @@ export function computeSegmentSnapOnCPU(
     sourceEdges: new Uint32Array(lineCount * capacity),
     counts: new Uint32Array(lineCount * 4),
     candidateOverflow: computeCandidateOverflow(input, options),
-    validity: new Uint32Array(lineCount)
+    validity: new Uint32Array(lineCount),
+    issueCode: new Uint32Array(lineCount)
   };
   const references = Array.from({length: referenceCount}, (_, row) =>
     readPoint(input.referencePositions, row)
@@ -217,16 +221,12 @@ export function computeSegmentSnapOnCPU(
       }
     }
     result.counts.set(
-      [
-        Math.min(required, capacity),
-        required,
-        Number(required > capacity || incomplete),
-        Number(invalid)
-      ],
+      [Math.min(required, capacity), required, Number(required > capacity), Number(invalid)],
       line * 4
     );
-    result.validity[line] =
+    result.issueCode[line] =
       Number(required === 1) | (invalid ? 2 : 0) | (required > capacity || incomplete ? 4 : 0);
+    result.validity[line] = Number(result.issueCode[line] === 0);
   }
   return result;
 }
@@ -234,6 +234,7 @@ export function computeSegmentSnapOnCPU(
 /** CPU segment snap twin; fixed slots and uint32 required-count limits are retained. */
 export class CPUSegmentSnapOperation extends GPUCPUOperation {
   constructor(props: SegmentSnapOperationProps) {
+    props = snapshotSegmentSnapOperationProps(props);
     const id = props.id ?? 'segment-snap';
     resolveGPUSpatialContext(id, props.spatialContext);
     validateCapacity(id, 'rowCount', props.rowCount, 0);
@@ -299,7 +300,12 @@ export class CPUSegmentSnapOperation extends GPUCPUOperation {
           ...(candidateOverflow !== undefined
             ? {[candidateOverflow]: result.candidateOverflow}
             : {}),
-          ...(props.output.validity !== undefined ? {[props.output.validity]: result.validity} : {})
+          ...(props.output.validity !== undefined
+            ? {[props.output.validity]: result.validity}
+            : {}),
+          ...(props.output.issueCode !== undefined
+            ? {[props.output.issueCode]: result.issueCode}
+            : {})
         };
       }
     });
@@ -354,9 +360,14 @@ function computeCandidateOverflow(
     const upper = [0, 0];
     const first = Math.min(input.lineOffsets[line], input.positions.length / 2);
     const last = Math.min(input.lineOffsets[line + 1], input.positions.length / 2);
+    let invalid = false;
     for (let row = first; row < last; row++)
       for (let axis = 0; axis < 2; axis++) {
         const value = input.positions[row * 2 + axis];
+        if (!Number.isFinite(value)) {
+          invalid = true;
+          continue;
+        }
         const roundingMargin = Math.fround(
           Math.fround(Math.max(Math.abs(value), tolerance) * 2 ** -20) + 2 ** -126
         );
@@ -371,6 +382,7 @@ function computeCandidateOverflow(
         lower[axis] = Math.min(lower[axis], Number.isFinite(low) ? low : 0);
         upper[axis] = Math.max(upper[axis], Number.isFinite(high) ? high : 1);
       }
+    if (invalid) continue;
     let required = 0;
     if (last > first)
       for (

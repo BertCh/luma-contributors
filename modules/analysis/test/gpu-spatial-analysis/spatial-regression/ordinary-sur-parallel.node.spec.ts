@@ -49,7 +49,7 @@ it('ordinary SUR stages fit core shader budgets with maximum shapes and optional
         expect(usage.storageBuffers).toBeLessThanOrEqual(8);
         expect(usage.functionBytes).toBeLessThanOrEqual(8192);
         expect(usage.privateBytes).toBeLessThanOrEqual(8192);
-        expect(usage.workgroupBytes).toBeLessThanOrEqual(16384);
+        expect(usage.workgroupStorageBytes).toBeLessThanOrEqual(16384);
       }
     }
   } finally {

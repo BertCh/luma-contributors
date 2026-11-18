@@ -4,7 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
-import {getRasterGridGeoreference} from '../../../src/analysis-core/raster-grid';
+import {getRasterGridGeoreference} from '../../../src/analysis-core/contracts/raster-grid';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {
   GPU_TERRAIN_WEISS_LANDFORMS,
@@ -14,10 +14,147 @@ import {
   type GPUTerrainTopographicPositionProps,
   type GPUTerrainWeissLandformsProps
 } from '../../../src/gpu-terrain/topographic-position/index';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getParsedKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 import {createBand} from '../terrain-test-utils';
+import {computeWeissLandforms} from './weiss-landforms-oracle';
 
 const GRID = makeGPURasterMetadata({width: 6, height: 5, cellSize: [2, 3], origin: [0, 5]});
+
+it.each([
+  'standardization',
+  'grid',
+  'getters'
+] as const)('final2 G2 Weiss captures inherited fields and reads %s once', inherited => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const reads: number[] = [];
+    const getterFields = <Fields extends object>(fields: Fields): Fields =>
+      Object.create(
+        null,
+        Object.fromEntries(
+          Object.entries(fields).map(([key, value]) => {
+            const index = reads.push(0) - 1;
+            return [
+              key,
+              {
+                get: () => {
+                  reads[index]++;
+                  return reads[index] === 1 ? value : undefined;
+                }
+              }
+            ];
+          })
+        )
+      );
+    let props: GPUTerrainWeissLandformsProps = {
+      grid: makeGPURasterMetadata({width: 9, height: 9}),
+      smallScale: {radius: 1},
+      largeScale: {radius: 2},
+      standardization: 'local',
+      elevation: createBand(graph, 'inherited-elevation', 81),
+      parameters: createTransientView(graph, 'inherited-settings', 'float32', 8),
+      output: {landforms: createTransientView(graph, 'inherited-landforms', 'uint32', 81)}
+    };
+    if (inherited === 'standardization') {
+      const {standardization, ...ownProps} = props;
+      props = Object.assign(
+        Object.create({
+          get standardization() {
+            return standardization;
+          }
+        }),
+        ownProps
+      );
+    } else if (inherited === 'grid') {
+      props.grid = Object.create(props.grid);
+    } else {
+      props = getterFields({
+        ...props,
+        grid: getterFields(props.grid),
+        smallScale: getterFields(props.smallScale!),
+        largeScale: getterFields(props.largeScale!),
+        output: getterFields(props.output)
+      });
+    }
+    const contributor = new GPUTerrainWeissLandforms(props);
+    expect(contributor.getHaloStage()).toEqual({requiredHalo: 2});
+    const kernels = getParsedKernelSources(contributor.getCommandNodes(graph));
+    expect(kernels.get('terrain-weiss-landforms-position-evaluate')).toContain(
+      'vec2<i32>(1i, 0i), vec2<i32>(2i, 0i)'
+    );
+    expect([...kernels.keys()].some(id => id.includes('-squares'))).toBe(false);
+    expect(reads.every(count => count === 1)).toBe(true);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('final1 F4 Weiss fixture distinguishes the captured radius from a larger caller radius', () => {
+  const elevation = new Float32Array(81);
+  elevation[4 * 9 + 7] = 100;
+  const options = {cellSize: 1, standardization: 'local' as const, standardThreshold: 0.05};
+  const captured = computeWeissLandforms(elevation, undefined, 9, 9, {
+    ...options,
+    scales: [{radius: 1}, {radius: 2}]
+  });
+  const changed = computeWeissLandforms(elevation, undefined, 9, 9, {
+    ...options,
+    scales: [{radius: 1}, {radius: 4}]
+  });
+  expect(captured.landforms[4 * 9 + 4]).toBe(5);
+  expect(changed.landforms[4 * 9 + 4]).toBe(4);
+});
+
+it.each([
+  'scales',
+  'grid'
+] as const)('final1 F4 Weiss retains its validated footprint after caller mutation of %s', mutation => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const grid = {
+      width: 9,
+      height: 9,
+      affine: [1, 0, 0, 0, -1, 9] as [number, number, number, number, number, number],
+      pixelInterpretation: 'area' as const
+    };
+    const smallScale = {radius: 1, innerRadius: 0};
+    const largeScale = {radius: 2, innerRadius: 0};
+    const contributor = new GPUTerrainWeissLandforms({
+      grid,
+      smallScale,
+      largeScale,
+      standardization: 'local',
+      elevation: createBand(graph, 'mutation-elevation', 81),
+      parameters: createTransientView(graph, 'mutation-settings', 'float32', 8),
+      output: {landforms: createTransientView(graph, 'mutation-landforms', 'uint32', 81)}
+    });
+    if (mutation === 'scales') {
+      largeScale.radius = 4;
+      largeScale.innerRadius = 1;
+    } else {
+      grid.width = 1;
+      grid.height = 1;
+      grid.affine[2] = 100;
+    }
+    expect(contributor.getHaloStage()).toEqual({requiredHalo: 2});
+    expect(contributor.props.largeScale).toEqual({radius: 2, innerRadius: 0});
+    expect(contributor.props.grid.width).toBe(9);
+    expect(contributor.props.grid.height).toBe(9);
+    expect(contributor.props.grid.affine).toEqual([1, 0, 0, 0, -1, 9]);
+    const evaluate = getParsedKernelSources(contributor.getCommandNodes(graph)).get(
+      'terrain-weiss-landforms-position-evaluate'
+    )!;
+    expect(evaluate).toContain('vec2<i32>(1i, 0i), vec2<i32>(2i, 0i)');
+    expect(evaluate).toContain('const WIDTH: u32 = 9u;');
+  } finally {
+    device.destroy();
+  }
+});
 
 it('GPUTerrainTopographicPosition builds one exact summed-area table and validates props', () => {
   const device = createNullWebGPUDevice();
@@ -53,7 +190,7 @@ it('GPUTerrainTopographicPosition builds one exact summed-area table and validat
   const shared = createTransientView(graph, 'shared', 'float32', 60);
   expect(() =>
     create({output: {deviationFromMean: shared, topographicPositionIndex: shared}})
-  ).toThrow(/must not share buffers/);
+  ).toThrow(/^terrain-topographic-position .*logical byte ranges must not overlap/);
 
   // The table needs 3 * pixelCount words per binding: at most 11184810 cells.
   expect(() =>
@@ -85,7 +222,7 @@ it('GPUTerrainWeissLandforms composes position, slope, statistics, and classific
     });
   };
   const global = create();
-  expect(global.requiredHalo).toBe(15);
+  expect(global.localRadius).toBe(15);
   const globalIds = global.getCommandNodes(graph).map(node => node.id);
   expect(globalIds).toContain('weiss-1-slope');
   expect(globalIds).toContain('weiss-1-squares');
@@ -95,7 +232,7 @@ it('GPUTerrainWeissLandforms composes position, slope, statistics, and classific
     smallScale: {radius: 2},
     largeScale: {radius: 6}
   });
-  expect(local.requiredHalo).toBe(6);
+  expect(local.getHaloStage().requiredHalo).toBe(6);
   const localIds = local.getCommandNodes(graph).map(node => node.id);
   expect(localIds.some(id => id === 'weiss-2-squares' || id.startsWith('weiss-2-sum-'))).toBe(
     false

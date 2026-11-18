@@ -13,6 +13,7 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
+  createWGSLKernelNode,
   type WGSLKernelProps,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -24,7 +25,8 @@ import type {
 } from '../../analysis-core/contracts/index';
 import {CELL_KEY_WGSL, type CellKeyLayout} from './cell-keys';
 import {createCellLevelKernelNode} from './cell-level-kernel';
-import {getFixedPointWGSL, ORDERED_KEY_WGSL} from '../../analysis-core/cell-key-wgsl';
+import {getFixedPointWGSL, ORDERED_KEY_WGSL} from '../../analysis-core/kernels/cell-key-wgsl';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 /** Key word written to every word of an unused cell table row. */
 export const GPU_CELL_EMPTY_KEY_WORD = 0xffffffff;
@@ -63,11 +65,41 @@ export type GPUCellTable = GPUCellTablePort & {
   maximums?: GraphDataView<'float32'>;
   /**
    * One-row status scalars: `count` receives the occupied row count, `min(requiredCount,
-   * cells.length)`, `overflow` receives 1 when cells were dropped here or in any source level,
-   * and the optional `requiredCount` receives the unclamped number of occupied cells.
+   * cells.length)`. `overflow` reports only this table's output capacity; `candidateOverflow`
+   * reports cells lost in source tables. `requiredCount` counts retained-input occupied cells
+   * before destination truncation; it is a lower bound when `candidateOverflow` is nonzero.
+   * `candidateOverflow` is required on rollup outputs and coarser pyramid levels; raw aggregation
+   * accepts it optionally and writes zero each submission. Missing source flags mean no prior loss.
    */
-  status: GPUCardinalityPort & GPUOverflowStatusPort;
+  status: GPUCardinalityPort &
+    GPUOverflowStatusPort & {candidateOverflow?: GraphDataView<'uint32'>};
 };
+
+/** Capture declared status ports once, including inherited getters, without metadata. @internal */
+export function snapshotCellTableStatus<Status extends GPUCellTable['status']>(
+  status: Status
+): Status {
+  return snapshotConstructionFields(status, [
+    'count',
+    'overflow',
+    'candidateOverflow',
+    'requiredCount'
+  ]);
+}
+
+/** Capture table topology once; graph views remain borrowed and their contents remain dynamic. @internal */
+export function snapshotCellTable(table: GPUCellTable): GPUCellTable {
+  const fields = snapshotConstructionFields(table, [
+    'cells',
+    'counts',
+    'sums',
+    'sumValues',
+    'minimums',
+    'maximums',
+    'status'
+  ]);
+  return Object.freeze({...fields, status: snapshotCellTableStatus(fields.status)});
+}
 
 /** Returns every view of a cell table, for graph membership and aliasing checks. @internal */
 export function getCellTableViews(table: GPUCellTable): (GraphDataView | undefined)[] {
@@ -80,6 +112,7 @@ export function getCellTableViews(table: GPUCellTable): (GraphDataView | undefin
     table.maximums,
     table.status.count,
     table.status.overflow,
+    table.status.candidateOverflow,
     table.status.requiredCount
   ];
 }
@@ -112,7 +145,7 @@ export function validateCellTable(id: string, name: string, table: GPUCellTable)
       throw new Error(`${id} ${name}.${column} must have the same length as ${name}.cells`);
     }
   }
-  for (const column of ['count', 'overflow', 'requiredCount'] as const) {
+  for (const column of ['count', 'overflow', 'candidateOverflow', 'requiredCount'] as const) {
     const view = table.status[column];
     if (!view) {
       continue;
@@ -150,8 +183,8 @@ export type CellTableNodesProps = {
   source: CellTableReductionSource;
   sumScale: number;
   output: GPUCellTable;
-  /** One-row flags ORed into `output.status.overflow`. */
-  overflowSources?: readonly GraphDataView<'uint32'>[];
+  /** Source loss flags propagated to `output.status.candidateOverflow`. */
+  candidateSources?: readonly GraphDataView<'uint32'>[];
   /** Extra one-row destinations of the clamped count. */
   extraCounts?: readonly GraphDataView<'uint32'>[];
 };
@@ -669,7 +702,7 @@ ${getFixedPointWGSL(props.sumScale)}`,
   }
 
   // 9. Publish with runtime capacity; each level keeps the same pipeline for this binding shape.
-  const overflowSources = props.overflowSources ?? [];
+  const candidateSources = props.candidateSources ?? [];
   const extraCounts = props.extraCounts ?? [];
   nodes.push(
     createTableKernel({
@@ -682,16 +715,29 @@ ${getFixedPointWGSL(props.sumScale)}`,
         write('countOut', output.status.count),
         write('overflowOut', output.status.overflow),
         ...(output.status.requiredCount ? [write('totalOut', output.status.requiredCount)] : []),
-        ...overflowSources.map((view, index) => read(`overflowIn${index}`, view)),
         ...extraCounts.map((view, index) => write(`extraOut${index}`, view))
       ],
       body: `let total = cellTotal[cellTotalOffset];
   let count = min(total, CAPACITY);
   countOut[countOutOffset] = count;
-  overflowOut[overflowOutOffset] = select(0u, 1u, total > CAPACITY${overflowSources.map((_, index) => ` || overflowIn${index}[overflowIn${index}Offset] != 0u`).join('')});
+  overflowOut[overflowOutOffset] = select(0u, 1u, total > CAPACITY);
   ${output.status.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}
   ${extraCounts.map((_, index) => `extraOut${index}[extraOut${index}Offset] = count;`).join('\n  ')}`
     })
   );
+  if (output.status.candidateOverflow)
+    nodes.push(
+      createWGSLKernelNode(graph, {
+        id: `${id}-candidate-status`,
+        operation,
+        variant: 'candidate-status',
+        invocationCount: 1,
+        bindings: [
+          ...candidateSources.map((view, index) => read(`candidateIn${index}`, view)),
+          write('candidateOverflowOut', output.status.candidateOverflow)
+        ],
+        body: `candidateOverflowOut[candidateOverflowOutOffset] = select(0u, 1u, false${candidateSources.map((_, index) => ` || candidateIn${index}[candidateIn${index}Offset] != 0u`).join('')});`
+      })
+    );
   return nodes;
 }

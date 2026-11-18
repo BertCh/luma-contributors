@@ -24,11 +24,11 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateCompactOutput
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import type {GPUNetworkAdjacency} from '../../analysis-core/network-topology';
+import type {GPUNetworkAdjacency} from '../../analysis-core/contracts/network-topology';
 import {
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology
-} from '../../analysis-core/network-topology';
+} from '../../analysis-core/contracts/network-topology';
 import {TIME_WORDS_WGSL} from '../../dataframe-analysis/time-window-filter/time-words';
 import {
   getWorkgroupCounterKernelSource,

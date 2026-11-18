@@ -7,6 +7,7 @@ import {
   type GPUContributorOperationOutput
 } from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUMobilityIndicators, type GPUMobilityIndicatorsProps} from './gpu-mobility-indicators';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 /** Graph-value names and explicit input lengths shared by both operation classes. */
 export type MobilityIndicatorsOperationProps = Pick<
@@ -23,14 +24,14 @@ export type MobilityIndicatorsOperationProps = Pick<
     startRows: string;
     durations: string;
     locationIds: string;
-    status: {count: string};
+    status: {count: string; overflow?: string; candidateOverflow?: string};
   };
   triplegCapacity?: number;
   triplegs?: {
     tracks: string;
     startRows: string;
     endRows: string;
-    status: {count: string};
+    status: {count: string; overflow?: string; candidateOverflow?: string};
     staypointFinishRows: string;
   };
   output: {
@@ -47,9 +48,73 @@ export type MobilityIndicatorsOperationProps = Pick<
   };
 };
 
-/** GPU mobility operation. Compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
+/** @internal Capture settings and nested maps shared by both operation forms. */
+export function snapshotMobilityIndicatorsOperationProps(
+  props: MobilityIndicatorsOperationProps
+): MobilityIndicatorsOperationProps {
+  props = snapshotConstructionFields(props, [
+    'id',
+    'spatialContext',
+    'trackCount',
+    'maximumEntropySequenceRows',
+    'timestamps',
+    'timestampFormat',
+    'rowCount',
+    'staypointCapacity',
+    'staypoints',
+    'triplegCapacity',
+    'triplegs',
+    'output'
+  ]);
+  const stays = snapshotConstructionFields(props.staypoints, [
+    'tracks',
+    'centroids',
+    'startRows',
+    'durations',
+    'locationIds',
+    'status'
+  ]);
+  const legs =
+    props.triplegs &&
+    snapshotConstructionFields(props.triplegs, [
+      'tracks',
+      'startRows',
+      'endRows',
+      'status',
+      'staypointFinishRows'
+    ]);
+  const output = snapshotConstructionFields(props.output, [
+    'radiusOfGyration',
+    'jumpLengths',
+    'waitingTimes',
+    'randomEntropy',
+    'uncorrelatedEntropy',
+    'realEntropy',
+    'homeLocations',
+    'workLocations',
+    'trackingQuality',
+    'status'
+  ]);
+  return {
+    ...props,
+    staypoints: {
+      ...stays,
+      status: snapshotConstructionFields(stays.status, ['count', 'overflow', 'candidateOverflow'])
+    },
+    triplegs: legs && {
+      ...legs,
+      status: snapshotConstructionFields(legs.status, ['count', 'overflow', 'candidateOverflow'])
+    },
+    output: {
+      ...output,
+      status: output.status && snapshotConstructionFields(output.status, ['candidateOverflow'])
+    }
+  };
+}
+
 export class GPUMobilityIndicatorsOperation extends GPUContributorOperation {
   constructor(props: MobilityIndicatorsOperationProps) {
+    props = snapshotMobilityIndicatorsOperationProps(props);
     const id = props.id ?? 'mobility-indicators';
     const outputs: Record<string, GPUContributorOperationOutput> = {};
     for (const port of [
@@ -90,12 +155,24 @@ export class GPUMobilityIndicatorsOperation extends GPUContributorOperation {
         durations: props.staypoints.durations,
         locationIds: props.staypoints.locationIds,
         stayCount: props.staypoints.status.count,
+        ...(props.staypoints.status.overflow !== undefined
+          ? {stayOverflow: props.staypoints.status.overflow}
+          : {}),
+        ...(props.staypoints.status.candidateOverflow !== undefined
+          ? {stayCandidateOverflow: props.staypoints.status.candidateOverflow}
+          : {}),
         ...(props.triplegs
           ? {
               triplegTracks: props.triplegs.tracks,
               triplegStartRows: props.triplegs.startRows,
               triplegEndRows: props.triplegs.endRows,
               triplegCount: props.triplegs.status.count,
+              ...(props.triplegs.status.overflow !== undefined
+                ? {triplegOverflow: props.triplegs.status.overflow}
+                : {}),
+              ...(props.triplegs.status.candidateOverflow !== undefined
+                ? {triplegCandidateOverflow: props.triplegs.status.candidateOverflow}
+                : {}),
               stayFinishRows: props.triplegs.staypointFinishRows
             }
           : {})
@@ -121,14 +198,34 @@ export class GPUMobilityIndicatorsOperation extends GPUContributorOperation {
             startRows: getView<'uint32'>('stayStartRows'),
             durations: getView<'float32'>('durations'),
             locationIds: getView<'uint32'>('locationIds'),
-            status: {count: getView<'uint32'>('stayCount')}
+            status: {
+              count: getView<'uint32'>('stayCount'),
+              overflow:
+                props.staypoints.status.overflow !== undefined
+                  ? getView<'uint32'>('stayOverflow')
+                  : undefined,
+              candidateOverflow:
+                props.staypoints.status.candidateOverflow !== undefined
+                  ? getView<'uint32'>('stayCandidateOverflow')
+                  : undefined
+            }
           },
           triplegs: props.triplegs
             ? {
                 tracks: getView<'uint32'>('triplegTracks'),
                 startRows: getView<'uint32'>('triplegStartRows'),
                 endRows: getView<'uint32'>('triplegEndRows'),
-                status: {count: getView<'uint32'>('triplegCount')},
+                status: {
+                  count: getView<'uint32'>('triplegCount'),
+                  overflow:
+                    props.triplegs.status.overflow !== undefined
+                      ? getView<'uint32'>('triplegOverflow')
+                      : undefined,
+                  candidateOverflow:
+                    props.triplegs.status.candidateOverflow !== undefined
+                      ? getView<'uint32'>('triplegCandidateOverflow')
+                      : undefined
+                },
                 staypointFinishRows: getView<'uint32'>('stayFinishRows')
               }
             : undefined,

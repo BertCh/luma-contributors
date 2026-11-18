@@ -25,6 +25,8 @@ type RunResult = {
   nodedCount: number;
   nodedRequiredCount: number;
   nodedOverflow: number;
+  directedStatus: number[];
+  uncertaintyCounts: number[];
   nodedCandidateOverflow: number;
   nodedEndpoints: number[];
   sourceEdgeIds: number[];
@@ -36,7 +38,7 @@ type RunResult = {
   polygonSourceIds: number[];
   diagnostics: number[];
   overflow: number;
-  requiredCount: number;
+  requiredRingCount: number;
   candidateOverflow: number;
   polygonPositions: number[];
 };
@@ -118,6 +120,8 @@ async function runPolygonize(
   const required = scalar('required');
   const overflow = scalar('overflow');
   const candidateOverflow = scalar('candidate-overflow');
+  const uncertainties = ['top', 'noded', 'directed'].map(name => scalar(`${name}-uncertain`));
+  for (const uncertainty of uncertainties) uncertainty.buffer.write(Uint32Array.of(777));
   const inputPositions = input('positions', arrays.positions, 'float32x2');
   const inputLineOffsets = input('line-offsets', arrays.lineOffsets, 'uint32');
   const inputGroups = groupIds ? input('groups', Uint32Array.from(groupIds), 'uint32') : undefined;
@@ -133,7 +137,8 @@ async function runPolygonize(
         count: nodedCount.view,
         requiredCount: nodedRequired.view,
         overflow: nodedOverflow.view,
-        candidateOverflow: nodedCandidateOverflow.view
+        candidateOverflow: nodedCandidateOverflow.view,
+        uncertainCount: uncertainties[1].view
       }
     },
     directedEdges: {
@@ -147,7 +152,8 @@ async function runPolygonize(
         count: directedCount.view,
         requiredCount: directedRequired.view,
         overflow: directedOverflow.view,
-        candidateOverflow: directedCandidateOverflow.view
+        candidateOverflow: directedCandidateOverflow.view,
+        uncertainCount: uncertainties[2].view
       }
     },
     polygons: {
@@ -168,9 +174,10 @@ async function runPolygonize(
     },
     status: {
       count: count.view,
-      requiredCount: required.view,
+      requiredRingCount: required.view,
       overflow: overflow.view,
-      candidateOverflow: candidateOverflow.view
+      candidateOverflow: candidateOverflow.view,
+      uncertainCount: uncertainties[0].view
     }
   };
   const common = {
@@ -215,6 +222,14 @@ async function runPolygonize(
   const [writtenPolygons] = await readUint32(count.buffer, 1);
   const polygonOffsetValues = await readUint32(polygonOffsets.buffer, ringCapacity + 1);
   const result: RunResult = {
+    directedStatus: await Promise.all(
+      [directedCount, directedRequired, directedOverflow, directedCandidateOverflow].map(
+        async value => (await readUint32(value.buffer, 1))[0]
+      )
+    ),
+    uncertaintyCounts: await Promise.all(
+      uncertainties.map(async value => (await readUint32(value.buffer, 1))[0])
+    ),
     nodedCount: writtenSegments,
     nodedRequiredCount: requiredSegments,
     nodedOverflow: (await readUint32(nodedOverflow.buffer, 1))[0],
@@ -249,7 +264,7 @@ async function runPolygonize(
       diagnosticScalars.map(async diagnostic => (await readUint32(diagnostic.buffer, 1))[0])
     ),
     overflow: (await readUint32(overflow.buffer, 1))[0],
-    requiredCount: (await readUint32(required.buffer, 1))[0],
+    requiredRingCount: (await readUint32(required.buffer, 1))[0],
     candidateOverflow: (await readUint32(candidateOverflow.buffer, 1))[0],
     polygonPositions: await readFloat32(polygonPositions.buffer, vertexCapacity * 2)
   };
@@ -443,19 +458,52 @@ it('GPUPolygonize exposes exact required cardinality when noded output capacity 
   expect(result.nodedRequiredCount).toBe(4);
   expect(result.nodedOverflow).toBe(1);
   expect(result.nodedCandidateOverflow).toBe(0);
-  expect(result.overflow).toBe(1);
-  // candidateOverflow is the noding candidate flag only; capacity overflow does not set it.
-  expect(result.candidateOverflow).toBe(0);
+  expect(result.directedStatus).toEqual([4, 8, 1, 0]);
+  expect(result.overflow).toBe(0);
+  // Noded capacity is intermediate loss to the polygon consumer, whose final rings fit.
+  expect(result.candidateOverflow).toBe(1);
 });
 
-it('GPUPolygonize publishes the ring-assembly requirement, not the written polygon count', async () => {
+it('GPUPolygonize publishes candidate-only loss independently and clears all uncertainty destinations', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const result = await runPolygonize(
+    device,
+    [
+      [
+        [-1, 0],
+        [1, 0]
+      ],
+      [
+        [0, -1],
+        [0, 1]
+      ],
+      [
+        [-1, -1],
+        [1, 1]
+      ]
+    ],
+    'polygonize',
+    64,
+    1
+  );
+  expect(result.nodedOverflow).toBe(0);
+  expect(result.nodedCandidateOverflow).toBe(1);
+  expect(result.directedStatus).toEqual([10, 10, 0, 1]);
+  expect(result.overflow).toBe(0);
+  expect(result.candidateOverflow).toBe(1);
+  expect(result.uncertaintyCounts).toEqual([0, 0, 0]);
+});
+
+it('GPUPolygonize separates ring requirements from feature counts with sufficient capacity', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   // A square with a hole polygonizes into the annulus ring, its hole ring, the island face and
   // the clockwise unbounded walk: more rings are required than polygons are written.
   const result = await runPolygonize(device, SQUARE_WITH_HOLE);
   expect(result.polygonCount).toBe(2);
-  expect(result.requiredCount).toBeGreaterThan(result.polygonCount);
+  expect(result.requiredRingCount).toBe(4);
+  expect(result.overflow).toBe(0);
   expect(result.candidateOverflow).toBe(0);
 });
 
@@ -596,7 +644,11 @@ it('GPUMakeValid keeps only the annulus of a valid polygon with a hole', async (
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   // make_valid: Polygon, area 12, shell + 1 hole. GPUPolygonize would add the island face.
-  expectMakeValidMatches(await runPolygonize(device, SQUARE_WITH_HOLE, 'make-valid'), [[12, 2]]);
+  const repaired = await runPolygonize(device, SQUARE_WITH_HOLE, 'make-valid');
+  expectMakeValidMatches(repaired, [[12, 2]]);
+  expect(repaired.polygonCount).toBe(1);
+  expect(repaired.requiredRingCount).toBe(4);
+  expect(repaired.overflow).toBe(0);
   const polygonized = await runPolygonize(device, SQUARE_WITH_HOLE);
   expect(polygonized.polygonCount).toBe(2);
 });

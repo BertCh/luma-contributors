@@ -3,9 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import {snapshotContiguityOperationProps} from './weights-construction-snapshot';
 import {
   validateCapacity,
-  validateFiniteNumber,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -13,7 +13,10 @@ import {
   getCPUOperationUint32Rows
 } from '../../analysis-core/operations/cpu-operation-rows';
 import type {GPUContiguityCriterion} from './gpu-contiguity-weights';
-import type {ContiguityWeightsOperationProps} from './gpu-contiguity-weights-operation';
+import {
+  GPUContiguityWeightsOperation,
+  type ContiguityWeightsOperationProps
+} from './gpu-contiguity-weights-operation';
 
 /** Four-level polygon rows; rings close implicitly. Offset ranges may leave unused padding. */
 export type CPUContiguityWeightsInput = {
@@ -52,8 +55,11 @@ function validatePolygonOffsets(name: string, offsets: Uint32Array, maximum: num
  * Snapping is anchored at ringOffsets[0], falling back to zero for empty or non-finite input.
  *
  * What differs from the GPU contributor:
- * - There is no intermediate pair capacity: candidateOverflow is always 0 and requiredCount is
- *   exact. overflow reports only final slot truncation, even if pairCapacity would be too small.
+ * - An explicit pairCapacity binds candidate emission before deduplication; candidateOverflow
+ *   reports loss and requiredCount is then a lower bound. Without an explicit budget the CPU
+ *   uses no bounded pair scratch. Under candidate loss the retained prefix can differ because
+ *   GPU float32 key ordering and CPU point-key insertion order can differ. Final overflow is
+ *   separate and depends only on retained distinct links exceeding final capacity.
  * - Positive-tolerance snap keys use float64 round-half-up, without the GPU's float32 rounding,
  *   2^23-step shortcut or signed-integer clamp. Cells near float32 rounding boundaries may differ.
  * - The GPU snap-cell range limit is dropped. Zero tolerance still compares exact input float32
@@ -65,12 +71,19 @@ function validatePolygonOffsets(name: string, offsets: Uint32Array, maximum: num
  */
 export function computeContiguityWeightsOnCPU(
   input: CPUContiguityWeightsInput,
-  options: {criterion: GPUContiguityCriterion; capacity: number; snapTolerance?: number}
+  options: {
+    criterion: GPUContiguityCriterion;
+    capacity: number;
+    snapTolerance?: number;
+    pairCapacity?: number;
+  }
 ): CPUContiguityWeightsResult {
   const {positions, ringOffsets, polygonOffsets, featureOffsets} = input;
   const {criterion, capacity} = options;
   const tolerance = options.snapTolerance ?? 0;
   validateCapacity('computeContiguityWeightsOnCPU', 'capacity', capacity, 0);
+  if (options.pairCapacity !== undefined)
+    validateCapacity('computeContiguityWeightsOnCPU', 'pairCapacity', options.pairCapacity);
   validateRequirement(
     'computeContiguityWeightsOnCPU',
     criterion === 'queen' || criterion === 'rook',
@@ -137,9 +150,15 @@ export function computeContiguityWeightsOnCPU(
     }
   }
   const adjacency = Array.from({length: featureCount}, () => new Set<number>());
+  let candidateCount = 0;
+  const pairCapacity = options.pairCapacity ?? Infinity;
   for (const features of owners.values()) {
     for (const first of features) {
-      for (const second of features) if (first !== second) adjacency[first].add(second);
+      for (const second of features)
+        if (first !== second) {
+          if (candidateCount < pairCapacity) adjacency[first].add(second);
+          candidateCount++;
+        }
     }
   }
   const offsets = new Uint32Array(featureCount + 1);
@@ -164,29 +183,21 @@ export function computeContiguityWeightsOnCPU(
     weights,
     requiredCount: Uint32Array.of(requiredCount),
     overflow: Uint32Array.of(Number(requiredCount > capacity)),
-    candidateOverflow: Uint32Array.of(0)
+    candidateOverflow: Uint32Array.of(Number(candidateCount > pairCapacity))
   };
 }
 
-/** CPU twin. pairCapacity is unused and the GPU snap-range restriction is dropped. */
+/** CPU twin. Explicit pairCapacity is honored; the GPU snap-range restriction is dropped. */
 export class CPUContiguityWeightsOperation extends GPUCPUOperation {
   constructor(props: ContiguityWeightsOperationProps) {
+    props = snapshotContiguityOperationProps(props);
     const id = props.id ?? 'contiguity-weights';
-    validateCapacity(id, 'featureCount', props.featureCount, 1, 0xfffffffe);
-    validateCapacity(id, 'capacity', props.capacity);
-    validateRequirement(
-      id,
-      props.criterion === 'queen' || props.criterion === 'rook',
-      "criterion must be 'queen' or 'rook'"
-    );
-    validateRequirement(id, (props.snapTolerance ?? 0) >= 0, 'snapTolerance must be >= 0');
-    validateFiniteNumber(id, 'snapTolerance', props.snapTolerance ?? 0, 0);
-    if (props.coordinateExtent !== undefined)
-      validateFiniteNumber(id, 'coordinateExtent', props.coordinateExtent, 0);
+    // Validate names before duplicate object keys can erase a diagnostic in the CPU schema.
+    const operation = new GPUContiguityWeightsOperation(props);
     const shape = {length: props.capacity};
     super({
       id,
-      inputs: {...props.polygons},
+      inputs: operation.inputs,
       outputs: {
         [props.output.offsets]: gpuGraph.vector('uint32', {length: props.featureCount + 1}),
         [props.output.neighbors]: gpuGraph.vector('uint32', shape),

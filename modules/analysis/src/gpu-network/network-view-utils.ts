@@ -8,7 +8,7 @@ import {
   validateDisjointWritableViews,
   type GraphChunkDispatchViews
 } from '../analysis-core/kernels/graph-chunk-dispatch';
-import {getCoreDefaultBuffer} from '../analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../analysis-core/contracts/network-topology';
 import {
   getGraphViewChunks,
   validateGPUStorageBindingByteLength
@@ -129,15 +129,24 @@ export function validateNetworkOutputsDisjointFromInputs(
   outputs: readonly (GraphDataView | GraphVectorView | undefined)[],
   inputs: readonly (GraphDataView | GraphVectorView | undefined)[]
 ): void {
-  const physicalInputs = new Set(
-    inputs.flatMap(view => (view ? getGraphViewChunks(view).map(getNetworkPhysicalBuffer) : []))
+  const physicalInputs = new Map(
+    inputs.flatMap((view, index) =>
+      view
+        ? getGraphViewChunks(view).map(
+            chunk => [getNetworkPhysicalBuffer(chunk), `inputs[${index}]`] as const
+          )
+        : []
+    )
   );
-  for (const view of outputs) {
-    if (
-      view &&
-      getGraphViewChunks(view).some(chunk => physicalInputs.has(getNetworkPhysicalBuffer(chunk)))
-    ) {
-      throw new Error(`${id} outputs must not share buffers with inputs (physical storage)`);
+  for (const [index, view] of outputs.entries()) {
+    if (!view) continue;
+    for (const chunk of getGraphViewChunks(view)) {
+      const inputName = physicalInputs.get(getNetworkPhysicalBuffer(chunk));
+      if (inputName !== undefined) {
+        throw new Error(
+          `${id} outputs must not share buffers with inputs (physical storage): outputs[${index}] conflicts with ${inputName}`
+        );
+      }
     }
   }
 }

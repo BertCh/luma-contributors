@@ -197,9 +197,9 @@ it('terrain roadmap kernels parse within portable binding limits', () => {
     }
     const sources = getParsedKernelSources(commandNodes);
     expect(sources.size).toBeGreaterThan(0);
-    for (const [name, source] of sources) {
+    for (const {id: name, source, constants} of sources.configurations) {
       expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
-      expect(auditWGSLModule(source), name).toEqual([]);
+      expect(auditWGSLModule(source, constants), name).toEqual([]);
     }
   }
 });
@@ -441,9 +441,12 @@ it('flow distance and stream network declare their command node count and stay w
     expect(distanceNodes.length).toBe(distance.estimatedCommandNodeCount);
     const networkNodes = network.getCommandNodes(graph);
     expect(networkNodes.length).toBeLessThanOrEqual(network.estimatedCommandNodeCount);
-    for (const [name, source] of getParsedKernelSources([...distanceNodes, ...networkNodes])) {
+    for (const {id: name, source, constants} of getParsedKernelSources([
+      ...distanceNodes,
+      ...networkNodes
+    ]).configurations) {
       expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
-      expect(auditWGSLModule(source), name).toEqual([]);
+      expect(auditWGSLModule(source, constants), name).toEqual([]);
     }
   }
 });

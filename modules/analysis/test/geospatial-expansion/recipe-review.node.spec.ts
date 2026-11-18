@@ -34,7 +34,7 @@ it('scenario outputs cannot overwrite retained baselines or inputs used by other
       parameters: view('float32', 4),
       outputs: {scenarioCosts: baseline}
     })
-  ).toThrow(/distinct buffers/);
+  ).toThrow(/^network-disruption-recipe outputs must not share a buffer$/);
   const supply = view('float32', 1);
   expect(() =>
     addFacilityScenarioRecipe(graph, {

@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {captureRasterMorphologyOperationProps} from './raster-morphology-operation-utils';
 import {
   resolveRasterOperationBand,
   type RasterOperationBand
@@ -29,6 +30,7 @@ export type RasterReconstructionOperationProps = Pick<
 /** GPU reconstruction as a vector operation; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPURasterReconstructionOperation extends GPUContributorOperation {
   constructor(props: RasterReconstructionOperationProps) {
+    props = captureRasterMorphologyOperationProps(props);
     const length = props.grid.width * props.grid.height;
     super({
       id: props.id ?? 'raster-reconstruction',

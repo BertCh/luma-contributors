@@ -8,6 +8,7 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {makeGPURasterMetadata} from '../../../src/raster-analysis/raster-grid/index';
 import type {GPURasterBand} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPURasterZonalStatisticsParameterValues,
@@ -31,6 +32,112 @@ import {requireTestDevice} from '../../utils/require-test-device';
 
 const COLUMNS = ['cellCounts', 'valueCounts', 'sums', 'means', 'minimums', 'maximums'] as const;
 const NO_DATA = -9999;
+
+async function readReviewWeight(
+  device: Device,
+  grid: GPURasterMetadata,
+  settings: Float32Array,
+  row: number,
+  sumOrder: 'sorted' | 'atomic',
+  parameterLayoutVersion?: 1 | 2
+): Promise<number> {
+  const graph = new GPUCommandGraph(device);
+  const zones = new Uint32Array(grid.height).fill(0xffffffff);
+  zones[row] = 0;
+  const owned = [
+    createInputBuffer(device, zones),
+    createInputBuffer(device, new Float32Array(grid.height).fill(1)),
+    createInputBuffer(device, settings),
+    createOutputBuffer(device, 1)
+  ];
+  graph.add(
+    new GPURasterZonalStatistics({
+      grid,
+      zoneCapacity: 1,
+      sumOrder,
+      cellSizeMode: 'geographic',
+      parameterLayoutVersion,
+      zones: importGraphBuffer(graph, 'zones', owned[0], 'uint32', grid.height),
+      values: {
+        id: 'values',
+        format: 'float32',
+        storage: {
+          kind: 'buffer',
+          values: importGraphBuffer(graph, 'values', owned[1], 'float32', grid.height)
+        }
+      },
+      parameters: importGraphBuffer(graph, 'parameters', owned[2], 'float32', settings.length),
+      output: {weightSums: importGraphBuffer(graph, 'weight', owned[3], 'float32', 1)}
+    })
+  );
+  const compiled = graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    return (await readFloat32(owned[3], 1))[0];
+  } finally {
+    compiled.destroy();
+    for (const buffer of owned) buffer.destroy();
+  }
+}
+
+it('R1 legacy padding is ignored in both sum orders', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const grid: GPURasterMetadata = {
+    width: 1,
+    height: 1,
+    affine: [1, 0, 0, 0, -1, 60],
+    pixelInterpretation: 'area'
+  };
+  for (const sumOrder of ['sorted', 'atomic'] as const) {
+    const weights = [];
+    for (const settings of [
+      Float32Array.of(1, 1, 60, 59),
+      Float32Array.of(1, 1, 60, 59, 0, 0, 0, 0),
+      Float32Array.of(1, 1, 60, 59, 13, 17, 23, 29)
+    ]) {
+      const area = await readReviewWeight(device, grid, settings, 0, sumOrder);
+      expect(Number.isFinite(area)).toBe(true);
+      expect(area / 6275297022.198418).toBeCloseTo(1, 5);
+      weights.push(area);
+    }
+    expect(weights[1]).toBe(weights[0]);
+    expect(weights[2]).toBe(weights[0]);
+  }
+});
+
+it('R2 shifted polar windows preserve thin cell area in both sum orders', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const full: GPURasterMetadata = {
+    width: 1,
+    height: 3,
+    affine: [1, 0, 0, 0, -1e-6, 90],
+    pixelInterpretation: 'area'
+  };
+  const crop = {
+    ...full,
+    height: 1,
+    affine: [1, 0, 0, 0, -1e-6, 89.999998] as GPURasterMetadata['affine']
+  };
+  for (const sumOrder of ['sorted', 'atomic'] as const) {
+    for (const [grid, row] of [
+      [full, 2],
+      [crop, 0]
+    ] as const) {
+      const area = await readReviewWeight(
+        device,
+        grid,
+        getGPURasterZonalStatisticsParameterValues(grid),
+        row,
+        sumOrder,
+        2
+      );
+      expect(Number.isFinite(area)).toBe(true);
+      expect(area / 0.0005394961).toBeCloseTo(1, 5);
+    }
+  }
+});
 
 /** Deterministic pseudo-random generator so failures reproduce. */
 function createRandom(seed: number): () => number {
@@ -582,6 +689,85 @@ for (const [zoneCapacity, sumOrder] of [
   });
 }
 
+it('GPURasterZonalStatistics preserves thin geographic weights across windows', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const rowStep of [-0.000001, 0.000001]) {
+    for (const height of [1, 256]) {
+      for (const sumOrder of ['sorted', 'atomic'] as const) {
+        const graph = new GPUCommandGraph(device);
+        const metadata = {
+          width: 1,
+          height,
+          affine: [0.000001, 0, 0, 0, rowStep, 60] as [
+            number,
+            number,
+            number,
+            number,
+            number,
+            number
+          ],
+          pixelInterpretation: 'area' as const
+        };
+        const settings = getGPURasterZonalStatisticsParameterValues(metadata);
+        const zones = new Uint32Array(height).fill(0xffffffff);
+        zones[0] = 0;
+        const owned = [
+          createInputBuffer(device, zones),
+          createInputBuffer(device, new Float32Array(height).fill(2)),
+          createInputBuffer(device, settings),
+          createOutputBuffer(device, 1)
+        ];
+        graph.add(
+          new GPURasterZonalStatistics({
+            grid: metadata,
+            zones: importGraphBuffer(graph, 'zones', owned[0], 'uint32', height),
+            values: {
+              id: 'values',
+              format: 'float32',
+              storage: {
+                kind: 'buffer',
+                values: importGraphBuffer(graph, 'values', owned[1], 'float32', height)
+              }
+            },
+            zoneCapacity: 1,
+            sumOrder,
+            cellSizeMode: 'geographic',
+            parameterLayoutVersion: 2,
+            parameters: importGraphBuffer(
+              graph,
+              'parameters',
+              owned[2],
+              'float32',
+              settings.length
+            ),
+            output: {weightSums: importGraphBuffer(graph, 'weight-sums', owned[3], 'float32', 1)}
+          })
+        );
+        const compiled = graph.compile();
+        try {
+          submitGraph(device, compiled, undefined);
+          const [area] = await readFloat32(owned[3], 1);
+          expect(Number.isFinite(area)).toBe(true);
+          // Closed form: R² dLon 2 cos(midLatitude) sin(|dLatitude| / 2).
+          const radians = Math.PI / 180;
+          const expected =
+            6371007.180918475 ** 2 *
+            0.000001 *
+            radians *
+            2 *
+            Math.cos((60 + rowStep / 2) * radians) *
+            Math.sin((0.000001 * radians) / 2);
+          expect(area / expected).toBeCloseTo(1, 5);
+        } finally {
+          compiled.destroy();
+          for (const buffer of owned) buffer.destroy();
+        }
+      }
+    }
+  }
+});
+
 it('GPURasterZonalStatistics weights geographic cells by spherical area', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
@@ -591,11 +777,11 @@ it('GPURasterZonalStatistics weights geographic cells by spherical area', async 
   const height = 3;
   const grid = makeGPURasterMetadata({width, height, cellSize: [10, 20], origin: [0, 60]});
   const settingsValues = Array.from(getGPURasterZonalStatisticsParameterValues(grid));
-  expect(settingsValues).toEqual([10, 20, 60, 0]);
+  expect(settingsValues).toEqual([10, 20, 60, 0, -20, 30, 1]);
   const zones = new Uint32Array([0, 0, 0, 1, 1, 1]);
   const values = new Float32Array([1, 2, 3, 4, 5, 6]);
   const cellWeights = Array.from(zones, (_, cell) =>
-    getRasterZonalCellArea(settingsValues, Math.floor(cell / width), height)
+    getRasterZonalCellArea(settingsValues, Math.floor(cell / width), height, 2)
   );
   const expected = computeZonalStatistics(zones, values, {zoneCapacity: 2, cellWeights});
   for (const sumOrder of ['sorted', 'atomic'] as const) {
@@ -629,7 +815,14 @@ it('GPURasterZonalStatistics weights geographic cells by spherical area', async 
         zoneCapacity: 2,
         sumOrder,
         cellSizeMode: 'geographic',
-        parameters: importGraphBuffer(graph, 'parameters', owned[2], 'float32', 4),
+        parameterLayoutVersion: 2,
+        parameters: importGraphBuffer(
+          graph,
+          'parameters',
+          owned[2],
+          'float32',
+          settingsValues.length
+        ),
         output
       })
     );
@@ -669,7 +862,7 @@ for (const sumOrder of ['sorted', 'atomic'] as const) {
       validity[index] = random() < 0.1 ? 0 : 1;
     }
     const cellWeights = Array.from(zones, (_, cell) =>
-      getRasterZonalCellArea(settingsValues, Math.floor(cell / width), height)
+      getRasterZonalCellArea(settingsValues, Math.floor(cell / width), height, 2)
     );
     const expected = computeZonalStatistics(zones, values, {zoneCapacity, validity, cellWeights});
     const graph = new GPUCommandGraph(device, {id: `zonal-split-mask-${sumOrder}`});
@@ -710,7 +903,14 @@ for (const sumOrder of ['sorted', 'atomic'] as const) {
       zoneCapacity,
       sumOrder,
       cellSizeMode: 'geographic',
-      parameters: importGraphBuffer(graph, 'parameters', owned[3], 'float32', 4),
+      parameterLayoutVersion: 2,
+      parameters: importGraphBuffer(
+        graph,
+        'parameters',
+        owned[3],
+        'float32',
+        settingsValues.length
+      ),
       output: {
         ...output,
         status: {overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)}

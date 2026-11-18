@@ -8,13 +8,14 @@ import {
   validateTrajectoryOutputRanges
 } from '../trajectory-analysis/trajectory-binding-validation';
 import {
+  createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 import {
   validateCapacity,
@@ -49,7 +50,7 @@ export type GPUSpaceTimeCrossCorrelationOutput = {
   adjustedPValues?: GraphDataView<'float32'>;
   /** Optional overlap pair count `n` per (cell, lag), uint32. */
   pairCounts?: GraphDataView<'uint32'>;
-  /** Optional one-row uint32: the size of the multiple-testing family. */
+  /** Optional one-row uint32: tested (finite p-value) count, independent of adjustedPValues. */
   testedCount?: GraphDataView<'uint32'>;
 };
 
@@ -165,8 +166,12 @@ export class GPUSpaceTimeCrossCorrelation implements GPUCommandNodeProducer {
       validateSinglePackedView(output.pairCounts, ['uint32'], `${id} pairCounts`);
       validateViewLength(id, 'pairCounts', output.pairCounts, this.rowCount);
     }
+    if (output.testedCount) {
+      validateSinglePackedView(output.testedCount, ['uint32'], `${id} output.testedCount`);
+      validateViewLength(id, 'output.testedCount', output.testedCount, 1);
+    }
     resolveGPUMultipleTestingMethod(id, props.multipleTesting);
-    validateTrajectoryOutputRanges(this.id, this.getUsedOutput());
+    validateTrajectoryOutputRanges(this.id, output);
     validateTrajectoryWritableDispatches(this.id, [
       {correlations: output.correlations, pValues: output.pValues, pairCounts: output.pairCounts}
     ]);
@@ -177,22 +182,17 @@ export class GPUSpaceTimeCrossCorrelation implements GPUCommandNodeProducer {
         output.pValues,
         output.adjustedPValues,
         output.pairCounts,
-        output.adjustedPValues ? output.testedCount : undefined
+        output.testedCount
       ],
       [props.first, props.second]
     );
   }
 
-  private getUsedOutput(): GPUSpaceTimeCrossCorrelationOutput {
-    const {output} = this.props;
-    return {...output, testedCount: output.adjustedPValues ? output.testedCount : undefined};
-  }
-
-  /** Returns the correlation kernel and, with an adjusted-p output, the adjustment nodes. */
+  /** Returns correlation, optional family counting and optional adjustment nodes. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    validateTrajectoryBindings(graph, this.id, {...this.props, output: this.getUsedOutput()});
+    validateTrajectoryBindings(graph, this.id, this.props);
     const {props, id, rowCount} = this;
     const {first, second, layout, cellCount, periodCount, lags, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
@@ -202,7 +202,7 @@ export class GPUSpaceTimeCrossCorrelation implements GPUCommandNodeProducer {
       output.pValues,
       output.adjustedPValues,
       output.pairCounts,
-      output.adjustedPValues ? output.testedCount : undefined
+      output.testedCount
     ]);
     const address = (cell: string, period: string) =>
       layout === 'period-major'
@@ -322,14 +322,58 @@ fn erfcPositive(x: f32) -> f32 {
   pValues[pValuesOffset + index] = clamp(erfcPositive(z * 0.70710678), 0.0, 1.0);`
       })
     ];
+    // Both branches count privately so pValues and testedCount may occupy disjoint ranges of
+    // one caller buffer, while the adjustment contributor receives separate input/output storage.
+    const testedCount = output.testedCount
+      ? createTransientView(graph, `${id}-tested-count`, 'uint32', 1)
+      : undefined;
     if (output.adjustedPValues) {
       nodes.push(
         ...new GPUMultipleTestingAdjustment({
           id: `${id}-adjust`,
           pValues: output.pValues,
           method: props.multipleTesting ?? 'benjamini-hochberg',
-          output: {adjustedPValues: output.adjustedPValues, testedCount: output.testedCount}
+          output: {adjustedPValues: output.adjustedPValues, testedCount}
         }).getCommandNodes(graph)
+      );
+    } else if (testedCount) {
+      nodes.push(
+        createFillNode<Parameters>(graph, {
+          id: `${id}-clear-tested-count`,
+          operation: OPERATION,
+          view: testedCount,
+          type: 'u32',
+          value: '0u'
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-tested-count`,
+          operation: OPERATION,
+          variant: 'tested-count',
+          bindings: [
+            {name: 'pValues', view: output.pValues, type: 'f32', access: 'read'},
+            {name: 'testedCount', view: testedCount, type: 'atomic<u32>', access: 'read_write'}
+          ],
+          invocationCount: rowCount,
+          declarations: IS_FINITE_VALUE_WGSL,
+          body: `if (isFiniteValue(pValues[pValuesOffset + index])) {
+  atomicAdd(&testedCount[testedCountOffset], 1u);
+}`
+        })
+      );
+    }
+    if (testedCount && output.testedCount) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-publish-tested-count`,
+          operation: OPERATION,
+          variant: 'publish-tested-count',
+          bindings: [
+            {name: 'count', view: testedCount, type: 'u32', access: 'read'},
+            {name: 'testedCount', view: output.testedCount, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: 1,
+          body: 'testedCount[testedCountOffset] = count[countOffset];'
+        })
       );
     }
     return nodes;

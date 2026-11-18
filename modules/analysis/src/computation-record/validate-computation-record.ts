@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getGPUComputationIdentityIssues} from './computation-identity-validation';
 import {
   GPU_COMPUTATION_RECORD_SCHEMA,
   GPU_COMPUTATION_METRICS_SCHEMA,
@@ -97,6 +98,18 @@ export function validateGPUComputationRecord(record: unknown): GPUComputationVal
     if (root['schema'] !== GPU_COMPUTATION_RECORD_SCHEMA)
       issue('schema', 'Unsupported record schema');
     strings(root, ['id', 'runId', 'createdAt'], '');
+    for (const identityIssue of getGPUComputationIdentityIssues({
+      parameters: root['parameters'],
+      choices: root['choices'],
+      seed: root['seed'],
+      adapter: root['adapter'],
+      datasetVersion: root['datasetVersion'],
+      implementationRevision: root['implementationRevision']
+    }))
+      issue(identityIssue.path, identityIssue.message);
+    for (const field of ['executionId', 'implementationRevision']) {
+      if (root[field] !== undefined) strings(root, [field], '');
+    }
     strings(object(root['adapter'], 'adapter'), ['backend'], 'adapter');
     array(root['domains'], 'domains').forEach((domain, index) => {
       if (typeof domain !== 'string' || !domain)
@@ -299,6 +312,15 @@ export function validateGPUComputationRecord(record: unknown): GPUComputationVal
       resources?.forEach((resource, index) => {
         const resourcePath = `${path}.resources[${index}]`;
         strings(resource, ['kind', 'ownership'], resourcePath);
+        if (!['imported', 'transient', 'unknown'].includes(String(resource['ownership'])))
+          issue(`${resourcePath}.ownership`, 'Invalid resource ownership');
+        if (
+          resource['bytesKind'] !== undefined &&
+          !['logical', 'lower-bound', 'estimated', 'unavailable'].includes(
+            String(resource['bytesKind'])
+          )
+        )
+          issue(`${resourcePath}.bytesKind`, 'Invalid resource size precision');
         for (const endpoint of ['firstNode', 'lastNode']) {
           if (resource[endpoint] !== undefined)
             reference(resource[endpoint], nodeIds, `${resourcePath}.${endpoint}`);
@@ -368,6 +390,11 @@ export function validateGPUComputationSidecars(
     if (metrics.schema !== GPU_COMPUTATION_METRICS_SCHEMA)
       issue(`${path}.schema`, 'Unsupported metrics schema');
     if (metrics.runId !== record.runId) issue(`${path}.runId`, 'Run id does not match');
+    if (metrics.executionId !== record.executionId)
+      issue(
+        `${path}.executionId`,
+        'Execution id does not match (including missing legacy identity)'
+      );
     const graph = record.graphs.find(candidate => candidate.id === metrics.graph);
     if (!graph) issue(`${path}.graph`, 'Unknown graph');
     const nodeIds = new Set(graph?.nodes.map(node => node.id));
@@ -383,6 +410,11 @@ export function validateGPUComputationSidecars(
     if (captures.schema !== GPU_COMPUTATION_CAPTURES_SCHEMA)
       issue('captures.schema', 'Unsupported captures schema');
     if (captures.runId !== record.runId) issue('captures.runId', 'Run id does not match');
+    if (captures.executionId !== record.executionId)
+      issue(
+        'captures.executionId',
+        'Execution id does not match (including missing legacy identity)'
+      );
     for (const category of ['snapshots', 'stamps', 'replays'] as const) {
       captures[category].forEach((capture, index) => {
         const path = `captures.${category}[${index}]`;
@@ -406,6 +438,14 @@ export function validateGPUComputationSidecars(
           !record.axes.keySpaces.some(space => space.id === capture.keySpace)
         )
           issue(`${path}.keySpace`, 'Unknown key space');
+        const geometry = capture.geometry;
+        if (
+          geometry &&
+          'featureKeySpace' in geometry &&
+          geometry.featureKeySpace !== undefined &&
+          !record.axes.keySpaces.some(space => space.id === geometry.featureKeySpace)
+        )
+          issue(`${path}.geometry.featureKeySpace`, 'Unknown key space');
         const components = capture.components ?? 1;
         if (!Number.isInteger(components) || components <= 0)
           issue(`${path}.components`, 'Expected a positive integer');

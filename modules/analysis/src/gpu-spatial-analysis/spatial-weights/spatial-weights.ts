@@ -249,14 +249,14 @@ const TRANSFORM_STATES: readonly GPUSpatialWeightsTransformState[] = [
  */
 export type GPUSpatialWeightsOutput = GPUSpatialWeights & {
   status: {
-    /** One when the neighbors (or an intermediate stage) did not fit their capacity, else 0. */
+    /** One when final neighbor slots did not fit capacity, else 0. Intermediate loss is candidateOverflow. */
     overflow: GraphDataView<'uint32'>;
     /**
      * Optional unclamped slot requirement: exact unless `candidateOverflow` (or the producer's
      * documented intermediate stage) overflowed, in which case it is a lower bound.
      */
     requiredCount?: GraphDataView<'uint32'>;
-    /** Optional: one when an intermediate candidate stage overflowed (see each producer). */
+    /** Optional: one after intermediate-stage loss or inherited incomplete input (see each producer). */
     candidateOverflow?: GraphDataView<'uint32'>;
   };
 };

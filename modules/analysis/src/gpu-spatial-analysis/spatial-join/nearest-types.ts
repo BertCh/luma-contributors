@@ -6,6 +6,7 @@ import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPUNearestFeatureSource} from './spatial-join-types';
 import type {
   GPULineGeometryPort,
+  GPUMultipartGeometryPort,
   GPUPackedGeometryPort,
   GPUPointGeometryPort,
   GPUPolygonGeometryPort
@@ -22,19 +23,22 @@ export const GPU_NEAREST_NO_SEGMENT = 0xffffffff;
 /**
  * Feature geometry accepted by {@link GPUNearestFeatureJoin}: points, single segments, linestrings
  * and polygons or multipolygons (four-level layout). Optional `sourceIds` are written instead of
- * feature rows.
+ * feature rows. Multipart point/line featureOffsets group parts into one feature in neighbors mode.
  */
 export type GPUNearestFeatureGeometry =
   | GPUNearestFeatureSource
+  | GPUPackedGeometryPort<GPUMultipartGeometryPort>
   | GPUPackedGeometryPort<GPULineGeometryPort>
   | GPUPackedGeometryPort<GPUPolygonGeometryPort>;
 
 /**
  * Query geometry of {@link GPUNearestFeatureJoin}, one query per row: points (possibly chunked),
- * linestrings or polygons. Line and polygon queries are one packed view each and need neighbors mode.
+ * linestrings or polygons. Multipart points/lines use featureOffsets and one query per feature.
+ * Multipart, line and polygon queries are packed and need neighbors mode.
  */
 export type GPUNearestQueryGeometry =
   | GPUPointGeometryPort
+  | GPUPackedGeometryPort<GPUMultipartGeometryPort>
   | GPUPackedGeometryPort<GPULineGeometryPort | GPUPolygonGeometryPort>;
 
 /**
@@ -56,6 +60,8 @@ export type NearestSide = {
   kind: GPUNearestFeatureGeometry['kind'];
   /** Number of vertices in the position buffer, used to clamp malformed offsets. */
   vertexCount: number;
+  /** Feature-to-part offsets are bound when this child count is present. */
+  partCount?: number;
   /** Word offset of ring offsets packed after the polygon feature ring ranges, when present. */
   packedRingOffsetsBase?: number;
 };

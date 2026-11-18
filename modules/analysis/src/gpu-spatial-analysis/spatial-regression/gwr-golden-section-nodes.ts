@@ -424,6 +424,7 @@ ${stateConstants}`;
         gate.binding,
         ...(props.runningState ? [read('runningState', props.runningState, 'u32')] : [])
       ],
+      // contract-allow: single-invocation -- <=66 table rows x7 fields; GWR <=4096 bounds partials (large route pre-reduces to one); MGWR supplies bounds.
       invocationCount: 1,
       declarations: searchCommon,
       body: `let nan = getNaN();
@@ -634,8 +635,19 @@ export function selectGoldenSectionBandwidth(
   evaluate: (bandwidth: number) => number,
   maximumIterations: number
 ): number {
+  return selectGoldenSectionBandwidthWithStatus(lower, upper, evaluate, maximumIterations)
+    .bandwidth;
+}
+
+/** Selected finite bandwidth and whether its score search exhausted the budget. @internal */
+export function selectGoldenSectionBandwidthWithStatus(
+  lower: number,
+  upper: number,
+  evaluate: (bandwidth: number) => number,
+  maximumIterations: number
+): {bandwidth: number; iterationLimitReached: boolean} {
   if (!(lower > 0) || !(upper >= lower) || !Number.isFinite(lower) || !Number.isFinite(upper))
-    return NaN;
+    return {bandwidth: NaN, iterationLimitReached: false};
   const delta = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_GOLDEN_SECTION_DELTA;
   let first = lower + delta * (upper - lower);
   let second = upper - delta * (upper - lower);
@@ -645,6 +657,7 @@ export function selectGoldenSectionBandwidth(
   const endpointScore = evaluate(endpoint);
   const endpointValid = Number.isFinite(endpointScore);
   let best = NaN;
+  let iterationLimitReached = false;
   for (let iteration = 0; iteration < maximumIterations; iteration++) {
     const firstValid = Number.isFinite(firstScore);
     const secondValid = Number.isFinite(secondScore);
@@ -658,12 +671,13 @@ export function selectGoldenSectionBandwidth(
       GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_GOLDEN_SECTION_RELATIVE_TOLERANCE *
         Math.max(Math.abs(firstScore), Math.abs(secondScore))
     );
-    if (
+    const finished =
       (!firstValid && !secondValid && !endpointValid) ||
-      (firstValid && secondValid && Math.abs(firstScore - secondScore) <= tolerance) ||
-      iteration + 1 === maximumIterations
-    )
+      (firstValid && secondValid && Math.abs(firstScore - secondScore) <= tolerance);
+    if (finished || iteration + 1 === maximumIterations) {
+      iterationLimitReached = !finished;
       break;
+    }
     if (firstWins) {
       upper = second;
       second = first;
@@ -678,5 +692,5 @@ export function selectGoldenSectionBandwidth(
       secondScore = evaluate(second);
     }
   }
-  return best;
+  return {bandwidth: best, iterationLimitReached};
 }

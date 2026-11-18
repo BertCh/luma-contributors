@@ -148,14 +148,6 @@ export type GPUGeneralizedGeographicallyWeightedRegressionProps = {
   gaussianCutoff?: number;
   /** Predict at finite query rows excluded by the training mask. Their responses are never used. */
   predictExcluded?: boolean;
-  /**
-   * Scale of `output.fitted`: `'response'` (the default) is the fitted mean, `'link'` the linear
-   * predictor. Bandwidth selection fits its candidates on the link scale, because the float32
-   * logistic mean is exactly 1 from a linear predictor of about 17 and cannot give a deviance.
-   *
-   * @internal
-   */
-  fittedScale?: 'response' | 'link';
   /** Training-only grid LOO/AICc or bounded AICc golden-section selection. */
   bandwidthSelection?: {
     output: {
@@ -238,7 +230,14 @@ export class GPUGeneralizedGeographicallyWeightedRegression implements GPUComman
   readonly props: Omit<GPUGeneralizedGeographicallyWeightedRegressionProps, 'indexGridSize'> & {
     indexGridSize?: readonly [number, number];
   };
-  constructor(inputProps: GPUGeneralizedGeographicallyWeightedRegressionProps) {
+  private readonly fittedScale: 'response' | 'link';
+
+  constructor(inputProps: GPUGeneralizedGeographicallyWeightedRegressionProps);
+  constructor(
+    inputProps: GPUGeneralizedGeographicallyWeightedRegressionProps,
+    fittedScale: 'response' | 'link' = 'response'
+  ) {
+    this.fittedScale = fittedScale;
     const props = {...inputProps, indexGridSize: inputProps.indexGridSize || undefined};
     this.id = props.id ?? 'generalized-geographically-weighted-regression';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext, {
@@ -496,6 +495,9 @@ export class GPUGeneralizedGeographicallyWeightedRegression implements GPUComman
       ]
     );
   }
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[];
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>,
     /** Shared training index and search gate; used only by the internal selection composition. @internal */
@@ -847,7 +849,7 @@ for (var iteration = 0u; iteration < ${iterations}u; iteration++) {
 if (state == 0u || state == 3u) {
   // Publish the current finite iterate even when the iteration budget is exhausted.
   // Map the centered, scaled coefficients back to the raw predictor basis.
-  fits[base + ${columns}u] = ${props.fittedScale === 'link' ? 'linearPredictor(focus, &coefficients)' : 'meanResponse(linearPredictor(focus, &coefficients))'};
+  fits[base + ${columns}u] = ${this.fittedScale === 'link' ? 'linearPredictor(focus, &coefficients)' : 'meanResponse(linearPredictor(focus, &coefficients))'};
   var intercept = coefficients[0];
   for (var column = 1u; column < ${columns}u; column++) {
     fits[base + column] = coefficients[column] / scaleValues[column];
@@ -945,6 +947,28 @@ ${props.inference ? `for (var column = 0u; column < ${columns}u; column++) { sta
     }
     return nodes;
   }
+}
+
+/** Fits a bandwidth-selection candidate with its shared grid and dispatch gates. @internal */
+export function getGeneralizedRegressionCompositionNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUGeneralizedGeographicallyWeightedRegressionProps,
+  options: {
+    fittedScale?: 'response' | 'link';
+    gridSetup?: ReturnType<typeof createLocalRegressionGrid<Parameters>>;
+    gate?: WGSLDispatchGate<Parameters>;
+    fits?: GraphDataView<'float32'>;
+    focusGate?: WGSLDispatchGate<Parameters>;
+  }
+): readonly GPUCommandNode<Parameters>[] {
+  const contributor = Reflect.construct(GPUGeneralizedGeographicallyWeightedRegression, [
+    props,
+    options.fittedScale
+  ]) as GPUGeneralizedGeographicallyWeightedRegression;
+  return Reflect.apply(contributor.getCommandNodes, contributor, [
+    graph,
+    options
+  ]) as readonly GPUCommandNode<Parameters>[];
 }
 
 /** Shared bounded input contract for local iterative regression. @internal */

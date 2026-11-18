@@ -88,7 +88,9 @@ it.each([
         reconcilePatches,
         output: {aggregation}
       })
-    ).toThrow(/^landscape-metrics outputs must not share buffers with inputs$/);
+    ).toThrow(
+      /^landscape-metrics outputs must not share buffers with inputs: outputs\[0\] conflicts with inputs\[1\]$/
+    );
     expect((graph as unknown as {nodes: unknown[]}).nodes).toHaveLength(0);
   } finally {
     device.destroy();

@@ -1,6 +1,7 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
 
 import {
   createTransientView,
@@ -17,8 +18,18 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {createScanCarryNode} from '../../analysis-core/kernels/scan-total';
 import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+import {
+  snapshotJoinGeometry,
+  snapshotJoinPairs,
+  snapshotJoinStatus
+} from '../spatial-join/spatial-join-construction-snapshot';
+import {
   validateSinglePackedView,
   validateMaximumCount,
+  validateRequirement,
   validatePowerOfTwo
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUSegmentGeometry, GPUSegmentIntersectionOutput} from './segment-intersection-types';
@@ -92,9 +103,11 @@ export type GPUSegmentIntersectionProps = {
   leafCapacity?: number;
   /**
    * Caller-owned outputs. `output.pairs` holds the `(left, right)` segment pairs, sorted by left
-   * then right segment ID, with the capacity `pairs.leftIds.length`. `pairs.count` is
-   * `min(total, capacity)`; `pairs.overflow` is 1 when the total exceeded the capacity, in which
-   * case the output holds the sorted prefix of the pairs. The optional per-pair columns and
+   * then right segment row, with the capacity `pairs.leftRows.length`. `pairs.status.count` is
+   * `min(total, capacity)`; `pairs.status.overflow` is 1 only when total exceeds pair capacity.
+   * `pairs.status.candidateOverflow` reports BVH leaf loss and is required when leafCapacity is
+   * below the right vertex-slot count (left in self mode). Both flags are rewritten on reuse.
+   * The output holds the sorted prefix of the retained pairs. The optional per-pair columns and
    * `status.uncertainCount` are described by {@link GPUSegmentIntersectionOutput}.
    */
   output: GPUSegmentIntersectionOutput;
@@ -157,8 +170,47 @@ export class GPUSegmentIntersection implements GPUCommandNodeProducer {
   readonly spatialSort: boolean;
 
   constructor(props: GPUSegmentIntersectionProps) {
-    this.id = props.id ?? 'segment-intersection';
-    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    const contextProps = snapshotConstructionFields(props, ['id', 'spatialContext']);
+    this.id = contextProps.id ?? 'segment-intersection';
+    const spatialContext =
+      contextProps.spatialContext &&
+      snapshotConstructionSpatialContext(contextProps.spatialContext);
+    // Reject unsupported coordinates before evaluating geometry or output getters.
+    this.spatialContext = resolveGPUSpatialContext(this.id, spatialContext);
+    const snapshot = snapshotConstructionFields(props, [
+      'left',
+      'right',
+      'sameFeatureOnly',
+      'spatialSort',
+      'leafCapacity',
+      'output'
+    ]);
+    const left = snapshotSinglePartGeometryPort(this.id, 'left', snapshot.left);
+    const right =
+      snapshot.right && snapshotSinglePartGeometryPort(this.id, 'right', snapshot.right);
+    const output = snapshotConstructionFields(snapshot.output, [
+      'pairs',
+      'status',
+      'kinds',
+      'points',
+      'endPoints',
+      'leftFeatures',
+      'rightFeatures',
+      'leftRings',
+      'rightRings'
+    ]);
+    props = Object.freeze({
+      ...contextProps,
+      ...snapshot,
+      spatialContext,
+      left: snapshotJoinGeometry(left),
+      ...(right ? {right: snapshotJoinGeometry(right)} : {}),
+      output: Object.freeze({
+        ...output,
+        pairs: snapshotJoinPairs(output.pairs),
+        ...(output.status ? {status: snapshotJoinStatus(output.status)} : {})
+      })
+    });
     this.props = props;
     const {id} = this;
     this.isSelfMode = !props.right;
@@ -197,15 +249,26 @@ export class GPUSegmentIntersection implements GPUCommandNodeProducer {
     this.leafCapacity = props.leafCapacity ?? getNextPowerOfTwo(this.rightSlotCount);
     validatePowerOfTwo(id, 'leafCapacity', this.leafCapacity);
     const {pairs} = props.output;
-    validatePackedUint32View(pairs.leftIds, `${id} pairs.leftIds`);
-    validatePackedUint32View(pairs.rightIds, `${id} pairs.rightIds`);
-    this.pairCapacity = pairs.leftIds.length;
-    if (this.pairCapacity < 1 || pairs.rightIds.length !== this.pairCapacity) {
-      throw new Error(`${id} pairs.leftIds and pairs.rightIds must have equal nonzero length`);
+    validateRequirement(
+      id,
+      Boolean(pairs.leftRows && pairs.rightRows) && !('leftIds' in pairs) && !('rightIds' in pairs),
+      'pairs.leftRows and pairs.rightRows are required; leftIds and rightIds are unsupported application-ID names'
+    );
+    validateRequirement(
+      id,
+      this.leafCapacity >= this.rightSlotCount || pairs.status.candidateOverflow !== undefined,
+      'output.pairs.status.candidateOverflow is required when leafCapacity is below the right segment slot count'
+    );
+    validatePackedUint32View(pairs.leftRows, `${id} pairs.leftRows`);
+    validatePackedUint32View(pairs.rightRows, `${id} pairs.rightRows`);
+    this.pairCapacity = pairs.leftRows.length;
+    if (this.pairCapacity < 1 || pairs.rightRows.length !== this.pairCapacity) {
+      throw new Error(`${id} pairs.leftRows and pairs.rightRows must have equal nonzero length`);
     }
     for (const [name, view] of [
       ['count', pairs.status.count],
       ['overflow', pairs.status.overflow],
+      ['candidateOverflow', pairs.status.candidateOverflow],
       ['requiredCount', pairs.status.requiredCount],
       ['status.uncertainCount', props.output.status?.uncertainCount]
     ] as const) {
@@ -263,10 +326,11 @@ export class GPUSegmentIntersection implements GPUCommandNodeProducer {
     const {pairs, status, ...columns} = this.props.output;
     const uncertainCount = status?.uncertainCount;
     return [
-      pairs.leftIds,
-      pairs.rightIds,
+      pairs.leftRows,
+      pairs.rightRows,
       pairs.status.count,
       pairs.status.overflow,
+      pairs.status.candidateOverflow,
       pairs.status.requiredCount,
       uncertainCount,
       columns.kinds,
@@ -519,7 +583,7 @@ ${NODE_OVERLAPS_WGSL}`;
     const writeBindings: WGSLKernelBinding[] = [
       ...probeBindings,
       {name: 'offsets', view: offsets, type: 'u32', access: 'read'},
-      {name: 'pairRight', view: pairs.rightIds, type: 'u32', access: 'read_write'}
+      {name: 'pairRight', view: pairs.rightRows, type: 'u32', access: 'read_write'}
     ];
     if (hitCodes) {
       // The 8 storage bindings of a default device are full, so pairLeft is expanded afterwards.
@@ -555,7 +619,7 @@ ${NODE_OVERLAPS_WGSL}`;
         bindings: [
           {name: 'offsets', view: offsets, type: 'u32', access: 'read'},
           {name: 'state', view: state, type: 'u32', access: 'read'},
-          {name: 'pairLeft', view: pairs.leftIds, type: 'u32', access: 'read_write'}
+          {name: 'pairLeft', view: pairs.leftRows, type: 'u32', access: 'read_write'}
         ],
         invocationCount: pairCapacity,
         declarations: `const PAIR_CAPACITY: u32 = ${pairCapacity}u;
@@ -577,7 +641,7 @@ const LEFT_COUNT: u32 = ${leftSlotCount}u;`,
       const sortBindings: WGSLKernelBinding[] = [
         {name: 'counts', view: counts, type: 'u32', access: 'read'},
         {name: 'offsets', view: offsets, type: 'u32', access: 'read'},
-        {name: 'pairRight', view: pairs.rightIds, type: 'u32', access: 'read_write'}
+        {name: 'pairRight', view: pairs.rightRows, type: 'u32', access: 'read_write'}
       ];
       if (hitCodes) {
         sortBindings.push({name: 'hitCodes', view: hitCodes, type: 'u32', access: 'read_write'});
@@ -644,8 +708,8 @@ const PAIR_CAPACITY: u32 = ${pairCapacity}u;`,
     }
     if (hitCodes && (points || endPoints)) {
       const bindings: WGSLKernelBinding[] = [
-        {name: 'pairLeft', view: pairs.leftIds, type: 'u32', access: 'read'},
-        {name: 'pairRight', view: pairs.rightIds, type: 'u32', access: 'read'},
+        {name: 'pairLeft', view: pairs.leftRows, type: 'u32', access: 'read'},
+        {name: 'pairRight', view: pairs.rightRows, type: 'u32', access: 'read'},
         {name: 'leftTable', view: leftTable, type: 'u32', access: 'read'},
         {name: 'rightTable', view: rightTable, type: 'u32', access: 'read'},
         {name: 'hitCodes', view: hitCodes, type: 'u32', access: 'read'},
@@ -679,8 +743,8 @@ const PAIR_CAPACITY: u32 = ${pairCapacity}u;`,
       );
     }
     for (const [side, ids, table, featureColumn, ringColumn] of [
-      ['left', pairs.leftIds, leftTable, props.output.leftFeatures, props.output.leftRings],
-      ['right', pairs.rightIds, rightTable, props.output.rightFeatures, props.output.rightRings]
+      ['left', pairs.leftRows, leftTable, props.output.leftFeatures, props.output.leftRings],
+      ['right', pairs.rightRows, rightTable, props.output.rightFeatures, props.output.rightRings]
     ] as const) {
       if (!featureColumn && !ringColumn) {
         continue;
@@ -721,12 +785,15 @@ ${getSegmentTableAccessorsWGSL(side)}`,
 
     // Scalars.
     const scalarBindings: WGSLKernelBinding[] = [
-      {name: 'state', view: state, type: 'u32', access: 'read'},
-      {name: 'bvhOverflow', view: bvh.overflow, type: 'u32', access: 'read'}
+      {name: 'state', view: state, type: 'u32', access: 'read'}
     ];
+    if (pairs.status.candidateOverflow) {
+      scalarBindings.push({name: 'bvhOverflow', view: bvh.overflow, type: 'u32', access: 'read'});
+    }
     const scalars: [string, GraphDataView<'uint32'> | undefined][] = [
       ['count', pairs.status.count],
       ['overflow', pairs.status.overflow],
+      ['candidateOverflow', pairs.status.candidateOverflow],
       ['requiredCount', pairs.status.requiredCount],
       ['uncertainCount', uncertainCount]
     ];
@@ -745,9 +812,10 @@ ${getSegmentTableAccessorsWGSL(side)}`,
         invocationCount: 1,
         declarations: `const PAIR_CAPACITY: u32 = ${pairCapacity}u;`,
         body: `let total = state[stateOffset];
-  let overflowed = bvhOverflow[bvhOverflowOffset] != 0u || total > PAIR_CAPACITY;
+  let overflowed = total > PAIR_CAPACITY;
   ${has('count') ? 'count[countOffset] = min(total, PAIR_CAPACITY);' : ''}
   ${has('overflow') ? 'overflow[overflowOffset] = select(0u, 1u, overflowed);' : ''}
+  ${has('candidateOverflow') ? 'candidateOverflow[candidateOverflowOffset] = select(0u, 1u, bvhOverflow[bvhOverflowOffset] != 0u);' : ''}
   ${has('requiredCount') ? 'requiredCount[requiredCountOffset] = total;' : ''}
   ${has('uncertainCount') ? 'uncertainCount[uncertainCountOffset] = state[stateOffset + 1u];' : ''}`
       })

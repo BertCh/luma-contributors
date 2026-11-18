@@ -15,7 +15,7 @@ import {
   getRasterGroundCellSize,
   type GPURasterCellSizeMode,
   type RasterGridAffine
-} from '../../../src/analysis-core/raster-grid';
+} from '../../../src/analysis-core/contracts/raster-grid';
 
 /** Float64 row half-widths for a ground-radius rectangle; zero remains unfiltered. */
 export function getGroundReliefRowRadii(

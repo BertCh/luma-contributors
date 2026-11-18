@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {addPreparedRecipe} from './prepared-recipe';
+
 import {validateRecipeBoundary, getRecipeView as getOrCreateView} from './recipe-utils';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {GPUKriging, type GPUKrigingProps} from '../spatial-interpolation/gpu-kriging';
@@ -33,6 +35,13 @@ export type GPUInterpolationDiagnosticsRecipeProps = {
 
 /** Ordinary kriging and leave-one-out diagnostics, with no hidden fitting or readback. */
 export function addInterpolationDiagnosticsRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUInterpolationDiagnosticsRecipeProps
+): GPURecipeResult<GPUInterpolationDiagnosticsOutput> {
+  return addPreparedRecipe(graph, props, declareInterpolationDiagnosticsRecipe);
+}
+
+function declareInterpolationDiagnosticsRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUInterpolationDiagnosticsRecipeProps
 ): GPURecipeResult<GPUInterpolationDiagnosticsOutput> {

@@ -9,7 +9,10 @@ import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {GPUSpatialErrorMaximumLikelihood} from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-spatial-error-maximum-likelihood';
 import {GPUSpatialLagMaximumLikelihood} from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-spatial-lag-maximum-likelihood';
-import {getSpatialWeightsEigenvalues} from '../../../src/gpu-spatial-analysis/spatial-regression/spatial-exact-log-determinant';
+import {
+  getExactLogDeterminantWGSL,
+  getSpatialWeightsEigenvalues
+} from '../../../src/gpu-spatial-analysis/spatial-regression/spatial-exact-log-determinant';
 import {
   GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LENGTH,
   GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LOG_DETERMINANT,
@@ -24,6 +27,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {runWGSLModuleKernel} from '../../utils/wgsl-module-harness';
 import {SPATIAL_MAXIMUM_LIKELIHOOD_SCENES} from './spatial-maximum-likelihood-reference';
 
 type Scene = {
@@ -32,6 +36,64 @@ type Scene = {
   response: Float32Array;
   predictorCount: number;
 };
+
+it('exact WGSL evaluates log absolute determinants and retains small factors', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const {eigenvalues, parameters, expected} of [
+    {eigenvalues: [1, -1], parameters: [2, 1, 0], expected: [Math.log(3), -Infinity, 0]},
+    {
+      eigenvalues: [1, 0],
+      parameters: [1e-20, 1e-4, -1e-4],
+      expected: [-1e-20, Math.log1p(-Math.fround(1e-4)), Math.log1p(Math.fround(1e-4))]
+    },
+    {
+      // R1: the rounded f32 product is one, but the exact determinant is 2^-26.
+      eigenvalues: [1 - 2 ** -13],
+      parameters: [1 + 2 ** -13],
+      expected: [-26 * Math.LN2]
+    },
+    {
+      // R3: a finite log magnitude survives a float32 product overflow.
+      eigenvalues: [2 ** 127],
+      parameters: [2],
+      expected: [128 * Math.LN2]
+    },
+    {
+      eigenvalues: [0.5, 2 ** 127],
+      parameters: [2],
+      expected: [-Infinity]
+    },
+    {
+      eigenvalues: [2 ** 127, 0.5],
+      parameters: [2],
+      expected: [-Infinity]
+    }
+  ]) {
+    const words = await runWGSLModuleKernel(device, {
+      id: 'exact-log-absolute-determinant',
+      inputs: {
+        eigenvalues: Float32Array.from(eigenvalues),
+        parameters: Float32Array.from(parameters)
+      },
+      outputLength: parameters.length,
+      invocationCount: parameters.length,
+      declarations: getExactLogDeterminantWGSL('eigenvalues', eigenvalues.length),
+      body: `output[outputOffset + index] = bitcast<u32>(getSpatialLogDeterminant(parameters[parametersOffset + index]));`
+    });
+    const actual = new Float32Array(words.buffer, words.byteOffset, words.length);
+    for (const [index, value] of expected.entries()) {
+      if (!Number.isFinite(value)) {
+        expect(actual[index]).toBe(value);
+      } else {
+        expect(Number.isFinite(actual[index])).toBe(true);
+        expect(Math.abs(actual[index] - value)).toBeLessThanOrEqual(
+          Math.max(Math.abs(value) * 5e-7, 1e-30)
+        );
+      }
+    }
+  }
+});
 
 async function runMaximumLikelihood(
   device: Device,

@@ -11,6 +11,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
+import {expectNumericArrayClose} from '../../../src/testing/expect-numeric-array-close';
 import {GPUSpatialLag} from '../../../src/gpu-spatial-analysis/spatial-weights/index';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
@@ -137,15 +138,16 @@ it('GPUSpatialLag matches the oracle on a 1e5-neighbor hub (same-run A/B against
   const balanced = await runLag(device, csr, values, 'load-balanced');
   const rowLoop = await runLag(device, csr, values, 'row-loop');
   // Tolerance: as the utility spec, 1e-5 * sum |w y| per row (about 120 rounding steps of 2^-24).
+  const magnitudes = new Float64Array(ROWS);
   for (let row = 0; row < ROWS; row++) {
-    let magnitude = 0;
     for (let slot = csr.offsets[row]; slot < csr.offsets[row + 1]; slot++) {
-      magnitude += Math.abs(csr.weights[slot] * values[csr.neighbors[slot]]);
-    }
-    if (Math.abs(balanced.lag[row] - expected[row]) > 1e-5 * magnitude) {
-      expect(balanced.lag[row], `row ${row}`).toBeCloseTo(expected[row], 5);
+      magnitudes[row] += Math.abs(csr.weights[slot] * values[csr.neighbors[slot]]);
     }
   }
+  expectNumericArrayClose(balanced.lag, expected, {
+    absoluteTolerance: (_value, row) => 1e-5 * magnitudes[row],
+    label: 'load-balanced spatial lag'
+  });
   // A/B report (decision 3): the hub row serializes one thread of the row loop.
   console.info(
     `spatial lag hub A/B: load-balanced ${balanced.milliseconds.toFixed(2)} ms, ` +

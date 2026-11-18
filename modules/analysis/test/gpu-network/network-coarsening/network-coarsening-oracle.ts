@@ -86,6 +86,7 @@ export type CoarseningOracleResult = {
   edges: {source: number; target: number; count: number; weight: number}[];
   summary: number[];
   overflow: boolean;
+  candidateOverflow: boolean;
 };
 
 const TWO_64 = 1n << 64n;
@@ -242,6 +243,7 @@ export function computeCoarseningOracle(options: CoarseningOracleOptions): Coars
     groupValueSum: valueSum,
     edges,
     summary,
-    overflow: summary[1] > 0 || summary[3] > 0 || edges.length > edgeCapacity
+    overflow: edges.length > edgeCapacity,
+    candidateOverflow: summary[1] > 0 || summary[3] > 0
   };
 }

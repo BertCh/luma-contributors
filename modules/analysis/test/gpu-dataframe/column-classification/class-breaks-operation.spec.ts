@@ -16,6 +16,154 @@ import {
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 
+for (const inherited of [false, true]) {
+  it(`both class-break operation forms retain getter mask and output names, inherited=${inherited}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    for (const Operation of [CPUClassBreaksOperation, GPUClassBreaksOperation]) {
+      const mask = {get: () => 'mask', enumerable: false};
+      const outputFields = Object.fromEntries(
+        ['breaks', 'classCount', 'classCounts'].map(name => [
+          name,
+          {get: () => name, enumerable: false}
+        ])
+      );
+      const output = inherited
+        ? Object.create(Object.defineProperties({}, outputFields))
+        : Object.defineProperties({}, outputFields);
+      const props: ClassBreaksOperationProps = Object.assign(
+        inherited
+          ? Object.create(Object.defineProperty({}, 'mask', mask))
+          : Object.defineProperty({}, 'mask', mask),
+        {
+          values: 'values',
+          parameters: 'parameters',
+          maximumClassCount: 2,
+          methods: ['equal-interval'],
+          output
+        }
+      );
+      const result = await runOperationGraph(device, {
+        operations: [new Operation(props)],
+        outputs: ['breaks', 'classCount', 'classCounts'],
+        inputs: {
+          values: {format: 'float32', values: Float32Array.of(1, 100)},
+          mask: {format: 'uint32', values: Uint32Array.of(1, 0)},
+          parameters: {
+            format: 'float32',
+            values: getGPUClassBreaksParameterValues({method: 'equal-interval', classCount: 2}, 2)
+          }
+        }
+      });
+      expect(Array.from(result['breaks'])).toEqual([1, 1, NaN]);
+      expect(Array.from(result['classCount'])).toEqual([1]);
+      expect(Array.from(result['classCounts'])).toEqual([1, 0]);
+    }
+  });
+}
+
+it('both class-break operation forms require exact mode for exact storage even with only equal intervals', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props: ClassBreaksOperationProps = {
+    values: 'values',
+    parameters: 'parameters',
+    maximumClassCount: 2,
+    methods: ['equal-interval'],
+    naturalBreaksExactStorage: 'recompute',
+    output: {breaks: 'breaks', classCount: 'classCount'}
+  };
+  for (const Operation of [CPUClassBreaksOperation, GPUClassBreaksOperation]) {
+    expect(() => new Operation(props)).toThrow(/naturalBreaksExactStorage requires exact mode/);
+    const result = await runOperationGraph(device, {
+      operations: [new Operation({...props, naturalBreaksMode: 'exact'})],
+      outputs: ['breaks'],
+      inputs: {
+        values: {format: 'float32', values: Float32Array.of(1, 100)},
+        parameters: {
+          format: 'float32',
+          values: getGPUClassBreaksParameterValues({method: 'equal-interval', classCount: 2}, 2)
+        }
+      }
+    });
+    expect(Array.from(result['breaks'])).toEqual([1, 50.5, 100]);
+  }
+});
+
+it('reuses each class-break operation after caller props, methods and output ports mutate', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const Operation of [CPUClassBreaksOperation, GPUClassBreaksOperation]) {
+    const methods: NonNullable<ClassBreaksOperationProps['methods']>[number][] = ['equal-interval'];
+    const props: ClassBreaksOperationProps = {
+      values: 'values',
+      parameters: 'parameters',
+      rowCount: 2,
+      methods,
+      maximumClassCount: 2,
+      output: {breaks: 'breaks', classCount: 'classCount', classCounts: 'classCounts'}
+    };
+    const operation = new Operation(props);
+    for (const run of [0, 1]) {
+      if (run === 1) {
+        props.rowCount = 3;
+        props.valuesFormat = 'float32';
+        props.maximumClassCount = 6;
+        props.values = 'other-values';
+        props.mask = 'other-mask';
+        props.output.breaks = 'other-breaks';
+        props.output.classCounts = undefined;
+        methods.splice(0, methods.length, 'quantile');
+      }
+      const result = await runOperationGraph(device, {
+        inputs: {
+          values: {format: 'uint32', values: new Uint32Array([0, 2])},
+          parameters: {
+            format: 'float32',
+            values: getGPUClassBreaksParameterValues({method: 'equal-interval', classCount: 2}, 2)
+          }
+        },
+        operations: [operation],
+        outputs: ['breaks', 'classCount', 'classCounts']
+      });
+      expect(Array.from(result['breaks'])).toEqual([0, 1, 2]);
+      expect(Array.from(result['classCount'])).toEqual([2]);
+      expect(Array.from(result['classCounts'])).toEqual([1, 1]);
+    }
+  }
+});
+
+for (const format of ['uint32', 'sint32'] as const) {
+  it(`class-break operations infer ${format} and rowCount from the same input`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const values = format === 'uint32' ? new Uint32Array([0, 2]) : new Int32Array([-2, 0]);
+    const props: ClassBreaksOperationProps = {
+      values: 'values',
+      parameters: 'parameters',
+      maximumClassCount: 2,
+      methods: ['equal-interval'],
+      output: {breaks: 'breaks', classCount: 'classCount', classCounts: 'classCounts'}
+    };
+    for (const Operation of [GPUClassBreaksOperation, CPUClassBreaksOperation]) {
+      const result = await runOperationGraph(device, {
+        inputs: {
+          values: {format, values},
+          parameters: {
+            format: 'float32',
+            values: getGPUClassBreaksParameterValues({method: 'equal-interval', classCount: 2}, 2)
+          }
+        },
+        operations: [new Operation(props)],
+        outputs: ['breaks', 'classCount', 'classCounts']
+      });
+      expect(Array.from(result['breaks'])).toEqual(format === 'uint32' ? [0, 1, 2] : [-2, -1, 0]);
+      expect(Array.from(result['classCount'])).toEqual([2]);
+      expect(Array.from(result['classCounts'])).toEqual([1, 1]);
+    }
+  });
+}
+
 for (const method of GPU_CLASS_BREAKS_METHODS) {
   for (const empty of [false, true]) {
     it(`class-break operations agree for ${method}, all masked=${empty}`, async () => {

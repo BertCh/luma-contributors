@@ -13,7 +13,7 @@ export type PopulationSupportAlignmentOperationProps = {
   targetIds: string;
   /** Positive number of target IDs; determines the output lengths. */
   targetCount: number;
-  output: {populations: string; validity: string; status: string};
+  output: {populations: string; alignmentCode: string; matchedMask: string; status: string};
 };
 
 /** GPU support-ID join in a mixed GPUGraph; use GPU_CONTRIBUTOR_OPERATION_LOWERING. */
@@ -32,7 +32,12 @@ export class GPUPopulationSupportAlignmentOperation extends GPUContributorOperat
           format: 'float32x2',
           length: props.targetCount
         },
-        validity: {value: props.output.validity, format: 'uint32', length: props.targetCount},
+        alignmentCode: {
+          value: props.output.alignmentCode,
+          format: 'uint32',
+          length: props.targetCount
+        },
+        matchedMask: {value: props.output.matchedMask, format: 'uint32', length: props.targetCount},
         status: {value: props.output.status, format: 'uint32x4', length: 1}
       },
       createContributor: getView =>
@@ -43,7 +48,8 @@ export class GPUPopulationSupportAlignmentOperation extends GPUContributorOperat
           targetIds: getView<'uint32'>('targetIds'),
           output: {
             populations: getView<'float32x2'>('populations'),
-            validity: getView<'uint32'>('validity'),
+            alignmentCode: getView<'uint32'>('alignmentCode'),
+            matchedMask: getView<'uint32'>('matchedMask'),
             status: getView<'uint32x4'>('status')
           }
         })

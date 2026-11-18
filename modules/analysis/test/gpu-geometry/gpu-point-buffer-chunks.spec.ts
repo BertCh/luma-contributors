@@ -9,7 +9,7 @@ import {expect, it} from 'vitest';
 import {
   GPUPointBuffer,
   getGPUPointBufferParameterValues
-} from '../../src/geospatial-analysis/gpu-point-buffer';
+} from '../../src/geospatial-analysis/point-buffer/index';
 import {importGraphBuffer} from '../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   createInputBuffer,

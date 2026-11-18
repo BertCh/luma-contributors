@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   validateTrajectoryBindings,
   validateTrajectoryScratch,
@@ -33,7 +34,7 @@ import {
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral
@@ -64,7 +65,7 @@ export type GPUModalSplitTriplegs = {
   /** Exclusive end row of each tripleg. */
   endRows: GraphDataView<'uint32'>;
   /** One row in `count`: active tripleg count, as `GPUTrajectorySegments` writes it. */
-  status: {count: GPUStatusScalar};
+  status: {count: GPUStatusScalar; overflow?: GPUStatusScalar; candidateOverflow?: GPUStatusScalar};
 };
 
 /**
@@ -101,11 +102,12 @@ export type GPUModalSplitProps = GPUTrajectoryGeometryFields & {
   /** Aggregation per (track, mode). Compile-time. */
   metric: GPUModalSplitMetric;
   output: {
-    /** Per-(track, mode) accumulated metric, `trackCount * modeCount` rows, major axis track. */
+    /** Per-(track, mode) metric; all NaN when supplied tripleg loss is nonzero. */
     modalSplit: GraphDataView<'float32'>;
     /**
      * Optional predicted mode per tripleg (requires `modeSpeedBreaks`); `0xffffffff` for a tripleg
-     * with no speed. Rows at and after the tripleg count are 0.
+     * with no speed. With complete input, rows at and after the tripleg count are 0.
+     * If either supplied tripleg loss flag is nonzero, every capacity row is `0xffffffff`.
      */
     predictedModes?: GraphDataView<'uint32'>;
   };
@@ -122,6 +124,39 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUModalSplitProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'positions',
+      'timestamps',
+      'temporalContext',
+      'trackOffsets',
+      'spatialContext',
+      'triplegs',
+      'modes',
+      'modeSpeedBreaks',
+      'modeCount',
+      'metric',
+      'output'
+    ]);
+    const triplegSnapshot = snapshotConstructionFields(props.triplegs, [
+      'tracks',
+      'startRows',
+      'endRows',
+      'status'
+    ]);
+    props = {
+      ...props,
+      triplegs: {
+        ...triplegSnapshot,
+        status: snapshotConstructionFields(triplegSnapshot.status, [
+          'count',
+          'overflow',
+          'candidateOverflow'
+        ])
+      },
+      output: snapshotConstructionFields(props.output, ['modalSplit', 'predictedModes']),
+      modeSpeedBreaks: props.modeSpeedBreaks && Object.freeze([...props.modeSpeedBreaks])
+    };
     this.id = props.id ?? 'modal-split';
     this.props = props;
     const id = this.id;
@@ -140,6 +175,15 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
       modeSpeedBreaks,
       modeCount
     } = props;
+    for (const [name, view] of Object.entries(triplegs.status)) {
+      if (!view) continue;
+      validateSinglePackedView(view, ['uint32'], `${id} triplegs.status.${name}`);
+      validateRequirement(
+        id,
+        view.length >= 1,
+        `triplegs.status.${name} must contain at least one row`
+      );
+    }
     validateSinglePackedView(positions, ['float32x2'], `${id} positions`);
     validateSinglePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
     validateSinglePackedView(trackOffsets, ['uint32'], `${id} trackOffsets`);
@@ -204,6 +248,8 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
         triplegs.startRows,
         triplegs.endRows,
         triplegs.status.count,
+        triplegs.status.overflow,
+        triplegs.status.candidateOverflow,
         modeSpeedBreaks ? undefined : modes
       ]
     );
@@ -234,6 +280,8 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
       triplegs.startRows,
       triplegs.endRows,
       triplegs.status.count,
+      triplegs.status.overflow,
+      triplegs.status.candidateOverflow,
       modeSpeedBreaks ? undefined : props.modes,
       output.modalSplit,
       modeSpeedBreaks ? output.predictedModes : undefined
@@ -250,6 +298,15 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
     validateTrajectoryBindings(graph, this.id, this.getUsedProps());
     validateTrajectoryScratch(graph, id, {'tripleg track offsets': (trackCount + 1) * 4});
     const radius = getGPUGreatCircleRadius(this.spatialContext);
+    const lossBindings = [triplegs.status.overflow, triplegs.status.candidateOverflow].flatMap(
+      (view, index) =>
+        view
+          ? [{name: `triplegLoss${index}`, view, type: 'u32' as const, access: 'read' as const}]
+          : []
+    );
+    const hasLoss =
+      lossBindings.map(binding => `${binding.name}[${binding.name}Offset] != 0u`).join(' || ') ||
+      'false';
     const timeMode = getTrajectoryTimeMode(props);
     const tripTrackOffsets = createTransientView(
       graph,
@@ -358,6 +415,26 @@ fn triplegLength(start: u32, end: u32) -> f32 {
   }`
       })
     );
+    if (lossBindings.length)
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-suppress-incomplete`,
+          operation: OPERATION,
+          invocationCount: Math.max(output.modalSplit.length, modeSpeedBreaks ? modes.length : 0),
+          bindings: [
+            ...lossBindings,
+            {name: 'modalSplit', view: output.modalSplit, type: 'f32', access: 'read_write'},
+            ...(modeSpeedBreaks
+              ? [{name: 'modes', view: modes, type: 'u32' as const, access: 'read_write' as const}]
+              : [])
+          ],
+          declarations: GET_NAN_WGSL,
+          body: `if (${hasLoss}) {
+    if (index < ${output.modalSplit.length}u) { modalSplit[modalSplitOffset + index] = getNaN(); }
+    ${modeSpeedBreaks ? `if (index < ${modes.length}u) { modes[modesOffset + index] = 0xffffffffu; }` : ''}
+  }`
+        })
+      );
     return nodes;
   }
 }

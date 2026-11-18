@@ -670,7 +670,7 @@ it('flow stop sentinels, cycles, and bounded morphology remain unresolved', asyn
   const destroy = run();
   expect(Array.from(await readUint32(terminals.buffer, 3))).toEqual([0xfffffffe, 0xfffffffe, 2]);
   expect(Array.from(await readUint32(cycleTerminals.buffer, 2))).toEqual([0xfffffffe, 0xfffffffe]);
-  // An unconverged run publishes its current values (the front advanced two cells) with
+  // An unconverged run publishes its budgeted values (the front advanced one cell) with
   // converged = 0 and the limit flag set.
   expect((await readUint32(complete.buffer, 1))[0]).toBe(0);
   expect((await readUint32(limitReached.buffer, 1))[0]).toBe(1);
@@ -678,7 +678,7 @@ it('flow stop sentinels, cycles, and bounded morphology remain unresolved', asyn
   expect(Array.from(await readUint32(reconstructionValidity.buffer, 6))).toEqual([
     1, 1, 1, 1, 1, 1
   ]);
-  expect(Array.from(await readFloat32(reconstructed.buffer, 6))).toEqual([1, 1, 1, 0, 0, 0]);
+  expect(Array.from(await readFloat32(reconstructed.buffer, 6))).toEqual([1, 1, 0, 0, 0, 0]);
   destroy();
 });
 
@@ -826,7 +826,7 @@ it('skeleton and fill holes publish their current values when the iteration limi
       }
     })
   );
-  // Background corridor that touches the border at both ends: two rounds reach only the cells
+  // Background corridor that touches the border at both ends: one round reaches only the cells
   // next to each end, so the middle is still reported as a hole.
   const holes = output(33, 'uint32'),
     holesConverged = output(1, 'uint32'),

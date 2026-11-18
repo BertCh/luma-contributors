@@ -8,17 +8,19 @@ import {getCPUOperationFloat32Rows} from '../../analysis-core/operations/cpu-ope
 import {
   calibrateRasterOperationBand,
   readRasterOperationBand,
-  validateRasterOperationBand
+  validateRasterOperationBand,
+  type CPURasterOperationBand
 } from '../raster-grid/raster-operation-band';
 import type {RasterReconstructionOperationProps} from './gpu-raster-reconstruction-operation';
 import {
   validateRasterMorphologyOptions,
+  captureRasterMorphologyOperationProps,
   visitRasterMorphologyNeighbors
 } from './raster-morphology-operation-utils';
 
 export type CPURasterReconstructionOptions = Pick<
   RasterReconstructionOperationProps,
-  'grid' | 'method' | 'connectivity'
+  'grid' | 'method' | 'connectivity' | 'maximumIterations'
 >;
 export type CPURasterReconstructionResult = {
   values: Float32Array;
@@ -29,15 +31,14 @@ export type CPURasterReconstructionResult = {
 };
 
 /**
- * Computes geodesic grayscale reconstruction to its fixed point. Invalid marker/mask pairs
+ * Computes bounded geodesic grayscale reconstruction. Invalid marker/mask pairs
  * (nonfinite, marker > mask for dilation, marker < mask for erosion) stay NaN and are barriers.
  * Only grid.width * grid.height marker and mask rows are read; surplus rows are ignored.
  *
  * What differs from the GPU contributor:
- * - maximumIterations and the GPU command-node budget are not used: the exact fixed point is
- *   always returned, converged is 1 and iterationLimitReached is 0.
- * - iterationCount is the number of synchronous rounds needed, including the first unchanged
- *   round; it can exceed the GPU budget. Finite min/max results are exact float32 input values.
+ * - The GPU command-node budget is not used. maximumIterations (default 64) still bounds
+ *   output propagation. iterationCount includes the final verification pass; that pass does
+ *   not advance the published values. Finite min/max results are exact float32 input values.
  * - Subnormal inputs are retained; GPU implementations may flush them to zero.
  *
  * @throws Error naming marker or mask for an inconsistent length, or an invalid option.
@@ -68,6 +69,8 @@ export function computeRasterReconstructionOnCPU(
   );
   let next = new Float64Array(length);
   let iterationCount = 0;
+  const maximumIterations = options.maximumIterations ?? 64;
+  let converged = false;
   for (;;) {
     let changed = false;
     for (let cell = 0; cell < length; cell++) {
@@ -84,21 +87,32 @@ export function computeRasterReconstructionOnCPU(
       next[cell] = value;
     }
     iterationCount++;
+    if (iterationCount > maximumIterations) {
+      converged = !changed;
+      break;
+    }
     [previous, next] = [next, previous];
-    if (!changed) break;
+    if (!changed) {
+      converged = true;
+      break;
+    }
   }
   return {
     values: Float32Array.from(previous),
     validity: Uint32Array.from(previous, value => (Number.isFinite(value) ? 1 : 0)),
-    converged: Uint32Array.of(1),
-    iterationLimitReached: Uint32Array.of(0),
+    converged: Uint32Array.of(Number(converged)),
+    iterationLimitReached: Uint32Array.of(Number(!converged)),
     iterationCount: Uint32Array.of(iterationCount)
   };
 }
 
-/** CPU reconstruction without a command-node or convergence budget. */
+/**
+ * CPU reconstruction with the GPU propagation budget and verification count. Band values and
+ * validity may have spare capacity; calibration reads only the grid prefix at their original offsets.
+ */
 export class CPURasterReconstructionOperation extends GPUCPUOperation {
   constructor(props: RasterReconstructionOperationProps) {
+    props = captureRasterMorphologyOperationProps(props);
     const id = props.id ?? 'raster-reconstruction';
     validateRasterMorphologyOptions(id, props);
     validateRequirement(
@@ -135,33 +149,33 @@ export class CPURasterReconstructionOperation extends GPUCPUOperation {
         const result = computeRasterReconstructionOnCPU(
           typeof props.marker === 'string'
             ? getCPUOperationFloat32Rows(id, inputs, 'marker')
-            : Float32Array.from(
-                calibrateRasterOperationBand(
-                  readRasterOperationBand(
-                    id,
-                    {
-                      values: inputs['marker'],
-                      ...(props.marker.validity ? {validity: inputs['markerValidity']} : {})
-                    },
-                    props.marker
-                  ),
-                  length
-                )
+            : calibrateReconstructionBand(
+                id,
+                'marker',
+                readRasterOperationBand(
+                  id,
+                  {
+                    values: inputs['marker'],
+                    ...(props.marker.validity ? {validity: inputs['markerValidity']} : {})
+                  },
+                  props.marker
+                ),
+                length
               ),
           typeof props.mask === 'string'
             ? getCPUOperationFloat32Rows(id, inputs, 'mask')
-            : Float32Array.from(
-                calibrateRasterOperationBand(
-                  readRasterOperationBand(
-                    id,
-                    {
-                      values: inputs['mask'],
-                      ...(props.mask.validity ? {validity: inputs['maskValidity']} : {})
-                    },
-                    props.mask
-                  ),
-                  length
-                )
+            : calibrateReconstructionBand(
+                id,
+                'mask',
+                readRasterOperationBand(
+                  id,
+                  {
+                    values: inputs['mask'],
+                    ...(props.mask.validity ? {validity: inputs['maskValidity']} : {})
+                  },
+                  props.mask
+                ),
+                length
               ),
           props
         );
@@ -179,4 +193,33 @@ export class CPURasterReconstructionOperation extends GPUCPUOperation {
       }
     });
   }
+}
+
+/** Calibrates borrowed grid-prefix views without rebasing their values or validity offsets. */
+function calibrateReconstructionBand(
+  id: string,
+  port: 'marker' | 'mask',
+  band: CPURasterOperationBand,
+  count: number
+): Float32Array {
+  validateRequirement(
+    id,
+    band.values.length >= count,
+    `${port}.values must hold at least ${count} samples for grid.width * grid.height`
+  );
+  validateRequirement(
+    id,
+    !band.validity || band.validity.length >= count,
+    `${port}.validity must hold at least ${count} flags for grid.width * grid.height`
+  );
+  return Float32Array.from(
+    calibrateRasterOperationBand(
+      {
+        ...band,
+        values: band.values.subarray(0, count),
+        validity: band.validity?.subarray(0, count)
+      },
+      count
+    )
+  );
 }

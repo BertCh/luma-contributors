@@ -4,7 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
-import {GPUGeometryCleanup} from '../../../src/gpu-spatial-analysis/geometry-edit/index';
+import {createGeometryCleanupForTesting} from '../../../src/gpu-spatial-analysis/geometry-edit/gpu-geometry-cleanup';
 import {createSeededRandom} from '../neighbor-search/neighbor-search-oracle';
 import {
   createNullWebGPUDevice,
@@ -288,20 +288,22 @@ function createCleanupFixture(options: {forceSequential?: boolean} = {}) {
     format: Format,
     length: number
   ) => createTransientView(graph, `cleanup-${serial++}`, format, length);
-  const cleanup = new GPUGeometryCleanup({
-    geometryType: 'polygons',
-    positions: view('float32x2', 40),
-    ringOffsets: view('uint32', 5),
-    polygonOffsets: view('uint32', 3),
-    featureOffsets: view('uint32', 3),
-    parameters: view('float32', 4),
-    forceSequentialRepeatRemoval: options.forceSequential,
-    output: {
+  const cleanup = createGeometryCleanupForTesting(
+    {
+      geometryType: 'polygons',
       positions: view('float32x2', 40),
       ringOffsets: view('uint32', 5),
-      status: {count: view('uint32', 1), overflow: view('uint32', 1)}
-    }
-  });
+      polygonOffsets: view('uint32', 3),
+      featureOffsets: view('uint32', 3),
+      parameters: view('float32', 4),
+      output: {
+        positions: view('float32x2', 40),
+        ringOffsets: view('uint32', 5),
+        status: {count: view('uint32', 1), overflow: view('uint32', 1)}
+      }
+    },
+    {forceSequentialRepeatRemoval: options.forceSequential}
+  );
   return {graph, nodes: cleanup.getCommandNodes(graph)};
 }
 

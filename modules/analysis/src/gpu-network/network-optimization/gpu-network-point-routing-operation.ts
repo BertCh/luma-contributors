@@ -14,6 +14,7 @@ export type NetworkPointRoutingOperationProps = {
   edgeCount: number;
   queryCount: number;
   turns: string;
+  turnPenalties?: string;
   costs: string;
   queries: string;
   fractions: string;
@@ -29,6 +30,7 @@ export class GPUNetworkPointRoutingOperation extends GPUContributorOperation {
       id: props.id ?? 'network-point-routing',
       inputs: {
         turns: props.turns,
+        ...(props.turnPenalties === undefined ? {} : {turnPenalties: props.turnPenalties}),
         edgeCosts: props.costs,
         queries: props.queries,
         fractions: props.fractions
@@ -46,6 +48,8 @@ export class GPUNetworkPointRoutingOperation extends GPUContributorOperation {
         new GPUNetworkPointRouting({
           id: props.id,
           turns: getView<'uint32x2'>('turns'),
+          turnPenalties:
+            props.turnPenalties === undefined ? undefined : getView<'float32'>('turnPenalties'),
           costs: getView<'float32'>('edgeCosts'),
           queries: getView<'uint32x2'>('queries'),
           fractions: getView<'float32x2'>('fractions'),

@@ -89,7 +89,8 @@ function cellTable(
     status: {
       count: view('uint32', 1),
       overflow: view('uint32', 1),
-      requiredCount: view('uint32', 1)
+      requiredCount: view('uint32', 1),
+      candidateOverflow: view('uint32', 1)
     }
   };
 }
@@ -1290,8 +1291,8 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
             new GPUPairGather({
               how,
               pairs: {
-                leftIds: view('uint32', ROWS),
-                rightIds: view('uint32', ROWS),
+                leftRows: view('uint32', ROWS),
+                rightRows: view('uint32', ROWS),
                 status: {
                   count: view('uint32', 1),
                   requiredCount: view('uint32', 1),
@@ -1308,7 +1309,11 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
                 leftRows: view('uint32', ROWS),
                 rightRows: view('uint32', ROWS),
                 rowCount: view('uint32', 1),
-                status: {overflow: view('uint32', 1), matchedCount: view('uint32', 1)}
+                status: {
+                  overflow: view('uint32', 1),
+                  candidateOverflow: view('uint32', 1),
+                  matchedCount: view('uint32', 1)
+                }
               }
             })
           );
@@ -1324,7 +1329,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
           context.graph.add(
             new GPUPairGather({
               how,
-              neighbors: {ids: view('uint32', slots), counts: view('uint32', ROWS), capacity},
+              neighbors: {rows: view('uint32', slots), counts: view('uint32', ROWS), capacity},
               ...unmatched(context, ROWS),
               leftColumns: columns(context, ROWS, slots),
               rightColumns: columns(context, ROWS, slots),
@@ -1350,8 +1355,8 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
             new GPUPairGather({
               how,
               pairs: {
-                leftIds: view('uint32', rows),
-                rightIds: view('uint32', rows),
+                leftRows: view('uint32', rows),
+                rightRows: view('uint32', rows),
                 status: {
                   count: view('uint32', 1),
                   overflow: view('uint32', 1),
@@ -1366,7 +1371,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
                 leftRows: view('uint32', rows),
                 rightRows: view('uint32', rows),
                 rowCount: view('uint32', 1),
-                status: {overflow: view('uint32', 1)}
+                status: {overflow: view('uint32', 1), candidateOverflow: view('uint32', 1)}
               }
             })
           );
@@ -1760,7 +1765,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
                 matches: {ids: view('uint32', ROWS), status: compactStatus(context)},
                 drawInstanceCount: view('uint32', 1),
                 distances: view('float32', ROWS),
-                nearestFeatureIds: view('uint32', ROWS),
+                nearestFeatureRows: view('uint32', ROWS),
                 status: {overflow: view('uint32', 1)}
               }
             })
@@ -1794,7 +1799,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
             matches: {ids: view('uint32', rows), status: compactStatus(context)},
             drawInstanceCount: view('uint32', 1),
             distances: view('float32', rows),
-            nearestFeatureIds: view('uint32', rows),
+            nearestFeatureRows: view('uint32', rows),
             status: {overflow: view('uint32', 1)}
           }
         })
@@ -1836,8 +1841,8 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
               leafCapacity: 256,
               output: {
                 pairs: {
-                  leftIds: view('uint32', pairCapacity),
-                  rightIds: view('uint32', pairCapacity),
+                  leftRows: view('uint32', pairCapacity),
+                  rightRows: view('uint32', pairCapacity),
                   status: {
                     count: view('uint32', 1),
                     ...(fullStatus ? {requiredCount: view('uint32', 1)} : {}),
@@ -1961,8 +1966,8 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
                 candidateCapacity: 8192,
                 output: {
                   pairs: {
-                    leftIds: view('uint32', 2048),
-                    rightIds: view('uint32', 2048),
+                    leftRows: view('uint32', 2048),
+                    rightRows: view('uint32', 2048),
                     status: {
                       count: view('uint32', 1),
                       overflow: view('uint32', 1),
@@ -2003,8 +2008,8 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
             candidateCapacity: 8192,
             output: {
               pairs: {
-                leftIds: view('uint32', 2048),
-                rightIds: view('uint32', 2048),
+                leftRows: view('uint32', 2048),
+                rightRows: view('uint32', 2048),
                 status: {
                   count: view('uint32', 1),
                   overflow: view('uint32', 1),
@@ -2039,8 +2044,8 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
             candidateCapacity,
             output: {
               pairs: {
-                leftIds: view('uint32', pairs),
-                rightIds: view('uint32', pairs),
+                leftRows: view('uint32', pairs),
+                rightRows: view('uint32', pairs),
                 status: {
                   count: view('uint32', 1),
                   overflow: view('uint32', 1),
@@ -2112,8 +2117,8 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
                 distance: viewDistance ? view('float32', 1) : 5,
                 leafCapacity: 256,
                 output: {
-                  leftIds: view('uint32', 4096),
-                  rightIds: view('uint32', 4096),
+                  leftRows: view('uint32', 4096),
+                  rightRows: view('uint32', 4096),
                   status: {
                     count: view('uint32', 1),
                     requiredCount: view('uint32', 1),
@@ -2146,8 +2151,8 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
           right,
           prepared,
           output: {
-            leftIds: view('uint32', 4096),
-            rightIds: view('uint32', 4096),
+            leftRows: view('uint32', 4096),
+            rightRows: view('uint32', 4096),
             status: {
               count: view('uint32', 1),
               overflow: view('uint32', 1),
@@ -2174,8 +2179,8 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
             right: geometry(context, 'polygons', MAXIMUM_BVH_FEATURES, maximumRows(8)),
             distance: view('float32', 1),
             output: {
-              leftIds: view('uint32', pairs),
-              rightIds: view('uint32', pairs),
+              leftRows: view('uint32', pairs),
+              rightRows: view('uint32', pairs),
               status: {
                 count: view('uint32', 1),
                 requiredCount: view('uint32', 1),
@@ -2199,7 +2204,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
           const slotCapacity = 64;
           graph.add(
             new GPUNearestFeatureWeights({
-              neighborIds: view('uint32', ROWS * slotCapacity),
+              neighborRows: view('uint32', ROWS * slotCapacity),
               neighborCounts: view('uint32', ROWS),
               neighborDistances: view('float32', ROWS * slotCapacity),
               slotCapacity,
@@ -2229,7 +2234,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
       const rows = maximumRows(4 * slotCapacity) - 1;
       graph.add(
         new GPUNearestFeatureWeights({
-          neighborIds: view('uint32', rows * slotCapacity),
+          neighborRows: view('uint32', rows * slotCapacity),
           neighborCounts: view('uint32', rows),
           neighborDistances: view('float32', rows * slotCapacity),
           slotCapacity,

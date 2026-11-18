@@ -382,8 +382,10 @@ it('a prepared handle with edgeSlabs builds persistent slabs once and the join r
   expect(preparedIds).toContain('prep-edges-slab-params');
   expect(preparedIds).toContain('prep-edges-copy-entries');
   expect(prepared.edgeSlabStorage).toBeDefined();
-  // Every node of the handle is conditioned on the rebuild decision (once per rebuild).
-  expect(preparedNodes.every(node => node.condition?.id === 'prep-rebuild')).toBe(true);
+  // Geometry refresh is GPU-gated; public builders replay against the retained geometry.
+  expect(preparedNodes[0].condition?.id).toBe('prep-rebuild');
+  expect(preparedNodes.some(node => node.condition?.source === 'gpu')).toBe(true);
+  expect(preparedNodes.at(-1)?.id).toBe('prep-snapshot-commit');
   const sources = getGPUCommandNodeKernelSources(preparedNodes);
   for (const kernel of sources) {
     expect(() => new WgslReflect(kernel.source), kernel.id).not.toThrow();

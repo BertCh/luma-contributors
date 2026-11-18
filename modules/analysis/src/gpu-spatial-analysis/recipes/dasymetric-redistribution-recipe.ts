@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {addPreparedRecipe} from './prepared-recipe';
+
 import {
   validateCapacity,
   validateRequirement,
@@ -89,6 +91,13 @@ export function addDasymetricRedistributionRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUDasymetricRedistributionRecipeProps
 ) {
+  return addPreparedRecipe(graph, props, declareDasymetricRedistributionRecipe);
+}
+
+function declareDasymetricRedistributionRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUDasymetricRedistributionRecipeProps
+) {
   const id = props.id ?? 'dasymetric-redistribution-recipe';
   const builder = new RecipeBuilder(graph);
   const sourceCount = props.sourceTotals.length;
@@ -162,7 +171,12 @@ export function addDasymetricRedistributionRecipe<Parameters>(
   validateViewLength(id, 'coverage.fractions', coverage.fractions, tupleCapacity);
   validateViewLength(id, 'coverage.zoneValidity', coverage.zoneValidity, sourceCount);
   for (const [name, view] of Object.entries(coverage.status))
-    validateViewLength(id, `coverage.status.${name}`, view, 1);
+    if (view)
+      validateRequirement(
+        id,
+        view.length >= 1,
+        `coverage.status.${name} must have at least one row`
+      );
   const outputs = {
     targetTotals: getRecipeView(
       graph,
@@ -308,14 +322,16 @@ outputSources[outputSourcesOffset+index]=source;outputTargets[outputTargetsOffse
       body: `var weight=0.0;if(sources[sourcesOffset+index]<${sourceCount}u){let value=weights[weightsOffset+cells[cellsOffset+index]];if(isFiniteValue(value)&&value>0.0){weight=value*fractions[fractionsOffset+index];}}output[outputOffset+index]=weight;`
     })
   );
+  const pairOverflow = createView('pair-overflow', 'uint32', 1);
+  const requiredPairCount = createView('pair-required', 'uint32', 1);
   const weights = createTransientSpatialWeights(
     graph,
     `${id}-weights`,
     targetCount,
-    props.pairCapacity
+    props.pairCapacity,
+    // The transfer consumer must read the status written by the areal producer each frame.
+    {status: {overflow: pairOverflow, requiredCount: requiredPairCount}}
   );
-  const pairOverflow = createView('pair-overflow', 'uint32', 1);
-  const requiredPairCount = createView('pair-required', 'uint32', 1);
   const eligibleWeights = createView('eligible-weights', 'float32', sourceCount);
   const transferredFractions = createView('transferred-fractions', 'float32', sourceCount);
   builder.add(
@@ -418,6 +434,16 @@ if(index<${targetCount}u){failures+=u32(!isFiniteValue(targets[targetsOffset+ind
       operation: id,
       invocationCount: 1,
       bindings: [
+        ...(coverage.status.candidateOverflow
+          ? [
+              {
+                name: 'candidateOverflow',
+                view: coverage.status.candidateOverflow,
+                type: 'u32' as const,
+                access: 'read' as const
+              }
+            ]
+          : []),
         {name: 'count', view: coverage.status.count, type: 'u32', access: 'read'},
         {name: 'required', view: coverage.status.requiredCount, type: 'u32', access: 'read'},
         {name: 'overflow', view: coverage.status.overflow, type: 'u32', access: 'read'},
@@ -425,7 +451,7 @@ if(index<${targetCount}u){failures+=u32(!isFiniteValue(targets[targetsOffset+ind
         {name: 'invalidTuples', view: invalidTupleCount, type: 'u32', access: 'read'},
         {name: 'complete', view: coverageComplete, type: 'u32', access: 'read_write'}
       ],
-      body: `let valid=overflow[overflowOffset]==0u&&count[countOffset]==required[requiredOffset]&&count[countOffset]<=${tupleCapacity}u&&invalidZones[invalidZonesOffset]==0u;
+      body: `let valid=overflow[overflowOffset]==0u${coverage.status.candidateOverflow ? '&&candidateOverflow[candidateOverflowOffset]==0u' : ''}&&count[countOffset]==required[requiredOffset]&&count[countOffset]<=${tupleCapacity}u&&invalidZones[invalidZonesOffset]==0u;
 complete[completeOffset]=u32(valid&&invalidTuples[invalidTuplesOffset]==0u);`
     })
   );

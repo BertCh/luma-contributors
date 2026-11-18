@@ -20,6 +20,8 @@ import {
   GPUNetworkTravelTimePercentilesOperation,
   type NetworkTravelTimePercentilesOperationProps
 } from './gpu-network-travel-time-percentiles-operation';
+import {getNetworkTravelTimePercentileRank} from './network-travel-time-percentile-rank';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 /** Packed inputs for regular-window FIFO travel-time percentiles. */
 export type CPUNetworkTravelTimePercentilesInput = Omit<
@@ -45,30 +47,31 @@ function validatePercentileOptions(
   validateCapacity(id, 'percentiles.length', props.percentiles.length);
   validateRequirement(
     id,
-    props.percentiles.every(
-      (percentile, index) =>
+    Array.from(props.percentiles).every(
+      (percentile, index, percentiles) =>
         Number.isFinite(percentile) &&
         percentile > 0 &&
         percentile <= 100 &&
-        (index === 0 || percentile >= props.percentiles[index - 1])
+        (index === 0 || percentile >= percentiles[index - 1])
     ),
     'percentiles must be ascending numbers in (0, 100]'
   );
 }
 
 /**
- * Routes every window departure to convergence, then selects vertex-major nearest-rank travel
+ * Routes every window departure within its budget, then selects vertex-major nearest-rank travel
  * times. Unreachable or invalid departures count as Infinity. Optional graph outputs have the
  * same layouts as these always-returned reachedCounts and per-departure [valid, converged] rows.
- * Ranks retain the contributor's ceil(percentile / 100 * departureCount - 1e-9) convention.
+ * Ranks are ceil(percentile * departureCount / 100), evaluated exactly for the supplied
+ * binary64 percentile without an epsilon, using the same host helper as the GPU contributor.
  *
  * What differs from the GPU contributor:
  * - Routing state, transition, sample and round caps are dropped, as are the 60-departure and
- *   16-percentile caps. maximumRelaxations does not truncate CPU routing.
+ *   16-percentile caps. Explicit maximumRelaxations still bounds each departure's sweeps.
  * - Departures, routing labels and travel-time subtraction stay float64 until final float32
  *   output; the GPU rounds at its intermediate buffers and shader operations.
- * - Valid finite routing always reports converged = 1; float32 output overflow does not clear
- *   valid. Invalid input contents retain the GPU's [0, 0] routing status.
+ * - Float32 output overflow does not clear valid. A budget exit reports [1, 0]; invalid input
+ *   contents retain the GPU's [0, 0] routing status.
  *
  * @throws If initialState, window, transitions or costs have inconsistent array lengths.
  */
@@ -83,6 +86,9 @@ export function computeNetworkTravelTimePercentilesOnCPU(
   if (input.initialState.length !== 1) throw new Error('initialState must hold one row');
   if (input.window.length !== 2) throw new Error('window must hold first departure and step');
   const {vertexCount, departureCount, percentiles, window} = input;
+  const ranks = percentiles.map(percentile =>
+    getNetworkTravelTimePercentileRank(percentile, departureCount)
+  );
   const values = Array.from({length: vertexCount}, () =>
     new Float64Array(departureCount).fill(Infinity)
   );
@@ -91,7 +97,17 @@ export function computeNetworkTravelTimePercentilesOnCPU(
   for (let departure = 0; departure < departureCount; departure++) {
     const time = window[0] + departure * window[1];
     const result = computeNetworkTimeRoutingFloat64(
-      {...input, endpoints, departure: window.subarray(0, 1)},
+      {
+        stateVertices: input.stateVertices,
+        transitions: input.transitions,
+        costs: input.costs,
+        costModel: input.costModel,
+        maximumRelaxations: input.maximumRelaxations,
+        samplesPerTransition: input.samplesPerTransition,
+        waitingPolicy: input.waitingPolicy,
+        endpoints,
+        departure: window.subarray(0, 1)
+      },
       time
     );
     status[departure * 2] = result.valid;
@@ -115,8 +131,7 @@ export function computeNetworkTravelTimePercentilesOnCPU(
       0
     );
     for (let column = 0; column < percentiles.length; column++) {
-      const rank = Math.max(1, Math.ceil((percentiles[column] / 100) * departureCount - 1e-9));
-      travelTimes[vertex * percentiles.length + column] = values[vertex][rank - 1];
+      travelTimes[vertex * percentiles.length + column] = values[vertex][ranks[column] - 1];
     }
   }
   return {travelTimes, reachedCounts, status};
@@ -124,7 +139,34 @@ export function computeNetworkTravelTimePercentilesOnCPU(
 
 /** CPU reference twin with no GPU routing, window or percentile caps. */
 export class CPUNetworkTravelTimePercentilesOperation extends GPUCPUOperation {
-  constructor(props: NetworkTravelTimePercentilesOperationProps) {
+  constructor(originalProps: NetworkTravelTimePercentilesOperationProps) {
+    const settings = snapshotConstructionFields(originalProps, [
+      'id',
+      'stateCount',
+      'transitionCount',
+      'stateVertices',
+      'transitions',
+      'costs',
+      'initialState',
+      'window',
+      'vertexCount',
+      'departureCount',
+      'percentiles',
+      'costModel',
+      'maximumRelaxations',
+      'samplesPerTransition',
+      'waitingPolicy',
+      'output'
+    ]);
+    const props = {
+      ...settings,
+      percentiles: Object.freeze(Array.from(settings.percentiles)),
+      output: snapshotConstructionFields(settings.output, [
+        'travelTimes',
+        'reachedCounts',
+        'status'
+      ])
+    };
     const id = props.id ?? 'network-travel-time-percentiles';
     validatePercentileOptions(id, props);
     validateNetworkTimeRoutingOperationProps(id, props);
@@ -155,6 +197,7 @@ export class CPUNetworkTravelTimePercentilesOperation extends GPUCPUOperation {
           departureCount: props.departureCount,
           percentiles: props.percentiles,
           costModel: props.costModel,
+          maximumRelaxations: props.maximumRelaxations,
           samplesPerTransition: props.samplesPerTransition,
           waitingPolicy: props.waitingPolicy
         });

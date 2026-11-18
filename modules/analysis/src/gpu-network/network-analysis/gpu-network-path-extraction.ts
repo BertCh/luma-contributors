@@ -13,16 +13,18 @@ import {
 import {createFillNode, createPublishNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCompactOutput} from '../../analysis-core/kernels/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   validateCapacity,
   validateCompactOutput,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology,
   type GPUNetworkTopology
-} from '../../analysis-core/network-topology';
+} from '../../analysis-core/contracts/network-topology';
 import {
   createPathEdgeLengthsNode,
   createPathMeasureNode,
@@ -30,7 +32,8 @@ import {
   createPathResolveEdgesNode,
   createPathTotalsNode,
   createPathWriteLinksNode,
-  createPathWriteNodesNode
+  createPathWriteNodesNode,
+  createPathMapEdgeIdsNode
 } from './network-path-extraction-passes';
 
 /** Largest accepted compile-time `maximumPathLength`. */
@@ -56,9 +59,12 @@ export type GPUNetworkPathExtractionEdges = {
   /**
    * Concatenated edge lists in target-row order. A path with `n` nodes contributes
    * `max(n - 1, 0)` edges ordered source to target. Slots with no matching CSR edge hold
-   * {@link GPU_NETWORK_PATH_NO_EDGE}. Its overflow also reports truncated paths.
+   * {@link GPU_NETWORK_PATH_NO_EDGE}. Optional candidateOverflow reports bounded walks;
+   * overflow reports final edge-list capacity only.
    */
   output: GPUCompactOutput & {
+    /** Optional CSR row indices, independent of the caller identities in ids; same capacity. */
+    edgeRows?: GraphDataView<'uint32'>;
     /** Optional `targets.length + 1` rows: unclamped start of each path in `ids`, then the total. */
     lineOffsets?: GraphDataView<'uint32'>;
   };
@@ -66,6 +72,8 @@ export type GPUNetworkPathExtractionEdges = {
 
 /** Views written by {@link GPUNetworkPathExtraction}. */
 export type GPUNetworkPathExtractionOutput = GPUCompactOutput & {
+  /** Optional node row indices for positional gathers; ids always contains caller identities. Same capacity as ids. */
+  nodeRows?: GraphDataView<'uint32'>;
   /** Optional `targets.length + 1` rows: unclamped start of each path in `ids`, then the total. */
   lineOffsets?: GraphDataView<'uint32'>;
   /** Optional per-target `costs[target]` when found, `+Infinity` otherwise. */
@@ -110,13 +118,66 @@ export type GPUNetworkPathExtractionProps = {
   nodeIds?: GraphDataView<'uint32'>;
   /**
    * Concatenated node paths in target-row order, each ordered start to target. `count` is
-   * clamped to `ids.length`; `overflow` is set when the total exceeds capacity or any walk was
-   * truncated by `maximumPathLength`.
+   * clamped to `ids.length`; `overflow` reports final capacity. Optional `candidateOverflow`
+   * reports a walk truncated by `maximumPathLength`, which growing the output cannot recover.
    */
   output: GPUNetworkPathExtractionOutput;
   /** Optional edge extraction. Requires the topology that produced `costs`. */
   edges?: GPUNetworkPathExtractionEdges;
 };
+
+function snapshotNetworkPathExtractionProps(
+  props: GPUNetworkPathExtractionProps
+): GPUNetworkPathExtractionProps {
+  const snapshot = snapshotConstructionFields(props, [
+    'id',
+    'predecessors',
+    'costs',
+    'targets',
+    'targetCount',
+    'predecessorsComplete',
+    'maximumPathLength',
+    'nodeIds',
+    'output',
+    'edges'
+  ]);
+  const output = snapshotConstructionFields(snapshot.output, [
+    'ids',
+    'nodeRows',
+    'status',
+    'lineOffsets',
+    'pathCosts',
+    'pathFound'
+  ]);
+  const edges =
+    snapshot.edges && snapshotConstructionFields(snapshot.edges, ['topology', 'edgeIds', 'output']);
+  const edgeOutput =
+    edges && snapshotConstructionFields(edges.output, ['ids', 'edgeRows', 'status', 'lineOffsets']);
+  const statusFields = ['count', 'overflow', 'requiredCount', 'candidateOverflow'] as const;
+  return Object.freeze({
+    ...snapshot,
+    output: Object.freeze({
+      ...output,
+      status: snapshotConstructionFields(output.status, statusFields)
+    }),
+    edges:
+      edges && edgeOutput
+        ? Object.freeze({
+            ...edges,
+            topology: snapshotConstructionFields(edges.topology, [
+              'offsets',
+              'neighbors',
+              'weights',
+              'nodePositions'
+            ]),
+            output: Object.freeze({
+              ...edgeOutput,
+              status: snapshotConstructionFields(edgeOutput.status, statusFields)
+            })
+          })
+        : undefined
+  });
+}
 
 /**
  * Extracts ordered source-to-target node and edge lists from a shortest-path predecessor array
@@ -124,7 +185,7 @@ export type GPUNetworkPathExtractionProps = {
  *
  * Each active target walks its predecessor chain, bounded by `maximumPathLength`, so cycles and
  * garbage predecessors terminate: such a target reports not found, and a too-long walk also sets
- * the overflow flag. A found target that is itself a root yields a one-node path. Target rows that
+ * candidateOverflow when requested. A found target that is itself a root yields a one-node path. Target rows that
  * are out of range, unreached (non-finite cost) or inactive yield empty paths. Path lengths are
  * prefix-summed with `GPUScan` so lists are packed in target-row order and written in parallel.
  * Edges link each predecessor to its successor using the smallest CSR edge whose weight explains
@@ -147,6 +208,7 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
    * `targetCount` is out of range, or an output shares a buffer with an input or another output.
    */
   constructor(props: GPUNetworkPathExtractionProps) {
+    props = snapshotNetworkPathExtractionProps(props);
     this.id = props.id ?? 'network-path-extraction';
     this.props = props;
     this.maximumPathLength = props.maximumPathLength ?? DEFAULT_MAXIMUM_PATH_LENGTH;
@@ -159,9 +221,11 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
       ['predecessorsComplete', props.predecessorsComplete],
       ['nodeIds', props.nodeIds],
       ['output.lineOffsets', output.lineOffsets],
+      ['output.nodeRows', output.nodeRows],
       ['output.pathFound', output.pathFound],
       ['edges.edgeIds', edges?.edgeIds],
-      ['edges.output.lineOffsets', edges?.output.lineOffsets]
+      ['edges.output.lineOffsets', edges?.output.lineOffsets],
+      ['edges.output.edgeRows', edges?.output.edgeRows]
     ] as const) {
       if (view) {
         validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
@@ -228,17 +292,30 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
       GPU_NETWORK_PATH_MAXIMUM_LENGTH
     );
     validateCompactOutput(id, output);
+    if (output.nodeRows)
+      validateViewLength(id, 'output.nodeRows', output.nodeRows, output.ids.length);
+    if (edges?.output.edgeRows)
+      validateViewLength(
+        id,
+        'edges.output.edgeRows',
+        edges.output.edgeRows,
+        edges.output.ids.length
+      );
     const outputs = [
       output.ids,
+      output.nodeRows,
       output.status.count,
       output.status.overflow,
+      output.status.candidateOverflow,
       output.status.requiredCount,
       output.lineOffsets,
       output.pathCosts,
       output.pathFound,
       edges?.output.ids,
+      edges?.output.edgeRows,
       edges?.output.status.count,
       edges?.output.status.overflow,
+      edges?.output.status.candidateOverflow,
       edges?.output.status.requiredCount,
       edges?.output.lineOffsets
     ]
@@ -395,7 +472,8 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
           nodeLengths,
           nodeStarts,
           nodeIds: props.nodeIds,
-          ids: output.ids
+          ids: output.ids,
+          nodeRows: output.nodeRows
         })
       );
     }
@@ -405,7 +483,7 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
         operation: OPERATION,
         requiredCount: nodeTotal,
         output: output,
-        overflowSources: [status]
+        candidateOverflowSources: output.status.candidateOverflow ? [status] : []
       })
     );
     if (edges && edgeTotal && edgeStarts) {
@@ -441,10 +519,19 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
             offsets: edges.topology.offsets,
             neighbors: edges.topology.neighbors,
             weights: edges.topology.weights,
-            edgeIds: edges.edgeIds,
-            ids: edges.output.ids
+            edgeIds: edges.output.edgeRows ? undefined : edges.edgeIds,
+            ids: edges.output.edgeRows ?? edges.output.ids
           })
         );
+        if (edges.output.edgeRows)
+          nodes.push(
+            createPathMapEdgeIdsNode(graph, {
+              id: `${id}-map-edge-ids`,
+              rows: edges.output.edgeRows,
+              edgeIds: edges.edgeIds,
+              ids: edges.output.ids
+            })
+          );
       }
       nodes.push(
         createPublishNode<Parameters>(graph, {
@@ -452,7 +539,7 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
           operation: OPERATION,
           requiredCount: edgeTotal,
           output: edges.output,
-          overflowSources: [status]
+          candidateOverflowSources: edges.output.status.candidateOverflow ? [status] : []
         })
       );
     }
@@ -471,8 +558,10 @@ function getViews(props: GPUNetworkPathExtractionProps): (GraphDataView | undefi
     props.predecessorsComplete,
     props.nodeIds,
     output.ids,
+    output.nodeRows,
     output.status.count,
     output.status.overflow,
+    output.status.candidateOverflow,
     output.status.requiredCount,
     output.lineOffsets,
     output.pathCosts,
@@ -480,8 +569,10 @@ function getViews(props: GPUNetworkPathExtractionProps): (GraphDataView | undefi
     ...(edges ? getGPUNetworkTopologyViews(edges.topology) : []),
     edges?.edgeIds,
     edges?.output.ids,
+    edges?.output.edgeRows,
     edges?.output.status.count,
     edges?.output.status.overflow,
+    edges?.output.status.candidateOverflow,
     edges?.output.status.requiredCount,
     edges?.output.lineOffsets
   ];

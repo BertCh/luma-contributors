@@ -130,8 +130,8 @@ async function runPredicate(
       view: importGraphBuffer(graph, `out-${buffers.length}`, buffer, 'uint32', length)
     };
   };
-  const leftIds = output(64);
-  const rightIds = output(64);
+  const leftRows = output(64);
+  const rightRows = output(64);
   const count = output(1);
   const pairOverflow = output(1);
   const overflow = output(1);
@@ -145,8 +145,8 @@ async function runPredicate(
       candidateCapacity: 64,
       output: {
         pairs: {
-          leftIds: leftIds.view,
-          rightIds: rightIds.view,
+          leftRows: leftRows.view,
+          rightRows: rightRows.view,
           status: {count: count.view, overflow: pairOverflow.view}
         },
         status: {overflow: overflow.view, candidateOverflow: candidateOverflow.view}
@@ -156,8 +156,8 @@ async function runPredicate(
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
   const [pairCount] = await readUint32(count.buffer, 1);
-  const lefts = (await readUint32(leftIds.buffer, 64)).slice(0, pairCount);
-  const rights = (await readUint32(rightIds.buffer, 64)).slice(0, pairCount);
+  const lefts = (await readUint32(leftRows.buffer, 64)).slice(0, pairCount);
+  const rights = (await readUint32(rightRows.buffer, 64)).slice(0, pairCount);
   const result = {
     pairs: lefts.map((row, slot) => [row, rights[slot]]).sort((a, b) => a[0] - b[0] || a[1] - b[1]),
     pairOverflow: await readUint32(pairOverflow.buffer, 1),

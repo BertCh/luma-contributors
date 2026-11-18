@@ -9,6 +9,7 @@ import {
 } from '../network-view-utils';
 
 import type {Device} from '@luma.gl/core';
+import {snapshotNetworkReachabilityConstructionProps} from './network-reachability-construction';
 import {
   createTransientView,
   GPUHistogram,
@@ -28,7 +29,7 @@ import {
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology,
   type GPUNetworkTopology
-} from '../../analysis-core/network-topology';
+} from '../../analysis-core/contracts/network-topology';
 import {
   createReachabilityBandsNode,
   createReachabilityFinalizeNode,
@@ -304,6 +305,7 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
    * overlaps another output, or shares a read-only/writable binding with an input.
    */
   constructor(props: GPUNetworkReachabilityProps) {
+    props = snapshotNetworkReachabilityConstructionProps(props);
     this.id = props.id ?? 'network-reachability';
     this.props = props;
     const writable = props.output;

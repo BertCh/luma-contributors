@@ -13,6 +13,50 @@ import {
 } from '../../../src/gpu-spatial-analysis/line-simplification/gpu-line-simplification-operation';
 import {getGPULineSimplificationParameterValues} from '../../../src/gpu-spatial-analysis/line-simplification/line-simplification-parameters';
 
+it('honors one explicit Visvalingam round and retains unresolved importance', () => {
+  const result = computeLineSimplificationOnCPU(
+    {
+      positions: Float32Array.of(0, 0, 1, 1, 2, 1, 3, 0),
+      lineOffsets: Uint32Array.of(0, 4),
+      parameters: getGPULineSimplificationParameterValues({tolerance: 1})
+    },
+    {method: 'visvalingam', maximumIterations: 1}
+  );
+  expect(Array.from(result.iterationCount)).toEqual([1]);
+  expect(Array.from(result.converged)).toEqual([0]);
+  expect(Array.from(result.importance)).toEqual([Infinity, 0.5, Infinity, Infinity]);
+  expect(Array.from(result.outputMask)).toEqual([1, 0, 1, 1]);
+});
+
+it('bounds unfinished Douglas-Peucker rows by their parent split after one round', () => {
+  const result = computeLineSimplificationOnCPU(
+    {positions: Float32Array.of(0, 0, 1, 1, 2, 0, 3, 1, 4, 0), lineOffsets: Uint32Array.of(0, 5)},
+    {maximumIterations: 1, finishSpanLimit: 1}
+  );
+  expect(Array.from(result.importance)).toEqual([Infinity, 1, 1, 1, Infinity]);
+  expect(result.converged[0]).toBe(0);
+  expect(result.iterationCount[0]).toBe(1);
+});
+
+it('simplifies a remote antimeridian chord using the endpoint-bounded importance', () => {
+  const result = computeLineSimplificationOnCPU(
+    {
+      positions: Float32Array.of(100, 0, 0, 0, -100, 0),
+      lineOffsets: Uint32Array.of(0, 3),
+      parameters: getGPULineSimplificationParameterValues({tolerance: 120})
+    },
+    {
+      spatialContext: {
+        coordinateSpace: 'longitude-latitude',
+        metric: 'great-circle',
+        sphereRadius: 180 / Math.PI
+      }
+    }
+  );
+  expect(result.importance[1]).toBe(100);
+  expect(Array.from(result.outputMask)).toEqual([1, 0, 1]);
+});
+
 it('runs zero-capacity selection and keeps empty-output validation on both operations', async () => {
   const positions = new Float32Array([0, 0, 1, 0]);
   const lineOffsets = new Uint32Array([0, 2]);

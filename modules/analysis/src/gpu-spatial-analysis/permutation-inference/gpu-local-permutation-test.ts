@@ -65,10 +65,12 @@ import {
   type GPUPermutationSettings
 } from './permutation-parameters';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
+import {snapshotLocalPermutationProps} from './permutation-construction';
 import type {GPUFloat32OrUint32Values} from '../spatial-weights/float32-values';
 import {
   getGPUSpatialWeightsOrChunksViews,
   getGPUSpatialWeightsChunks,
+  getGPUSpatialWeightsLossViews,
   type GPUChunkedSpatialWeights
 } from '../spatial-weights/gpu-chunked-spatial-weights';
 
@@ -270,7 +272,7 @@ export type GPULocalPermutationTestOutput = {
     /**
      * Caller-owned one-row flag, 1 when the result is incomplete or invalid: an included row has
      * more than `maximumNeighbors` neighbors (that row is not tested), the weights report
-     * `status.overflow`, or the per-frame permutation count is outside `[1, maximumPermutations]`
+     * `status.overflow` or `status.candidateOverflow`, or the per-frame permutation count is outside `[1, maximumPermutations]`
      * (no row is tested and all p-values are NaN; the count is never clamped).
      */
     overflow: GraphDataView<'uint32'>;
@@ -553,6 +555,15 @@ type LocalPermutationReplayInputs = {
   negativeCount?: GraphDataView<'uint32'>;
 };
 
+const localPermutationReplayInputs = new WeakMap<object, LocalPermutationReplayInputs>();
+
+/** Recording-only state shared with the replay implementation; not a public barrel export. @internal */
+export function getLocalPermutationReplayInputs(
+  test: object
+): LocalPermutationReplayInputs | undefined {
+  return localPermutationReplayInputs.get(test);
+}
+
 /**
  * Conditional-permutation (pseudo p-value) inference for local Moran's I, local Geary (with the
  * optional `classes` output), local Getis-Ord G / G*, local bivariate Moran, Lee's local L and the
@@ -608,10 +619,26 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
   /** Conservative bound including published primitives and all row tiles. */
   readonly estimatedCommandNodeCount: number;
 
-  /** Views from the latest recording graph lowering, for internal lens replay only. @internal */
-  replayInputs?: LocalPermutationReplayInputs;
-
   constructor(props: GPULocalPermutationTestProps) {
+    props = snapshotLocalPermutationProps(props, [
+      'id',
+      'weights',
+      'values',
+      'secondValues',
+      'mask',
+      'statistic',
+      'joinCase',
+      'alternative',
+      'islands',
+      'parameters',
+      'maximumPermutations',
+      'stopAfterExceedances',
+      'maximumNeighbors',
+      'extendedNeighborScratch',
+      'rowTileSize',
+      'multipleTesting',
+      'output'
+    ]);
     const id = props.id ?? 'local-permutation-test';
     this.id = id;
     this.props = props;
@@ -683,8 +710,13 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
         Math.ceil(chunk.rowCount / Math.min(props.rowTileSize ?? chunk.rowCount, chunk.rowCount)),
       0
     );
+    // Each distinct outer/chunk loss view adds a preparation pass and a completeness writer.
+    const lossViewCount = getGPUSpatialWeightsLossViews(props.weights).length;
     this.estimatedCommandNodeCount =
-      LOCAL_PERMUTATION_FIXED_COMMAND_NODE_ALLOWANCE + 3 * chunks.length + tileCount;
+      LOCAL_PERMUTATION_FIXED_COMMAND_NODE_ALLOWANCE +
+      3 * chunks.length +
+      tileCount +
+      2 * lossViewCount;
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
 
     validateCapacity(
@@ -931,7 +963,7 @@ fn getY(position: u32) -> f32 { return 0.0 * f32(position); }`;
       slotWeightWGSL
     };
     if (isWholeWeights) {
-      this.replayInputs = {
+      localPermutationReplayInputs.set(this, {
         kernel: kernelOptions,
         bindings: [
           {name: 'offsets', view: chunkWeights[0].weights.offsets, type: 'u32', access: 'read'},
@@ -942,9 +974,9 @@ fn getY(position: u32) -> f32 { return 0.0 * f32(position); }`;
           {name: 'parameters', view: parameters, type: 'u32', access: 'read'}
         ],
         observedRaw
-      };
+      });
     }
-    const weightsOverflow = weights.status?.overflow;
+    const weightsLosses = getGPUSpatialWeightsLossViews(weights);
     // Sequential stopping: the permute kernel already binds eight storage buffers, so it writes the
     // exceedance count and the permutation count into one transient (count at `index`, permutation
     // count at `ROWS + index`) that a following node splits into the two per-row views.
@@ -966,11 +998,11 @@ fn getY(position: u32) -> f32 { return 0.0 * f32(position); }`;
         componentCount: 1
       })
     );
-    if (weightsOverflow) {
+    for (const [lossIndex, weightsOverflow] of weightsLosses.entries()) {
       // Truncated weights: the front end analyzed no row; report it.
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-weights-overflow`,
+          id: `${id}-weights-overflow${lossIndex === 0 ? '' : `-${lossIndex}`}`,
           operation: OPERATION,
           variant: 'weights-overflow',
           bindings: [
@@ -1216,8 +1248,9 @@ ${accessWGSL}`,
         compactX,
         rowPositions
       });
-      if (this.replayInputs) {
-        this.replayInputs.negativeCount = negative.negativeCount;
+      const replayInputs = localPermutationReplayInputs.get(this);
+      if (replayInputs) {
+        replayInputs.negativeCount = negative.negativeCount;
       }
       const invalidBindings: WGSLKernelBinding[] = [
         {name: 'negativeCount', view: negative.negativeCount, type: 'u32', access: 'read'},

@@ -3,6 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {snapshotContiguityOperationProps} from './weights-construction-snapshot';
+import {
+  validateCapacity,
+  validateFiniteNumber,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUContiguityWeights, type GPUContiguityCriterion} from './gpu-contiguity-weights';
 
 /** Packed polygon and CSR graph values shared by the two operations. */
@@ -26,9 +32,29 @@ export type ContiguityWeightsOperationProps = {
     offsets: string;
     neighbors: string;
     weights: string;
-    status: {overflow: string; requiredCount?: string; candidateOverflow?: string};
+    /** Both causes need public destinations; pair capacity is bounded even when omitted. */
+    status: {overflow: string; requiredCount?: string; candidateOverflow: string};
   };
 };
+
+/** @internal Shared scalar validation precedes named output-port validation in both backends. */
+export function validateContiguityWeightsOperationScalars(
+  id: string,
+  props: ContiguityWeightsOperationProps
+): void {
+  validateCapacity(id, 'featureCount', props.featureCount, 1, 0xfffffffe);
+  validateCapacity(id, 'capacity', props.capacity);
+  if (props.pairCapacity !== undefined) validateCapacity(id, 'pairCapacity', props.pairCapacity);
+  validateRequirement(
+    id,
+    props.criterion === 'queen' || props.criterion === 'rook',
+    "criterion must be 'queen' or 'rook'"
+  );
+  validateRequirement(id, (props.snapTolerance ?? 0) >= 0, 'snapTolerance must be >= 0');
+  validateFiniteNumber(id, 'snapTolerance', props.snapTolerance ?? 0, 0);
+  if (props.coordinateExtent !== undefined)
+    validateFiniteNumber(id, 'coordinateExtent', props.coordinateExtent, 0);
+}
 
 /**
  * Operation form; all props are compile-time, polygon contents are per-frame.
@@ -36,7 +62,14 @@ export type ContiguityWeightsOperationProps = {
  */
 export class GPUContiguityWeightsOperation extends GPUContributorOperation {
   constructor(props: ContiguityWeightsOperationProps) {
+    props = snapshotContiguityOperationProps(props);
     const id = props.id ?? 'contiguity-weights';
+    validateContiguityWeightsOperationScalars(id, props);
+    validateRequirement(
+      id,
+      Boolean(props.output.status.candidateOverflow),
+      'output.status.candidateOverflow is required for bounded contiguity candidates'
+    );
     super({
       id,
       inputs: {...props.polygons},

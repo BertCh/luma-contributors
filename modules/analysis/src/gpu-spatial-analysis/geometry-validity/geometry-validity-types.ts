@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 /**
- * Bits written to the per-feature mask of `GPUGeometryValidity`. A feature with mask `0` has none
+ * Bits written to the per-feature `issueCode` of `GPUGeometryValidity`. A feature with code `0` has none
  * of the listed problems.
  */
 export const GPU_GEOMETRY_VALIDITY_BIT = {
@@ -49,6 +49,21 @@ export const GPU_GEOMETRY_VALIDITY_BIT = {
    */
   tooFewPoints: 1 << 9
 } as const;
+
+/** Decodes observed issues only. Absence of structural issues does not certify complete checks. */
+export function decodeGPUGeometryValidityIssueCode(
+  issueCode: number
+): Record<keyof typeof GPU_GEOMETRY_VALIDITY_BIT, boolean> & {hasStructuralIssue: boolean} {
+  return {
+    ...(Object.fromEntries(
+      Object.entries(GPU_GEOMETRY_VALIDITY_BIT).map(([name, bit]) => [
+        name,
+        (issueCode & bit) !== 0
+      ])
+    ) as Record<keyof typeof GPU_GEOMETRY_VALIDITY_BIT, boolean>),
+    hasStructuralIssue: (issueCode & GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK) !== 0
+  };
+}
 
 /**
  * Union of every bit that makes a geometry structurally invalid (GEOS `is_valid` false): all bits

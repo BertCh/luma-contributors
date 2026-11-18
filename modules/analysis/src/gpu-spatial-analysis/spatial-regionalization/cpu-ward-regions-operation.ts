@@ -19,13 +19,14 @@ import {
 } from './gpu-ward-regions';
 import {
   GPUWardRegionsOperation,
+  snapshotWardOperationProps,
   type WardRegionsOperationProps
 } from './gpu-ward-regions-operation';
 
 export type CPUWardRegionsOptions = Pick<
   WardRegionsOperationProps,
   'columnCount' | 'standardize' | 'targetRegionCount' | 'mergeSchedule' | 'statusLength'
->;
+> & {maximumIterations?: number};
 export type CPUWardRegionsResult = {
   labels: Uint32Array;
   objective: Float32Array;
@@ -40,12 +41,14 @@ type WardPair = {first: number; second: number; increase: number; key: number};
  * Status contains the four GPU_WARD_STATUS words, optionally followed by the mutual-nearest round
  * count. A disconnected final round counts as an attempted round. The fifth word is unused for
  * sequential schedules and is returned as zero; callers should use four words in that mode.
+ * Optional input.status loss scalars suppress the partition as on GPU: labels are 0xffffffff,
+ * objective is NaN and iteration/convergence fields are zero. Loss is not an invalid feature.
  *
  * What differs from the GPU contributor:
  * - Uses float64 column standardization, region sums, costs and objective, with one output rounding.
  *   Objective comparisons allow 1e-4 relative error; near-tied costs can change the partition.
- * - Runs until the target or disconnected components prevent further merges. No GPU round budget
- *   applies; iterationLimitReached is always 0 and iterationCount is the completed merge count.
+ * - Honors maximumIterations; omitted in the pure function it defaults to rows minus the target.
+ *   iterationCount is the completed merge count; the budget counts rounds for either schedule.
  * - Drops the eight-column private-array limit and GPU storage/command scheduling limits.
  * - Finite inputs whose GPU merge costs overflow remain mergeable; the float32 objective can
  *   overflow when the completed float64 objective is rounded at the output.
@@ -56,6 +59,7 @@ export function computeWardRegionsOnCPU(
     neighbors: Uint32Array;
     values: Float32Array;
     parameters: Uint32Array;
+    status?: {overflow?: Uint32Array; candidateOverflow?: Uint32Array};
   },
   options: CPUWardRegionsOptions
 ): CPUWardRegionsResult {
@@ -64,6 +68,8 @@ export function computeWardRegionsOnCPU(
   const columnCount = options.columnCount ?? 1;
   const mergeSchedule = options.mergeSchedule ?? 'sequential';
   const statusLength = options.statusLength ?? GPU_WARD_STATUS.length;
+  const maximumIterations = options.maximumIterations ?? rowCount - options.targetRegionCount;
+  validateCapacity('computeWardRegionsOnCPU', 'maximumIterations', maximumIterations, 0);
   validateCapacity('computeWardRegionsOnCPU', 'rowCount', rowCount);
   validateCapacity('computeWardRegionsOnCPU', 'columnCount', columnCount);
   validateCapacity(
@@ -100,11 +106,24 @@ export function computeWardRegionsOnCPU(
   for (let slot = 0; slot < offsets[rowCount]; slot++)
     if (neighbors[slot] >= rowCount) status[GPU_WARD_STATUS.invalidCount]++;
   const objective = new Float32Array(1);
+  for (const [name, values] of Object.entries(input.status ?? {})) {
+    if (values)
+      validateCapacity('computeWardRegionsOnCPU', `status.${name}.length`, values.length, 1);
+  }
+  if (
+    (input.status?.overflow?.[0] ?? 0) !== 0 ||
+    (input.status?.candidateOverflow?.[0] ?? 0) !== 0
+  ) {
+    labels.fill(0xffffffff);
+    objective[0] = NaN;
+    return {labels, objective, status};
+  }
   if (status[GPU_WARD_STATUS.invalidCount] > 0) {
     if (
       mergeSchedule === 'mutual-nearest' &&
       statusLength > GPU_WARD_ROUND_COUNT_STATUS_WORD &&
-      rowCount > options.targetRegionCount
+      rowCount > options.targetRegionCount &&
+      maximumIterations > 0
     )
       status[GPU_WARD_ROUND_COUNT_STATUS_WORD] = 1;
     return {labels, objective, status};
@@ -137,7 +156,10 @@ export function computeWardRegionsOnCPU(
     first.second - second.second;
   let remaining = rowCount;
   let totalObjective = 0;
-  while (remaining > options.targetRegionCount) {
+  let roundCount = 0;
+  let exhausted = false;
+  while (remaining > options.targetRegionCount && roundCount < maximumIterations) {
+    roundCount++;
     if (mergeSchedule === 'mutual-nearest' && statusLength > GPU_WARD_ROUND_COUNT_STATUS_WORD)
       status[GPU_WARD_ROUND_COUNT_STATUS_WORD]++;
     const pairs = new Map<string, WardPair>();
@@ -167,7 +189,10 @@ export function computeWardRegionsOnCPU(
       }
     }
     const orderedPairs = [...pairs.values()].sort(comparePairs);
-    if (orderedPairs.length === 0) break;
+    if (orderedPairs.length === 0) {
+      exhausted = true;
+      break;
+    }
     let selected: WardPair[];
     if (mergeSchedule === 'sequential') selected = [orderedPairs[0]];
     else {
@@ -195,12 +220,16 @@ export function computeWardRegionsOnCPU(
   }
   objective[0] = totalObjective;
   status[GPU_WARD_STATUS.converged] = Number(remaining === options.targetRegionCount);
+  status[GPU_WARD_STATUS.iterationLimitReached] = Number(
+    remaining > options.targetRegionCount && !exhausted && roundCount === maximumIterations
+  );
   return {labels, objective, status};
 }
 
-/** CPU twin; completes the chosen schedule without the GPU round or column limits. */
+/** CPU twin; honors the chosen schedule and round budget without the GPU column limit. */
 export class CPUWardRegionsOperation extends GPUCPUOperation {
   constructor(props: WardRegionsOperationProps) {
+    props = snapshotWardOperationProps(props);
     const id = props.id ?? 'ward-regions';
     validateCapacity(id, 'rowCount', props.rowCount);
     validateCapacity(id, 'columnCount', props.columnCount ?? 1);
@@ -219,10 +248,10 @@ export class CPUWardRegionsOperation extends GPUCPUOperation {
       "mergeSchedule must be 'sequential' or 'mutual-nearest'"
     );
     // Reuse the graph-port shape and disjointness checks; this allocates no GPU resources.
-    new GPUWardRegionsOperation(props);
+    const operation = new GPUWardRegionsOperation(props);
     super({
       id,
-      inputs: {...props.weights, values: props.values, parameters: props.parameters},
+      inputs: operation.inputs,
       outputs: {
         [props.output.labels]: gpuGraph.vector('uint32', {length: props.rowCount}),
         [props.output.objective]: gpuGraph.vector('float32', {length: 1}),
@@ -243,7 +272,15 @@ export class CPUWardRegionsOperation extends GPUCPUOperation {
             offsets,
             neighbors,
             values: getCPUOperationFloat32Rows(id, inputs, 'values'),
-            parameters: getCPUOperationUint32Rows(id, inputs, 'parameters')
+            parameters: getCPUOperationUint32Rows(id, inputs, 'parameters'),
+            status: {
+              overflow: props.weights.status?.overflow
+                ? getCPUOperationUint32Rows(id, inputs, 'weightsOverflow')
+                : undefined,
+              candidateOverflow: props.weights.status?.candidateOverflow
+                ? getCPUOperationUint32Rows(id, inputs, 'weightsCandidateOverflow')
+                : undefined
+            }
           },
           props
         );

@@ -661,7 +661,7 @@ for (const emptyFirstBlock of [false, true])
     }
   });
 
-it('lattice accepts packed writable stages, ignores an unused candidate port, and rejects co-bound read/write storage', () => {
+it('lattice accepts disjoint packed writable stages and rejects candidate aliases and co-bound read/write storage', () => {
   const {device, graph, rows, view} = createScene();
   try {
     const packed = view('uint32', 256);
@@ -676,13 +676,25 @@ it('lattice accepts packed writable stages, ignores an unused candidate port, an
       byteOffset: 256
     });
     const overflow = graph.createDataView(packed.buffer, {format: 'uint32', length: 1});
+    const candidateOverflow = graph.createDataView(packed.buffer, {
+      format: 'uint32',
+      length: 1,
+      byteOffset: 768
+    });
     const offsets = view('uint32', rows + 1);
     const props = {
       width: rows,
       height: 1,
       criterion: 'rook' as const,
-      output: {offsets, neighbors, weights, status: {overflow, candidateOverflow: neighbors}}
+      output: {offsets, neighbors, weights, status: {overflow, candidateOverflow}}
     };
+    expect(
+      () =>
+        new GPULatticeWeights({
+          ...props,
+          output: {...props.output, status: {overflow, candidateOverflow: neighbors}}
+        })
+    ).toThrow(/neighbors and candidateOverflow logical byte ranges must not overlap/);
     expect(() => new GPULatticeWeights(props).getCommandNodes(graph)).not.toThrow();
     expect(
       () =>

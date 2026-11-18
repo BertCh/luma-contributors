@@ -29,18 +29,23 @@ async function runKindValidity(
   const buffers: Buffer[] = [];
   const geometry = createPredicateGeometry(device, graph, 'geometry', spec, buffers);
   const maskBuffer = createOutputBuffer(device, featureCount);
-  buffers.push(maskBuffer);
+  const validityBuffer = createOutputBuffer(device, featureCount);
+  buffers.push(maskBuffer, validityBuffer);
   const mask = importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', featureCount);
+  const validity = importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', featureCount);
   graph.add(
     new GPUGeometryValidity(
       geometry.kind === 'lines'
-        ? {lines: geometry, output: {mask}}
-        : {points: geometry as never, output: {mask}}
+        ? {lines: geometry, output: {issueCode: mask, validity}}
+        : {points: geometry as never, output: {issueCode: mask, validity}}
     )
   );
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
   const result = await readUint32(maskBuffer, featureCount);
+  expect(await readUint32(validityBuffer, featureCount)).toEqual(
+    result.map(code => Number(code === 0))
+  );
   compiled.destroy();
   for (const buffer of buffers) {
     buffer.destroy();

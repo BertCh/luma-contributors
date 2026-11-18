@@ -1,6 +1,8 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {addPreparedRecipe} from './prepared-recipe';
 import {
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -57,6 +59,13 @@ export type GPUCellFlowTopologyRecipeProps = {
  * shared-boundary coordinates inherit the existing f32 H3 geometry precision limits.
  */
 export function addCellFlowTopologyRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUCellFlowTopologyRecipeProps
+) {
+  return addPreparedRecipe(graph, props, declareCellFlowTopologyRecipe);
+}
+
+function declareCellFlowTopologyRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUCellFlowTopologyRecipeProps
 ) {

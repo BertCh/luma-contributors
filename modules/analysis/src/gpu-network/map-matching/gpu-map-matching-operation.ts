@@ -7,6 +7,7 @@ import {
   type GPUContributorOperationOutput
 } from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUMapMatching, type GPUMapMatchingProps} from './gpu-map-matching';
+import {snapshotMapMatchingConstructionProps} from './map-matching-construction';
 
 /** Graph-value names replacing views; counts inferred from views become explicit. */
 export type MapMatchingOperationProps = Pick<
@@ -35,7 +36,7 @@ export type MapMatchingOperationProps = Pick<
     targets: string;
     costs: string;
     costLimit: string;
-    status?: {overflow?: string};
+    status?: {complete?: string};
   };
   output: {
     matchedEdges: string;
@@ -48,13 +49,18 @@ export type MapMatchingOperationProps = Pick<
     matchedCount?: string;
     breakCount?: string;
     status?: {overflow?: string; routeOverflow?: string; candidateOverflow?: string};
-    traversedEdges?: {edges: string; counts: string; status?: {overflow?: string}};
+    traversedEdges?: {
+      edges: string;
+      counts: string;
+      status?: {overflow?: string; candidateOverflow?: string};
+    };
   };
 };
 
 /** GPU map matching as a vector graph operation; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUMapMatchingOperation extends GPUContributorOperation {
   constructor(props: MapMatchingOperationProps) {
+    props = snapshotMapMatchingConstructionProps(props);
     const {output, routeTable} = props;
     const inputs: Record<string, string> = {
       positions: props.positions,
@@ -70,8 +76,8 @@ export class GPUMapMatchingOperation extends GPUContributorOperation {
       inputs['tableTargets'] = routeTable.targets;
       inputs['tableCosts'] = routeTable.costs;
       inputs['tableCostLimit'] = routeTable.costLimit;
-      if (routeTable.status?.overflow !== undefined)
-        inputs['tableOverflow'] = routeTable.status.overflow;
+      if (routeTable.status?.complete !== undefined)
+        inputs['tableComplete'] = routeTable.status.complete;
     }
     const outputs: Record<string, GPUContributorOperationOutput> = {
       matchedEdges: {value: output.matchedEdges, format: 'uint32', length: props.pointCount}
@@ -105,6 +111,12 @@ export class GPUMapMatchingOperation extends GPUContributorOperation {
       if (value !== undefined) outputs[port] = {value, format: 'uint32', length: 1};
     }
     if (output.traversedEdges) {
+      if (output.traversedEdges.status?.candidateOverflow !== undefined)
+        outputs['traversedCandidateOverflow'] = {
+          value: output.traversedEdges.status.candidateOverflow,
+          format: 'uint32',
+          length: 1
+        };
       outputs['traversedEdges'] = {
         value: output.traversedEdges.edges,
         format: 'uint32',
@@ -154,10 +166,10 @@ export class GPUMapMatchingOperation extends GPUContributorOperation {
                 costs: getView<'float32'>('tableCosts'),
                 costLimit: getView<'float32'>('tableCostLimit'),
                 status: {
-                  overflow:
-                    routeTable.status?.overflow === undefined
+                  complete:
+                    routeTable.status?.complete === undefined
                       ? undefined
-                      : getView<'uint32'>('tableOverflow')
+                      : getView<'uint32'>('tableComplete')
                 }
               }
             : undefined,
@@ -203,6 +215,10 @@ export class GPUMapMatchingOperation extends GPUContributorOperation {
                   edges: getView<'uint32'>('traversedEdges'),
                   counts: getView<'uint32'>('traversedCounts'),
                   status: {
+                    candidateOverflow:
+                      output.traversedEdges.status?.candidateOverflow === undefined
+                        ? undefined
+                        : getView<'uint32'>('traversedCandidateOverflow'),
                     overflow:
                       output.traversedEdges.status?.overflow === undefined
                         ? undefined

@@ -12,13 +12,17 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   createPublishNode,
+  createWGSLKernelNode,
   createTransientUint32Rows
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {
   GPUCompactOutput,
   GPUUint32Rows
 } from '../../analysis-core/kernels/gpu-contributor-types';
-import type {GPUPointGeometryPort} from '../../analysis-core/contracts/index';
+import type {
+  GPUPointGeometryPort,
+  GPUMultipartPointGeometryPort
+} from '../../analysis-core/contracts/index';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   getGraphViewChunks,
@@ -34,7 +38,7 @@ import {
   GPUNearestFeatureJoin,
   getGPUNearestFeatureJoinMaximumLeafCapacity
 } from './gpu-nearest-feature-join';
-import {validateStatusScalars} from './spatial-join-geometry';
+import {validateStatusScalars, validateSpatialJoinMultipartGeometry} from './spatial-join-geometry';
 import {
   getNextPowerOfTwo,
   getDefaultSpatialSort,
@@ -85,8 +89,8 @@ export type GPUBufferSelectionOutput = {
   outputMask?: GPUUint32Rows;
   /**
    * Optional bounded stable-ID result in ascending row order. `matches.ids.length` must be at
-   * least one. `matches.overflow` is set when the selection exceeds the capacity or when the join
-   * overflowed.
+   * least one. `matches.status.overflow` reports final selection capacity loss. Optional
+   * `matches.status.candidateOverflow` reports incomplete join candidates separately.
    */
   matches?: GPUCompactOutput;
   /**
@@ -98,8 +102,8 @@ export type GPUBufferSelectionOutput = {
   drawInstanceCount?: GraphDataView<'uint32'>;
   /** Optional per-point distance to the nearest feature (in the spatial context length unit), or -1 outside. Chunked like the points. */
   distances?: GraphDataView<'float32'> | GraphVectorView<'float32'>;
-  /** Optional per-point nearest feature row, or `GPU_SPATIAL_JOIN_NO_FEATURE`. Chunked like the points. */
-  nearestFeatureIds?: GPUUint32Rows;
+  /** Optional per-point nearest feature row before application IDs, or `GPU_SPATIAL_JOIN_NO_FEATURE`. Chunked like the points. */
+  nearestFeatureRows?: GPUUint32Rows;
   /**
    * Optional per-point flag, one packed `uint32` per point in row order across chunks, 1 when that
    * point's nearest-feature search may be incomplete because the join dropped candidates
@@ -128,7 +132,9 @@ export type GPUBufferSelectionOutput = {
  * Compile-time: view lengths and chunk topology, the feature kind, `candidateCapacity`,
  * `leafCapacity`, `spatialSort`, `output.matches.ids.length`, and which optional views exist.
  */
-export type GPUBufferSelectionProps = {
+export type GPUBufferSelectionProps<
+  PointGeometry extends GPUPointGeometryPort | GPUMultipartPointGeometryPort = GPUPointGeometryPort
+> = {
   /** Prefix for generated node and transient IDs. Defaults to `'buffer-selection'`. */
   id?: string;
   /**
@@ -150,12 +156,19 @@ export type GPUBufferSelectionProps = {
   /**
    * Points to test, possibly chunked; contents are per-frame and at least one row is required.
    * Optional `sourceIds` (same chunk topology) are written to `output.matches.ids`; row indices
-   * are used when omitted.
+   * are used when omitted. Constructors infer point branches from join-geometry unions;
+   * known multipart ports are excluded statically and grouping is rejected at construction.
    */
-  points: GPUPointGeometryPort;
+  points: PointGeometry &
+    (0 extends 1 & PointGeometry
+      ? unknown
+      : [PointGeometry] extends [GPUMultipartPointGeometryPort]
+        ? never
+        : unknown);
   /**
    * Point features, or segment features. Express a polyline as consecutive segment rows.
-   * Contents are per-frame; the feature count is compile-time.
+   * Contents are per-frame; the feature count is compile-time. Feature `sourceIds` do not affect
+   * selection or `output.nearestFeatureRows`; rows identify the reference geometry.
    */
   features: GPUNearestFeatureSource;
   /**
@@ -195,7 +208,7 @@ export type GPUBufferSelectionProps = {
  * Selects the points within a per-frame planar distance of point or polyline features.
  *
  * The contributor composes {@link GPUNearestFeatureJoin} (a feature BVH, candidate pairs, and exact
- * point-to-segment distances) with a mask kernel (`nearestFeatureIds != no feature`) and, when
+ * point-to-segment distances) with a mask kernel (`nearestFeatureRows != no feature`) and, when
  * `output.matches` is requested, `GPUVisibilityWorkflow` over that mask.
  *
  * This differs from the join's own `matches` output, which is unordered (atomic append). The
@@ -205,7 +218,10 @@ export type GPUBufferSelectionProps = {
  * Non-goals: polygon buffers and per-feature distances. Distances are planar in the units of the
  * input coordinates, or great-circle distances in the length unit of the longitude/latitude `spatialContext`.
  */
-export class GPUBufferSelection implements GPUCommandNodeProducer {
+export class GPUBufferSelection<
+  PointGeometry extends GPUPointGeometryPort | GPUMultipartPointGeometryPort = GPUPointGeometryPort
+> implements GPUCommandNodeProducer
+{
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
@@ -220,7 +236,38 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
   private readonly spatialSort: boolean;
   private readonly querySort: boolean;
 
-  constructor(props: GPUBufferSelectionProps) {
+  constructor(inputProps: GPUBufferSelectionProps<PointGeometry>) {
+    validateSpatialJoinMultipartGeometry(
+      inputProps.id ?? 'buffer-selection',
+      'points',
+      inputProps.points
+    );
+    const props: GPUBufferSelectionProps = Object.freeze({
+      ...inputProps,
+      points: Object.freeze({
+        kind: inputProps.points.kind,
+        positions: inputProps.points.positions,
+        sourceIds: inputProps.points.sourceIds
+      }),
+      features: Object.freeze({...inputProps.features}),
+      output: Object.freeze({
+        ...inputProps.output,
+        ...(inputProps.output.matches
+          ? {
+              matches: Object.freeze({
+                ...inputProps.output.matches,
+                status: Object.freeze({...inputProps.output.matches.status})
+              })
+            }
+          : {}),
+        ...(inputProps.output.status ? {status: Object.freeze({...inputProps.output.status})} : {})
+      })
+    });
+    validateRequirement(
+      props.id ?? 'buffer-selection',
+      !('nearestFeatureIds' in props.output),
+      'output.nearestFeatureIds is unsupported; use output.nearestFeatureRows'
+    );
     this.id = props.id ?? 'buffer-selection';
     this.props = props;
     const {id} = this;
@@ -240,7 +287,7 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
       validateNonZeroFiniteNumber(id, 'spatialContext.sphereRadius', sphereRadius);
     const points = props.points.positions;
     const {sourceIds} = props.points;
-    const {outputMask, matches, distances, nearestFeatureIds, drawInstanceCount} = props.output;
+    const {outputMask, matches, distances, nearestFeatureRows, drawInstanceCount} = props.output;
     if (!outputMask && !matches) {
       throw new Error(`${id} needs output.outputMask or output.matches`);
     }
@@ -265,7 +312,7 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
     for (const [name, view] of [
       ['points.sourceIds', sourceIds],
       ['output.outputMask', outputMask],
-      ['output.nearestFeatureIds', nearestFeatureIds]
+      ['output.nearestFeatureRows', nearestFeatureRows]
     ] as const) {
       for (const chunk of view ? getGraphViewChunks(view) : []) {
         validateSinglePackedView(chunk, ['uint32'], `${id} ${name}`);
@@ -355,7 +402,7 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
     validateDisjointOutputs(id, getInputs(props), getOutputs(props), [
       // Preserve the nested join's current writable-output contract before declaring adapters.
       {
-        nearestFeatureIds,
+        nearestFeatureRows,
         distances,
         overflow: props.output.status?.overflow,
         candidateOverflow: props.output.status?.candidateOverflow,
@@ -369,20 +416,14 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
         drawInstanceCount
       }
     ]);
-    validateSpatialJoinReadWriteBindings(id, [nearestFeatureIds], [outputMask]);
-    validateSpatialJoinReadWriteBindings(id, [features.sourceIds], [nearestFeatureIds, distances]);
-    if (matches)
+    validateSpatialJoinReadWriteBindings(id, [nearestFeatureRows], [outputMask]);
+    if (matches) {
       validateSpatialJoinReadWriteBindings(
         id,
         [props.output.status?.overflow],
-        [
-          matches.ids,
-          matches.status.count,
-          matches.status.overflow,
-          matches.status.requiredCount,
-          drawInstanceCount
-        ]
+        [matches.status.candidateOverflow]
       );
+    }
   }
 
   /** Returns join, mask, and (with `output`) stable compaction and publish nodes in order. */
@@ -453,7 +494,7 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
         operation: OPERATION,
         queries: {kind: 'points', points},
         queryCount: pointCount,
-        features: props.features,
+        features: {...props.features, sourceIds: undefined},
         featureCount: this.featureCount,
         k: 1,
         capacity: 1,
@@ -479,9 +520,9 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
     validateGraphChunkGroupKernelSupport(graph, id, 8);
     const nodes: GPUCommandNode<Parameters>[] = [];
 
-    const nearestFeatureIds =
-      props.output.nearestFeatureIds ??
-      createTransientUint32Rows(graph, `${id}-nearest-feature-ids`, points);
+    const nearestFeatureRows =
+      props.output.nearestFeatureRows ??
+      createTransientUint32Rows(graph, `${id}-nearest-feature-rows`, points);
     const joinOverflow =
       props.output.status?.overflow ??
       createTransientView(graph, `${id}-join-overflow`, 'uint32', 1);
@@ -491,7 +532,7 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
         spatialContext: this.spatialContext,
         featuresSpatialContext: props.featuresSpatialContext,
         queries: {kind: 'points', positions: points},
-        features: props.features,
+        features: {...props.features, sourceIds: undefined},
         radius: props.distance,
         candidateCapacity,
         leafCapacity: props.leafCapacity,
@@ -499,7 +540,7 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
         spatialSortCurve: props.spatialSortCurve,
         querySort: props.querySort,
         output: {
-          nearestFeatureIds,
+          nearestFeatureIds: nearestFeatureRows,
           nearestDistances: props.output.distances,
           candidateTruncated: props.output.candidateTruncated,
           status: {
@@ -511,7 +552,7 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
     );
 
     const mask = outputMask ?? createTransientUint32Rows(graph, `${id}-mask`, points);
-    const idChunks = getGraphViewChunks(nearestFeatureIds);
+    const idChunks = getGraphViewChunks(nearestFeatureRows);
     const maskChunks = getGraphViewChunks(mask);
     for (const [chunkIndex, idChunk] of idChunks.entries()) {
       if (idChunk.length === 0) {
@@ -552,11 +593,36 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
           operation: OPERATION,
           requiredCount: selectedTotal,
           compactIds: selectedIds,
-          output: matches,
-          overflowSources: [joinOverflow],
+          output: {
+            ids: matches.ids,
+            status: {
+              count: matches.status.count,
+              overflow: matches.status.overflow,
+              requiredCount: matches.status.requiredCount
+            }
+          },
           extraCounts: props.output.drawInstanceCount ? [props.output.drawInstanceCount] : []
         })
       );
+      if (matches.status.candidateOverflow)
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-publish-candidate`,
+            operation: OPERATION,
+            variant: 'candidate',
+            bindings: [
+              {name: 'candidateIn', view: joinOverflow, type: 'u32', access: 'read'},
+              {
+                name: 'candidateOut',
+                view: matches.status.candidateOverflow,
+                type: 'u32',
+                access: 'read_write'
+              }
+            ],
+            invocationCount: 1,
+            body: 'candidateOut[candidateOutOffset] = select(0u, 1u, candidateIn[candidateInOffset] != 0u);'
+          })
+        );
     }
     return nodes;
   }
@@ -585,7 +651,7 @@ function getOutputs(
   return [
     output.outputMask,
     output.distances,
-    output.nearestFeatureIds,
+    output.nearestFeatureRows,
     output.status?.overflow,
     output.status?.candidateOverflow,
     output.candidateTruncated,
@@ -593,6 +659,7 @@ function getOutputs(
     matches?.ids,
     matches?.status.count,
     matches?.status.overflow,
+    matches?.status.candidateOverflow,
     matches?.status.requiredCount
   ];
 }

@@ -128,6 +128,26 @@ function validateMinimumFamilySize(id: string, minimumFamilySize: number | undef
   return value;
 }
 
+/** Binary64 harmonic number: at most 64 exact terms, then Euler-Maclaurin. */
+function getFamilyHarmonicNumber(familySize: number): number {
+  if (familySize <= 64) {
+    let harmonic = 0;
+    for (let denominator = familySize; denominator >= 1; denominator--) {
+      harmonic += 1 / denominator;
+    }
+    return harmonic;
+  }
+  const inverse = 1 / familySize;
+  const inverseSquared = inverse * inverse;
+  // The next omitted term is at most 1/(240 * 65^8) < 1.4e-17, below binary64 rounding.
+  return (
+    Math.log(familySize) +
+    0.5772156649015329 +
+    inverse / 2 -
+    inverseSquared * (1 / 12 - inverseSquared * (1 / 120 - inverseSquared / 252))
+  );
+}
+
 /**
  * CPU reference (float64) of {@link GPUMultipleTestingAdjustment}, exported for oracles and tests.
  *
@@ -143,6 +163,9 @@ function validateMinimumFamilySize(id: string, minimumFamilySize: number | undef
  *
  * These equal statsmodels `multipletests` (`bonferroni`, `holm`, `fdr_bh`, `fdr_by`) on the tested
  * rows, with `minimumFamilySize - testedRows` extra p-values of 1 appended and then dropped.
+ * The logical family size may be at most 2^32 - 1; allocation and sorting depend only on the
+ * supplied rows. The harmonic factor uses at most 64 terms, then an Euler-Maclaurin expansion
+ * whose omitted remainder is below binary64 rounding.
  */
 export function getMultipleTestingAdjustedPValues(
   pValues: ArrayLike<number>,
@@ -150,7 +173,7 @@ export function getMultipleTestingAdjustedPValues(
   minimumFamilySize: number = 0
 ): Float64Array {
   resolveGPUMultipleTestingMethod('getMultipleTestingAdjustedPValues', method);
-  validateMinimumFamilySize('getMultipleTestingAdjustedPValues', minimumFamilySize);
+  validateCapacity('getMultipleTestingAdjustedPValues', 'minimumFamilySize', minimumFamilySize, 0);
   const rows = pValues.length;
   const result = new Float64Array(rows).fill(Number.NaN);
   const tested: number[] = [];
@@ -183,13 +206,7 @@ export function getMultipleTestingAdjustedPValues(
     }
     return result;
   }
-  let scale = 1;
-  if (method === 'benjamini-yekutieli') {
-    scale = 0;
-    for (let i = m; i >= 1; i--) {
-      scale += 1 / i;
-    }
-  }
+  const scale = method === 'benjamini-yekutieli' ? getFamilyHarmonicNumber(m) : 1;
   let running = 1;
   for (let rank = testedCount - 1; rank >= 0; rank--) {
     running = Math.min(running, (pValues[tested[rank]] * m * scale) / (rank + 1));

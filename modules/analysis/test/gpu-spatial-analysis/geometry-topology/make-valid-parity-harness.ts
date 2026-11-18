@@ -125,7 +125,12 @@ export function createMakeValidParityProbe(graph: GPUCommandGraph, groupBits: nu
         dangleCount: scalar(),
         unusedEdgeCount: scalar()
       },
-      status: status()
+      status: {
+        count: scalar(),
+        requiredRingCount: scalar(),
+        overflow: scalar(),
+        candidateOverflow: scalar()
+      }
     }
   });
   const commands = contributor.getCommandNodes(graph);
@@ -138,7 +143,7 @@ export function createMakeValidParityProbe(graph: GPUCommandGraph, groupBits: nu
     {view: binding(preparation, 'endpoints'), values: scene.endpoints},
     {view: binding(preparation, 'nodedRings'), values: scene.sourceRings},
     {
-      view: binding(preparation, 'ringSourceIds'),
+      view: binding(preparation, 'ringFeatureRows'),
       values: scene.sourceIds.slice(0, scene.featureCount)
     },
     {view: binding(parity, 'faceSourceIds'), values: scene.sourceIds},

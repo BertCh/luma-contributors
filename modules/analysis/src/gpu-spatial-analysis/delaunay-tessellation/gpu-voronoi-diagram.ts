@@ -29,6 +29,10 @@ import {
   type GPUBoundedResultStatusPort
 } from '../../analysis-core/contracts/status';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
+import {
+  TRIANGLE_CIRCUMCIRCLE_WGSL,
+  TRIANGLE_SCALE_WGSL
+} from '../shared/triangle-circumcircle-wgsl';
 
 import {
   validateDisjointWritableViews,
@@ -72,7 +76,7 @@ export type GPUVoronoiDiagramProps = {
    */
   spatialContext?: GPUSpatialContext;
   positions: GraphDataView<'float32x2'>;
-  /** Delaunay triples; only the prefix selected by `triangleCount` is read. */
+  /** Delaunay triples of either winding; only the prefix selected by `triangleCount` is read. */
   triangles: GraphDataView<'uint32x3'>;
   triangleCount: GraphDataView<'uint32'>;
   /** One dynamic `[minimumX, minimumY, maximumX, maximumY]` row for hull-ray clipping. */
@@ -96,8 +100,12 @@ export function getVoronoiMaximumSegmentCount(triangleCapacity: number): number 
  * miss the bounds entirely are dropped. Triangle and local-edge order provide stable compact output order;
  * each internal edge is emitted by the lower triangle row. Triangle adjacency comes from one stable
  * sort of undirected edge keys, so the build costs a sort rather than a scan of every triangle per edge. Exactly collinear triangles, and
- * triangles whose circumcenter overflows f32, are rejected and counted in `invalidCount` when that
+ * triangles whose final circumcenter is unrepresentable in f32, are rejected and counted in `invalidCount` when that
  * canonical status field is supplied.
+ * Circumcircle edge equations are independently scaled by powers of two, preserving unequal edge
+ * magnitudes; centers are restored after adding the origin, independently of radius overflow.
+ * Both clockwise and counter-clockwise input triples emit outward hull rays, clipped without a
+ * fixed distance cap. Edge differences that overflow are formed from scaled endpoints.
  *
  * Edges come only from triangles. Two sites, or any set of collinear sites, have no Delaunay
  * triangle, so the output is empty (`count` 0, `invalidCount` 0) although their Voronoi diagram is
@@ -407,10 +415,11 @@ fn isValidCenter(triangle: u32) -> bool {
 fn centerAt(triangle: u32) -> vec2<f32> {
   return vec2<f32>(centers[centersOffset + 3u * triangle], centers[centersOffset + 3u * triangle + 1u]);
 }
-// Liang-Barsky clip of origin + t * direction for t in [0, limit]; returns (t0, t1, 1) or zeros.
-fn clipParametric(origin: vec2<f32>, direction: vec2<f32>, limit: f32, bounds: vec4<f32>) -> vec3<f32> {
+// Liang-Barsky clip of a segment (0 <= t <= 1) or ray (t >= 0); returns (t0, t1, 1) or zeros.
+fn clipParametric(origin: vec2<f32>, direction: vec2<f32>, isRay: bool, bounds: vec4<f32>) -> vec3<f32> {
   var enter = 0.0;
-  var leave = limit;
+  var leave = 1.0;
+  var hasExit = !isRay;
   for (var axis = 0u; axis < 2u; axis++) {
     let low = bounds[axis];
     let high = bounds[axis + 2u];
@@ -420,10 +429,11 @@ fn clipParametric(origin: vec2<f32>, direction: vec2<f32>, limit: f32, bounds: v
       let first = (low - origin[axis]) / direction[axis];
       let second = (high - origin[axis]) / direction[axis];
       enter = max(enter, min(first, second));
-      leave = min(leave, max(first, second));
+      let exit = max(first, second);
+      if (hasExit) { leave = min(leave, exit); } else { leave = exit; hasExit = true; }
     }
   }
-  if (!(enter <= leave)) { return vec3<f32>(0.0); }
+  if (!hasExit || !(enter <= leave)) { return vec3<f32>(0.0); }
   return vec3<f32>(enter, leave, 1.0);
 }`,
         // Internal edges join two circumcenters; hull edges are rays along the outward bisector.
@@ -438,16 +448,18 @@ let neighbor = neighbors[neighborsOffset + index];
 let center = centerAt(triangle);
 var origin = center;
 var direction = vec2<f32>(0.0);
-var limit = 1.0;
+let isRay = neighbor >= TRIANGLE_CAPACITY;
 if (neighbor < TRIANGLE_CAPACITY) {
   direction = centerAt(neighbor) - center;
 } else {
   let a = site(vertex(triangle, edge));
   let b = site(vertex(triangle, (edge + 1u) % 3u));
-  direction = normalize(vec2<f32>(b.y - a.y, a.x - b.x));
-  limit = 3.0e38;
+  let edgeDirection = getScaledTriangleEdge(a, b).direction;
+  let edgeExtent = max(abs(edgeDirection.x), abs(edgeDirection.y));
+  // The third center word carries the certified triangle orientation, including clockwise input.
+  direction = centers[centersOffset + 3u * triangle + 2u] * vec2f(edgeDirection.y, -edgeDirection.x) / edgeExtent;
 }
-let clipped = clipParametric(origin, direction, limit, bounds);
+let clipped = clipParametric(origin, direction, isRay, bounds);
 if (clipped.z == 0.0) { candidateFlags[candidateFlagsOffset + index] = 0u; return; }
 let start = origin + clipped.x * direction;
 let end = origin + clipped.y * direction;
@@ -534,6 +546,7 @@ function getVoronoiWGSL(options: {pointCount: number; triangleCapacity: number})
 const POINT_COUNT: u32 = ${options.pointCount}u;
 const TRIANGLE_CAPACITY: u32 = ${options.triangleCapacity}u;
 ${EXACT_ORIENTATION_WGSL}
+${TRIANGLE_CIRCUMCIRCLE_WGSL}
 fn site(row: u32) -> vec2<f32> {
   return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
 }
@@ -550,31 +563,21 @@ fn circumcenter(triangle: u32) -> vec3<f32> {
   let a = site(aRow);
   let b = site(bRow);
   let c = site(cRow);
-  // Exact orientation rejects only truly collinear triangles, at any coordinate scale. Results 0
-  // (collinear) and 2 (non-finite or unrepresentable) both mark the triangle degenerate.
-  let orientation = orientSign(a, b, c);
-  if (orientation == 0 || orientation == 2) { return vec3<f32>(0.0, 0.0, 0.0); }
-  // Solve relative to a: raw-coordinate products cancel catastrophically far from the origin.
-  let ab = b - a;
-  let ac = c - a;
-  let denominator = 2.0 * (ab.x * ac.y - ab.y * ac.x);
-  let abLength = dot(ab, ab);
-  let acLength = dot(ac, ac);
-  let center = a + vec2<f32>(
-    (ac.y * abLength - ab.y * acLength) / denominator,
-    (ab.x * acLength - ac.x * abLength) / denominator
-  );
+  let circle = getTriangleCircumcircle(a, b, c);
+  if (circle.orientation == 0) { return vec3f(0.0); }
+  let center = circle.center;
   // Nearly collinear triangles can overflow; NaN fails both comparisons.
   if (!(abs(center.x) <= ORIENT_FLOAT_MAXIMUM && abs(center.y) <= ORIENT_FLOAT_MAXIMUM)) {
     return vec3<f32>(0.0, 0.0, 0.0);
   }
-  return vec3<f32>(center, 1.0);
+  return vec3<f32>(center, f32(circle.orientation));
 }
 `;
 }
 
 function getVoronoiEdgeWGSL(options: {pointCount: number; triangleCapacity: number}): string {
   return /* wgsl */ `
+${TRIANGLE_SCALE_WGSL}
 const POINT_COUNT: u32 = ${options.pointCount}u;
 const TRIANGLE_CAPACITY: u32 = ${options.triangleCapacity}u;
 fn site(row: u32) -> vec2<f32> {

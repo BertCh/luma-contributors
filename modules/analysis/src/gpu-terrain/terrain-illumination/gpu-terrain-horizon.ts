@@ -25,8 +25,11 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   captureGraphCommandNodes,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateCapacity,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   getRasterBandViews,
   getRasterBufferBandNodes,
@@ -52,16 +55,17 @@ import {
   type GPUTerrainHorizonFormat
 } from './terrain-illumination-utils';
 import {
-  getRasterGroundCellSizeWGSL,
   RASTER_PIXEL_DIRECTION_WGSL,
   type GPURasterCellSizeMode,
   type GPURasterRowDirection,
   validateRasterCellSizeMode,
   writeRasterGridParameterValues
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 import {resolveTerrainRowDirection} from '../terrain-curvature/terrain-geomorphometry-utils';
 import {
   createTerrainHorizonSweepNode,
+  getTerrainHorizonGroundCellSizeWGSL,
+  getTerrainSweepSourceParameterValues,
   createTerrainSweepSectorTable,
   TERRAIN_SWEEP_GRID_SLOTS,
   TERRAIN_SWEEP_MAXIMUM_EXTENT,
@@ -86,7 +90,8 @@ export type {GPUTerrainHorizonFormat} from './terrain-illumination-utils';
  *   through the pixel's own centre is below one pixel (up to 0.86 px at line slope 0.3), so
  *   values differ from the march by sampling, not by precision. `stepGrowth` must be 1. One digital line
  *   family has one pixel slope, so on anisotropic cells it follows each sector's ground azimuth
- *   at the reference row (`height / 2`); other rows of a `'geographic'` tile see the azimuth
+ *   at the reference row (`height / 2` by default, or the shared `sweepReferenceCellSize`);
+ *   other rows of a `'geographic'` tile see the azimuth
  *   rotated by the change of cos(latitude) across the tile, worst at 45 degree sectors: at 60 N,
  *   0.11 degrees at the edge rows of a 0.25 degree tall tile, 0.44 degrees for 1 degree, 2.3
  *   degrees for 5 degrees (about `tan(lat) * halfSpan / 2` radians). The march converts the azimuth
@@ -103,6 +108,12 @@ export const GPU_TERRAIN_HORIZON_PARAMETER_LENGTH = 8;
  * `[anisotropyAzimuthDegrees, anisotropyLevel, anisotropyMinimumWeight, 0]`.
  */
 export const GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH = 12;
+
+/** Explicit sweep layout: base/anisotropy, reference cells/origin phase, shared source georeference. */
+export const GPU_TERRAIN_HORIZON_SWEEP_PARAMETER_LENGTH = 24;
+
+// The extra march corner must remain a safe-integer halo accepted by the published assembler.
+const TERRAIN_HORIZON_MAXIMUM_MARCH_RADIUS = Number.MAX_SAFE_INTEGER - 1;
 
 /**
  * Default direction of maximum anisotropic sky-view weight in RVT's convention: RVT's default
@@ -176,6 +187,21 @@ export type GPUTerrainHorizonSettings = {
   /** Ground search radius in meters; `<= 0` searches the full pixel radius. Defaults to 0. */
   maximumDistance?: number;
   /**
+   * Shared ground metres per overview pixel `[x, y]` for sweep geometry and curvature decisions.
+   * Use the same positive finite pair for every window of a mosaic, including the whole-grid
+   * evaluation. Required for a seamless sweep halo in latitude-dependent cell-size modes.
+   * With `sweepSourceGrid`, packs the explicit 24-value sweep layout; this pair occupies 12..13.
+   */
+  sweepReferenceCellSize?: readonly [number, number];
+  /** Source-window origin in overview pixels, relative to `sweepSourceGrid`; per frame. Defaults to [0, 0]. */
+  sweepOrigin?: readonly [number, number];
+  /**
+   * Shared full overview grid for row spacing and distance cutoffs; required with sweep settings.
+   * Every window uses the same source grid per frame. Its height is at most 16777215 so global
+   * source rows can be combined exactly as integers before conversion to float32.
+   */
+  sweepSourceGrid?: GPURasterMetadata;
+  /**
    * Direction of maximum weight for `anisotropicSkyViewFactor`, in RVT's convention: the same
    * number as RVT's `asvf_dir` / `a_main_direction` means the same direction. RVT direction angles
    * run counterclockwise from north (0 north, 90 west, 180 south, 270 east), so `A` is compass
@@ -206,6 +232,12 @@ export type GPUTerrainHorizonSettings = {
  * (cell size and row-edge world y taken from `grid`), followed by `[anisotropyAzimuthDegrees, anisotropyLevel, anisotropyMinimumWeight, 0]` (12 values,
  * see {@link GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH}) when any anisotropy field is
  * given or `target` holds at least 12 values. Otherwise exactly 8 values are written and returned.
+ * Sweep settings explicitly select a 24-value layout: reference ground cell x/y at 12..13,
+ * reduced origin x/y at 14..15, shared source cell size at 16..17, source north/south edges at
+ * 18..19, source height and window row offset at 20..21, reserved zeros at 22..23. Both
+ * `sweepReferenceCellSize` and `sweepSourceGrid` are required. The origin defaults to [0, 0]
+ * relative to that source overview grid, and the window must lie inside it. Oversized targets
+ * with ordinary settings retain the ordinary layout; padding never selects sweep semantics.
  *
  * @throws If the grid cell size is not finite and positive, an anisotropy field is out of range, or
  *   `target` is too short.
@@ -215,25 +247,40 @@ export function getGPUTerrainHorizonParameterValues(
   grid: GPURasterMetadata,
   target?: Float32Array
 ): Float32Array {
+  const wantsSweepReference =
+    settings.sweepReferenceCellSize !== undefined ||
+    settings.sweepOrigin !== undefined ||
+    settings.sweepSourceGrid !== undefined;
+  validateRequirement(
+    'getGPUTerrainHorizonParameterValues',
+    !wantsSweepReference ||
+      (settings.sweepReferenceCellSize !== undefined && settings.sweepSourceGrid !== undefined),
+    'sweepReferenceCellSize and sweepSourceGrid are required for sweep settings'
+  );
   const hasAnisotropy =
     settings.anisotropyAzimuthDegrees !== undefined ||
     settings.anisotropyLevel !== undefined ||
     settings.anisotropyMinimumWeight !== undefined;
-  const wantsAnisotropy = hasAnisotropy || (target !== undefined && target.length >= 12);
+  const wantsAnisotropy =
+    wantsSweepReference || hasAnisotropy || (target !== undefined && target.length >= 12);
   const values =
     target ??
     new Float32Array(
-      wantsAnisotropy
-        ? GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH
-        : GPU_TERRAIN_HORIZON_PARAMETER_LENGTH
+      wantsSweepReference
+        ? GPU_TERRAIN_HORIZON_SWEEP_PARAMETER_LENGTH
+        : wantsAnisotropy
+          ? GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH
+          : GPU_TERRAIN_HORIZON_PARAMETER_LENGTH
     );
   validateTerrainIlluminationCellSize('getGPUTerrainHorizonParameterValues', grid);
   validateParameterTarget(
     'getGPUTerrainHorizonParameterValues',
     values,
-    hasAnisotropy
-      ? GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH
-      : GPU_TERRAIN_HORIZON_PARAMETER_LENGTH
+    wantsSweepReference
+      ? GPU_TERRAIN_HORIZON_SWEEP_PARAMETER_LENGTH
+      : hasAnisotropy
+        ? GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH
+        : GPU_TERRAIN_HORIZON_PARAMETER_LENGTH
   );
   const anisotropyAzimuth =
     settings.anisotropyAzimuthDegrees ?? GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_AZIMUTH_DEGREES;
@@ -269,6 +316,12 @@ export function getGPUTerrainHorizonParameterValues(
   if (wantsAnisotropy) {
     values.set([anisotropyAzimuth, anisotropyLevel, anisotropyMinimumWeight, 0], 8);
   }
+  if (settings.sweepReferenceCellSize) {
+    values.set(
+      getTerrainSweepSourceParameterValues('getGPUTerrainHorizonParameterValues', settings, grid),
+      12
+    );
+  }
   return values;
 }
 
@@ -279,28 +332,48 @@ export function getGPUTerrainHorizonParameterValues(
  * `maximumRadius` itself is appended when the sequence stops short of it. `stepGrowth = 1` gives
  * one-pixel steps; larger values give geometric steps that reach far horizons with few samples.
  * Values are rounded to float32 so CPU oracles match the baked WGSL constants.
+ * `maximumSampleDistance` optionally bounds materialization to the useful grid distance. It
+ * filters the original schedule; it never adds a sample at the cutoff. Contributors use the
+ * ceiling of the pixel-centre diagonal (at least one), retaining a conservative rounding margin.
  *
- * @throws If `maximumRadius` is not a positive integer or `stepGrowth` is not finite and `>= 1`.
+ * @throws If `maximumRadius` is not a positive safe integer, or `stepGrowth` or
+ * `maximumSampleDistance` is not finite and `>= 1`.
  */
 export function getGPUTerrainHorizonStepDistances(
   maximumRadius: number,
-  stepGrowth: number = 1
+  stepGrowth: number = 1,
+  maximumSampleDistance: number = maximumRadius
 ): Float32Array {
-  if (!Number.isSafeInteger(maximumRadius) || maximumRadius < 1) {
-    throw new Error('Terrain horizon maximumRadius must be a positive integer');
-  }
-  if (!Number.isFinite(stepGrowth) || stepGrowth < 1) {
-    throw new Error('Terrain horizon stepGrowth must be finite and >= 1');
-  }
+  validateTerrainHorizonSchedule('Terrain horizon', maximumRadius, stepGrowth);
+  validateRequirement(
+    'Terrain horizon',
+    Number.isFinite(maximumSampleDistance) && maximumSampleDistance >= 1,
+    'maximumSampleDistance must be finite and >= 1'
+  );
+  const maximumDistance = Math.min(maximumRadius, maximumSampleDistance);
   const distances: number[] = [];
-  for (let distance = 1; distance <= maximumRadius; ) {
+  for (let distance = 1; distance <= maximumDistance; ) {
     distances.push(distance);
     distance = Math.max(distance + 1, distance * stepGrowth);
   }
-  if (distances[distances.length - 1] < maximumRadius) {
+  if (maximumRadius <= maximumSampleDistance && distances[distances.length - 1] < maximumRadius) {
     distances.push(maximumRadius);
   }
   return Float32Array.from(distances);
+}
+
+/** Validates the schedule without allocating it; sweep construction uses only the radius. */
+function validateTerrainHorizonSchedule(
+  id: string,
+  maximumRadius: number,
+  stepGrowth: number
+): void {
+  validateCapacity(id, 'maximumRadius', maximumRadius, 1, Number.MAX_SAFE_INTEGER);
+  validateRequirement(
+    id,
+    Number.isFinite(stepGrowth) && stepGrowth >= 1,
+    'stepGrowth must be finite and >= 1'
+  );
 }
 
 /**
@@ -394,14 +467,14 @@ export type GPUTerrainHorizonProps = {
   elevation: GPURasterBand;
   /**
    * Per-frame parameters with at least 8 float32 values (12 when `output.anisotropicSkyViewFactor`
-   * is bound), see {@link getGPUTerrainHorizonParameterValues}.
+   * is bound; 24 with `parameterLayout: 'sweep'`), see {@link getGPUTerrainHorizonParameterValues}.
    */
   parameters: GraphDataView<'float32'>;
   /** Caller-owned outputs. */
   output: GPUTerrainHorizonOutput;
   /** Number of azimuth sectors, an integer in `[4, 64]`. Defaults to 16. */
   directionCount?: number;
-  /** Search radius in pixels, a positive integer. Also the required tile halo. */
+  /** Search radius in pixels, a positive safe integer. March accepts at most `Number.MAX_SAFE_INTEGER - 1` and needs a `maximumRadius + 1` halo. */
   maximumRadius: number;
   /** Geometric step growth, see {@link getGPUTerrainHorizonStepDistances}. Defaults to 1. */
   stepGrowth?: number;
@@ -416,6 +489,14 @@ export type GPUTerrainHorizonProps = {
    * against 109 ms). Prefer `'march'` for small radii and `'sweep'` near the full tile radius.
    */
   algorithm?: GPUTerrainHorizonAlgorithm;
+  /**
+   * Compile-time interpretation of parameters. Defaults to `'standard'`: base settings and
+   * optional anisotropy; spare view capacity has no meaning. `'sweep'` requires 24 values packed
+   * with `sweepReferenceCellSize`, `sweepSourceGrid` and per-frame `sweepOrigin`. It anchors sweep
+   * phase and both algorithms' source-row metrics. Sweep halos, and any latitude-dependent halo,
+   * require this explicit layout. Placement changes reuse the same compiled shader.
+   */
+  parameterLayout?: 'standard' | 'sweep';
   /**
    * Upper bound on `pixels * steps * sectors` one `'march'` dispatch may cost; the sectors are
    * split over as many dispatches as needed (at least one sector each) so a dispatch stays short
@@ -672,28 +753,55 @@ function getTerrainHorizonAnisotropicWeightWGSL(directionCount: number): string 
  * The march runs all sectors of a pixel in one invocation, in chunks of sectors sized so one dispatch
  * stays under about 2^30 sample steps; sums accumulate in fixed sector order, so results are
  * deterministic and identical to one dispatch per sector. Invalid centers receive NaN and validity 0. Pixels closer
- * than `maximumRadius` to the tile edge see a truncated horizon: pass a tile with a
- * `maximumRadius` halo for seamless results (`GPURasterHaloStage` contract).
+ * than `maximumRadius` to the tile edge see a truncated horizon. For march, pass a tile with a
+ * `maximumRadius + 1` halo: bilinear sampling reads the next corner even at zero weight, and
+ * that corner's validity matters. Obtain the published `GPURasterHaloStage` via `getHaloStage()`.
+ * The explicit `parameterLayout: 'sweep'` reads source origin, reference cells and a common source
+ * row georeference from 24 per-frame parameters. It preserves sweep phase, curvature decisions,
+ * row spacing and distance cutoffs across windows; `getHaloStage()` returns `maximumRadius` for
+ * this sweep. Any latitude-dependent halo also requires this layout, including march. Standard
+ * sweep parameters retain the local model and refuse halo assembly, regardless of view padding.
+ * CPU sweep oracles accept the same origin, packed reference cell and source georeference.
+ * March splits displacement into integer/fractional parts before adding the integer pixel origin,
+ * so cropping cannot change the validity corners through float32 coordinate addition.
  */
-export class GPUTerrainHorizon implements GPUCommandNodeProducer, GPURasterHaloStage {
+export class GPUTerrainHorizon implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUTerrainHorizonProps;
   /** Number of azimuth sectors. */
   readonly directionCount: number;
-  /** Receptive field in pixels (`GPURasterHaloStage` contract). */
-  readonly requiredHalo: number;
-  /** Baked ray-march distances in pixels. */
+  /** Grid-bounded ray-march distances in pixels; empty for sweep, which has no march schedule. */
   readonly stepDistances: Float32Array;
   /** Storage format of the optional `output.horizon`. */
   readonly horizonFormat: GPUTerrainHorizonFormat;
   /** Horizon search algorithm. */
   readonly algorithm: GPUTerrainHorizonAlgorithm;
+  /** Explicit parameter interpretation; spare capacity never selects a layout. */
+  readonly parameterLayout: 'standard' | 'sweep';
+  /** Validated radius captured independently of the caller's props object. */
+  readonly maximumRadius: number;
   /** Row direction the kernels use: the prop, or the direction the grid affine states. */
   readonly rowDirection: GPURasterRowDirection;
 
   constructor(props: GPUTerrainHorizonProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'elevation',
+      'parameters',
+      'output',
+      'directionCount',
+      'maximumRadius',
+      'stepGrowth',
+      'algorithm',
+      'parameterLayout',
+      'maximumStepsPerDispatch',
+      'cellSizeMode',
+      'rowDirection',
+      'horizonFormat'
+    ]);
     this.id = props.id ?? 'terrain-horizon';
     this.props = props;
     const {id} = this;
@@ -708,15 +816,23 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer, GPURasterHaloS
       throw new Error(`${id} directionCount must be an integer in [4, 64]`);
     }
     this.directionCount = directionCount;
-    try {
-      this.stepDistances = getGPUTerrainHorizonStepDistances(
-        props.maximumRadius,
-        props.stepGrowth ?? 1
+    validateTerrainHorizonSchedule(id, props.maximumRadius, props.stepGrowth ?? 1);
+    this.maximumRadius = props.maximumRadius;
+    this.parameterLayout = props.parameterLayout ?? 'standard';
+    validateRequirement(
+      id,
+      this.parameterLayout === 'standard' || this.parameterLayout === 'sweep',
+      'parameterLayout must be standard or sweep'
+    );
+    if ((props.algorithm ?? 'march') === 'march') {
+      validateCapacity(
+        id,
+        'maximumRadius',
+        this.maximumRadius,
+        1,
+        TERRAIN_HORIZON_MAXIMUM_MARCH_RADIUS
       );
-    } catch (error) {
-      throw new Error(`${id}: ${(error as Error).message}`);
     }
-    this.requiredHalo = props.maximumRadius;
     if (
       !output.horizon &&
       !output.skyViewFactor &&
@@ -746,6 +862,14 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer, GPURasterHaloS
         throw new Error(`${id} sweep supports extents up to ${TERRAIN_SWEEP_MAXIMUM_EXTENT}`);
       }
     }
+    this.stepDistances =
+      this.algorithm === 'march'
+        ? getGPUTerrainHorizonStepDistances(
+            props.maximumRadius,
+            props.stepGrowth ?? 1,
+            Math.max(1, Math.ceil(Math.hypot(props.grid.width - 1, props.grid.height - 1)))
+          )
+        : new Float32Array(0);
     if (
       props.maximumStepsPerDispatch !== undefined &&
       !(Number.isFinite(props.maximumStepsPerDispatch) && props.maximumStepsPerDispatch > 0)
@@ -805,9 +929,11 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer, GPURasterHaloS
     validateRasterParameters(
       id,
       props.parameters,
-      output.anisotropicSkyViewFactor
-        ? GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH
-        : GPU_TERRAIN_HORIZON_PARAMETER_LENGTH
+      this.parameterLayout === 'sweep'
+        ? GPU_TERRAIN_HORIZON_SWEEP_PARAMETER_LENGTH
+        : output.anisotropicSkyViewFactor
+          ? GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH
+          : GPU_TERRAIN_HORIZON_PARAMETER_LENGTH
     );
     validateRasterOutputTexture(
       id,
@@ -832,6 +958,24 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer, GPURasterHaloS
       ],
       [...getRasterBandViews(props.elevation), props.parameters]
     );
+  }
+
+  /** Returns a complete stage for march, or an anchored sweep with a shared ground reference. */
+  getHaloStage(): GPURasterHaloStage {
+    validateRequirement(
+      this.id,
+      (this.props.cellSizeMode ?? 'uniform') === 'uniform' || this.parameterLayout === 'sweep',
+      'latitude-dependent halo needs parameterLayout sweep with a shared sweepSourceGrid'
+    );
+    if (this.algorithm === 'march') {
+      return {requiredHalo: this.maximumRadius + 1};
+    }
+    validateRequirement(
+      this.id,
+      this.parameterLayout === 'sweep',
+      'algorithm sweep needs parameterLayout sweep for a seamless halo bound'
+    );
+    return {requiredHalo: this.maximumRadius};
   }
 
   /** Returns elevation canonicalization, the fused march (or one sweep node per sector), finalize, and texture nodes. */
@@ -923,7 +1067,10 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer, GPURasterHaloS
       : undefined;
     const rowDirection = this.rowDirection;
     const cellSizeMode = props.cellSizeMode ?? 'uniform';
-    const distances = Array.from(this.stepDistances, getWGSLFloatLiteral).join(', ');
+    const distances =
+      this.algorithm === 'march'
+        ? Array.from(this.stepDistances, getWGSLFloatLiteral).join(', ')
+        : '';
     const hull =
       this.algorithm === 'sweep'
         ? createTransientView(graph, `${id}-sweep-hull`, 'uint32', pixelCount)
@@ -943,6 +1090,7 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer, GPURasterHaloS
           rowDirection,
           distances,
           stepCount: this.stepDistances.length,
+          sourceGridIndex: this.parameterLayout === 'sweep' ? 16 : undefined,
           maximumStepsPerDispatch: props.maximumStepsPerDispatch ?? FUSED_MARCH_STEP_BUDGET,
           cellSizeMode,
           elevationValues,
@@ -985,7 +1133,10 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer, GPURasterHaloS
             height,
             sectorRecord: sweepSectors!.getRecord(sector),
             directionCount,
-            maximumRadius: props.maximumRadius,
+            maximumRadius: this.maximumRadius,
+            originIndex: this.parameterLayout === 'sweep' ? 14 : undefined,
+            sourceGridIndex: this.parameterLayout === 'sweep' ? 16 : undefined,
+            referenceCellSizeIndex: this.parameterLayout === 'sweep' ? 12 : undefined,
             cellSizeMode,
             elevationValues,
             settings: props.parameters,
@@ -1010,6 +1161,7 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer, GPURasterHaloS
           rowDirection,
           distances,
           stepCount: this.stepDistances.length,
+          sourceGridIndex: this.parameterLayout === 'sweep' ? 16 : undefined,
           cellSizeMode,
           elevationValues,
           settings: props.parameters,
@@ -1223,6 +1375,9 @@ function getSweepSectorNodes<Parameters>(
     sectorRecord: GraphDataView<'uint32'>;
     directionCount: number;
     maximumRadius: number;
+    originIndex?: number;
+    sourceGridIndex?: number;
+    referenceCellSizeIndex?: number;
     cellSizeMode: GPURasterCellSizeMode;
     elevationValues: GraphDataView<'float32'>;
     settings: GraphDataView<'float32'>;
@@ -1240,6 +1395,9 @@ function getSweepSectorNodes<Parameters>(
     height: props.height,
     geometry: {kind: 'table' as const, record: props.sectorRecord},
     maximumRadius: props.maximumRadius,
+    originIndex: props.originIndex,
+    sourceGridIndex: props.sourceGridIndex,
+    referenceCellSizeIndex: props.referenceCellSizeIndex,
     cellSizeMode: props.cellSizeMode,
     elevationValues: props.elevationValues,
     settings: props.settings,
@@ -1351,10 +1509,8 @@ fn getElevation(column: u32, row: u32) -> f32 {
 // corner is invalid. Corners are made origin-relative before interpolating, so the interpolation
 // rounds at the scale of the local relief instead of the absolute elevation (at 4000 m the absolute
 // form loses about 2.4e-4 m, 1.4e-3 degrees over one 10 m step).
-fn sampleElevation(position: vec2<f32>, origin: f32) -> vec2<f32> {
-  let base = vec2<u32>(floor(position));
+fn sampleElevation(base: vec2<u32>, fraction: vec2<f32>, origin: f32) -> vec2<f32> {
   let next = min(base + vec2<u32>(1u), vec2<u32>(WIDTH - 1u, HEIGHT - 1u));
-  let fraction = position - floor(position);
   // Canonical elevation is NaN exactly where a pixel is invalid: one bit test per corner replaces
   // four validity loads.
   let corner00 = getElevation(base.x, base.y);
@@ -1392,6 +1548,7 @@ function getFusedMarchNodes<Parameters>(
     stepCount: number;
     maximumStepsPerDispatch: number;
     cellSizeMode: GPURasterCellSizeMode;
+    sourceGridIndex?: number;
     elevationValues: GraphDataView<'float32'>;
     settings: GraphDataView<'float32'>;
     horizonFormat: GPUTerrainHorizonFormat;
@@ -1527,10 +1684,7 @@ const STEP_COUNT: u32 = ${props.stepCount}u;
 const STEP_DISTANCES: array<f32, ${props.stepCount}> = array<f32, ${props.stepCount}>(${props.distances});
 ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
 ${zenithOutput?.declarations ?? ''}
-${getRasterGroundCellSizeWGSL(props.cellSizeMode, {
-  cellSizeIndex: 0,
-  northEdgeIndex: 4
-})}
+${getTerrainHorizonGroundCellSizeWGSL(props.cellSizeMode, props.sourceGridIndex)}
 ${HORIZON_MARCH_SAMPLE_WGSL}
 ${RASTER_PIXEL_DIRECTION_WGSL}`,
         body: `let pixel = index;
@@ -1544,8 +1698,8 @@ ${RASTER_PIXEL_DIRECTION_WGSL}`,
   let groundCell = getGroundCellSize(row);
   let centerValid = isValidPixel(column, row);
   let centerElevation = select(0.0, getElevation(column, row), centerValid);
-  let limit = vec2<f32>(f32(WIDTH - 1u), f32(HEIGHT - 1u));
-  let center = vec2<f32>(f32(column), f32(row));
+  let limit = vec2<i32>(i32(WIDTH - 1u), i32(HEIGHT - 1u));
+  let center = vec2<i32>(i32(column), i32(row));
   ${loads}
   for (var sector = firstSector; sector < endSector; sector++) {
     // DIRECTIONS are ground azimuths; the pixel step follows them on anisotropic cells. The ray
@@ -1560,11 +1714,16 @@ ${RASTER_PIXEL_DIRECTION_WGSL}`,
       var maximumNadirTangent = 0.0;
       for (var stepIndex = 0u; stepIndex < STEP_COUNT; stepIndex++) {
         let stepDistance = STEP_DISTANCES[stepIndex];
-        let position = center + direction * stepDistance;
-        if (any(position < vec2<f32>(0.0)) || any(position > limit)) { break; }
+        let displacement = direction * stepDistance;
+        let integerDisplacement = floor(displacement);
+        let fraction = displacement - integerDisplacement;
+        let base = center + vec2<i32>(integerDisplacement);
+        if (any(base < vec2<i32>(0)) || any(base > limit) ||
+            (base.x == limit.x && fraction.x > 0.0) ||
+            (base.y == limit.y && fraction.y > 0.0)) { break; }
         let groundDistance = stepDistance * groundStep;
         if (maximumDistance > 0.0 && groundDistance > maximumDistance) { break; }
-        let elevationSample = sampleElevation(position, centerElevation);
+        let elevationSample = sampleElevation(vec2<u32>(base), fraction, centerElevation);
         if (elevationSample.y == 0.0) { continue; }
         let rise = zFactor * elevationSample.x -
           curvature * groundDistance * groundDistance;
@@ -1611,6 +1770,7 @@ function getHorizonNode<Parameters>(
     distances: string;
     stepCount: number;
     cellSizeMode: GPURasterCellSizeMode;
+    sourceGridIndex?: number;
     elevationValues: GraphDataView<'float32'>;
     settings: GraphDataView<'float32'>;
     horizonFormat: GPUTerrainHorizonFormat;
@@ -1676,10 +1836,7 @@ const STEP_COUNT: u32 = ${props.stepCount}u;
 const STEP_DISTANCES: array<f32, ${props.stepCount}> = array<f32, ${props.stepCount}>(${props.distances});
 ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
 ${zenithOutput?.declarations ?? ''}
-${getRasterGroundCellSizeWGSL(props.cellSizeMode, {
-  cellSizeIndex: 0,
-  northEdgeIndex: 4
-})}
+${getTerrainHorizonGroundCellSizeWGSL(props.cellSizeMode, props.sourceGridIndex)}
 ${HORIZON_MARCH_SAMPLE_WGSL}
 ${RASTER_PIXEL_DIRECTION_WGSL}`,
     body: `let pixel = index;
@@ -1695,19 +1852,24 @@ ${RASTER_PIXEL_DIRECTION_WGSL}`,
   var horizonAngle = getQuietNaN(index);
   var nadirAngle = getQuietNaN(index);
   if (isValidPixel(column, row) && groundStep > 0.0 && isFiniteValue(groundStep)) {
-    let center = vec2<f32>(f32(column), f32(row));
+    let center = vec2<i32>(i32(column), i32(row));
     let centerElevation = getElevation(column, row);
-    let limit = vec2<f32>(f32(WIDTH - 1u), f32(HEIGHT - 1u));
+    let limit = vec2<i32>(i32(WIDTH - 1u), i32(HEIGHT - 1u));
     var hasSample = false;
     var maximumTangent = 0.0;
     var maximumNadirTangent = 0.0;
     for (var stepIndex = 0u; stepIndex < STEP_COUNT; stepIndex++) {
       let stepDistance = STEP_DISTANCES[stepIndex];
-      let position = center + direction * stepDistance;
-      if (any(position < vec2<f32>(0.0)) || any(position > limit)) { break; }
+      let displacement = direction * stepDistance;
+      let integerDisplacement = floor(displacement);
+      let fraction = displacement - integerDisplacement;
+      let base = center + vec2<i32>(integerDisplacement);
+      if (any(base < vec2<i32>(0)) || any(base > limit) ||
+          (base.x == limit.x && fraction.x > 0.0) ||
+          (base.y == limit.y && fraction.y > 0.0)) { break; }
       let groundDistance = stepDistance * groundStep;
       if (maximumDistance > 0.0 && groundDistance > maximumDistance) { break; }
-      let elevationSample = sampleElevation(position, centerElevation);
+      let elevationSample = sampleElevation(vec2<u32>(base), fraction, centerElevation);
       if (elevationSample.y == 0.0) { continue; }
       let rise = zFactor * elevationSample.x -
         curvature * groundDistance * groundDistance;

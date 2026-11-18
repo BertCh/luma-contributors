@@ -22,13 +22,15 @@ async function countOutOfOrder(options: {
   float32?: number[];
   words?: bigint[];
   low?: number[];
+  statusLength?: number;
 }): Promise<number> {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const graph = new GPUCommandGraph(device, {id: 'sort-check-test'});
-  const output = createOutputBuffer(device, 1);
+  const statusLength = options.statusLength ?? 1;
+  const output = createOutputBuffer(device, statusLength);
   // A stale value must be overwritten, including by a zero count.
-  output.write(new Uint32Array([77]));
+  output.write(Uint32Array.from({length: statusLength}, (_, row) => (row === 0 ? 77 : 99)));
   const buffers = [output];
   const input = (values: Float32Array | Uint32Array) => {
     const buffer = createInputBuffer(device, values);
@@ -75,12 +77,16 @@ async function countOutOfOrder(options: {
       'uint32',
       options.offsets.length
     ),
-    output: {status: {invalidCount: importGraphBuffer(graph, 'out', output, 'uint32', 1)}}
+    output: {
+      status: {invalidCount: importGraphBuffer(graph, 'out', output, 'uint32', statusLength)}
+    }
   });
   const compiled = graph.compile();
   try {
     submitGraph(device, compiled, undefined);
-    return (await readUint32(output, 1))[0];
+    const values = await readUint32(output, statusLength);
+    if (statusLength > 1) expect(values.slice(1)).toEqual(new Array(statusLength - 1).fill(99));
+    return values[0];
   } finally {
     compiled.destroy();
     for (const buffer of buffers) {
@@ -90,6 +96,9 @@ async function countOutOfOrder(options: {
 }
 
 it('addTrajectorySortCheck counts rows earlier than their predecessor within a track', async () => {
+  expect(await countOutOfOrder({rows: 1, offsets: [0, 1], float32: [NaN], statusLength: 2})).toBe(
+    1
+  );
   // Sorted, equal times included, and a track boundary may step back in time.
   expect(await countOutOfOrder({rows: 5, offsets: [0, 3, 5], float32: [1, 2, 2, 0, 1]})).toBe(0);
   expect(await countOutOfOrder({rows: 5, offsets: [0, 3, 5], float32: [1, 3, 2, 5, 4]})).toBe(2);
@@ -106,5 +115,21 @@ it('addTrajectorySortCheck compares Int64 words and double-single times exactly'
   expect(await countOutOfOrder({rows: 2, offsets: [0, 2], words: [base + 1n, base]})).toBe(1);
   expect(
     await countOutOfOrder({rows: 2, offsets: [0, 2], float32: [1024, 1024], low: [0.5, 0.25]})
+  ).toBe(1);
+});
+
+it('counts nonfinite rows once, including first rows and both double-single components', async () => {
+  for (const value of [NaN, Infinity, -Infinity]) {
+    expect(await countOutOfOrder({rows: 1, offsets: [0, 1], float32: [value]})).toBe(1);
+    expect(await countOutOfOrder({rows: 1, offsets: [0, 1], float32: [0], low: [value]})).toBe(1);
+  }
+  expect(await countOutOfOrder({rows: 2, offsets: [0, 2], float32: [0, Infinity]})).toBe(1);
+  // Invalid rows break ordered runs; finite rows after them are not counted again.
+  expect(await countOutOfOrder({rows: 4, offsets: [0, 4], float32: [0, NaN, 1, 0]})).toBe(2);
+  expect(
+    await countOutOfOrder({rows: 3, offsets: [0, 3], float32: [0, 1, 2], low: [0, Infinity, 0]})
+  ).toBe(1);
+  expect(
+    await countOutOfOrder({rows: 3, offsets: [0, 3], float32: [0, NaN, 2], low: [0, Infinity, 0]})
   ).toBe(1);
 });

@@ -37,7 +37,7 @@ import {
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
-import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 import {
   validateDisjointWritableViews,
   validateGraphChunkBindingRanges

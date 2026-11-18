@@ -16,7 +16,10 @@ import {
   type GPUPointToCellOutput,
   type GPUPointToCellProps
 } from '../../../src/gpu-spatial-analysis/cell-indexing/gpu-point-to-cell';
-import {GPUCellAggregation} from '../../../src/gpu-spatial-analysis/cell-aggregation/gpu-cell-aggregation';
+import {
+  GPUCellAggregation,
+  createCellAggregation
+} from '../../../src/gpu-spatial-analysis/cell-aggregation/gpu-cell-aggregation';
 import {GPUCellLevelSelection} from '../../../src/gpu-spatial-analysis/cell-aggregation/gpu-cell-level-selection';
 import {GPUCellRollup} from '../../../src/gpu-spatial-analysis/cell-aggregation/gpu-cell-rollup';
 import {GPUCellPyramid} from '../../../src/gpu-spatial-analysis/cell-aggregation/gpu-cell-pyramid';
@@ -66,7 +69,8 @@ function createTable(graph: GPUCommandGraph, capacity = 16) {
     maximums: createTransientView(graph, `maximums-${serial++}`, 'float32', capacity),
     status: {
       count: createTransientView(graph, `count-${serial++}`, 'uint32', 1),
-      overflow: createTransientView(graph, `overflow-${serial++}`, 'uint32', 1)
+      overflow: createTransientView(graph, `overflow-${serial++}`, 'uint32', 1),
+      candidateOverflow: createTransientView(graph, `candidate-overflow-${serial++}`, 'uint32', 1)
     }
   };
 }
@@ -475,7 +479,7 @@ it('aligned extra-count bindings are checked before any aggregation declaration'
     length: 33_554_432,
     byteOffset: 4
   });
-  const aggregation = new GPUCellAggregation({
+  const aggregation = createCellAggregation({
     ...rows,
     family: 'quadbin',
     resolution: 26,
@@ -621,8 +625,8 @@ it('aggregation fields, extra counts and separate pyramid levels cannot overlap'
   expect(
     () => new GPUCellAggregation({...props, output: {...table, counts: overlappingCounts}})
   ).toThrow(/must not overlap/);
-  expect(
-    () => new GPUCellAggregation({...props, output: table, extraCounts: [table.status.count]})
+  expect(() =>
+    createCellAggregation({...props, output: table, extraCounts: [table.status.count]})
   ).toThrow(/must not overlap/);
   expect(
     () => new GPUCellPyramid({...props, resolutions: [26, 8], output: {levels: [table, table]}})
@@ -856,7 +860,7 @@ it('table parameter and publish limits fail before any graph declaration', () =>
     /cell level parameters.*128.*limit 64/
   );
   Object.defineProperty(device.limits, 'maxStorageBufferBindingSize', {value: 134217728});
-  const tooMany = new GPUCellAggregation({
+  const tooMany = createCellAggregation({
     ...rows,
     family: 'quadbin',
     resolution: 8,

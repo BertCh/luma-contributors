@@ -39,12 +39,12 @@ import {
   validateRequirement,
   validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import type {GPUNetworkAdjacency} from '../../analysis-core/network-topology';
+import type {GPUNetworkAdjacency} from '../../analysis-core/contracts/network-topology';
 import {
   getCoreDefaultBuffer,
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology
-} from '../../analysis-core/network-topology';
+} from '../../analysis-core/contracts/network-topology';
 import {createPublishNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   DECODE_ORDERED_KEY_WGSL,
@@ -168,7 +168,7 @@ export type GPUNetworkCoarseningProps = {
   nodeValues?: GraphDataView<'float32'>;
   /**
    * Compile-time number of dense groups, up to {@link GPU_NETWORK_COARSENING_MAXIMUM_GROUP_CAPACITY}, subject to device storage binding limits. Every `groupXxx` output has exactly this many
-   * rows. A live node with a label at or above it is excluded and raises `output.edges.overflow`.
+   * rows. A live node with a label at or above it is excluded and raises optional `output.edges.status.candidateOverflow`.
    */
   groupCapacity: number;
   /**
@@ -202,7 +202,8 @@ export type GPUNetworkCoarseningOutput = {
    * Bounded superedge list: `ids` is the source group. The capacity is `ids.length`. Rows are
    * sorted ascending by `(source, target)`; undirected superedges have `source < target`. When the
    * list overflows the first rows in that order are kept.
-   * `overflow` is also set by label overflow.
+   * `status.overflow` reports final superedge truncation. Optional `status.candidateOverflow`
+   * reports excluded nodes or edges due to label capacity; `requiredCount` is then a lower bound.
    */
   edges: GPUCompactOutput;
   /** Target group per superedge row, `edges.ids.length` rows. */
@@ -304,7 +305,7 @@ function getFixedPointAddSource(array: string, index: string, quantized: string)
  * Labels. Labels are arbitrary `uint32`, but the group ID is the label itself and must be below
  * the compile-time `groupCapacity` (also bounded by the device storage binding size). A live node with a larger label is excluded
  * from every group and superedge, edges touching it are counted in `droppedEdgeCount`, and
- * `edges.overflow` is set. A GPU-side dense relabel was rejected: first-come hash slot assignment
+ * optional `edges.status.candidateOverflow` is set. A GPU-side dense relabel was rejected: first-come hash slot assignment
  * is nondeterministic across runs, and a deterministic rank needs a sort of the vertices plus a
  * hash probe per edge endpoint, a large cost for the labels that matter (communities and
  * components below `nodeCount`, spatial cells indexed by the caller). Remap sparse labels first,
@@ -491,7 +492,12 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
       [output.edges.ids, output.edgeTargetGroups, output.edgeCounts],
       [output.groupNodeCount, output.groupCentroid, output.groupBounds, output.groupValueSum],
       [output.groupIntraEdgeCount, output.groupIntraWeight],
-      [output.edges.status.count, output.edges.status.overflow, output.edges.status.requiredCount]
+      [
+        output.edges.status.count,
+        output.edges.status.overflow,
+        output.edges.status.requiredCount,
+        output.edges.status.candidateOverflow
+      ]
     ];
     for (const group of outputBindingGroups) {
       validateDisjointWritableViews(
@@ -525,6 +531,7 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
       output.edges.ids,
       output.edges.status.count,
       output.edges.status.overflow,
+      output.edges.status.candidateOverflow,
       output.edges.status.requiredCount,
       output.edgeTargetGroups,
       output.edgeCounts,
@@ -1476,7 +1483,7 @@ ${getFixedPointSource(!usesDataUnit)}`,
         operation: OPERATION,
         requiredCount: segmentTotal,
         output: props.output.edges,
-        overflowSources: [overflowFlag]
+        candidateOverflowSources: props.output.edges.status.candidateOverflow ? [overflowFlag] : []
       })
     );
     if (props.output.summary) {

@@ -9,6 +9,7 @@ import {
   getGPUSpatialWeightsKernelValue,
   GPU_SPATIAL_WEIGHTS_VIOLATION,
   GPUContiguityWeights,
+  GPUChunkedSpatialWeightsAlgebra,
   GPULatticeWeights,
   GPUSpatialWeightsAlgebra,
   GPUSpatialWeightsTransform,
@@ -211,6 +212,48 @@ it('GPUSpatialWeightsTransform.outputWeights describes the transform honestly', 
     weights: weights(4, 10)
   }).outputWeights;
   expect(unknown.information?.symmetric).toBe('unknown');
+});
+
+it('chunked algebra declarations with default IDs allocate independent loss outputs', () => {
+  const {graph, view, weights} = setup();
+  try {
+    const input = {rowCount: 2, chunks: [{rowStart: 0, rowCount: 2, weights: weights(2, 2)}]};
+    const packedOffsets = view('uint32', 6);
+    const create = (byteOffset: number) =>
+      new GPUChunkedSpatialWeightsAlgebra({
+        operation: 'selfWeight',
+        selfWeight: 1,
+        weights: input,
+        output: {
+          chunks: [
+            {
+              rowStart: 0,
+              rowCount: 2,
+              weights: {
+                ...weights(2, 4),
+                offsets: graph.createDataView(packedOffsets.buffer, {
+                  format: 'uint32',
+                  length: 3,
+                  byteOffset
+                }),
+                status: {overflow: view('uint32', 1)}
+              }
+            }
+          ]
+        }
+      });
+    const first = create(0);
+    const second = create(12);
+    for (const field of ['overflow', 'candidateOverflow'] as const) {
+      expect(first.outputWeights.status?.[field]).toBeDefined();
+      expect(second.outputWeights.status?.[field]).toBeDefined();
+      expect(first.outputWeights.status?.[field]?.buffer).not.toBe(
+        second.outputWeights.status?.[field]?.buffer
+      );
+    }
+  } finally {
+    graph.device.destroy();
+  }
 });
 
 it('producers expose outputWeights with information and status', () => {

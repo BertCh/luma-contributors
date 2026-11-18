@@ -8,6 +8,24 @@ import {
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
+/** Captures operation topology and port names while retaining any input view identities. @internal */
+export function captureRasterMorphologyOperationProps<
+  Props extends {grid: GPURasterMetadata; output: {status: object}}
+>(props: Props): Props {
+  return Object.freeze({
+    ...props,
+    grid: Object.freeze({...props.grid, affine: Object.freeze([...props.grid.affine])}),
+    ...('marker' in props ? {marker: captureOperationBand(props.marker)} : {}),
+    ...('mask' in props ? {mask: captureOperationBand(props.mask)} : {}),
+    output: Object.freeze({...props.output, status: Object.freeze({...props.output.status})})
+  }) as Props;
+}
+
+function captureOperationBand(input: unknown): unknown {
+  return input && typeof input === 'object' && 'storage' in input
+    ? Object.freeze({...input, storage: Object.freeze({...(input.storage as object)})})
+    : input;
+}
 /** Validates scalar morphology options at construction and at the pure-function boundary. @internal */
 export function validateRasterMorphologyOptions(
   id: string,

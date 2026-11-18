@@ -4,6 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it, vi} from 'vitest';
+import type {Device} from '@luma.gl/core';
 import {
   GPUTemporalReduction,
   type GPUTemporalReductionProps
@@ -30,6 +31,46 @@ import {searchFloatTemporalRange, searchWordTemporalRange} from './sorted-range-
 vi.setConfig({testTimeout: 120_000});
 
 let serial = 0;
+
+function requireStorageBudget(nodes: readonly unknown[], context = '') {
+  const sources = getParsedKernelSources(nodes);
+  for (const {id, source} of sources.configurations)
+    expect(getStorageBindingCount(source), `${id} ${context}`).toBeLessThanOrEqual(8);
+  return sources;
+}
+
+it.each([
+  false,
+  true
+])('final3 H5 sorted reduction rejects an oversized shared-ID request first or last, reversed=%s', reversed => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const real = new GPUTemporalReduction(createProps(graph, 2))
+      .getCommandNodes(graph)
+      .find(node => node.id === 'temporal-reduction-range-search')!;
+    const oversized = {
+      compile: ({device}: {device: Device}) => {
+        const source = Array.from(
+          {length: 9},
+          (_, binding) =>
+            `@group(0) @binding(${binding}) var<storage, read> data${binding}: array<u32>;`
+        ).join('\n');
+        const shader = device.createShader({stage: 'compute', source});
+        device.createComputePipeline({id: 'temporal-reduction-range-search', shader});
+        return {destroy: () => shader.destroy()};
+      }
+    };
+    const requests = reversed ? [real, oversized] : [oversized, real];
+    const sources = getParsedKernelSources(requests);
+    expect(sources.configurations.map(({source}) => getStorageBindingCount(source))).toEqual(
+      reversed ? [3, 9] : [9, 3]
+    );
+    expect(() => requireStorageBudget(requests)).toThrow();
+  } finally {
+    device.destroy();
+  }
+});
 
 function createProps(
   graph: GPUCommandGraph,
@@ -101,10 +142,7 @@ it('GPUTemporalReduction sorted kernels parse and stay within the storage bindin
     const nodes = new GPUTemporalReduction(
       createProps(graph, 100, {words, slots, bucketCount: slots / 3})
     ).getCommandNodes(graph);
-    const sources = getParsedKernelSources(nodes);
-    for (const [id, source] of sources) {
-      expect(getStorageBindingCount(source), `${id} ${words} ${slots}`).toBeLessThanOrEqual(8);
-    }
+    const sources = requireStorageBudget(nodes, `${words} ${slots}`);
     const search = sources.get('temporal-reduction-range-search')!;
     expect(search).toContain('loop {');
     expect(search.includes('isQuotientAtLeastBucketCount')).toBe(words);

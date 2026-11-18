@@ -42,8 +42,8 @@ function createFixture(polygon = false, candidateCapacity = 4) {
     candidateCapacity,
     output: {
       pairs: {
-        leftIds: createTransientView(graph, 'left-ids', 'uint32', 4),
-        rightIds: createTransientView(graph, 'right-ids', 'uint32', 4),
+        leftRows: createTransientView(graph, 'left-ids', 'uint32', 4),
+        rightRows: createTransientView(graph, 'right-ids', 'uint32', 4),
         status: {
           count: scalar('count'),
           requiredCount: scalar('required'),
@@ -525,8 +525,8 @@ it('predicate joins accept aligned fields packed in one buffer and ignore unused
     const field = (byteOffset: number, length: number) =>
       graph.createDataView(storage.buffer, {format: 'uint32', byteOffset, length});
     const pairs = {
-      leftIds: field(0, 4),
-      rightIds: field(256, 4),
+      leftRows: field(0, 4),
+      rightRows: field(256, 4),
       status: {count: field(512, 1), overflow: field(768, 1)}
     };
     const join = new GPUSpatialPredicateJoin({
@@ -555,7 +555,7 @@ it('predicate joins accept aligned fields packed in one buffer and ignore unused
       }
     });
     expect(() => weighted.getCommandNodes(graph)).not.toThrow();
-    // The weight fill reads rightIds while writing neighbors: those aligned ranges coexist.
+    // The weight fill reads rightRows while writing neighbors: those aligned ranges coexist.
     expect(
       () =>
         new GPUSpatialPredicateJoin({
@@ -584,14 +584,14 @@ it('predicate joins accept aligned fields packed in one buffer and ignore unused
 it('predicate binding preflight rejects missing STORAGE usage without declaring scratch', () => {
   const {device, graph, contributor} = createFixture();
   try {
-    const leftIds = graph.createDataView(
+    const leftRows = graph.createDataView(
       graph.createTransientBuffer({id: 'non-storage', byteLength: 16, usage: Buffer.COPY_DST}),
       {format: 'uint32', length: 4}
     );
     const join = new GPUSpatialPredicateJoin({
       ...contributor.props,
       output: {
-        pairs: {...contributor.props.output.pairs!, leftIds}
+        pairs: {...contributor.props.output.pairs!, leftRows}
       }
     });
     const allocation = vi.spyOn(graph, 'createTransientBuffer');

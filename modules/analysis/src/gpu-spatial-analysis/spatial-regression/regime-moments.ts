@@ -68,8 +68,9 @@ export type RegimeMomentViews = {
  *    `regimeCount`, which sorts last) and its row index.
  * 2. Published stable `GPUSort` groups the rows by regime, keeping row order inside a regime.
  * 3. One binary search per regime gives the segment offsets (no atomics).
- * 4. One 256-thread workgroup per regime: each thread sums its strided rows of the segment, a
- *    fixed binary tree combines the threads (means), then the same for the centered
+ * 4. One 256-thread workgroup per regime: each thread sums differences from the segment's first
+ *    complete row, a fixed binary tree combines the threads and adds the origin back (means),
+ *    then the same for the centered
  *    cross-products about those means and for the sums of the deviations from them. The order
  *    depends only on the segment bounds, so the result is bitwise reproducible.
  *
@@ -196,17 +197,23 @@ fn reduceWorkgroup(localIndex: u32, value: f32) -> f32 {
     end = segmentOffsets[segmentOffsetsOffset + regime + 1u];
   }
   let count = f32(end - begin);
+  let runtimeZero = segmentOffsets[segmentOffsetsOffset];
+  var origins: array<f32, ${dimension}>;
+  if (end > begin) {
+    let originRow = sortedRows[sortedRowsOffset + begin];
+    for (var column = 0u; column < D; column++) { origins[column] = getValue(originRow, column); }
+  }
   var sums: array<f32, ${dimension}>;
   for (var slot = begin + localInvocationIndex; slot < end; slot += ${REGIME_WORKGROUP_SIZE}u) {
     let row = sortedRows[sortedRowsOffset + slot];
     for (var column = 0u; column < D; column++) {
-      sums[column] = sums[column] + getValue(row, column);
+      sums[column] += getRoundedDifference(getValue(row, column), origins[column], runtimeZero);
     }
   }
   for (var column = 0u; column < D; column++) {
     let total = reduceWorkgroup(localInvocationIndex, sums[column]);
     if (localInvocationIndex == 0u) {
-      regimeMeans[column] = select(0.0, total / count, end > begin);
+      regimeMeans[column] = select(0.0, origins[column] + total / max(count, 1.0), end > begin);
     }
   }
   workgroupBarrier();
@@ -220,7 +227,6 @@ fn reduceWorkgroup(localIndex: u32, value: f32) -> f32 {
   // The first segment starts at sorted row 0, so this buffer word is a zero the compiler cannot
   // know. It fixes each deviation as written: summed as (sum of values) - count * mean, the
   // deviation sums and the centered products would lose everything below a float32 step.
-  let runtimeZero = segmentOffsets[segmentOffsetsOffset];
   for (var slot = begin + localInvocationIndex; slot < end; slot += ${REGIME_WORKGROUP_SIZE}u) {
     let row = sortedRows[sortedRowsOffset + slot];
     for (var column = 0u; column < D; column++) {

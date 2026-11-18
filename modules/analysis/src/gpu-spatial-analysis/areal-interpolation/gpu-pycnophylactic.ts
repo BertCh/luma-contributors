@@ -46,7 +46,7 @@ import {
 import {
   getPlacedCellAreaWGSL,
   validateGeographicRaster
-} from '../../analysis-core/spherical-cell-area';
+} from '../../analysis-core/kernels/spherical-cell-area';
 import type {GPUStatusScalar} from '../../analysis-core/contracts/status';
 import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';

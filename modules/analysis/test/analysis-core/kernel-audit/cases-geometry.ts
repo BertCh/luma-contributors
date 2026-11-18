@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPULonLatPolygonPreparation} from '../../../src/gpu-spatial-analysis/lon-lat-polygons/index';
-import {createLonLatPolygonCheckNode} from '../../../src/analysis-core/lon-lat-ring-wgsl';
+import {createLonLatPolygonCheckNode} from '../../../src/analysis-core/kernels/lon-lat-ring-wgsl';
 
 import {
   GPUAffineTransform,
@@ -298,7 +298,12 @@ function polygonizeOutput(
       dangleCount: scalar(context, 'dangle-count'),
       unusedEdgeCount: scalar(context, 'unused-edge-count')
     },
-    status: topologyStatus(context)
+    status: {
+      count: scalar(context, 'polygon-count'),
+      requiredRingCount: scalar(context, 'polygon-required-rings'),
+      overflow: scalar(context, 'polygon-overflow'),
+      candidateOverflow: scalar(context, 'polygon-candidate-overflow')
+    }
   };
 }
 
@@ -536,8 +541,8 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
     name: 'sites at the binding limit',
     build: context => {
       const {graph, view, maximumRows} = context;
-      // 3n segments of 16 bytes and 2n padded triangles of 16 bytes.
-      const sites = maximumRows(48);
+      // Each of 2n triangles needs three 16-byte endpoint candidates: 96 bytes per site.
+      const sites = maximumRows(96);
       graph.add(
         new GPUVoronoiDiagram({
           positions: view('float32x2', sites),
@@ -1322,7 +1327,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           new GPUMakeValid({
             polygons: polygonGeometry(
               context,
-              getGPUSegmentIntersectionMaximumVertexCount(context.device) + excess,
+              getGPUSegmentIntersectionMaximumVertexCount(context.device) - 200000 + excess,
               100000
             ),
             intersectionCapacity: segments,
@@ -1355,7 +1360,8 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
             ringClosure,
             orientation,
             output: {
-              mask: view('uint32', ROWS),
+              issueCode: view('uint32', ROWS),
+              validity: view('uint32', ROWS),
               status: {
                 overflow: scalar(context, 'overflow'),
                 intersectionCount: scalar(context, 'count')
@@ -1376,7 +1382,8 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           new GPUGeometryValidity({
             [kind]: joinGeometry(context, kind),
             output: {
-              mask: view('uint32', ROWS),
+              issueCode: view('uint32', ROWS),
+              validity: view('uint32', ROWS),
               status: {
                 overflow: scalar(context, 'overflow'),
                 intersectionCount: scalar(context, 'count')
@@ -1401,7 +1408,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
             intersectionCapacity: maximumRows(16),
             ringClosure: 'explicit',
             output: {
-              mask: view('uint32', features),
+              issueCode: view('uint32', features),
               status: {
                 overflow: scalar(context, 'overflow'),
                 intersectionCount: scalar(context, 'count')
@@ -1456,7 +1463,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           intersectionCapacity: maximumRows(64),
           ringClosure: 'explicit',
           output: {
-            mask: view('uint32', features),
+            issueCode: view('uint32', features),
             status: {
               overflow: scalar(context, 'overflow'),
               intersectionCount: scalar(context, 'count')
@@ -1505,7 +1512,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const segments = maximumRows(144);
       graph.add(
         new GPUMakeValid({
-          polygons: polygonGeometry(context, maximumRows(32), 100000),
+          polygons: polygonGeometry(context, maximumRows(32) - 200000, 100000),
           intersectionCapacity: segments,
           precision: PRECISION,
           output: polygonizeOutput(context, segments, Math.floor(segments / 3), segments)
@@ -2554,7 +2561,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           iterationCount: GPU_LINE_SMOOTH_MAXIMUM_ITERATIONS,
           closed: true,
           parameters: view('float32', GPU_LINE_SMOOTH_PARAMETER_LENGTH),
-          output: lineGeometryOutput(context, 100000, maximumRows(8), {})
+          output: lineGeometryOutput(context, 100000, maximumRows(8) - 1, {})
         })
       );
     }
@@ -4109,8 +4116,8 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
               leafCapacity: 2048,
               output: {
                 pairs: {
-                  leftIds: view('uint32', 4096),
-                  rightIds: view('uint32', 4096),
+                  leftRows: view('uint32', 4096),
+                  rightRows: view('uint32', 4096),
                   status: {
                     count: scalar(context, 'count'),
                     overflow: scalar(context, 'overflow'),
@@ -4147,8 +4154,8 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
             right: polygonGeometry(context, vertices, 100000),
             output: {
               pairs: {
-                leftIds: view('uint32', pairs),
-                rightIds: view('uint32', pairs),
+                leftRows: view('uint32', pairs),
+                rightRows: view('uint32', pairs),
                 status: {
                   count: scalar(context, 'count'),
                   overflow: scalar(context, 'overflow'),
@@ -4182,8 +4189,8 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           right: polygonGeometry(context, maximumRows(32), 100000),
           output: {
             pairs: {
-              leftIds: view('uint32', pairs),
-              rightIds: view('uint32', pairs),
+              leftRows: view('uint32', pairs),
+              rightRows: view('uint32', pairs),
               status: {
                 count: scalar(context, 'count'),
                 overflow: scalar(context, 'overflow'),

@@ -22,6 +22,7 @@ import {
 import {
   getStorageBindingElementLimit,
   validateCapacity,
+  validateCommandNodeBudget,
   validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -39,7 +40,15 @@ import {
 } from './regionalization-inputs';
 
 import {WardActiveGraph, type WardActiveAdjacency} from './ward-active-graph';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
 import {getWardMutualSelectionNodes} from './ward-mutual-selection';
+import {
+  estimateWardCommandNodeCount,
+  WARD_MUTUAL_COOPERATIVE_MAXIMUM_ROW_COUNT
+} from './regionalization-command-budget';
 
 export const GPU_WARD_MAXIMUM_COLUMNS = 8;
 /**
@@ -101,6 +110,8 @@ export type GPUWardRegionsProps = {
    * the contributor; weights that declare `information.symmetric === true` are used as they are. At most
    * {@link getGPURegionalizationMaximumSlotCount} `neighbors` slots (16777216 on a default
    * device).
+   * If `status.overflow` or `status.candidateOverflow` is nonzero, merges are disabled and the
+   * partition is suppressed: labels are `0xffffffff`, objective is NaN and converged is zero.
    */
   weights: GPUSpatialWeights;
   /** Row-major feature values. */
@@ -151,9 +162,9 @@ export type GPUWardRegionsProps = {
 
 /** Caller-owned outputs of {@link GPUWardRegions}. */
 export type GPUWardRegionsOutput = {
-  /** Region label per row: the smallest row of its region. */
+  /** Region label per row: the smallest row of its region, or `0xffffffff` for incomplete adjacency. */
   labels: GraphDataView<'uint32'>;
-  /** One value: the within-region sum of squared deviations of `labels`. */
+  /** Within-region sum of squared deviations, or NaN when adjacency loss suppresses the partition. */
   objective: GraphDataView<'float32'>;
   /**
    * Four words indexed by {@link GPU_WARD_STATUS}; `iterationCount` is the number of merges
@@ -184,12 +195,82 @@ export type GPUWardRegionsOutput = {
  * iterations are gated off on the GPU through indirect dispatches with zero workgroups.
  */
 export class GPUWardRegions implements GPUCommandNodeProducer {
+  /** Upper bound including the transitive active-graph and selection nodes. */
+  readonly estimatedCommandNodeCount: number;
   readonly id: string;
   readonly props: GPUWardRegionsProps;
   readonly rowCount: number;
   readonly columnCount: number;
 
   constructor(props: GPUWardRegionsProps) {
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'weights',
+      'values',
+      'columnCount',
+      'standardize',
+      'targetRegionCount',
+      'maximumIterations',
+      'mergeSchedule',
+      'parameters',
+      'output'
+    ]);
+    const weights = snapshotConstructionFields(snapshot.weights, [
+      'offsets',
+      'neighbors',
+      'weights',
+      'distances',
+      'status',
+      'information',
+      'spatialContext'
+    ]);
+    const information = weights.information
+      ? snapshotConstructionFields(weights.information, [
+          'rowCount',
+          'transform',
+          'symmetric',
+          'hasSelfWeights',
+          'provenance'
+        ])
+      : undefined;
+    props = Object.freeze({
+      ...snapshot,
+      weights: Object.freeze({
+        ...weights,
+        status: weights.status
+          ? snapshotConstructionFields(weights.status, [
+              'count',
+              'requiredCount',
+              'overflow',
+              'candidateOverflow',
+              'uncertainCount',
+              'invalidCount',
+              'iterationCount',
+              'converged',
+              'iterationLimitReached',
+              'approximation'
+            ])
+          : undefined,
+        information: information
+          ? Object.freeze({
+              ...information,
+              provenance: information.provenance
+                ? snapshotConstructionFields(information.provenance, [
+                    'source',
+                    'criterion',
+                    'k',
+                    'radius',
+                    'order'
+                  ])
+                : undefined
+            })
+          : undefined,
+        spatialContext: weights.spatialContext
+          ? snapshotConstructionSpatialContext(weights.spatialContext)
+          : undefined
+      }),
+      output: snapshotConstructionFields(snapshot.output, ['labels', 'objective', 'status'])
+    });
     this.id = props.id ?? 'ward-regions';
     this.props = props;
     this.rowCount = validateGPUSpatialWeights(this.id, props.weights);
@@ -205,6 +286,12 @@ export class GPUWardRegions implements GPUCommandNodeProducer {
       0,
       rowCount - props.targetRegionCount
     );
+    this.estimatedCommandNodeCount = estimateWardCommandNodeCount(
+      rowCount,
+      props.maximumIterations,
+      props.mergeSchedule === 'mutual-nearest'
+    );
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     if (
       props.mergeSchedule !== undefined &&
       props.mergeSchedule !== 'sequential' &&
@@ -236,6 +323,8 @@ export class GPUWardRegions implements GPUCommandNodeProducer {
         props.weights.offsets,
         props.weights.neighbors,
         props.weights.weights,
+        props.weights.status?.overflow,
+        props.weights.status?.candidateOverflow,
         props.values,
         props.parameters
       ]
@@ -251,6 +340,8 @@ export class GPUWardRegions implements GPUCommandNodeProducer {
       props.weights.offsets,
       props.weights.neighbors,
       props.weights.weights,
+      props.weights.status?.overflow,
+      props.weights.status?.candidateOverflow,
       props.values,
       parameters,
       output.labels,
@@ -414,17 +505,53 @@ fn pairKey(first: u32, second: u32) -> u32 {
             access: 'read_write'
           },
           {name: 'status', view: output.status, type: 'u32', access: 'read_write'},
+          ...(gate && props.weights.status?.overflow
+            ? [
+                {
+                  name: 'inputOverflow',
+                  view: props.weights.status.overflow,
+                  type: 'u32',
+                  access: 'read'
+                } as const
+              ]
+            : []),
+          ...(gate && props.weights.status?.candidateOverflow
+            ? [
+                {
+                  name: 'inputCandidateOverflow',
+                  view: props.weights.status.candidateOverflow,
+                  type: 'u32',
+                  access: 'read'
+                } as const
+              ]
+            : []),
           ...(gate ? [gate.binding] : [])
         ],
         body: `state[stateOffset] = ${rowCount}u;
-  ${mutual ? 'for (var word = 1u; word < 5u; word++) { state[stateOffset + word] = 0u; }' : ''}
+  ${
+    mutual
+      ? `state[stateOffset + 1u] = 0u;
+  state[stateOffset + 2u] = 0u;
+  state[stateOffset + 3u] = 0u;
+  state[stateOffset + 4u] = 0u;`
+      : ''
+  }
   objective[objectiveOffset] = 0.0;
   status[statusOffset] = 0u;
   status[statusOffset + 1u] = 0u;
   status[statusOffset + 2u] = 0u;
   status[statusOffset + 3u] = 0u;
   ${mutual && hasRoundCountWord ? `status[statusOffset + ${GPU_WARD_ROUND_COUNT_STATUS_WORD}u] = 0u;` : ''}
-  ${gate ? gate.armWGSL : ''}`
+  ${
+    gate
+      ? `if (${props.weights.status?.overflow ? 'inputOverflow[inputOverflowOffset] != 0u' : 'false'} ||
+      ${props.weights.status?.candidateOverflow ? 'inputCandidateOverflow[inputCandidateOverflowOffset] != 0u' : 'false'}) {
+    ${gate.disarmWGSL}
+  } else {
+    ${gate.armWGSL}
+  }`
+      : ''
+  }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-initialize-regions`,
@@ -717,6 +844,7 @@ const NONE: u32 = 0xffffffffu;`,
     nodes.push(...activeGraph.getPublishNodes(output.labels));
     if (mutualBuffers) {
       nodes.push(this.createMutualNearestFinalizeNode(graph, state));
+      nodes.push(...this.getIncompleteAdjacencySuppressionNodes(graph));
       return nodes;
     }
     nodes.push(
@@ -734,10 +862,58 @@ const MAXIMUM_ITERATIONS: u32 = ${props.maximumIterations}u;`,
         body: `let remaining = state[stateOffset];
   let completed = status[statusOffset];
   status[statusOffset + 1u] = select(0u, 1u, remaining == TARGET_REGION_COUNT && status[statusOffset + 3u] == 0u);
-  status[statusOffset + 2u] = select(0u, 1u, remaining > TARGET_REGION_COUNT && completed == MAXIMUM_ITERATIONS);`
+  status[statusOffset + 2u] = select(0u, 1u, remaining > TARGET_REGION_COUNT && completed == MAXIMUM_ITERATIONS && status[statusOffset + 3u] == 0u);`
       })
     );
+    nodes.push(...this.getIncompleteAdjacencySuppressionNodes(graph));
     return nodes;
+  }
+
+  /** Suppress partition-dependent outputs when a supplied adjacency loss flag is set. */
+  private getIncompleteAdjacencySuppressionNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): GPUCommandNode<Parameters>[] {
+    const {id, props, rowCount} = this;
+    const overflow = props.weights.status?.overflow;
+    const candidateOverflow = props.weights.status?.candidateOverflow;
+    if (!overflow && !candidateOverflow) return [];
+    return [
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-suppress-incomplete-adjacency`,
+        operation: 'GPUWardRegions',
+        variant: 'suppress-incomplete-adjacency',
+        invocationCount: rowCount,
+        bindings: [
+          ...(overflow
+            ? [{name: 'inputOverflow', view: overflow, type: 'u32', access: 'read'} as const]
+            : []),
+          ...(candidateOverflow
+            ? [
+                {
+                  name: 'inputCandidateOverflow',
+                  view: candidateOverflow,
+                  type: 'u32',
+                  access: 'read'
+                } as const
+              ]
+            : []),
+          {name: 'labels', view: props.output.labels, type: 'u32', access: 'read_write'},
+          {name: 'objective', view: props.output.objective, type: 'f32', access: 'read_write'},
+          {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'}
+        ],
+        body: `let incomplete = ${overflow ? 'inputOverflow[inputOverflowOffset] != 0u' : 'false'} ||
+    ${candidateOverflow ? 'inputCandidateOverflow[inputCandidateOverflowOffset] != 0u' : 'false'};
+  if (incomplete) {
+    labels[labelsOffset + index] = 0xffffffffu;
+    if (index == 0u) {
+      var nanBits = 0x7fc00000u;
+      objective[objectiveOffset] = bitcast<f32>(nanBits);
+      status[statusOffset + ${GPU_WARD_STATUS.converged}u] = 0u;
+      status[statusOffset + ${GPU_WARD_STATUS.iterationLimitReached}u] = 0u;
+    }
+  }`
+      })
+    ];
   }
 
   /**
@@ -958,7 +1134,7 @@ ${pairKeyWGSL}`,
   }`
       }),
       // Small inputs keep the cooperative path; large inputs distribute counting and radix selection.
-      ...(rowCount > 4096
+      ...(rowCount > WARD_MUTUAL_COOPERATIVE_MAXIMUM_ROW_COUNT
         ? getWardMutualSelectionNodes(graph, {
             id: prefix,
             rowCount,

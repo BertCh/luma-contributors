@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+/// <reference types="vite/client" />
+
 import {Buffer, type Device} from '@luma.gl/core';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {GPURecordBatch, GPUTable} from '@luma.gl/graph/gpu-tables';
@@ -9,30 +11,6 @@ import {GPUDataFrame, column, literal, parameter} from '@luma.gl/graph/gpu-dataf
 import {decodeOracleFixture} from './oracle-fixture';
 import {compareParity} from './parity-wp6-compare';
 import fixtureJson from './fixtures/parity-wp6-dataframe-queries.json';
-import batch0 from './fixtures/parity-wp6-dataframe-osm-batch-0.json';
-import batch1 from './fixtures/parity-wp6-dataframe-osm-batch-1.json';
-import batch2 from './fixtures/parity-wp6-dataframe-osm-batch-2.json';
-import batch3 from './fixtures/parity-wp6-dataframe-osm-batch-3.json';
-import batch4 from './fixtures/parity-wp6-dataframe-osm-batch-4.json';
-import batch5 from './fixtures/parity-wp6-dataframe-osm-batch-5.json';
-import batch6 from './fixtures/parity-wp6-dataframe-osm-batch-6.json';
-import batch7 from './fixtures/parity-wp6-dataframe-osm-batch-7.json';
-import batch8 from './fixtures/parity-wp6-dataframe-osm-batch-8.json';
-import batch9 from './fixtures/parity-wp6-dataframe-osm-batch-9.json';
-import batch10 from './fixtures/parity-wp6-dataframe-osm-batch-10.json';
-const realBatches = [
-  batch0.batch,
-  batch1.batch,
-  batch2.batch,
-  batch3.batch,
-  batch4.batch,
-  batch5.batch,
-  batch6.batch,
-  batch7.batch,
-  batch8.batch,
-  batch9.batch,
-  batch10.batch
-];
 
 type Payload = {dtype: string; length: number; base64: string};
 export type ParityDataFrameBatch = {
@@ -67,6 +45,17 @@ export const dataframeFixture = decodeOracleFixture<{
 }>(fixtureJson);
 export type ParityDataFrameSchema = {category: 'uint32'; value: 'float32'};
 
+type ParityDataFrameBatchFixture = {batch: ParityDataFrameBatch};
+
+// Vite supplies raw text in both Node and browser Vitest projects. TypeScript sees string
+// values instead of building types for 11 MB of JSON. Each scene supplies its own file order;
+// lexicographic glob ordering would put batch 10 between batches 1 and 2.
+const realBatchSources = import.meta.glob<string>(
+  './fixtures/parity-wp6-dataframe-osm-batch-*.json',
+  {query: '?raw', import: 'default', eager: true}
+);
+const parsedBatches = new Map<string, ParityDataFrameBatch>();
+
 /** Lossless little-endian payload decoding, including source 8-bit validity codes. */
 export function decodeDataFramePayload(payload: Payload): number[] {
   const bytes = Uint8Array.from(atob(payload.base64), character => character.charCodeAt(0));
@@ -83,7 +72,18 @@ export function decodeDataFramePayload(payload: Payload): number[] {
 }
 
 export function getDataFrameBatches(scene: ParityDataFrameScene): ParityDataFrameBatch[] {
-  return scene.batches ?? realBatches;
+  if (scene.batches) return scene.batches;
+  return scene.batchFiles!.map(fileName => {
+    let batch = parsedBatches.get(fileName);
+    if (!batch) {
+      const fixture: ParityDataFrameBatchFixture = JSON.parse(
+        realBatchSources[`./fixtures/${fileName}`]
+      );
+      batch = fixture.batch;
+      parsedBatches.set(fileName, batch);
+    }
+    return batch;
+  });
 }
 
 export function createParityDataFrame(device: Device, scene: ParityDataFrameScene) {

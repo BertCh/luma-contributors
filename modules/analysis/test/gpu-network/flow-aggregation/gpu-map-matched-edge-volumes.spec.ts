@@ -16,6 +16,60 @@ import {
 } from '../../../src/gpu-network/flow-aggregation/index';
 import {createOptimizationHarness} from '../network-optimization/optimization-test-harness';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {createParallelRoadMatchingInput} from '../map-matching/map-matching-final-review-fixture';
+
+it.each([
+  8, 16
+])('network:G8 edge volumes follow the retained road when the route budget is %s', async budget => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = createParallelRoadMatchingInput();
+  const harness = createOptimizationHarness(device);
+  const traversedEdges = {
+    edges: harness.output('uint32', 16),
+    counts: harness.output('uint32', 1),
+    status: {candidateOverflow: harness.output('uint32', 1), overflow: harness.output('uint32', 1)}
+  };
+  const matchedEdges = harness.output('uint32', 2);
+  const matching = new GPUMapMatching({
+    positions: harness.input('float32x2', fixture.positions),
+    trackOffsets: harness.input('uint32', fixture.trackOffsets),
+    parameters: harness.input('float32', fixture.parameters),
+    topology: {
+      offsets: harness.input('uint32', fixture.topology.offsets),
+      neighbors: harness.input('uint32', fixture.topology.neighbors),
+      nodePositions: harness.input('float32x2', fixture.topology.nodePositions)
+    },
+    cellSize: 1,
+    bounds: {minimum: [-1, -1], maximum: [12, 1]},
+    candidateCount: 2,
+    routeNodeBudget: budget,
+    traversedEdgeCapacity: 16,
+    output: {matchedEdges, traversedEdges}
+  });
+  const edgeVolumes = harness.output('uint32', 14),
+    loss = harness.output('uint32', 1);
+  const volumes = new GPUMapMatchedEdgeVolumes({
+    traversedEdges,
+    trackCount: 1,
+    traversedEdgeCapacity: 16,
+    edgeCount: 14,
+    output: {edgeVolumes, status: {candidateOverflow: loss}}
+  });
+  const read = await harness.run({
+    getCommandNodes: graph => [
+      ...matching.getCommandNodes(graph),
+      ...volumes.getCommandNodes(graph)
+    ]
+  });
+  const limited = budget === 8;
+  expect(read(matchedEdges)).toEqual(limited ? [11, 13] : [0, 10]);
+  expect(read(edgeVolumes)).toEqual(
+    limited ? [...new Array(11).fill(0), 1, 1, 1] : [...new Array(11).fill(1), 0, 0, 0]
+  );
+  expect(read(loss)).toEqual([Number(limited)]);
+  expect(read(traversedEdges.status.overflow)).toEqual([0]);
+});
 
 const SIDE = 4;
 const SPACING = 100;
@@ -142,6 +196,10 @@ async function runMatchedVolumes(options: {capacity: number; transitions: boolea
   const edges = harness.output('uint32', trackCount * options.capacity);
   const counts = harness.output('uint32', trackCount);
   const matchedOverflow = harness.output('uint32', 1);
+  const traversedStatus = {
+    overflow: harness.output('uint32', 1),
+    candidateOverflow: harness.output('uint32', 1)
+  };
   const pointCount = points.length;
   const matching = new GPUMapMatching({
     positions: harness.input('float32x2', Float32Array.from(points.flat())),
@@ -165,8 +223,8 @@ async function runMatchedVolumes(options: {capacity: number; transitions: boolea
       trackLogLikelihoods: harness.output('float32', trackCount),
       matchedCount: harness.output('uint32', 1),
       breakCount: harness.output('uint32', 1),
-      status: {overflow: matchedOverflow},
-      traversedEdges: {edges, counts}
+      status: {candidateOverflow: matchedOverflow},
+      traversedEdges: {edges, counts, status: traversedStatus}
     }
   });
   const edgeVolumes = harness.output('uint32', edgeCount);
@@ -190,12 +248,12 @@ async function runMatchedVolumes(options: {capacity: number; transitions: boolea
       }
     : undefined;
   const volumes = new GPUMapMatchedEdgeVolumes({
-    traversedEdges: {edges, counts},
+    traversedEdges: {edges, counts, status: traversedStatus},
     trackCount,
     traversedEdgeCapacity: options.capacity,
     edgeCount,
     transitionPairCapacity: options.transitions ? pairCapacity : undefined,
-    output: {edgeVolumes, truncated, transitions: transitionOutput}
+    output: {edgeVolumes, status: {candidateOverflow: truncated}, transitions: transitionOutput}
   });
   const chain = {
     id: 'map-matching-then-edge-volumes',

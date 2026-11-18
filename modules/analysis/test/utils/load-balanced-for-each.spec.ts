@@ -6,6 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph, type GPUCommandNode} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
+import {expectNumericArrayClose} from '../../src/testing/expect-numeric-array-close';
 import {importGraphBuffer} from '../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   createLoadBalancedForEachNode,
@@ -133,18 +134,10 @@ function sumRowsOnCpu(csr: SkewedCSR, itemCapacity = csr.values.length) {
  * of a partial bounded by `sum |v|`. 120 * 6e-8 = 7.2e-6, so 1e-5 * sum |v| bounds the error.
  */
 function expectRowSums(actual: number[], expected: ReturnType<typeof sumRowsOnCpu>): void {
-  expect(actual.length).toBe(expected.sums.length);
-  let failures = 0;
-  for (let row = 0; row < actual.length; row++) {
-    const bound = 1e-5 * expected.magnitudes[row];
-    if (Math.abs(actual[row] - expected.sums[row]) > bound) {
-      failures++;
-      if (failures < 5) {
-        expect.soft(actual[row], `row ${row}`).toBeCloseTo(expected.sums[row], 4);
-      }
-    }
-  }
-  expect(failures).toBe(0);
+  expectNumericArrayClose(actual, expected.sums, {
+    absoluteTolerance: (_value, row) => 1e-5 * expected.magnitudes[row],
+    label: 'load-balanced row sums'
+  });
 }
 
 it('createLoadBalancedSegmentSumNodes matches the CPU on a 1e5-item hub plus leaves, reproducibly', async () => {

@@ -126,7 +126,7 @@ export const GPU_SPATIAL_MAXIMUM_LIKELIHOOD_STATUS_OK = 0;
 export const GPU_SPATIAL_MAXIMUM_LIKELIHOOD_STATUS_SINGULAR = 1;
 /** `status` value: too few rows, `n <= predictorCount + 2`. */
 export const GPU_SPATIAL_MAXIMUM_LIKELIHOOD_STATUS_TOO_FEW_ROWS = 2;
-/** `status` value: a non-finite input, weight or moment, or no admissible parameter interval. */
+/** `status` value: a non-finite input, weight or moment, no admissible parameter interval, or results suppressed for incomplete weights. */
 export const GPU_SPATIAL_MAXIMUM_LIKELIHOOD_STATUS_NON_FINITE = 3;
 
 /**

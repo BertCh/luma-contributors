@@ -36,7 +36,7 @@ import {
   validateMonotoneChainConvexityScratch
 } from './convexity-hull';
 import {GEOMETRY_STATS_STRIDE} from '../geometry-measures/geometry-measures-kernels';
-import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 import {
   validateDisjointWritableViews,
   validateGraphChunkBindingRanges

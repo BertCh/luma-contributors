@@ -119,8 +119,8 @@ it('KDE accepts packed outputs written separately and audits scaled quotient sha
     };
     try {
       const nodes = new GPUNetworkKernelDensity(props).getCommandNodes(graph);
-      for (const [name, source] of getParsedKernelSources(nodes)) {
-        expect(auditWGSLModule(source), name).toEqual([]);
+      for (const {id: name, source, constants} of getParsedKernelSources(nodes).configurations) {
+        expect(auditWGSLModule(source, constants), name).toEqual([]);
         expect(source).toContain('fn getScaledQuotient(');
       }
       expect(getParsedKernelSources(nodes).get('network-kernel-density-intensity')).toContain(

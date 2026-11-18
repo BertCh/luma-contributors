@@ -140,7 +140,7 @@ it('keeps the pair-key tie rule and rejects malformed arrays while reporting inv
   ).toThrow(/offsets/);
 });
 
-it('stops at disconnected components, supports nine columns and ignores GPU round budgets', () => {
+it('stops at disconnected components, supports nine columns and honors explicit round budgets', () => {
   const pattern = getCSR([[1], [0], [3], [2]]);
   const values = Float32Array.from({length: 36}, (_, index) => Math.floor(index / 9));
   const result = computeWardRegionsOnCPU(
@@ -169,6 +169,12 @@ it('stops at disconnected components, supports nine columns and ignores GPU roun
   expect(
     () => new CPUWardRegionsOperation({...PROPS, columnCount: 9, maximumIterations: 0})
   ).not.toThrow();
+  const stopped = computeWardRegionsOnCPU(
+    {...pattern, values, parameters: Uint32Array.of(0)},
+    {columnCount: 9, targetRegionCount: 1, standardize: false, maximumIterations: 0}
+  );
+  expect(Array.from(stopped.labels)).toEqual([0, 1, 2, 3]);
+  expect(Array.from(stopped.status)).toEqual([0, 0, 1, 0]);
 });
 
 it('checks construction-time CPU limits and delegates GPU checks to contributor construction', () => {

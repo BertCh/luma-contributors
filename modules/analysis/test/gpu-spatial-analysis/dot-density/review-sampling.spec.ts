@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
@@ -35,6 +35,7 @@ async function runSampling(
     capacity?: number;
     normalize?: boolean;
     packed?: boolean;
+    nextRequests?: Uint32Array;
   } = {}
 ) {
   const device = await getWebGPUTestDevice();
@@ -79,6 +80,7 @@ async function runSampling(
     : output('ids', capacity);
   const count = output('count', 1);
   const overflow = output('overflow', 1);
+  const candidateOverflow = output('candidate-overflow', 1);
   const required = output('required', 1);
   const failed = output('failed', 1);
   const slotCounts = output('slot-counts', featureCount);
@@ -105,35 +107,63 @@ async function runSampling(
       positions: positionsBacking,
       dots: {
         ids: ids.view,
-        status: {count: count.view, overflow: overflow.view, requiredCount: required.view}
+        status: {
+          count: count.view,
+          overflow: overflow.view,
+          candidateOverflow: candidateOverflow.view,
+          requiredCount: required.view
+        }
       },
       status: {failedCount: failed.view},
       slotCounts: slotCounts.view,
       slotOffsets: slotOffsets.view
     }
   };
+  const requestBuffer = track(
+    createInputBuffer(device, options.route === 'counts' ? requests : Float32Array.from(requests))
+  );
+  const requestView = importGraphBuffer(
+    graph,
+    'requests',
+    requestBuffer,
+    options.route === 'counts' ? 'uint32' : 'float32',
+    requests.length
+  );
   graph.add(
     options.route === 'counts'
-      ? new GPURandomPointsInPolygon({...props, counts: input('requests', requests, 'uint32')})
+      ? new GPURandomPointsInPolygon({
+          ...props,
+          counts: requestView as GraphDataView<'uint32'>
+        })
       : new GPUDotDensity({
           ...props,
-          values: input('requests', Float32Array.from(requests), 'float32')
+          values: requestView as GraphDataView<'float32'>
         })
   );
   const compiled = graph.compile();
   try {
-    submitGraph(device, compiled, undefined);
-    const identifiers = await readUint32(ids.buffer, options.packed ? 3 * capacity : capacity);
-    return {
-      positions: await readFloat32(coordinates, 2 * capacity),
-      ids: options.packed ? identifiers.slice(2 * capacity) : identifiers,
-      count: (await readUint32(count.buffer, 1))[0],
-      overflow: (await readUint32(overflow.buffer, 1))[0],
-      required: (await readUint32(required.buffer, 1))[0],
-      failed: (await readUint32(failed.buffer, 1))[0],
-      slotCounts: await readUint32(slotCounts.buffer, featureCount),
-      slotOffsets: await readUint32(slotOffsets.buffer, featureCount)
+    const read = async () => {
+      const identifiers = await readUint32(ids.buffer, options.packed ? 3 * capacity : capacity);
+      return {
+        positions: await readFloat32(coordinates, 2 * capacity),
+        ids: options.packed ? identifiers.slice(2 * capacity) : identifiers,
+        count: (await readUint32(count.buffer, 1))[0],
+        overflow: (await readUint32(overflow.buffer, 1))[0],
+        candidateOverflow: (await readUint32(candidateOverflow.buffer, 1))[0],
+        required: (await readUint32(required.buffer, 1))[0],
+        failed: (await readUint32(failed.buffer, 1))[0],
+        slotCounts: await readUint32(slotCounts.buffer, featureCount),
+        slotOffsets: await readUint32(slotOffsets.buffer, featureCount)
+      };
     };
+    submitGraph(device, compiled, undefined);
+    const first = await read();
+    if (!options.nextRequests) return {...first, next: undefined};
+    requestBuffer.write(
+      options.route === 'counts' ? options.nextRequests : Float32Array.from(options.nextRequests)
+    );
+    submitGraph(device, compiled, undefined);
+    return {...first, next: await read()};
   } finally {
     compiled.destroy();
     for (const buffer of buffers) buffer.destroy();
@@ -234,6 +264,45 @@ it('samples multipolygons, holes and empty polygons against a CPU quantized-CDF 
     }
   }
 });
+
+for (const route of ['values', 'counts'] as const) {
+  it(`slot-prefix clamp with spare final capacity reports candidate loss and clears on reuse (${route})`, async () => {
+    const polygons = createPolygonColumns([
+      [
+        [
+          [
+            [0, 0],
+            [1, 0],
+            [0, 1]
+          ]
+        ]
+      ]
+    ]);
+    polygons.featureOffsets = new Uint32Array(65537).fill(1);
+    polygons.featureOffsets[0] = 0;
+    const requests = new Uint32Array(65536);
+    requests[0] = 65536;
+    const nextRequests = new Uint32Array(65536);
+    nextRequests[0] = 1;
+    const result = await runSampling(polygons, requests, {route, capacity: 65536, nextRequests});
+    expect([
+      result.count,
+      result.required,
+      result.overflow,
+      result.candidateOverflow,
+      result.failed
+    ]).toEqual([65535, 65535, 0, 1, 0]);
+    expect(Number.isFinite(result.positions[0]) && Number.isFinite(result.positions[1])).toBe(true);
+    expect(result.ids[0]).toBe(0);
+    expect([
+      result.next!.count,
+      result.next!.required,
+      result.next!.overflow,
+      result.next!.candidateOverflow,
+      result.next!.failed
+    ]).toEqual([1, 1, 0, 0, 0]);
+  });
+}
 
 for (const route of ['values', 'counts'] as const) {
   it(`concurrent ${route} slots clamp with exact independent counts and overflow`, async () => {

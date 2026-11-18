@@ -22,6 +22,7 @@ import {
   validateFittingWritableViews
 } from './fitting-utils';
 import {createWGSLKernelNode} from './wgsl-kernel-nodes';
+import {snapshotConstructionFields} from './construction-snapshot';
 import {
   createGraphChunkGroupKernelNode,
   validateGraphChunkGroupKernelSupport
@@ -60,6 +61,17 @@ export class GPUFittingGradientSums implements GPUCommandNodeProducer {
   readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUFittingGradientSumsProps) {
+    props = Object.freeze({
+      ...snapshotConstructionFields(props, [
+        'id',
+        'rowCount',
+        'parameterCount',
+        'gradients',
+        'mask',
+        'output'
+      ]),
+      output: snapshotConstructionFields(props.output, ['sums'])
+    });
     this.id = props.id ?? 'fitting-gradient-sums';
     this.props = props;
     validateCapacity(this.id, 'rowCount', props.rowCount, 0, GPU_FITTING_MAXIMUM_ROW_COUNT);

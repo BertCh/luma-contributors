@@ -12,12 +12,15 @@ export const SINKHORN_DIVERGENCE_STATE_SLOTS = {
   iterationLimitReached: 4,
   /** L1 error of the target marginal, summed over cells by the last iteration. */
   marginalError: 5,
+  /** L1 marginal errors of the symmetric source and target self plans, before damping. */
+  sourceSelfError: 6,
+  targetSelfError: 7,
   /** One when the masses and parameters allow a fit. */
-  valid: 6
+  valid: 8
 } as const;
 
 /** Length of the float32 state buffer. */
-export const SINKHORN_DIVERGENCE_STATE_LENGTH = 8;
+export const SINKHORN_DIVERGENCE_STATE_LENGTH = 9;
 
 /**
  * Log of a mass that is zero. A finite stand-in for minus infinity (WGSL has no portable
@@ -36,6 +39,17 @@ export const SINKHORN_POTENTIAL_SLOTS = {
   /** Potential of the (target, target) problem. */
   targetOfSelf: 3
 } as const;
+
+/**
+ * Scales finite nonnegative masses by the inverse binary exponent of their field's maximum.
+ * The multiplier stays normal and finite, including for maxima at the float32 range limit.
+ * Every scaled mass is below four, so summing the supported cell count cannot overflow.
+ */
+export const SINKHORN_MASS_SCALE_WGSL = `fn scaleSinkhornMass(mass: f32, maximum: f32) -> f32 {
+  let maximumExponent = (bitcast<u32>(maximum) >> 23u) & 255u;
+  let inverseExponent = max(254u - maximumExponent, 1u);
+  return mass * bitcast<f32>(inverseExponent << 23u);
+}`;
 
 /**
  * WGSL helpers of the log-domain blur: `accumulateLogSum` adds `value` to the running

@@ -25,21 +25,22 @@ export const GEOMETRY_LINES_REJECTIONS: readonly KernelAuditRejection[] = [
     name: 'planar queries above the maximum',
     kind: 'binding',
     limit: 3728270,
-    rejects: /^Error: linear-referencing queryPositions rows must be at most 3728270$/
+    rejects: /^Error: linear-referencing queryPositions chunk rows must be at most 3728270$/
   },
   {
     exportName: 'GPULineLocate',
     name: 'events above the maximum',
     kind: 'binding',
     limit: 5592405,
-    rejects: /^Error: line-locate eventLineIndices rows must be at most 5592405$/
+    rejects: /^Error: line-locate eventLineIndices chunk rows must be at most 5592405$/
   },
   {
     exportName: 'GPUBufferSurface',
     name: 'polygons above the maximum',
     kind: 'binding',
-    limit: 786432,
-    rejects: /^Error: buffer-surface boundary rows must be at most 786432$/
+    limit: 134217728,
+    rejects:
+      /^Error: buffer-surface hotPixelSegmentTables needs 134221952 bytes in one binding \(limit 134217728\); reduce capacities or split input features$/
   },
   {
     exportName: 'GPUPolygonTriangulation',
@@ -103,8 +104,9 @@ export const GEOMETRY_LINES_REJECTIONS: readonly KernelAuditRejection[] = [
     exportName: 'GPUBufferSurface',
     name: 'lines above the maximum',
     kind: 'binding',
-    limit: 786432,
-    rejects: /^Error: buffer-surface boundary rows must be at most 786432$/
+    limit: 134217728,
+    rejects:
+      /^Error: buffer-surface hotPixelSegmentTables needs 134219520 bytes in one binding \(limit 134217728\); reduce capacities or split input features$/
   },
   {
     exportName: 'GPUPolygonTriangulation',

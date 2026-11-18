@@ -19,10 +19,26 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {getGPUVectorFormatInfo, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import type {GPUCompactOutput} from './gpu-contributor-types';
-import {getCoreDefaultBuffer} from '../network-topology';
+import {getCoreDefaultBuffer} from '../contracts/network-topology';
+import type {GPUSpatialParameterArray} from '../contracts/parameter-schema';
 
 /** Scalar formats supported by {@link GPUParameterBuffer}. */
 export type GPUParameterFormat = 'float32' | 'uint32' | 'sint32';
+
+/** Typed values whose scalar representation matches a parameter buffer's declared format. */
+export type GPUParameterValues<Format extends GPUParameterFormat> =
+  GPUSpatialParameterArray<Format>;
+
+// The intrinsic getter reads the typed-array kind across realms and ignores an own toStringTag.
+const GET_PARAMETER_TYPED_ARRAY_NAME = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Float32Array.prototype),
+  Symbol.toStringTag
+)!.get!;
+
+/** Reads the intrinsic typed-array kind across realms, ignoring caller tags. @internal */
+export function getTypedArrayName(values: unknown): string | undefined {
+  return GET_PARAMETER_TYPED_ARRAY_NAME.call(values) as string | undefined;
+}
 
 /** Properties for one application-owned, per-frame parameter buffer. */
 export type GPUParameterBufferProps<Format extends GPUParameterFormat> = {
@@ -32,8 +48,8 @@ export type GPUParameterBufferProps<Format extends GPUParameterFormat> = {
   format: Format;
   /** Element count. Fixed for the lifetime of any compiled graph that imports the buffer. */
   length: number;
-  /** Optional initial values. Unwritten elements are zero. */
-  values?: Float32Array | Uint32Array | Int32Array;
+  /** Optional initial values matching `format`, with at most `length` elements. Unwritten elements are zero. */
+  values?: GPUParameterValues<NoInfer<Format>>;
 };
 
 /**
@@ -58,13 +74,22 @@ export class GPUParameterBuffer<Format extends GPUParameterFormat = GPUParameter
     this.id = props.id;
     this.format = props.format;
     this.length = props.length;
+    validateRequirement(
+      `GPUParameterBuffer ${this.id}`,
+      ['float32', 'uint32', 'sint32'].includes(this.format),
+      'format must be float32, uint32 or sint32'
+    );
+    validateCapacity(`GPUParameterBuffer ${this.id}`, 'length', this.length, 0);
+    if (props.values !== undefined) {
+      validateGPUParameterValues(this, props.values);
+    }
     this.buffer = device.createBuffer({
       id: props.id,
       byteLength: Math.max(props.length, 1) * Uint32Array.BYTES_PER_ELEMENT,
       usage: Buffer.STORAGE | Buffer.COPY_DST | Buffer.COPY_SRC
     });
-    if (props.values) {
-      this.buffer.write(props.values);
+    if (props.values !== undefined) {
+      this.write(props.values);
     }
   }
 
@@ -81,14 +106,9 @@ export class GPUParameterBuffer<Format extends GPUParameterFormat = GPUParameter
     return importGraphBuffer(graph, id, this.buffer, this.format, this.length);
   }
 
-  /** Overwrites elements starting at `firstElement`; visible to the next submitted encoding. */
-  write(values: Float32Array | Uint32Array | Int32Array, firstElement: number = 0): void {
-    // The written range must lie inside the buffer's `length` elements.
-    if (!(firstElement >= 0 && firstElement + values.length <= this.length)) {
-      throw new Error(
-        `GPUParameterBuffer ${this.id} write of ${values.length} elements at firstElement ${firstElement} must lie within [0, ${this.length}]`
-      );
-    }
+  /** Overwrites a matching-format range at an integer `firstElement` within the logical length. */
+  write(values: GPUParameterValues<Format>, firstElement: number = 0): void {
+    validateGPUParameterValues(this, values, firstElement);
     this.buffer.write(values, firstElement * Uint32Array.BYTES_PER_ELEMENT);
   }
 
@@ -96,6 +116,29 @@ export class GPUParameterBuffer<Format extends GPUParameterFormat = GPUParameter
   destroy(): void {
     this.buffer.destroy();
   }
+}
+
+/** Checks a parameter upload without accessing or changing its backing buffer. @internal */
+export function validateGPUParameterValues<Format extends GPUParameterFormat>(
+  parameters: Pick<GPUParameterBuffer<Format>, 'id' | 'format' | 'length'>,
+  values: GPUParameterValues<Format>,
+  firstElement = 0
+): void {
+  const id = `GPUParameterBuffer ${parameters.id}`;
+  const parameterArrayName =
+    parameters.format === 'float32'
+      ? 'Float32Array'
+      : parameters.format === 'uint32'
+        ? 'Uint32Array'
+        : 'Int32Array';
+  validateRequirement(
+    id,
+    ArrayBuffer.isView(values) &&
+      GET_PARAMETER_TYPED_ARRAY_NAME.call(values) === parameterArrayName,
+    `values must match format ${parameters.format}`
+  );
+  validateCapacity(id, 'firstElement', firstElement, 0, parameters.length);
+  validateMaximumCount(id, 'values length', values.length, parameters.length - firstElement);
 }
 
 /**
@@ -156,23 +199,38 @@ export function validateGraphViewsBelongToGraph<Parameters>(
  *
  * The graph compiler rejects overlapping writable bindings within one node. Contributors whose
  * outputs are written by separate nodes must also validate output-versus-output separation.
+ * Pass records keyed by port name for actionable errors. Array callers receive indexed port names.
  */
 export function validateGraphOutputsDisjointFromInputs(
   id: string,
-  outputs: readonly (GraphDataView | GraphVectorView | undefined)[],
-  inputs: readonly (GraphDataView | GraphVectorView | undefined)[]
+  outputs:
+    | readonly (GraphDataView | GraphVectorView | undefined)[]
+    | Readonly<Record<string, GraphDataView | GraphVectorView | undefined>>,
+  inputs:
+    | readonly (GraphDataView | GraphVectorView | undefined)[]
+    | Readonly<Record<string, GraphDataView | GraphVectorView | undefined>>
 ): void {
   const getBufferIdentity = (view: GraphDataView) =>
     view.buffer.defaultBuffer ? getCoreDefaultBuffer(view.buffer.defaultBuffer) : view.buffer;
-  const inputBuffers = new Set(
-    inputs.flatMap(view => (view ? getGraphViewChunks(view).map(getBufferIdentity) : []))
-  );
-  for (const view of outputs) {
-    if (
-      view &&
-      getGraphViewChunks(view).some(chunk => inputBuffers.has(getBufferIdentity(chunk)))
-    ) {
-      throw new Error(`${id} outputs must not share buffers with inputs`);
+  const inputBuffers = new Map<unknown, string>();
+  for (const [name, view] of Object.entries(inputs)) {
+    if (!view) continue;
+    const port = Array.isArray(inputs) ? `inputs[${name}]` : name;
+    for (const chunk of getGraphViewChunks(view)) {
+      if (!inputBuffers.has(getBufferIdentity(chunk)))
+        inputBuffers.set(getBufferIdentity(chunk), port);
+    }
+  }
+  for (const [name, view] of Object.entries(outputs)) {
+    if (!view) continue;
+    const port = Array.isArray(outputs) ? `outputs[${name}]` : name;
+    for (const chunk of getGraphViewChunks(view)) {
+      const inputPort = inputBuffers.get(getBufferIdentity(chunk));
+      if (inputPort !== undefined) {
+        throw new Error(
+          `${id} outputs must not share buffers with inputs: ${port} conflicts with ${inputPort}`
+        );
+      }
     }
   }
 }
@@ -386,6 +444,7 @@ export function validateCompactOutput(id: string, output: GPUCompactOutput): voi
   for (const [name, scalar] of [
     ['count', output.status.count],
     ['overflow', output.status.overflow],
+    ['candidateOverflow', output.status.candidateOverflow],
     ['requiredCount', output.status.requiredCount]
   ] as const) {
     if (!scalar) {

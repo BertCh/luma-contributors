@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GraphDataView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GraphDataView, GPUCommandGraph, GPUCommandNode} from '@luma.gl/graph/gpu-core';
+import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {GPUSimilaritySearch} from '@luma.gl/graph/gpu-vector-search';
 import {
+  captureGraphCommandNodes,
   validateCapacity,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -18,7 +20,7 @@ import {
 /** Caller-owned outputs of {@link GPURasterEmbeddingNearestPixels}. */
 export type GPURasterEmbeddingNearestPixelsOutput = {
   /** Pixel indices of the best matches, `query * resultCount + rank`; `0xffffffff` where fewer than `resultCount` pixels exist. */
-  pixelIds: GraphDataView<'uint32'>;
+  pixelRows: GraphDataView<'uint32'>;
   /** Cosine similarity of each match, `query * resultCount + rank`, best first. */
   scores: GraphDataView<'float32'>;
   /** Matches found per query. */
@@ -53,9 +55,10 @@ export type GPURasterEmbeddingNearestPixelsProps = {
  * Per-frame: the contents of the views. Compile-time: `pixelCount`, `dimensions`, `queryCount`,
  * `resultCount`.
  */
-export class GPURasterEmbeddingNearestPixels {
+export class GPURasterEmbeddingNearestPixels implements GPUCommandNodeProducer {
   readonly id: string;
   private readonly search: GPUSimilaritySearch;
+  private readonly commandNodes = new WeakMap<object, readonly GPUCommandNode[]>();
 
   constructor(readonly props: GPURasterEmbeddingNearestPixelsProps) {
     const id = props.id ?? 'raster-embedding-nearest-pixels';
@@ -81,7 +84,7 @@ export class GPURasterEmbeddingNearestPixels {
       id,
       dataset: createRasterEmbeddingMatrix(props.vectors, pixelCount, dimensions, props.mask),
       queries: createRasterEmbeddingMatrix(props.queries, props.queryCount, dimensions),
-      outputIds: output.pixelIds,
+      outputIds: output.pixelRows,
       outputScores: output.scores,
       resultCounts: output.resultCounts,
       k: props.resultCount,
@@ -89,8 +92,16 @@ export class GPURasterEmbeddingNearestPixels {
     });
   }
 
-  /** Adds the published search passes. */
-  addToGraph<Parameters>(graph: GPUCommandGraph<Parameters>): void {
-    this.search.addToGraph(graph);
+  /** Returns the published search passes, materializing them once per target graph. */
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    const cached = this.commandNodes.get(graph);
+    if (cached) return cached as readonly GPUCommandNode<Parameters>[];
+    const nodes = Object.freeze(
+      captureGraphCommandNodes(graph, () => this.search.addToGraph(graph))
+    );
+    this.commandNodes.set(graph, nodes as readonly GPUCommandNode[]);
+    return nodes;
   }
 }

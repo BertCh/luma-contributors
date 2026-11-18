@@ -318,7 +318,7 @@ it('GPUPointHorizonVisibility measures a Web Mercator tile in WGS84 ground metre
   // A zoom 12 window (512 px tiles) centred on the equator: one pixel is 2 pi a / worldPixelSize
   // = 19.109 EPSG:3857 metres. Expected distances below are closed forms on the WGS84 ellipsoid,
   // independent of the kernel: the meridian arc (integral of M) north-south and a times the
-  // longitude difference along the equator. They are the row scales of analysis-core/raster-grid
+  // longitude difference along the equator. They are the row scales of analysis-core/contracts/raster-grid
   // (M cos(lat) / a and N cos(lat) / a per EPSG:3857 metre). The mean sphere of 6371008.8 m gives
   // 0.56% more north-south and 0.11% less east-west.
   const size = 256;

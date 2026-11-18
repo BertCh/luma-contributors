@@ -13,6 +13,43 @@ import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {getPointRoutingInput} from './network-point-routing-operation-test-utils';
 
+for (const mode of ['reference', 'scalable'] as const) {
+  it(`point routing twins charge complete per-turn penalties on partial destinations (${mode})`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const props: NetworkPointRoutingOperationProps = {
+      mode,
+      edgeCount: 3,
+      queryCount: 2,
+      turns: 'turns',
+      turnPenalties: 'penalties',
+      costs: 'baseCosts',
+      queries: 'queries',
+      fractions: 'fractions',
+      maximumRelaxations: 8,
+      output: {costs: 'costs', status: 'status', predecessorEdges: 'parents'}
+    };
+    for (const Operation of [GPUNetworkPointRoutingOperation, CPUNetworkPointRoutingOperation]) {
+      const rows = await runOperationGraph(device, {
+        inputs: {
+          turns: {format: 'uint32x2', values: Uint32Array.of(0, 2, 1, 2)},
+          penalties: {format: 'float32', values: Float32Array.of(7, 1)},
+          baseCosts: {format: 'float32', values: Float32Array.of(2, 2, 10)},
+          queries: {format: 'uint32x2', values: Uint32Array.of(0, 2, 1, 2)},
+          fractions: {format: 'float32x2', values: Float32Array.of(0.5, 0.25, 0.5, 0.25)}
+        },
+        operations: [new Operation(props)],
+        outputs: ['costs', 'status', 'parents']
+      });
+      expect(rows['costs']).toEqual(Float32Array.of(10.5, 4.5));
+      expect(rows['status']).toEqual(Uint32Array.of(0, 0));
+      expect(rows['parents']).toEqual(
+        Uint32Array.of(0xffffffff, 0xffffffff, 0, 0xffffffff, 0xffffffff, 1)
+      );
+    }
+  });
+}
+
 for (const invalid of [false, true])
   it(`point routing twins compare every output (invalid endpoints: ${invalid})`, async () => {
     const device = await getWebGPUTestDevice();

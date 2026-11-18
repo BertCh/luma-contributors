@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {addPreparedRecipe, writeRecipeParameters} from './prepared-recipe';
+
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -41,6 +43,8 @@ import {
   type GPURecipeResult
 } from './recipe-utils';
 import {IS_NAN_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 
 /** Specification search outcome: no spatial dependence detected, OLS is adequate. */
 export const GPU_SPATIAL_REGRESSION_SPECIFICATION_OLS = 0;
@@ -302,7 +306,19 @@ export type GPUSpatialRegressionRecipeProps = GPURecipeOverrides<
 export type GPUSpatialRegressionRecipeSettings = GPUSpatialAutocorrelationSettings;
 
 /** Named outputs of {@link addSpatialRegressionRecipe}. */
-export type GPUSpatialRegressionRecipeResult = GPURecipeResult & {
+export type GPUSpatialRegressionRecipeOutputs = Pick<
+  GPUSpatialRegressionRecipeViews,
+  'ols' | 'diagnostics' | 'specification' | 'residualMoran' | 'localFits'
+>;
+
+/** Spatial-regression outputs and top-level convenience fields; no intermediate ports. */
+export type GPUSpatialRegressionRecipeResult = GPURecipeResult<
+  GPUSpatialRegressionRecipeOutputs,
+  Record<never, never>
+> &
+  GPUSpatialRegressionRecipeViews;
+
+type GPUSpatialRegressionRecipeViews = {
   rowCount: number;
   ols: {
     coefficients: GraphDataView<'float32'>;
@@ -372,7 +388,151 @@ export function addSpatialRegressionRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUSpatialRegressionRecipeProps
 ): GPUSpatialRegressionRecipeResult {
+  return addPreparedRecipe(graph, props, declareSpatialRegressionRecipe);
+}
+
+function declareSpatialRegressionRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUSpatialRegressionRecipeProps
+): GPUSpatialRegressionRecipeResult {
+  const captured = snapshotConstructionFields(props, [
+    'id',
+    'weights',
+    'predictors',
+    'response',
+    'predictorCount',
+    'parameters',
+    'settings',
+    'mask',
+    'restandardizeRows',
+    'olsParameters',
+    'tileRowCount',
+    'localFits',
+    'outputs'
+  ]);
+  const weights = snapshotConstructionFields(captured.weights, [
+    'offsets',
+    'neighbors',
+    'weights',
+    'distances',
+    'spatialContext',
+    'information',
+    'status'
+  ]);
+  const output = snapshotConstructionFields(captured.outputs ?? {}, [
+    'ols',
+    'diagnostics',
+    'specification',
+    'residualMoran',
+    'localFits'
+  ]);
+  const olsPorts = snapshotConstructionFields(output.ols ?? {}, [
+    'coefficients',
+    'standardErrors',
+    'tStatistics',
+    'summary',
+    'status',
+    'residuals',
+    'fitted'
+  ]);
+  const diagnosticsPorts = snapshotConstructionFields(output.diagnostics ?? {}, [
+    'tests',
+    'summary',
+    'status'
+  ]);
+  props = {
+    ...captured,
+    weights: {
+      ...weights,
+      ...(weights.status
+        ? {
+            status: snapshotConstructionFields(weights.status, [
+              'count',
+              'requiredCount',
+              'overflow',
+              'candidateOverflow',
+              'invalidCount',
+              'uncertainCount',
+              'iterationCount',
+              'converged',
+              'iterationLimitReached',
+              'approximation'
+            ])
+          }
+        : {})
+    },
+    outputs: {
+      ols: {
+        ...olsPorts,
+        ...(olsPorts.status ? {status: snapshotConstructionFields(olsPorts.status, ['code'])} : {})
+      },
+      diagnostics: {
+        ...diagnosticsPorts,
+        ...(diagnosticsPorts.status
+          ? {status: snapshotConstructionFields(diagnosticsPorts.status, ['code'])}
+          : {})
+      },
+      ...(output.specification
+        ? {specification: snapshotConstructionFields(output.specification, ['decision'])}
+        : {}),
+      ...(output.residualMoran
+        ? {
+            residualMoran: snapshotConstructionFields(output.residualMoran, [
+              'zScores',
+              'localI',
+              'quadrants',
+              'pValues'
+            ])
+          }
+        : {}),
+      ...(output.localFits
+        ? {
+            localFits: snapshotConstructionFields(output.localFits, [
+              'coefficients',
+              'localR2',
+              'residuals',
+              'selectedBandwidth',
+              'localStatus',
+              'summary'
+            ])
+          }
+        : {})
+    },
+    ...(captured.localFits
+      ? {
+          localFits: snapshotConstructionFields(captured.localFits, [
+            'positions',
+            'spatialContext',
+            'parameters',
+            'maximumBandwidthCount',
+            'maximumNeighborCount',
+            'refinement'
+          ])
+        }
+      : {})
+  };
   const id = props.id ?? 'spatial-regression';
+  const writes: Record<string, GraphDataView | undefined> = {};
+  for (const [stage, ports] of Object.entries(props.outputs ?? {}))
+    for (const [name, view] of Object.entries(ports)) {
+      if (!view) continue;
+      if (name === 'status') {
+        for (const [statusName, statusView] of Object.entries(view))
+          writes[`${stage}.status.${statusName}`] = statusView as GraphDataView;
+      } else writes[`${stage}.${name}`] = view as GraphDataView;
+    }
+  const lossInputs = {
+    'weights.status.overflow': props.weights.status?.overflow,
+    'weights.status.candidateOverflow': props.weights.status?.candidateOverflow
+  };
+  for (const [inputName, input] of Object.entries(lossInputs))
+    for (const [outputName, outputView] of Object.entries(writes))
+      if (input && outputView)
+        validateDisjointWritableViews(
+          id,
+          {[inputName]: input, [outputName]: outputView},
+          {separateDispatches: true}
+        );
   const builder = new RecipeBuilder(graph);
   const outputOverrides = props.outputs ?? {};
   const rowCount = props.response.length;
@@ -524,7 +684,7 @@ export function addSpatialRegressionRecipe<Parameters>(
   const writeSettings = (settings: GPUSpatialRegressionRecipeSettings): GPUInferenceMetadata => {
     const values = getGPUSpatialAutocorrelationParameterValues(settings);
     const metadata = localMoran.getInferenceMetadata(settings);
-    props.parameters.write(values);
+    writeRecipeParameters(graph, props.parameters, values);
     return metadata;
   };
 

@@ -9,6 +9,7 @@ import type {
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
+import {validatePackedView} from '@luma.gl/graph/gpu-core';
 import {
   createRasterTimeSeriesKernelNode,
   planRasterTimeSeriesChunks,
@@ -18,12 +19,14 @@ import {
   type RasterTimeSeriesScalarView
 } from './raster-time-series-chunks';
 import {
+  getGraphViewChunks,
   validateCapacity,
   validateCommandNodeBudget,
   validateFiniteNumber,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {RASTER_FINITE_WGSL, rasterBinding} from '../remote-sensing/raster-kernel-utils';
+import {getGPURasterGeometricMedianCompositeOutputLayout} from './raster-geometric-median-output-layout';
 
 /** Slices per cell: each Weiszfeld iteration is one pass over the slices on one invocation. */
 export const MAXIMUM_GEOMETRIC_MEDIAN_SLICE_COUNT = 256;
@@ -132,13 +135,23 @@ export class GPURasterGeometricMedianComposite<
         (!props.mask || props.mask.length >= observationCount),
       'values must hold cellCount times sliceCount times bandCount entries and mask cellCount times sliceCount'
     );
-    validateRequirement(
+    const outputLayout = getGPURasterGeometricMedianCompositeOutputLayout({
       id,
-      props.output.composite.length >= props.cellCount * props.bandCount &&
-        props.output.status.length >= props.cellCount &&
-        (!props.output.lastStep || props.output.lastStep.length >= props.cellCount),
-      'output.composite must hold cellCount times bandCount entries; status and lastStep one per cell'
-    );
+      cellCount: props.cellCount,
+      bandCount: props.bandCount,
+      lastStep: props.output.lastStep !== undefined
+    });
+    for (const [name, descriptor] of Object.entries(outputLayout)) {
+      const view = props.output[name as keyof typeof props.output]!;
+      validateRequirement(
+        id,
+        view.length >= descriptor.length,
+        `output.${name} must hold at least ${descriptor.length} entries`
+      );
+      for (const chunk of getGraphViewChunks(view)) {
+        validatePackedView(chunk, [descriptor.format], `${id} output.${name}`);
+      }
+    }
     validateRequirement(
       id,
       props.parameters.length >= GPU_RASTER_GEOMETRIC_MEDIAN_COMPOSITE_PARAMETER_LENGTH,

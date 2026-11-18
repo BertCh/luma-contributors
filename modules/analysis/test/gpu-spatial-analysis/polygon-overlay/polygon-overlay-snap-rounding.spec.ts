@@ -58,6 +58,57 @@ const FIXTURE = fixtureJson as unknown as {
   cases: FixtureCase[];
 };
 
+it('publishes candidate-only incompleteness and clears it after an adequate intersection budget', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const left: OverlayOperand = [
+    [
+      [
+        [
+          [0, 0],
+          [4, 0],
+          [4, 4],
+          [0, 4]
+        ]
+      ]
+    ]
+  ];
+  const right: OverlayOperand = [
+    [
+      [
+        [
+          [2, -1],
+          [6, -1],
+          [6, 3],
+          [2, 3]
+        ]
+      ]
+    ]
+  ];
+  for (const intersections of [1, 32]) {
+    const readout = await runOverlay(
+      device,
+      {
+        implementation: 'current',
+        operation: 'intersection',
+        left,
+        right,
+        vertexTolerance: 1,
+        capacity: {intersections, nodedSegments: 64, boundary: 64, vertices: 96, rings: 16}
+      },
+      `candidate-budget-${intersections}`
+    );
+    expect(readout.overflow).toBe(0);
+    expect(readout.boundaryOverflow).toBe(0);
+    expect(readout.candidateOverflow).toBe(Number(intersections === 1));
+    if (intersections === 32) {
+      const complete = summarizeReadout(readout, {origin: [0, -1], cell: 1});
+      expect(complete.area2).toBe(12);
+      expect(complete.ringCount).toBe(1);
+    }
+  }
+});
+
 const canonical = (rings: Ring[]) =>
   [...rings].sort((a, b) => {
     const keyA = JSON.stringify(a);

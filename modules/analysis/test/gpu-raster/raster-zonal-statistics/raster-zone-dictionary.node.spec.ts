@@ -29,7 +29,7 @@ it('maps sparse uint32 zones without per-row shader variants and rejects malform
       output: {
         cellCounts: view('uint32', 3),
         sourceZoneIds: view('uint32', 3),
-        denseZoneIds: view('uint32', 3),
+        denseZoneRows: view('uint32', 3),
         status: {invalidCount: view('uint32', 1)}
       }
     });
@@ -62,7 +62,7 @@ it('maps sparse uint32 zones without per-row shader variants and rejects malform
         output: {
           cellCounts: view('uint32', 3),
           sourceZoneIds: view('uint32', 3),
-          denseZoneIds: view('uint32', 3),
+          denseZoneRows: view('uint32', 3),
           status: {invalidCount: view('uint32', 1)}
         }
       })
@@ -95,7 +95,7 @@ it('preflights nested sparse-zone analysis before mapping allocations and accept
       output: {
         cellCounts: outputView(0, 3),
         sourceZoneIds: outputView(12, 3),
-        denseZoneIds: outputView(256, 3),
+        denseZoneRows: outputView(256, 3),
         status: {invalidCount: outputView(512, 1)}
       }
     });

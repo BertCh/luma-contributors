@@ -23,12 +23,12 @@ it('Gaussian scores match packed rows exactly and independent closed-form CRPS v
   const graph = new GPUCommandGraph(device);
   const buffers: Buffer[] = [];
   const inputs = {
-    means: new Float32Array([0, 1, 2, 3, 4, 5, 6]),
-    variances: new Float32Array([0, 1, 4, 9, 1, -1, NaN]),
-    observations: new Float32Array([2, 1, 2, 3, 6, 9, 8])
+    means: new Float32Array([0, 1, 2, 3, 4, 5, 6, 0, 0, 0, 0]),
+    variances: new Float32Array([0, 1, 4, 9, 1, -1, NaN, 1e-20, 1e-20, 1, 1]),
+    observations: new Float32Array([2, 1, 2, 3, 6, 9, 8, 1e32, -1e32, 5, 6])
   };
   const outputs: {buffer: Buffer; prefix: number; length: number}[][] = [];
-  for (const [routeIndex, lengths] of [[7], [1, 4, 2]].entries()) {
+  for (const [routeIndex, lengths] of [[11], [1, 4, 2, 4]].entries()) {
     const outputBuffers: {buffer: Buffer; prefix: number; length: number}[] = [];
     const rows = (name: string, values?: Float32Array) => {
       let rowBase = 0;
@@ -85,10 +85,29 @@ it('Gaussian scores match packed rows exactly and independent closed-form CRPS v
       // At zero error, CRPS = sd * (sqrt(2) - 1) / sqrt(pi).
       // At zero variance it is absolute error. z=2 uses erf(sqrt(2)) in float64.
       const centered = (Math.sqrt(2) - 1) / Math.sqrt(Math.PI);
-      const expected = [2, centered, 2 * centered, 3 * centered, 1.452791821685903, NaN, NaN];
-      for (let row = 0; row < 7; row++) {
+      // At |z| >> 1, CRPS = |error| - sd/sqrt(pi) to float32 rounding, even when
+      // |error|/sd overflows. z=5 and z=6 straddle the erf-series cutoff (4*sqrt(2)).
+      const expected = [
+        2,
+        centered,
+        2 * centered,
+        3 * centered,
+        1.452791821685903,
+        NaN,
+        NaN,
+        Math.fround(1e32),
+        Math.fround(1e32),
+        4.435810523375554,
+        5.435810416764958
+      ];
+      for (let row = 0; row < expected.length; row++) {
         if (Number.isNaN(expected[row])) expect(results[0][row]).toBeNaN();
-        else expect(Math.abs(results[0][row] - expected[row])).toBeLessThan(2e-6);
+        else {
+          expect(Number.isFinite(results[0][row])).toBe(true);
+          expect(Math.abs(results[0][row] - expected[row])).toBeLessThan(
+            2e-6 * Math.max(1, expected[row])
+          );
+        }
       }
     }
   } finally {

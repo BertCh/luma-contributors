@@ -28,6 +28,10 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import referenceCases from './skater-reference.json';
 import {
+  recordWGSLKernelNodes,
+  getWGSLKernelNodeRecord
+} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
+import {
   computePseudoF,
   selectMaxPStart,
   standardizeColumns,
@@ -47,6 +51,242 @@ function setup(rows: number, capacity: number) {
   };
   return {graph, view, weights};
 }
+
+for (const rows of [2, 3, 4094])
+  it(`final3 SKATER includes loss passes in its ${rows}-row admission bound`, () => {
+    const {graph, view, weights} = setup(rows, 2);
+    const create = () =>
+      new GPUSkaterRegions({
+        weights: {
+          ...weights,
+          status: {overflow: view('uint32', 1), candidateOverflow: view('uint32', 1)}
+        },
+        values: view('float32', rows),
+        treeEdgeFlags: view('uint32', 2),
+        componentLabels: view('uint32', rows),
+        parameters: view('uint32', 2),
+        maximumRegionCount: rows,
+        output: {
+          labels: view('uint32', rows),
+          regionCount: view('uint32', 2),
+          cutEdges: view('uint32', rows),
+          cutGains: view('float32', rows)
+        }
+      });
+    try {
+      if (rows === 4094) expect(create).toThrow(/estimated command node count.*32768/);
+      else {
+        const contributor = create();
+        const nodes = contributor.getCommandNodes(graph);
+        expect(nodes).toHaveLength(rows === 2 ? 26 : 35);
+        expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
+      }
+    } finally {
+      graph.device.destroy();
+    }
+  });
+
+it('final3 SKATER suppression dispatches only logical output words', () => {
+  const {graph, view, weights} = setup(2, 2);
+  recordWGSLKernelNodes(graph);
+  try {
+    const contributor = new GPUSkaterRegions({
+      weights: {...weights, status: {candidateOverflow: view('uint32', 1)}},
+      values: view('float32', 2),
+      treeEdgeFlags: view('uint32', 2),
+      componentLabels: view('uint32', 2),
+      parameters: view('uint32', 2),
+      maximumRegionCount: 2,
+      output: {
+        labels: view('uint32', 2),
+        regionCount: view('uint32', 2),
+        cutEdges: view('uint32', 2),
+        cutGains: view('float32', 2)
+      }
+    });
+    const nodes = contributor.getCommandNodes(graph);
+    for (const name of ['region-count', 'cut-edges', 'cut-gains']) {
+      const node = nodes.find(node => node.id.endsWith(`-incomplete-${name}`))!;
+      expect(getWGSLKernelNodeRecord(graph, node.id)?.invocationCount, name).toBe(1);
+    }
+  } finally {
+    graph.device.destroy();
+  }
+});
+
+it('bounds SKATER construction by attainable cuts while keeping the requested log layout', () => {
+  const {graph, view, weights} = setup(2, 2);
+  const contributor = new GPUSkaterRegions({
+    weights,
+    values: view('float32', 2),
+    treeEdgeFlags: view('uint32', 2),
+    componentLabels: view('uint32', 2),
+    parameters: view('uint32', 2),
+    maximumRegionCount: 100_000,
+    output: {
+      labels: view('uint32', 2),
+      cutEdges: view('uint32', 99_999),
+      cutGains: view('float32', 99_999)
+    }
+  });
+  expect(contributor.estimatedCommandNodeCount).toBeLessThan(100);
+  const nodes = contributor.getCommandNodes(graph);
+  expect(nodes.filter(node => node.id.endsWith('-candidates'))).toHaveLength(1);
+  expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
+  const source = getGPUCommandNodeKernelSources(nodes)
+    .map(kernel => kernel.source)
+    .join('\n');
+  expect(source).toContain('index < STEP_COUNT');
+  expect(source).toContain('cutEdgesOut[cutEdgesOutOffset + index] = NONE');
+});
+
+it('rejects regionalizer graphs above the shared budget at construction', () => {
+  const {view, weights} = setup(100_000, 2);
+  const values = view('float32', 100_000);
+  expect(
+    () =>
+      new GPUSkaterRegions({
+        id: 'skater-budget',
+        weights,
+        values,
+        treeEdgeFlags: view('uint32', 2),
+        componentLabels: view('uint32', 100_000),
+        parameters: view('uint32', 2),
+        maximumRegionCount: 100_000,
+        output: {labels: view('uint32', 100_000)}
+      })
+  ).toThrow(/skater-budget.*estimated command node count/);
+  expect(
+    () =>
+      new GPUWardRegions({
+        id: 'ward-budget',
+        weights,
+        values,
+        targetRegionCount: 1,
+        maximumIterations: 99_999,
+        parameters: view('uint32', 1),
+        output: {
+          labels: view('uint32', 100_000),
+          objective: view('float32', 1),
+          status: view('uint32', 4)
+        }
+      })
+  ).toThrow(/ward-budget.*estimated command node count/);
+});
+
+it('admits both Ward A/B schedules within the shared command-node budget', () => {
+  for (const [rows, mergeSchedule, maximumIterations, admitted] of [
+    [1024, 'sequential', 1008, true],
+    [1024, 'mutual-nearest', 256, true],
+    [1024, 'mutual-nearest', 1008, true],
+    [8192, 'mutual-nearest', 1008, false],
+    [4096, 'sequential', 4080, false]
+  ] as const) {
+    const {graph, view, weights} = setup(rows, 4 * rows);
+    const createContributor = () =>
+      new GPUWardRegions({
+        weights,
+        values: view('float32', 2 * rows),
+        columnCount: 2,
+        standardize: false,
+        targetRegionCount: 16,
+        parameters: view('uint32', 1),
+        output: {
+          labels: view('uint32', rows),
+          objective: view('float32', 1),
+          status: view('uint32', 5)
+        },
+        mergeSchedule,
+        maximumIterations
+      });
+    if (admitted) {
+      const contributor = createContributor();
+      expect(contributor.estimatedCommandNodeCount).toBeLessThanOrEqual(32768);
+      if (mergeSchedule === 'mutual-nearest' && maximumIterations === 1008) {
+        expect(contributor.getCommandNodes(graph).length).toBe(18_160);
+      }
+    } else {
+      // Thirteen nodes per sequential round already require 53,040 nodes before the prologue.
+      expect(createContributor).toThrow(/estimated command node count.*32768/);
+    }
+  }
+});
+
+it('keeps Ward and AZP lowering within the admitted budget after caller mutation', () => {
+  for (const kind of ['ward', 'azp'] as const) {
+    const {graph, view, weights} = setup(16, 32);
+    const props = {
+      weights,
+      values: view('float32', 16),
+      parameters: view('uint32', 1),
+      maximumIterations: 1,
+      targetRegionCount: 2,
+      mergeSchedule: 'sequential' as 'sequential' | 'mutual-nearest',
+      initialLabels: view('uint32', 16),
+      regionCapacity: 2,
+      output: {labels: view('uint32', 16), objective: view('float32', 1), status: view('uint32', 5)}
+    };
+    const baseline =
+      kind === 'ward'
+        ? new GPUWardRegions({...props, id: 'baseline'})
+        : new GPUAZPRegions({...props, id: 'baseline'});
+    const contributor = kind === 'ward' ? new GPUWardRegions(props) : new GPUAZPRegions(props);
+    const nodeCount = baseline.getCommandNodes(graph).length;
+    props.maximumIterations = kind === 'ward' ? 14 : 256;
+    props.mergeSchedule = 'mutual-nearest';
+    expect(contributor.getCommandNodes(graph).length).toBe(nodeCount);
+    expect(nodeCount).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
+  }
+});
+
+it('upper-bounds transitive nodes for all four regionalizers and both Ward schedules', () => {
+  for (const rows of [6, 512, 5000]) {
+    const {graph, view, weights} = setup(rows, rows * 2);
+    const common = {
+      weights,
+      values: view('float32', rows),
+      parameters: view('uint32', 1),
+      maximumIterations: 2,
+      output: {
+        labels: view('uint32', rows),
+        objective: view('float32', 1),
+        status: view('uint32', 6)
+      }
+    };
+    const contributors = [
+      new GPUWardRegions({...common, id: 'ward-sequential', targetRegionCount: 2}),
+      new GPUWardRegions({
+        ...common,
+        id: 'ward-mutual',
+        targetRegionCount: 2,
+        mergeSchedule: 'mutual-nearest'
+      }),
+      new GPUAZPRegions({...common, initialLabels: view('uint32', rows), regionCapacity: 2}),
+      new GPUMaxPRegions({
+        ...common,
+        extensiveValues: view('float32', rows),
+        threshold: view('float32', 1),
+        startCount: 1,
+        maximumGrowthSteps: 8
+      }),
+      new GPUMaxPRegions({
+        ...common,
+        id: 'max-p-no-improvement',
+        maximumIterations: 0,
+        extensiveValues: view('float32', rows),
+        threshold: view('float32', 1),
+        startCount: 1,
+        maximumGrowthSteps: 8
+      })
+    ];
+    for (const contributor of contributors) {
+      expect(contributor.estimatedCommandNodeCount).toBeGreaterThan(0);
+      expect(contributor.getCommandNodes(graph).length).toBeLessThanOrEqual(
+        contributor.estimatedCommandNodeCount
+      );
+    }
+  }
+});
 
 it('GPUSpatialWeightsMinimumSpanningTree validates props and declares nodes', () => {
   const {graph, view, weights} = setup(6, 16);

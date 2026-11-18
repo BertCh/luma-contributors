@@ -36,10 +36,12 @@ for (const testCase of oracle.cases) {
             ...(indexed
               ? {grid: {origin: [-2, -2, -2] as const, dimensions: [4, 4, 4] as const, cellSize: 1}}
               : {}),
-            normals: normals.view,
-            normalScales: normalScales.view,
-            normalVariances: normalVariances.view,
-            status: normalStatus.view
+            output: {
+              normals: normals.view,
+              normalScales: normalScales.view,
+              normalVariances: normalVariances.view,
+              status: normalStatus.view
+            }
           })
         );
         const changes = fixture.view('float32x3', new Float32Array(3));
@@ -59,10 +61,12 @@ for (const testCase of oracle.cases) {
             alignment: 'already-aligned',
             radius: 1.1,
             halfDepth: 0.5,
-            changes: changes.view,
-            roughness: roughness.view,
-            counts: counts.view,
-            status: status.view
+            output: {
+              changes: changes.view,
+              roughness: roughness.view,
+              counts: counts.view,
+              status: status.view
+            }
           })
         );
         await fixture.run();
@@ -120,10 +124,12 @@ it('rejects overflowing scales, preserves complete smaller scales, and clears in
         queryRows: fixture.view('uint32', new Uint32Array([0, 9, 0xffffffff, 1])).view,
         radii: [0.3, 2],
         capacity: 5,
-        normals: normals.view,
-        normalScales: scales.view,
-        normalVariances: variances.view,
-        status: status.view
+        output: {
+          normals: normals.view,
+          normalScales: scales.view,
+          normalVariances: variances.view,
+          status: status.view
+        }
       })
     );
     await fixture.run();
@@ -155,10 +161,12 @@ it('rejects omitted ties on the radius boundary rather than selecting a truncate
         queryRows: fixture.view('uint32', new Uint32Array([0])).view,
         radii: [0.25],
         capacity: 3,
-        normals: normals.view,
-        normalScales: scales.view,
-        normalVariances: variances.view,
-        status: status.view
+        output: {
+          normals: normals.view,
+          normalScales: scales.view,
+          normalVariances: variances.view,
+          status: status.view
+        }
       })
     );
     await fixture.run();
@@ -196,10 +204,12 @@ it('updates support eligibility and orientation on the same compiled graph', asy
         parameters: parameters.importToGraph(fixture.graph),
         radii: [0.3],
         capacity: 8,
-        normals: normals.view,
-        normalScales: scales.view,
-        normalVariances: variances.view,
-        status: status.view
+        output: {
+          normals: normals.view,
+          normalScales: scales.view,
+          normalVariances: variances.view,
+          status: status.view
+        }
       })
     );
     await fixture.run();

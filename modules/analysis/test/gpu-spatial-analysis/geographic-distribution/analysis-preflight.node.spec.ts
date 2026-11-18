@@ -25,7 +25,7 @@ import {
   getWGSLKernelNodeRecord,
   recordWGSLKernelNodes
 } from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
-import {getCoreDefaultBuffer} from '../../../src/analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../../src/analysis-core/contracts/network-topology';
 import {getSpatialAnalysisPackedKernelNodes} from '../../../src/gpu-spatial-analysis/geographic-distribution/spatial-analysis-packed-kernel';
 import type {GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {addPatchProximityRecipe} from '../../../src/gpu-spatial-analysis/landscape-ecology/patch-proximity';

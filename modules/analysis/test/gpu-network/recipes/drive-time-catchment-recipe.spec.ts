@@ -152,7 +152,8 @@ it('addDriveTimeCatchmentRecipe bands demand by drive time to the nearest facili
         }
       }
     });
-    expect(recipe.contributors.length).toBe(5);
+    // Five analysis contributors and ten ordered adapters; preparation instances are excluded.
+    expect(recipe.contributors.length).toBe(15);
     expect(recipe.outputs?.['demandTimes']).toBe(recipe.demandTimes);
     expect(recipe.intermediates?.['startNodes']).toBe(recipe.startNodes);
     expect(recipe.status.stages.map(({stage}) => stage)).toEqual([

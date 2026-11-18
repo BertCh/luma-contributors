@@ -55,7 +55,7 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 import {
   validateDisjointWritableViews,
   validateGraphChunkBindingRanges

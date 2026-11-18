@@ -74,9 +74,11 @@ it.skipIf(!enabled)(
             radius: 1.5,
             capacity,
             grid: {origin: [0, 0, 0], cellSize: 1, dimensions: [side, side, side]},
-            indices: indices.view,
-            squaredDistances: squaredDistances.view,
-            counts: counts.view
+            output: {
+              indices: indices.view,
+              squaredDistances: squaredDistances.view,
+              counts: counts.view
+            }
           })
         );
         fixture.graph.add(
@@ -85,10 +87,12 @@ it.skipIf(!enabled)(
             indices: indices.view,
             counts: counts.view,
             capacity,
-            normals: normals.view,
-            eigenvalues: eigenvalues.view,
-            shapes: shapes.view,
-            status: status.view
+            output: {
+              normals: normals.view,
+              eigenvalues: eigenvalues.view,
+              shapes: shapes.view,
+              status: status.view
+            }
           })
         );
         const declarationMilliseconds = performance.now() - declarationStart;

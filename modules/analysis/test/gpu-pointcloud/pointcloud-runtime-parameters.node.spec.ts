@@ -41,41 +41,42 @@ function makeDeclaration() {
     counts,
     indices: view('uint32', 36),
     capacity: 4,
-    normals: view('float32x3', 9),
-    eigenvalues: view('float32x3', 9),
-    shapes: view('float32x3', 9),
-    status
+    output: {
+      normals: view('float32x3', 9),
+      eigenvalues: view('float32x3', 9),
+      shapes: view('float32x3', 9),
+      status
+    }
   };
   const ground = {
     positions,
     classifications,
     grid: GRID,
-    minimumSurface: view('float32', 9),
-    coverage: view('uint32', 9),
     radii: [1, 3],
     initialThreshold: 0.2,
     slope: 0.3,
     maximumThreshold: 2,
-    groundMask: view('uint32', 9),
-    outputClassifications: view('uint32', 9),
-    status
+    minimumSurface: view('float32', 9),
+    coverage: view('uint32', 9),
+    output: {groundMask: view('uint32', 9), outputClassifications: view('uint32', 9), status}
   };
   const smrf = {
     positions,
     classifications,
     grid: GRID,
     window: GRID.cellSize * 3,
-    groundSurface: view('float32', 9),
-    groundMask: view('uint32', 9),
-    outputClassifications: view('uint32', 9),
-    status
+    output: {
+      groundSurface: view('float32', 9),
+      groundMask: view('uint32', 9),
+      outputClassifications: view('uint32', 9),
+      status
+    }
   };
   const filter = {
     counts,
     squaredDistances: view('float32', 36),
     capacity: 4,
-    meanDistances: view('float32', 9),
-    validity: view('uint32', 9)
+    output: {meanDistances: view('float32', 9), validity: view('uint32', 9)}
   };
   return {graph, view, features, ground, smrf, filter};
 }
@@ -152,10 +153,12 @@ it('matches Huber and Tukey constructor scale limits when packing ICP parameters
         maximumDistance: 1,
         robust: {method, scale},
         iterations: 1,
-        transform: view('float32', 16),
-        history: view('float32x3', 1),
-        inlierMask: view('uint32', 9),
-        status: view('uint32', 1)
+        output: {
+          transform: view('float32', 16),
+          history: view('float32x3', 1),
+          inlierMask: view('uint32', 9),
+          status: view('uint32', 1)
+        }
       });
     for (const robustScale of [1e20, 1e-30]) {
       const settings = {maximumDistance: 1, robustScale, robustMethod: method};
@@ -212,10 +215,12 @@ it('rejects ICP local transforms that overflow float32 after origin conversion',
           origin,
           maximumDistance: 1,
           iterations: 1,
-          transform: view('float32', 16),
-          history: view('float32x3', 1),
-          inlierMask: view('uint32', 9),
-          status: view('uint32', 1)
+          output: {
+            transform: view('float32', 16),
+            history: view('float32x3', 1),
+            inlierMask: view('uint32', 9),
+            status: view('uint32', 1)
+          }
         })
     ).toThrow(/^test-local-icp initialTransform.*local.*finite float32/);
   }
@@ -254,17 +259,33 @@ it('rounds derived morphology thresholds once, retaining the constructor convent
 
 it('validates every parameter view length at construction', () => {
   const {view, features, ground, smrf, filter} = makeDeclaration();
-  expect(() => new GPUPointCloudFeatures({...features, parameters: view('float32', 3)})).toThrow(
-    /^gpu-pointcloud-features parameters/
-  );
-  expect(() => new GPUPointCloudGround({...ground, parameters: view('float32', 1)})).toThrow(
-    /^gpu-pointcloud-ground parameters/
-  );
-  expect(() => new GPUPointCloudSMRF({...smrf, parameters: view('float32', 4)})).toThrow(
-    /^gpu-pointcloud-smrf parameters/
-  );
   expect(
-    () => new GPUPointCloudStatisticalFilter({...filter, parameters: view('float32', 2)})
+    () =>
+      new GPUPointCloudFeatures({
+        ...features,
+        parameters: view('float32', 3)
+      })
+  ).toThrow(/^gpu-pointcloud-features parameters/);
+  expect(
+    () =>
+      new GPUPointCloudGround({
+        ...ground,
+        parameters: view('float32', 1)
+      })
+  ).toThrow(/^gpu-pointcloud-ground parameters/);
+  expect(
+    () =>
+      new GPUPointCloudSMRF({
+        ...smrf,
+        parameters: view('float32', 4)
+      })
+  ).toThrow(/^gpu-pointcloud-smrf parameters/);
+  expect(
+    () =>
+      new GPUPointCloudStatisticalFilter({
+        ...filter,
+        parameters: view('float32', 2)
+      })
   ).toThrow(/^gpu-pointcloud-statistical-filter parameters/);
 });
 
@@ -274,21 +295,30 @@ it('reads resident parameters and audits the feature and ICP shared eigensolvers
     reference: features.positions,
     comparison: features.positions,
     cores: features.positions,
-    normals: features.normals,
+    normals: features.output.normals,
     alignment: 'already-aligned' as const,
     radius: 1,
     halfDepth: 1,
-    changes: view('float32x3', 9),
-    roughness: view('float32x3', 9),
-    counts: view('uint32', 18),
-    status: view('uint32', 9),
-    samplingCovariance: {referenceVariance: 1, comparisonVariance: 1, correlationLength: 1}
+    samplingCovariance: {referenceVariance: 1, comparisonVariance: 1, correlationLength: 1},
+    output: {
+      changes: view('float32x3', 9),
+      roughness: view('float32x3', 9),
+      counts: view('uint32', 18),
+      status: view('uint32', 9)
+    }
   };
-  expect(() => new GPUPointCloudChange({...change, parameters: view('uint32', 11)})).toThrow(
-    /^gpu-pointcloud-change parameters/
-  );
+  expect(
+    () =>
+      new GPUPointCloudChange({
+        ...change,
+        parameters: view('uint32', 11)
+      })
+  ).toThrow(/^gpu-pointcloud-change parameters/);
   const contributors = [
-    new GPUPointCloudChange({...change, parameters: view('uint32', 12)}),
+    new GPUPointCloudChange({
+      ...change,
+      parameters: view('uint32', 12)
+    }),
     new GPUPointCloudChange({
       ...change,
       id: 'indexed-change',
@@ -297,12 +327,22 @@ it('reads resident parameters and audits the feature and ICP shared eigensolvers
     }),
     new GPUPointCloudFeatures({
       ...features,
-      covariance: view('float32', 54),
-      parameters: view('float32', 4)
+      parameters: view('float32', 4),
+      output: {...features.output, covariance: view('float32', 54)}
     }),
-    new GPUPointCloudGround({...ground, parameters: view('float32', 2)}),
-    new GPUPointCloudSMRF({...smrf, selection: view('uint32', 9), parameters: view('float32', 5)}),
-    new GPUPointCloudStatisticalFilter({...filter, parameters: view('float32', 1)}),
+    new GPUPointCloudGround({
+      ...ground,
+      parameters: view('float32', 2)
+    }),
+    new GPUPointCloudSMRF({
+      ...smrf,
+      selection: view('uint32', 9),
+      parameters: view('float32', 5)
+    }),
+    new GPUPointCloudStatisticalFilter({
+      ...filter,
+      parameters: view('float32', 1)
+    }),
     ...(['point-to-point', 'point-to-plane'] as const).map(
       metric =>
         new GPUPointCloudICP({
@@ -316,10 +356,12 @@ it('reads resident parameters and audits the feature and ICP shared eigensolvers
           targetGrid: {origin: [-1, -1, -1], cellSize: 1, dimensions: [5, 5, 5]},
           parameters: view('float32', 22),
           iterations: 1,
-          transform: view('float32', 16),
-          history: view('float32x3', 1),
-          inlierMask: view('uint32', 9),
-          status: view('uint32', 1)
+          output: {
+            transform: view('float32', 16),
+            history: view('float32x3', 1),
+            inlierMask: view('uint32', 9),
+            status: view('uint32', 1)
+          }
         })
     )
   ];
@@ -328,11 +370,11 @@ it('reads resident parameters and audits the feature and ICP shared eigensolvers
   const sources = new Map<string, string>();
   for (const contributor of contributors) {
     for (const node of contributor.getCommandNodes(graph)) {
-      for (const source of getParsedKernelSources([node]).values()) sources.set(node.id, source);
+      for (const {source, constants} of getParsedKernelSources([node]).configurations) {
+        expect(auditWGSLModule(source, constants), node.id).toEqual([]);
+        sources.set(node.id, source);
+      }
     }
-  }
-  for (const [identifier, source] of sources) {
-    expect(auditWGSLModule(source), identifier).toEqual([]);
   }
   expect(sources.get('gpu-pointcloud-change')).toContain('readParameters(0u)');
   expect(sources.get('indexed-change-reference')).toContain('bitcast<f32>(readParameters(11u))');

@@ -175,8 +175,8 @@ it('cost weights accepts adjacent output ranges in separate dispatches and rejec
   };
   try {
     const nodes = new GPUNetworkCostWeights(props).getCommandNodes(graph);
-    for (const [name, source] of getParsedKernelSources(nodes))
-      expect(auditWGSLModule(source), name).toEqual([]);
+    for (const {id: name, source, constants} of getParsedKernelSources(nodes).configurations)
+      expect(auditWGSLModule(source, constants), name).toEqual([]);
     expect(getParsedKernelSources(nodes).get('network-cost-weights-fill')).toContain(
       'getScaledQuotient(cost, costLimit, 1.0, 0)'
     );
@@ -272,7 +272,8 @@ it('noding accepts adjacent node-position and CSR-offset outputs and atomically 
         source.includes('atomicStore(&snapOverflow[snapOverflowOffset], 1u)')
       )
     ).toBe(true);
-    for (const [name, source] of sources) expect(auditWGSLModule(source), name).toEqual([]);
+    for (const {id: name, source, constants} of sources.configurations)
+      expect(auditWGSLModule(source, constants), name).toEqual([]);
     expect(() => nodes.forEach(node => graph.add(node))).not.toThrow();
   } finally {
     device.destroy();
@@ -298,8 +299,8 @@ it('inhomogeneous K audits scaled arithmetic and rejects normalization as writab
   };
   try {
     const nodes = new GPUNetworkInhomogeneousK(props).getCommandNodes(graph);
-    for (const [name, source] of getParsedKernelSources(nodes))
-      expect(auditWGSLModule(source), name).toEqual([]);
+    for (const {id: name, source, constants} of getParsedKernelSources(nodes).configurations)
+      expect(auditWGSLModule(source, constants), name).toEqual([]);
     expect(getParsedKernelSources(nodes).get('network-inhomogeneous-k-pairs')).toContain(
       'getScaledQuotient(1.0, sourceIntensity, destinationIntensity, 0)'
     );
@@ -335,8 +336,8 @@ it('adjacency matrix rejects scales that would create infinite or zero WGSL cons
     const nodes = new GPUAdjacencyMatrix({...props, weightScale: 1e20}).getCommandNodes(
       props.topology.offsets.buffer.graph as GPUCommandGraph
     );
-    for (const [name, source] of getParsedKernelSources(nodes)) {
-      expect(auditWGSLModule(source), name).toEqual([]);
+    for (const {id: name, source, constants} of getParsedKernelSources(nodes).configurations) {
+      expect(auditWGSLModule(source, constants), name).toEqual([]);
     }
     expect(getParsedKernelSources(nodes).get('adjacency-matrix-bin-counts')).toMatch(
       /const WEIGHT_SCALE: f32 = [0-9]+\.[0-9]+e[+-][0-9]+f;/

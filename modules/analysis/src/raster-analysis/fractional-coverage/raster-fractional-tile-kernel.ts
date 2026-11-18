@@ -19,7 +19,7 @@ import {
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
-import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
 /** Fixed workgroup width; tile lengths affect node dispatch geometry, never pipeline constants. */

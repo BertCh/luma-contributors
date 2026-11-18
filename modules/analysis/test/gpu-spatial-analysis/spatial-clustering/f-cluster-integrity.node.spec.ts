@@ -24,7 +24,10 @@ import {GPUStudyWindowPreparation} from '../../../src/gpu-spatial-analysis/study
 import {GPUInhomogeneousPointPattern} from '../../../src/gpu-spatial-analysis/point-process/gpu-inhomogeneous-point-pattern';
 import {GPUPointPatternEnvelope} from '../../../src/gpu-spatial-analysis/point-process/gpu-point-pattern-envelope';
 import {GPURegionPartitionEvaluation} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-region-partition-evaluation';
-import {GPUSpatialWeightsMinimumSpanningTree} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-spatial-weights-minimum-spanning-tree';
+import {
+  GPUSpatialWeightsMinimumSpanningTree,
+  GPU_MINIMUM_SPANNING_TREE_STATUS
+} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-spatial-weights-minimum-spanning-tree';
 import {GPURedcapSingleLinkage} from '../../../src/gpu-spatial-analysis/redcap-regions/gpu-redcap-single-linkage';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {validateSpatialOutputViews} from '../../../src/gpu-spatial-analysis/spatial-clustering/spatial-output-validation';
@@ -412,10 +415,22 @@ it('accepts disjoint REDCAP and HDBSCAN outputs sharing an aligned binding prefi
       output: {
         labels,
         regionCount,
-        // This optional port is not published by REDCAP and must not create a fictitious binding.
-        status: {iterationCount: graph.createDataView(labels.buffer, {format: 'uint32', length: 1})}
+        // iterationCount is published in its own pass, but remains a retained logical output.
+        status: {iterationCount: view('uint32', 1)}
       }
     });
+    expect(
+      () =>
+        new GPURedcapSingleLinkage({
+          ...redcap.props,
+          output: {
+            ...redcap.props.output,
+            status: {
+              iterationCount: graph.createDataView(labels.buffer, {format: 'uint32', length: 1})
+            }
+          }
+        })
+    ).toThrow(/must not overlap writable byte ranges/);
     const density = new GPUHierarchicalDensityClustering({
       positions: view('float32x2', 8),
       minimumClusterSize: 2,
@@ -431,6 +446,8 @@ it('accepts disjoint REDCAP and HDBSCAN outputs sharing an aligned binding prefi
     for (const contributor of [redcap, density]) {
       const nodes = contributor.getCommandNodes(graph);
       expect(nodes.length).toBeGreaterThan(0);
+      if (contributor === redcap)
+        expect(nodes.some(node => node.id.endsWith('-iteration-count'))).toBe(true);
       for (const node of nodes) {
         const boundOutputs =
           node.resources?.filter(
@@ -561,7 +578,7 @@ it('accepts packed MST outputs and separate-pass k-means status/inertia without 
         treeEdgeFlags: unsigned(0, 8),
         componentLabels: unsigned(32, 8),
         standardizedValues: floating(64, 8),
-        status: unsigned(96, 1)
+        status: unsigned(96, GPU_MINIMUM_SPANNING_TREE_STATUS.length)
       }
     });
     expect(() => spanningTree.getCommandNodes(graph)).not.toThrow();
@@ -853,11 +870,13 @@ it('accepts zero-byte unused DBSCAN views while preflighting every bound empty-r
   try {
     const parameters = view('float32', 10);
     Object.defineProperty(parameters.buffer, 'usage', {value: Buffer.COPY_DST});
+    const positions = empty('float32x2');
+    const emptyRows = graph.createDataView(positions.buffer, {format: 'uint32', length: 0});
     const packed = view('uint32', 12);
     const output = {
-      labels: empty('uint32'),
-      rootRows: empty('uint32'),
-      coreFlags: empty('uint32'),
+      labels: emptyRows,
+      rootRows: emptyRows,
+      coreFlags: emptyRows,
       clusterCount: view('uint32', 1),
       clusters: {
         // ids is unused on this route and may alias a written field.
@@ -877,8 +896,8 @@ it('accepts zero-byte unused DBSCAN views while preflighting every bound empty-r
       drawInstanceCount: view('uint32', 1)
     };
     const props = {
-      positions: empty('float32x2'),
-      sourceIds: empty('uint32'),
+      positions,
+      sourceIds: emptyRows,
       parameters,
       gridSize: [2, 2] as const,
       output

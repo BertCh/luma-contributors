@@ -87,12 +87,28 @@ export function validateGPUSpatialWeightsOrChunks(
 export function getGPUSpatialWeightsOrChunksViews(
   weights: GPUSpatialWeights | GPUChunkedSpatialWeights
 ): (GraphDataView<'uint32'> | GraphDataView<'float32'> | undefined)[] {
-  return getGPUSpatialWeightsChunks(weights).flatMap(chunk => [
-    chunk.weights.offsets,
-    chunk.weights.neighbors,
-    chunk.weights.weights,
-    chunk.weights.distances
-  ]);
+  return [
+    ...getGPUSpatialWeightsChunks(weights).flatMap(chunk => [
+      chunk.weights.offsets,
+      chunk.weights.neighbors,
+      chunk.weights.weights,
+      chunk.weights.distances
+    ]),
+    ...getGPUSpatialWeightsLossViews(weights)
+  ];
+}
+
+/** Loss of retained edges or upstream candidates makes the whole neighborhood unavailable. @internal */
+export function getGPUSpatialWeightsLossViews(
+  weights: GPUSpatialWeights | GPUChunkedSpatialWeights
+): GraphDataView<'uint32'>[] {
+  return [
+    ...new Set(
+      [weights, ...getGPUSpatialWeightsChunks(weights).map(chunk => chunk.weights)]
+        .flatMap(part => [part.status?.overflow, part.status?.candidateOverflow])
+        .filter((view): view is GraphDataView<'uint32'> => view !== undefined)
+    )
+  ];
 }
 
 /**

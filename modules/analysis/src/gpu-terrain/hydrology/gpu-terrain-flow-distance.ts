@@ -21,7 +21,7 @@ import {
 import {
   validateRasterCellSizeMode,
   type GPURasterCellSizeMode
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   getTerrainFlowTracingWGSL,

@@ -20,6 +20,7 @@ import {GPU_MOVEMENT_SENTINEL} from './movement-common';
 import {GPU_TRAJECTORY_SEGMENTS_PARAMETER_LENGTH} from './gpu-trajectory-segments';
 import {
   GPUTrajectorySegmentsOperation,
+  snapshotTrajectorySegmentsOperationProps,
   type TrajectorySegmentsOperationProps
 } from './gpu-trajectory-segments-operation';
 
@@ -33,6 +34,8 @@ export type CPUTrajectorySegmentsInput = CPUTrajectoryRows & {
     finishRows: Uint32Array;
     durations: Float32Array;
     count: Uint32Array;
+    overflow?: Uint32Array;
+    candidateOverflow?: Uint32Array;
   };
 };
 
@@ -48,6 +51,7 @@ export type CPUTrajectorySegmentsResult = {
   triplegCount: Uint32Array;
   triplegRequiredCount: Uint32Array;
   triplegOverflow: Uint32Array;
+  triplegCandidateOverflow: Uint32Array;
   tripIds: Uint32Array;
   tripStartRows: Uint32Array;
   tripFinishRows: Uint32Array;
@@ -57,6 +61,7 @@ export type CPUTrajectorySegmentsResult = {
   tripCount: Uint32Array;
   tripRequiredCount: Uint32Array;
   tripOverflow: Uint32Array;
+  tripCandidateOverflow: Uint32Array;
 };
 
 type SegmentRecord = {track: number; start: number; finish: number};
@@ -94,8 +99,15 @@ export function computeTrajectorySegmentsOnCPU(
   const [maximumGap, activityMinimumDuration] = input.parameters;
   const trackCount = trackOffsets.length - 1;
   const staypoints = input.staypoints;
+  const upstreamLoss = Number(
+    Boolean(staypoints?.overflow?.[0] || staypoints?.candidateOverflow?.[0])
+  );
   let stayCount = 0;
   if (staypoints) {
+    for (const field of ['overflow', 'candidateOverflow'] as const) {
+      if (staypoints[field] && staypoints[field]!.length === 0)
+        throw new Error(`staypoints.${field} must contain one row`);
+    }
     const capacity = staypoints.tracks.length;
     for (const column of ['startRows', 'finishRows', 'durations'] as const) {
       if (staypoints[column].length !== capacity)
@@ -131,6 +143,7 @@ export function computeTrajectorySegmentsOnCPU(
     triplegCount: new Uint32Array(1),
     triplegRequiredCount: new Uint32Array(1),
     triplegOverflow: new Uint32Array(1),
+    triplegCandidateOverflow: Uint32Array.of(upstreamLoss),
     tripIds: createMissingRows(tripCapacity),
     tripStartRows: createMissingRows(tripCapacity),
     tripFinishRows: createMissingRows(tripCapacity),
@@ -139,7 +152,8 @@ export function computeTrajectorySegmentsOnCPU(
     triplegTripIds: createMissingRows(options.triplegCapacity),
     tripCount: new Uint32Array(1),
     tripRequiredCount: new Uint32Array(1),
-    tripOverflow: new Uint32Array(1)
+    tripOverflow: new Uint32Array(1),
+    tripCandidateOverflow: Uint32Array.of(upstreamLoss)
   };
   const triplegs: SegmentRecord[] = [];
   for (let track = 0; track < trackCount; track++) {
@@ -181,6 +195,7 @@ export function computeTrajectorySegmentsOnCPU(
   result.triplegCount[0] = keptTriplegs.length;
   result.triplegRequiredCount[0] = triplegs.length;
   result.triplegOverflow[0] = Number(triplegs.length > options.triplegCapacity);
+  result.tripCandidateOverflow[0] = Number(Boolean(upstreamLoss || result.triplegOverflow[0]));
   if (options.tripCapacity === undefined) return result;
   const eventsByTrack: TripEvent[][] = Array.from({length: trackCount}, () => []);
   for (let stay = 0; stay < stayCount; stay++) {
@@ -274,6 +289,7 @@ export function computeTrajectorySegmentsOnCPU(
 /** CPU twin, retaining tripleg capacity as the input-table bound of downstream trip assembly. */
 export class CPUTrajectorySegmentsOperation extends GPUCPUOperation {
   constructor(props: TrajectorySegmentsOperationProps) {
+    props = snapshotTrajectorySegmentsOperationProps(props);
     const id = props.id ?? 'trajectory-segments';
     validateCapacity(id, 'rowCount', props.rowCount, 0);
     validateCapacity(id, 'triplegCapacity', props.triplegCapacity);
@@ -322,7 +338,13 @@ export class CPUTrajectorySegmentsOperation extends GPUCPUOperation {
                   startRows: getCPUOperationUint32Rows(id, inputs, 'stayStartRows'),
                   finishRows: getCPUOperationUint32Rows(id, inputs, 'stayFinishRows'),
                   durations: getCPUOperationFloat32Rows(id, inputs, 'stayDurations'),
-                  count: getCPUOperationUint32Rows(id, inputs, 'stayCount')
+                  count: getCPUOperationUint32Rows(id, inputs, 'stayCount'),
+                  overflow: props.staypoints.status.overflow
+                    ? getCPUOperationUint32Rows(id, inputs, 'stayOverflow')
+                    : undefined,
+                  candidateOverflow: props.staypoints.status.candidateOverflow
+                    ? getCPUOperationUint32Rows(id, inputs, 'stayCandidateOverflow')
+                    : undefined
                 }
               : undefined
           },

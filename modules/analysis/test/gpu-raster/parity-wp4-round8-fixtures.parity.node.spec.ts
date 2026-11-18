@@ -140,7 +140,7 @@ for (const name of names.filter(name => name.includes('lic-modes'))) {
 import costJSON from '../oracles/fixtures/parity-wp4-cost-modes.json';
 import sieveJSON from '../oracles/fixtures/parity-wp4-sieve-modes.json';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
-import {getRasterGridGeoreference} from '../../src/analysis-core/raster-grid';
+import {getRasterGridGeoreference} from '../../src/analysis-core/contracts/raster-grid';
 import {
   computeCostDistance,
   computeBands,

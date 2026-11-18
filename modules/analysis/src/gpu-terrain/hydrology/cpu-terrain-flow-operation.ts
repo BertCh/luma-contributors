@@ -13,7 +13,7 @@ import {
   getRasterGroundCellSize,
   validateRasterCellSizeMode,
   type RasterGridGeoreference
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 import {
   validateRasterGridAxisAligned,
   validateRasterGridOrthogonal

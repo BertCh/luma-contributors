@@ -36,13 +36,14 @@ it('matches hand-integrated disjoint cell pieces with unequal coverage and calib
   }
 });
 
-it('retains the contributor mean denominator floor for normal float32 coverage below 1e-30', () => {
+it('preserves the observation for normal float32 coverage below 1e-30', () => {
   const input = createStatisticsInput();
   input.coverage.count[0] = 1;
+  input.coverage.requiredCount[0] = 1;
   input.coverage.fractions[0] = 1e-32;
   const result = computeRasterFractionalZonalStatisticsOnCPU(input, STATISTICS_PROPS);
-  // Calibrated value 5, weight about 1e-32, denominator 1e-30: mean about 0.05, not 5.
-  expect(Math.abs(result.means[0] - 0.05)).toBeLessThanOrEqual(1e-8);
+  // Positive normal float32 weights must divide by their actual sum.
+  expect(result.means[0]).toBe(5);
   expect(result.validity[0]).toBe(1);
   expect(result.validArea[0]).toBeGreaterThan(0);
 });
@@ -50,7 +51,7 @@ it('retains the contributor mean denominator floor for normal float32 coverage b
 it('matches completeness, count clamping, ignored IDs and the compile-time area fallback', () => {
   const input = createStatisticsInput();
   input.parameters = undefined;
-  input.coverage.requiredCount[0] = 500; // Deliberately ignored by this contributor.
+  input.coverage.requiredCount[0] = input.coverage.count[0];
   input.coverage.zoneValidity[1] = 0;
   const result = computeRasterFractionalZonalStatisticsOnCPU(input, STATISTICS_PROPS);
   expect(Array.from(result.totals)).toEqual([4.75, NaN, NaN, NaN]);
@@ -64,10 +65,8 @@ it('matches completeness, count clamping, ignored IDs and the compile-time area 
   input.coverage.overflow[0] = 0;
   input.coverage.zoneValidity.fill(1);
   input.coverage.count[0] = 999;
-  // Clamping includes exactly one additional tuple, value 25 times coverage 1.
-  expect(computeRasterFractionalZonalStatisticsOnCPU(input, STATISTICS_PROPS).totals[0]).toBe(
-    29.75
-  );
+  // An out-of-capacity count is incomplete, even though reads remain clamped for safety.
+  expect(computeRasterFractionalZonalStatisticsOnCPU(input, STATISTICS_PROPS).totals[0]).toBeNaN();
 });
 
 it('rounds the nodata sentinel and honors integer band formats and exact lengths', () => {
@@ -79,6 +78,7 @@ it('rounds the nodata sentinel and honors integer band formats and exact lengths
     noDataValue: 0.1
   };
   input.coverage.count[0] = 1;
+  input.coverage.requiredCount[0] = 1;
   expect(computeRasterFractionalZonalStatisticsOnCPU(input, STATISTICS_PROPS).validity[0]).toBe(0);
   for (const format of ['sint32', 'uint32'] as const) {
     input.input = {

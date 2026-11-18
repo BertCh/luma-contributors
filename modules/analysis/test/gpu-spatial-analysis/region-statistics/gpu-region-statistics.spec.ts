@@ -73,6 +73,7 @@ type Fixture = {
   idsBuffer: Buffer;
   countBuffer: Buffer;
   overflowBuffer: Buffer;
+  candidateOverflowBuffer: Buffer;
   totalBuffer: Buffer;
   summaryBuffer: Buffer;
   summary: ReturnType<typeof importGraphBuffer<'uint32', void>>;
@@ -86,6 +87,7 @@ function createFixture(device: Device, id: string, capacity: number, binCount: n
   const idsBuffer = createOutputBuffer(device, capacity);
   const countBuffer = createOutputBuffer(device, 1);
   const overflowBuffer = createOutputBuffer(device, 1);
+  const candidateOverflowBuffer = createOutputBuffer(device, 1);
   const totalBuffer = createOutputBuffer(device, 1);
   const summaryBuffer = createOutputBuffer(device, getGPURegionStatisticsSummaryLength(binCount));
   return {
@@ -98,6 +100,7 @@ function createFixture(device: Device, id: string, capacity: number, binCount: n
       idsBuffer,
       countBuffer,
       overflowBuffer,
+      candidateOverflowBuffer,
       totalBuffer,
       summaryBuffer
     ],
@@ -109,12 +112,20 @@ function createFixture(device: Device, id: string, capacity: number, binCount: n
       status: {
         count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
         overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
+        candidateOverflow: importGraphBuffer(
+          graph,
+          'candidate-overflow',
+          candidateOverflowBuffer,
+          'uint32',
+          1
+        ),
         requiredCount: importGraphBuffer(graph, 'total', totalBuffer, 'uint32', 1)
       }
     },
     idsBuffer,
     countBuffer,
     overflowBuffer,
+    candidateOverflowBuffer,
     totalBuffer,
     summaryBuffer,
     summary: importGraphBuffer(
@@ -358,13 +369,22 @@ it('GPURegionStatistics summarizes a lasso and flags vertex overflow', async () 
   expect(Array.from(summary.histogram)).toEqual([2, 1, 2, 1]);
   expect(await readCompactIds(fixture.idsBuffer, fixture.countBuffer)).toEqual(rows);
   expect(summary.regionTruncated).toBe(false);
+  expect(await readUint32(fixture.overflowBuffer, 1)).toEqual([0]);
+  expect(await readUint32(fixture.candidateOverflowBuffer, 1)).toEqual([0]);
 
   vertexCount.write(Uint32Array.of(99));
   submitGraph(device, compiled, undefined);
   summary = await readSummary(fixture.summaryBuffer, 4);
   expect(summary.regionTruncated).toBe(true);
   expect(summary.selectedCount).toBe(rows.length);
-  expect(await readUint32(fixture.overflowBuffer, 1)).toEqual([1]);
+  expect(await readUint32(fixture.overflowBuffer, 1)).toEqual([0]);
+  expect(await readUint32(fixture.candidateOverflowBuffer, 1)).toEqual([1]);
+
+  vertexCount.write(Uint32Array.of(5));
+  submitGraph(device, compiled, undefined);
+  expect((await readSummary(fixture.summaryBuffer, 4)).regionTruncated).toBe(false);
+  expect(await readUint32(fixture.overflowBuffer, 1)).toEqual([0]);
+  expect(await readUint32(fixture.candidateOverflowBuffer, 1)).toEqual([0]);
 
   compiled.destroy();
   vertexCount.destroy();

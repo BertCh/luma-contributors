@@ -66,3 +66,30 @@ it('getGPURegressionPredictorNames uses spreg default names', () => {
   expect(getGPURegressionPredictorNames(2)).toEqual(['CONSTANT', 'x0', 'x1']);
   expect(getGPURegressionPredictorNames(2, ['income'])).toEqual(['CONSTANT', 'income', 'x1']);
 });
+
+for (const rowCount of [3, 4, 5]) {
+  it(`derived AICc requires n > criterion parameter count + 1 at n=${rowCount}`, () => {
+    const input = {
+      kind: 'ordinary-least-squares' as const,
+      coefficients: [coefficient('CONSTANT', 1), coefficient('x0', 2)],
+      rowCount,
+      residualSumOfSquares: 1,
+      standardErrorSigmaSquared: 'degrees-of-freedom' as const,
+      statusCode: 0,
+      logLikelihood: -10,
+      // Counting variance for the criterion can differ from the fitted coefficient count.
+      informationCriterionParameterCount: 3
+    };
+    const result = createGPURegressionModelResult(input);
+    expect(result.status.ok).toBe(true);
+    expect(result.akaikeInformationCriterion).toBe(26);
+    if (rowCount <= 4) expect(result.correctedAkaikeInformationCriterion).toBeNull();
+    else expect(result.correctedAkaikeInformationCriterion).toBe(50);
+    for (const override of [null, 12, Infinity]) {
+      expect(
+        createGPURegressionModelResult({...input, correctedAkaikeInformationCriterion: override})
+          .correctedAkaikeInformationCriterion
+      ).toBe(override);
+    }
+  });
+}

@@ -21,10 +21,15 @@ import {
   getStorageBindingElementLimit,
   validateCapacity,
   validateMaximumCount,
+  validateRequirement,
+  validateSinglePackedView,
   getGraphOutputViews as getRasterPreflightOutputViews
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {GPUIsobands} from './gpu-isobands';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {snapshotRasterBand} from '../raster-band-utils';
 
 /**
  * Largest `edgeCapacity` of {@link GPUIsobandRings} on `device`: the boundary edge list holds one
@@ -62,10 +67,10 @@ export type GPUIsobandRingsStatus = {
   /** Optional one-row scalar receiving the number of band boundary edges before ring assembly. */
   edgeCount?: GraphDataView<'uint32'>;
   /**
-   * Optional one-row scalar receiving 1 when more boundary edges existed than `edgeCapacity`. The
-   * rings are then incomplete (open chains are dropped), so raise the capacity.
+   * Required packed uint32 view with at least one row. Its first word receives 1 when more boundary
+   * edges existed than `edgeCapacity`; spare words are untouched. Rings are then incomplete.
    */
-  edgeOverflow?: GraphDataView<'uint32'>;
+  edgeOverflow: GraphDataView<'uint32'>;
 };
 
 /**
@@ -145,8 +150,127 @@ export class GPUIsobandRings implements GPUCommandNodeProducer {
   readonly props: GPUIsobandRingsProps;
 
   constructor(props: GPUIsobandRingsProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'values',
+      'mask',
+      'noDataValue',
+      'breaks',
+      'parameters',
+      'edgeCapacity',
+      'vertexTolerance',
+      'splitTouchingRings',
+      'output'
+    ]);
+    const grid = snapshotConstructionFields(captured.grid, [
+      'width',
+      'height',
+      'affine',
+      'pixelInterpretation',
+      'coordinateReferenceSystem',
+      'level',
+      'levelZeroOrigin'
+    ]);
+    const output = snapshotConstructionFields(captured.output, [
+      'ringOffsets',
+      'positions',
+      'ringAreas',
+      'ringIsHole',
+      'ringShells',
+      'ringGroups',
+      'segmentRings',
+      'segmentVertices',
+      'segmentFlags',
+      'polygons',
+      'status'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      grid: Object.freeze({
+        ...grid,
+        affine: grid.affine && (Object.freeze([...grid.affine]) as GPURasterMetadata['affine']),
+        levelZeroOrigin:
+          grid.levelZeroOrigin &&
+          (Object.freeze([...grid.levelZeroOrigin]) as readonly [number, number])
+      }),
+      values: 'storage' in captured.values ? snapshotRasterBand(captured.values) : captured.values,
+      output: Object.freeze({
+        ...output,
+        status: snapshotConstructionFields(output.status, [
+          'count',
+          'overflow',
+          'requiredCount',
+          'openSegmentCount',
+          'touchingSegmentCount',
+          'edgeCount',
+          'edgeOverflow'
+        ]),
+        polygons:
+          output.polygons &&
+          snapshotConstructionFields(output.polygons, [
+            'kind',
+            'positions',
+            'ringOffsets',
+            'polygonOffsets',
+            'featureOffsets',
+            'sourceIds'
+          ])
+      })
+    });
     this.id = props.id ?? 'isoband-rings';
     this.props = props;
+    validateRequirement(
+      this.id,
+      Boolean(props.output.status.edgeOverflow),
+      'output.status.edgeOverflow is required to expose intermediate edge loss'
+    );
+    validateSinglePackedView(
+      props.output.status.edgeOverflow,
+      ['uint32'],
+      `${this.id} output.status.edgeOverflow`
+    );
+    validateCapacity(
+      this.id,
+      'output.status.edgeOverflow.length',
+      props.output.status.edgeOverflow.length,
+      1
+    );
+    const {edgeCount, edgeOverflow, ...ringStatus} = props.output.status;
+    const finalFields = {
+      ...Object.fromEntries(
+        Object.entries(props.output).filter(([name]) => name !== 'status' && name !== 'polygons')
+      ),
+      ...Object.fromEntries(
+        Object.entries(ringStatus).map(([name, view]) => [`status.${name}`, view])
+      ),
+      ...Object.fromEntries(
+        Object.entries(props.output.polygons ?? {}).map(([name, view]) => [
+          `polygons.${name}`,
+          view
+        ])
+      )
+    };
+    validateDisjointWritableViews(
+      this.id,
+      {'output.status.edgeCount': edgeCount, 'output.status.edgeOverflow': edgeOverflow},
+      {separateDispatches: true}
+    );
+    for (const [name, field] of Object.entries(finalFields)) {
+      for (const view of getRasterPreflightOutputViews({field})) {
+        validateDisjointWritableViews(
+          this.id,
+          {'output.status.edgeOverflow': edgeOverflow, [`output.${name}`]: view},
+          {separateDispatches: true}
+        );
+        if (edgeCount)
+          validateDisjointWritableViews(
+            this.id,
+            {'output.status.edgeCount': edgeCount, [`output.${name}`]: view},
+            {separateDispatches: true}
+          );
+      }
+    }
     if (!Number.isInteger(props.edgeCapacity) || props.edgeCapacity < 1) {
       throw new Error(`${this.id} edgeCapacity must be a positive integer`);
     }
@@ -208,8 +332,7 @@ export class GPUIsobandRings implements GPUCommandNodeProducer {
     const edgeBands = createTransientView(graph, `${id}-edge-bands`, 'uint32', props.edgeCapacity);
     const edgeCount =
       output.status.edgeCount ?? createTransientView(graph, `${id}-edge-count`, 'uint32', 1);
-    const edgeOverflow =
-      output.status.edgeOverflow ?? createTransientView(graph, `${id}-edge-overflow`, 'uint32', 1);
+    const edgeOverflow = output.status.edgeOverflow;
     const isobands = new GPUIsobands({
       id: `${id}-isobands`,
       grid: props.grid,

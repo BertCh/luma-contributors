@@ -4,6 +4,7 @@
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUStreamlines, type GPUStreamlinesProps} from './gpu-streamlines';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 /** Streamline graph values, including optional pre-publication candidate diagnostics. */
 export type StreamlinesOperationProps = Pick<
@@ -24,7 +25,10 @@ export type StreamlinesOperationProps = Pick<
   lineCapacity: number;
   pointCapacity: number;
   output: {
-    lines: {ids: string; status: {count: string; requiredCount?: string; overflow: string}};
+    lines: {
+      ids: string;
+      status: {count: string; requiredCount?: string; overflow: string; candidateOverflow?: string};
+    };
     lineOffsets: string;
     positions: string;
     positionCount: string;
@@ -33,9 +37,63 @@ export type StreamlinesOperationProps = Pick<
   };
 };
 
+/** @internal Capture operation topology once, including inherited budget and status fields. */
+export function snapshotStreamlinesOperationProps(
+  props: StreamlinesOperationProps
+): StreamlinesOperationProps {
+  const captured = snapshotConstructionFields(props, [
+    'id',
+    'fieldWidth',
+    'fieldHeight',
+    'gridWidth',
+    'gridHeight',
+    'seedColumns',
+    'seedRows',
+    'stepsPerDirection',
+    'maximumIterations',
+    'velocities',
+    'parameters',
+    'uint32Parameters',
+    'lineCapacity',
+    'pointCapacity',
+    'output'
+  ]);
+  const output = snapshotConstructionFields(captured.output, [
+    'lines',
+    'lineOffsets',
+    'positions',
+    'positionCount',
+    'status',
+    'candidates'
+  ]);
+  const lines = snapshotConstructionFields(output.lines, ['ids', 'status']);
+  return Object.freeze({
+    ...captured,
+    output: Object.freeze({
+      ...output,
+      lines: Object.freeze({
+        ...lines,
+        status: snapshotConstructionFields(lines.status, [
+          'count',
+          'requiredCount',
+          'overflow',
+          'candidateOverflow'
+        ])
+      }),
+      status: output.status
+        ? snapshotConstructionFields(output.status, ['iterationLimitReached'])
+        : undefined,
+      candidates: output.candidates
+        ? snapshotConstructionFields(output.candidates, ['positions', 'spans'])
+        : undefined
+    })
+  });
+}
+
 /** Vector-backed streamlines; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUStreamlinesOperation extends GPUContributorOperation {
   constructor(props: StreamlinesOperationProps) {
+    props = snapshotStreamlinesOperationProps(props);
     const {output} = props;
     super({
       id: props.id ?? 'streamlines',
@@ -64,10 +122,9 @@ export class GPUStreamlinesOperation extends GPUContributorOperation {
             }
           : {}),
         ...Object.fromEntries(
-          Object.entries({...output.lines.status, ...output.status}).map(([port, value]) => [
-            port,
-            {value, format: 'uint32' as const, length: 1}
-          ])
+          Object.entries({...output.lines.status, ...output.status})
+            .filter(([, value]) => value !== undefined)
+            .map(([port, value]) => [port, {value, format: 'uint32' as const, length: 1}])
         )
       },
       createContributor: getView =>
@@ -88,6 +145,10 @@ export class GPUStreamlinesOperation extends GPUContributorOperation {
               status: {
                 count: getView<'uint32'>('count'),
                 overflow: getView<'uint32'>('overflow'),
+                candidateOverflow:
+                  output.lines.status.candidateOverflow !== undefined
+                    ? getView<'uint32'>('candidateOverflow')
+                    : undefined,
                 requiredCount:
                   output.lines.status.requiredCount !== undefined
                     ? getView<'uint32'>('requiredCount')

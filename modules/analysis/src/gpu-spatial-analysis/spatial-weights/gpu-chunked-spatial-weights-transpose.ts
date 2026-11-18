@@ -82,7 +82,7 @@ export type GPUChunkedSpatialWeightsTransposeProps<
 > = {
   /** Prefix for generated node and transient IDs. Defaults to 'chunked-spatial-weights-transpose'. */
   id?: string;
-  /** Chunked weights W. Neighbor IDs outside [0, columnCount) are dropped. */
+  /** Chunked W. Chunk-local loss ports are refused; use an outer aggregate status. Out-of-range neighbors are dropped. */
   weights: GPUChunkedSpatialWeights;
   /** Number of columns of W. Defaults to the total input row count. */
   columnCount?: number;
@@ -149,6 +149,13 @@ export class GPUChunkedSpatialWeightsTranspose<
     const {id} = this;
     const {weights, output} = props;
     this.rowCount = validateGPUChunkedSpatialWeights(id, weights);
+    for (const [index, chunk] of weights.chunks.entries()) {
+      validateRequirement(
+        id,
+        !chunk.weights.status?.overflow && !chunk.weights.status?.candidateOverflow,
+        `input chunk ${index} status loss ports must be aggregated on outer weights.status`
+      );
+    }
     this.columnCount = props.columnCount ?? this.rowCount;
     validateCapacity(id, 'rowCount', this.rowCount);
     validateCapacity(id, 'columnCount', this.columnCount, 1, MAXIMUM_SLOT_COUNT - 1);

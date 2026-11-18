@@ -143,13 +143,18 @@ it('edge volumes preflights transition table scratch before declaring conversion
   const context = createKernelAuditContext('transition-scratch');
   const {graph, view} = context;
   const contributor = new GPUMapMatchedEdgeVolumes({
-    traversedEdges: {edges: view('uint32', 8), counts: view('uint32', 2)},
+    traversedEdges: {
+      edges: view('uint32', 8),
+      counts: view('uint32', 2),
+      completeness: 'known-complete'
+    },
     trackCount: 2,
     traversedEdgeCapacity: 4,
     edgeCount: 4,
     transitionPairCapacity: 64,
     output: {
       edgeVolumes: view('uint32', 4),
+      status: {candidateOverflow: view('uint32', 1)},
       transitions: {
         ids: view('uint32', 2),
         status: {count: view('uint32', 1), overflow: view('uint32', 1)}
@@ -215,13 +220,18 @@ it('edge volumes accepts disjoint packed outputs written by its separate aggrega
     expect(() =>
       graph.add(
         new GPUMapMatchedEdgeVolumes({
-          traversedEdges: {edges: view('uint32', 8), counts: view('uint32', 2)},
+          traversedEdges: {
+            edges: view('uint32', 8),
+            counts: view('uint32', 2),
+            completeness: 'known-complete'
+          },
           trackCount: 2,
           traversedEdgeCapacity: 4,
           edgeCount: 4,
           transitionPairCapacity: 8,
           output: {
             edgeVolumes: graph.createDataView(storage, {format: 'uint32', length: 4}),
+            status: {candidateOverflow: view('uint32', 1)},
             transitions: {
               ids: graph.createDataView(storage, {format: 'uint32', length: 2, byteOffset: 16}),
               status: {count: view('uint32', 1), overflow: view('uint32', 1)}

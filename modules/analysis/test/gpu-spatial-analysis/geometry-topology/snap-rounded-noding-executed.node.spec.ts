@@ -242,6 +242,8 @@ type NodingOptions = {
   outputCapacity?: number;
   sourceIds?: number[];
   spatialSort?: boolean;
+  leafCapacity?: number;
+  candidateLossFrames?: readonly (readonly [number, number])[];
 };
 
 /** Runs `GPUSnapRoundedNoding` on the CPU executor for lines of world vertices (NaN allowed). */
@@ -289,9 +291,31 @@ function runNoding(lines: readonly (readonly [number, number])[][], options: Nod
     gridSize,
     intersectionCapacity: options.intersectionCapacity ?? 64,
     spatialSort: options.spatialSort,
+    leafCapacity: options.leafCapacity,
     output
   });
-  executeCommandNodesOnCPU(contributor.getCommandNodes(graph), memory);
+  const nodes = contributor.getCommandNodes(graph);
+  executeCommandNodesOnCPU(nodes, memory);
+  const candidateLossFrames: number[] = [];
+  if (options.candidateLossFrames) {
+    const publication = nodes.find(node => node.id.endsWith('-status-candidates'))!;
+    const findStatusView = (suffix: string) => {
+      for (const resource of publication.resources ?? []) {
+        if (!('buffer' in resource)) continue;
+        const view = resource.buffer;
+        if (view && 'format' in view && view.buffer.id.endsWith(suffix)) return view;
+      }
+      throw new Error(`missing noding status input ${suffix}`);
+    };
+    const crossingLoss = findStatusView('-crossing-candidate-overflow');
+    const incidenceLoss = findStatusView('-incidence-candidate-overflow');
+    for (const [crossing, incidence] of options.candidateLossFrames) {
+      memory.write(crossingLoss, Uint32Array.of(crossing));
+      memory.write(incidenceLoss, Uint32Array.of(incidence));
+      executeCommandNodesOnCPU([publication], memory);
+      candidateLossFrames.push(memory.readUint32(output.status.candidateOverflow)[0]);
+    }
+  }
   const read = (view: typeof output.status.count) => memory.readUint32(view)[0];
   const count = read(output.status.count);
   const lattice = Array.from(memory.readFloat32(output.lattice));
@@ -310,6 +334,7 @@ function runNoding(lines: readonly (readonly [number, number])[][], options: Nod
     required: read(output.status.requiredCount),
     overflow: read(output.status.overflow),
     candidateOverflow: read(output.status.candidateOverflow),
+    candidateLossFrames,
     uncertain: read(output.status.uncertainCount),
     pieces,
     worldRows,
@@ -325,6 +350,52 @@ function runNoding(lines: readonly (readonly [number, number])[][], options: Nod
 const NAN = Number.NaN;
 
 describe('GPUSnapRoundedNoding WGSL executed on the CPU', () => {
+  it('publishes crossing loss, incidence loss and recovery on the same status node', () => {
+    const result = runNoding(
+      [
+        [
+          [0, 0],
+          [2, 0]
+        ]
+      ],
+      {
+        candidateLossFrames: [
+          [1, 0],
+          [0, 1],
+          [0, 0]
+        ]
+      }
+    );
+    expect(result.candidateLossFrames).toEqual([1, 1, 0]);
+    expect(result.candidateOverflow).toBe(0);
+    expect(result.overflow).toBe(0);
+    expect(result.count).toBe(1);
+  });
+
+  it('propagates bounded crossing candidates without final overflow', () => {
+    const lines: [number, number][][] = [
+      [
+        [-1, 0],
+        [1, 0]
+      ],
+      [
+        [0, -1],
+        [0, 1]
+      ],
+      [
+        [-1, -1],
+        [1, 1]
+      ]
+    ];
+    const incomplete = runNoding(lines, {leafCapacity: 1, outputCapacity: 128});
+    expect(incomplete.candidateOverflow).toBe(1);
+    expect(incomplete.overflow).toBe(0);
+    const complete = runNoding(lines, {leafCapacity: 8, outputCapacity: 128});
+    expect(complete.candidateOverflow).toBe(0);
+    expect(complete.overflow).toBe(0);
+    expect(complete.count).toBe(6);
+  });
+
   it('nodes a crossing at a half pixel and reroutes through a nearby vertex', () => {
     const cross = runNoding([
       [
@@ -505,7 +576,8 @@ describe('GPUSnapRoundedNoding WGSL executed on the CPU', () => {
         [4, 0]
       ]
     ]);
-    expect(nonFinite.overflow).toBe(1);
+    expect(nonFinite.overflow).toBe(0);
+    expect(nonFinite.candidateOverflow).toBe(1);
     const small = runNoding(
       [
         [
@@ -695,7 +767,8 @@ describe('GPUSnapRoundedNoding WGSL executed on the CPU', () => {
         [1, 0]
       ]
     ]);
-    expect(huge.overflow).toBe(1);
+    expect(huge.overflow).toBe(0);
+    expect(huge.candidateOverflow).toBe(1);
     // The frame falls back to the unit lattice at the origin: the two huge vertices are dropped
     // (NaN) and the small line survives.
     expect(huge.lattice).toEqual([0, 0, 1, 0]);

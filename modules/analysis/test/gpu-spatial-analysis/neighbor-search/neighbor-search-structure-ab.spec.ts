@@ -11,7 +11,7 @@
  * not beat it on clustered data, change the default or the gate threshold
  * (`GPU_NEIGHBOR_SEARCH_BVH_OCCUPANCY_THRESHOLD`).
  *
- * Run with `LUMA_TEST_BROWSER_BENCHMARKS=true npx vitest run --project headless --no-file-parallelism --silent=false <this file>`.
+ * Run with `yarn test-headless modules/analysis/test/gpu-spatial-analysis/neighbor-search/neighbor-search-structure-ab.spec.ts`.
  */
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';

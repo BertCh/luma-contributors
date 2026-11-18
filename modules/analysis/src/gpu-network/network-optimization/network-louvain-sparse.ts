@@ -27,7 +27,7 @@ import {
 import {
   validateGPUNetworkTopology,
   getGPUNetworkTopologyViews
-} from '../../analysis-core/network-topology';
+} from '../../analysis-core/contracts/network-topology';
 import {
   createWGSLKernelNode,
   createWGSLDispatchGate,

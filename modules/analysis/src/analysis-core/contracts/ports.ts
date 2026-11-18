@@ -2,9 +2,24 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GraphDataView, GraphVectorView} from '@luma.gl/graph/gpu-core';
+import type {
+  GPUCommandGraph,
+  GPUCommandNode,
+  GraphDataView,
+  GraphVectorView
+} from '@luma.gl/graph/gpu-core';
+import {getViewBindingRange} from '@luma.gl/graph/gpu-core';
 import type {GPUFloat32Positions} from '@luma.gl/graph/geospatial';
 import type {GPUUint32Rows} from '../kernels/gpu-contributor-types';
+import {
+  validateGraphOutputsDisjointFromInputs,
+  validateGPUStorageBindingByteLength,
+  validateRequirement,
+  validateSinglePackedView
+} from '../kernels/gpu-contributor-utils';
+import {getBinarySearchWGSL} from '../kernels/binary-search-wgsl';
+import {snapshotConstructionFields} from '../kernels/construction-snapshot';
+import {createWGSLKernelNode} from '../kernels/wgsl-kernel-nodes';
 import type {
   GPUBoundedResultStatusPort,
   GPUCandidateStatusPort,
@@ -20,6 +35,8 @@ export type {GPUCompactOutput, GPUUint32Rows} from '../kernels/gpu-contributor-t
 /** Point features with optional stable source identity. */
 export type GPUPointGeometryPort = {
   kind: 'points';
+  /** Single-point rows have no feature-to-part grouping. */
+  featureOffsets?: never;
   positions: GPUFloat32Positions;
   sourceIds?: GPUUint32Rows;
 };
@@ -27,11 +44,72 @@ export type GPUPointGeometryPort = {
 /** Linestring features in a global offset layout. */
 export type GPULineGeometryPort = {
   kind: 'lines';
+  /** Single-linestring rows have no feature-to-part grouping. */
+  featureOffsets?: never;
   positions: GPUFloat32Positions;
   /** Feature-to-vertex offsets with one terminal entry. */
   lineOffsets: GraphDataView<'uint32'>;
   sourceIds?: GPUUint32Rows;
 };
+
+/**
+ * Multipoint features: `featureOffsets` maps feature rows to point-part rows in `positions`.
+ * Offsets start at zero, are nondecreasing and end at `positions.length`. Equal consecutive
+ * offsets describe an empty feature. `sourceIds`, when present, has one row per feature.
+ * A consumer must explicitly support multipart inputs; this port is not a single-point port.
+ */
+export type GPUMultipartPointGeometryPort = Omit<GPUPointGeometryPort, 'featureOffsets'> & {
+  /** Feature-to-point-part offsets, with one terminal entry. */
+  featureOffsets: GraphDataView<'uint32'>;
+};
+
+/**
+ * Multilinestring features: `featureOffsets` maps feature rows to linestring-part rows;
+ * `lineOffsets` maps those parts to vertices. Both offset arrays start at zero, are nondecreasing
+ * and end at the child count. Empty parts and empty features are distinct and allowed.
+ * `sourceIds`, when present, has one row per feature, independent of the part count.
+ * A consumer must explicitly support multipart inputs.
+ */
+export type GPUMultipartLineGeometryPort = Omit<GPULineGeometryPort, 'featureOffsets'> & {
+  /** Feature-to-linestring-part offsets, with one terminal entry. */
+  featureOffsets: GraphDataView<'uint32'>;
+};
+
+/** Point or line features with an explicit feature-to-part level. */
+export type GPUMultipartGeometryPort = GPUMultipartPointGeometryPort | GPUMultipartLineGeometryPort;
+
+/** Captures a single-part consumer's port before unpacking can discard grouping. @internal */
+export function snapshotSinglePartGeometryPort<Geometry extends GPUFeatureGeometryPort>(
+  id: string,
+  name: string,
+  geometry: Geometry
+): Readonly<Geometry> {
+  const identity = snapshotConstructionFields(geometry, [
+    'kind',
+    'featureOffsets'
+  ] as (keyof Geometry)[]);
+  validateRequirement(
+    id,
+    (identity.kind !== 'points' && identity.kind !== 'lines') ||
+      identity.featureOffsets === undefined,
+    `${name}.featureOffsets multipart ${identity.kind} are unsupported by this consumer`
+  );
+  const topologyFields =
+    identity.kind === 'lines'
+      ? ['lineOffsets']
+      : identity.kind === 'polygons'
+        ? ['polygonOffsets', 'ringOffsets']
+        : identity.kind === 'trajectories'
+          ? ['trackOffsets', 'timestamps', 'temporalContext']
+          : [];
+  const fields = Array.from(
+    new Set(['positions', 'sourceIds', ...topologyFields, ...Object.keys(geometry)])
+  ).filter(field => field !== 'kind' && field !== 'featureOffsets') as (keyof Geometry)[];
+  return Object.freeze({...snapshotConstructionFields(geometry, fields), ...identity});
+}
+
+/** Missing owner written for a part outside the supplied feature-offset range. */
+export const GPU_MULTIPART_NO_FEATURE_ROW = 0xffffffff;
 
 /** Polygon or multipolygon features in a GeoArrow-compatible offset layout. */
 export type GPUPolygonGeometryPort = {
@@ -74,7 +152,9 @@ export type GPUTrajectoryGeometryPort<
 /** Canonical logical feature geometry accepted by spatial-analysis contributors. */
 export type GPUFeatureGeometryPort =
   | GPUPointGeometryPort
+  | GPUMultipartPointGeometryPort
   | GPULineGeometryPort
+  | GPUMultipartLineGeometryPort
   | GPUPolygonGeometryPort
   | GPUTrajectoryGeometryPort;
 
@@ -122,7 +202,7 @@ export type GPUPolygonGeometryFields = Omit<
 /** The line layout as flat contributor props: `positions` and `lineOffsets`, one row per line. */
 export type GPULineGeometryFields = Omit<
   GPUPackedGeometryPort<GPULineGeometryPort>,
-  'kind' | 'sourceIds'
+  'kind' | 'sourceIds' | 'featureOffsets'
 >;
 
 /**
@@ -135,8 +215,10 @@ export type GPUTrajectoryGeometryFields<
 
 /** Capacity-bounded pairs with explicit final and candidate completeness. */
 export type GPUCompactPairPort = {
-  leftIds: GraphDataView<'uint32'>;
-  rightIds: GraphDataView<'uint32'>;
+  /** Left input row offsets, never application identities. */
+  leftRows: GraphDataView<'uint32'>;
+  /** Right input row offsets, never application identities. */
+  rightRows: GraphDataView<'uint32'>;
   /** Pair count, final overflow and, when refinement is candidate-bounded, candidate overflow. */
   status: GPUCardinalityPort & GPUOverflowStatusPort & GPUCandidateStatusPort;
 };
@@ -156,8 +238,8 @@ export type GPUCellTablePort = {
   cells: GraphDataView<'uint32x2'>;
   /** Optional source-row occupancy per cell. */
   counts?: GraphDataView<'uint32'>;
-  /** Occupied row count, optional unclamped requirement and optional overflow. */
-  status: GPUCardinalityPort & Partial<GPUOverflowStatusPort>;
+  /** Occupied rows, retained-input requirement, final overflow and optional inherited source loss. */
+  status: GPUCardinalityPort & Partial<GPUOverflowStatusPort> & GPUCandidateStatusPort;
 };
 
 /** Regular sampled field with an explicit row-major shape and nodata convention. */
@@ -215,6 +297,14 @@ function validateSourceIds(id: string, sourceIds: GPUUint32Rows | undefined, len
 /** Validates the static formats and lengths visible from a feature-geometry port. */
 export function validateGPUFeatureGeometryPort(id: string, geometry: GPUFeatureGeometryPort): void {
   validateFormat(id, 'positions', geometry.positions, 'float32x2');
+  if (
+    (geometry.kind === 'points' || geometry.kind === 'lines') &&
+    'featureOffsets' in geometry &&
+    geometry.featureOffsets !== undefined
+  ) {
+    validateGPUMultipartGeometryPort(id, geometry);
+    return;
+  }
   if (geometry.kind === 'points') {
     validateSourceIds(id, geometry.sourceIds, geometry.positions.length);
     return;
@@ -254,12 +344,105 @@ export function validateGPUFeatureGeometryPort(id: string, geometry: GPUFeatureG
   validateSourceIds(id, geometry.sourceIds, geometry.trackOffsets.length - 1);
 }
 
+/**
+ * Validates the static formats and lengths of a multipart point/line port. Offset contents stay
+ * GPU-resident: the caller supplies the nondecreasing, zero-based complete hierarchy documented
+ * on the port. A single terminal entry represents zero features or zero line parts.
+ */
+export function validateGPUMultipartGeometryPort(
+  id: string,
+  geometry: GPUMultipartGeometryPort
+): void {
+  validateFormat(id, 'positions', geometry.positions, 'float32x2');
+  validateFormat(id, 'featureOffsets', geometry.featureOffsets, 'uint32');
+  validateRequirement(
+    id,
+    geometry.featureOffsets.length >= 1,
+    'featureOffsets must contain a terminal entry'
+  );
+  if (geometry.kind === 'lines') {
+    validateFormat(id, 'lineOffsets', geometry.lineOffsets, 'uint32');
+    validateRequirement(
+      id,
+      geometry.lineOffsets.length >= 1,
+      'lineOffsets must contain a terminal entry'
+    );
+  }
+  validateSourceIds(id, geometry.sourceIds, geometry.featureOffsets.length - 1);
+}
+
+/**
+ * Creates a feature-row owner adapter, with one invocation and one `featureRows` output row per
+ * point part or linestring part. Empty features own no parts; an empty linestring still has an
+ * owner. Application `sourceIds` never determine ownership. The adapter reads current offsets
+ * each submission and uses binary search rather than a serial expansion over features.
+ *
+ * Inputs must satisfy {@link GPUMultipartGeometryPort}'s offset-content contract. Uncovered parts
+ * receive {@link GPU_MULTIPART_NO_FEATURE_ROW}; this is distinct from an empty feature. For this
+ * adapter, `featureOffsets` and `featureRows` must be packed views in disjoint buffers, each fitting
+ * the device's storage-binding limit. `featureRows.length` must equal the part count. Positions
+ * and line-offset contents are not read by this node.
+ */
+export function createGPUMultipartRowOwnersNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  id: string,
+  geometry: GPUMultipartGeometryPort,
+  featureRows: GraphDataView<'uint32'>
+): GPUCommandNode<Parameters> {
+  validateGPUMultipartGeometryPort(id, geometry);
+  const featureOffsets = geometry.featureOffsets;
+  const featureCount = featureOffsets.length - 1;
+  const partCount =
+    geometry.kind === 'points' ? geometry.positions.length : geometry.lineOffsets.length - 1;
+  validateSinglePackedView(featureOffsets, ['uint32'], `${id} featureOffsets`);
+  validateSinglePackedView(featureRows, ['uint32'], `${id} featureRows`);
+  validateRequirement(
+    id,
+    featureRows.length === partCount,
+    'featureRows length must equal the part count'
+  );
+  validateGraphOutputsDisjointFromInputs(id, {featureRows}, {featureOffsets});
+  for (const [name, view] of Object.entries({featureOffsets, featureRows})) {
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      name,
+      getViewBindingRange(view).size,
+      'reduce the multipart feature or part count'
+    );
+  }
+  return createWGSLKernelNode<Parameters>(graph, {
+    id,
+    operation: 'MultipartRowOwners',
+    variant: 'part-to-feature',
+    bindings: [
+      {name: 'featureOffsets', view: featureOffsets, type: 'u32', access: 'read'},
+      {name: 'featureRows', view: featureRows, type: 'u32', access: 'read_write'}
+    ],
+    invocationCount: partCount,
+    declarations: getBinarySearchWGSL('featureOffsets'),
+    body: `var owner = 0xffffffffu;
+  let upper = upperBoundFeatureOffsets(0u, ${featureCount + 1}u, index);
+  if (upper > 0u && upper <= ${featureCount}u) {
+    let start = featureOffsets[featureOffsetsOffset + upper - 1u];
+    let end = featureOffsets[featureOffsetsOffset + upper];
+    if (start <= index && index < end && end <= ${partCount}u) { owner = upper - 1u; }
+  }
+  featureRows[featureRowsOffset + index] = owner;`
+  });
+}
+
 /** Validates the static shape of a compact pair port. */
 export function validateGPUCompactPairPort(id: string, pairs: GPUCompactPairPort): void {
-  validateFormat(id, 'leftIds', pairs.leftIds, 'uint32');
-  validateFormat(id, 'rightIds', pairs.rightIds, 'uint32');
-  if (pairs.leftIds.length !== pairs.rightIds.length) {
-    throw new Error(`${id} pair ID capacities must match`);
+  validateRequirement(
+    id,
+    Boolean(pairs.leftRows && pairs.rightRows) && !('leftIds' in pairs) && !('rightIds' in pairs),
+    'pairs.leftRows and pairs.rightRows are required; leftIds and rightIds are unsupported application-ID names'
+  );
+  validateFormat(id, 'leftRows', pairs.leftRows, 'uint32');
+  validateFormat(id, 'rightRows', pairs.rightRows, 'uint32');
+  if (pairs.leftRows.length !== pairs.rightRows.length) {
+    throw new Error(`${id} pair row capacities must match`);
   }
   validateGPUStatusPort(`${id} status`, pairs.status);
 }

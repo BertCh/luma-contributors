@@ -12,7 +12,7 @@ import {
 import type {GPUApproximationStatusPort} from '../../analysis-core/contracts/status';
 
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
-import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 
 /** Largest finite f32 literal; JavaScript's finite range is much larger than WGSL's. */
 export const GWR_MAXIMUM_SHADER_FLOAT = 3.4028234663852886e38;

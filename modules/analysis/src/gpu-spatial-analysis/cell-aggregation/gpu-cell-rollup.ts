@@ -12,6 +12,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {createCellLevelKernelNode} from './cell-level-kernel';
 import {
   validateCapacity,
+  validateRequirement,
   validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -20,13 +21,14 @@ import {
   getCellKeyLayout,
   resolveCellSpatialContext,
   type CellKeyLayout,
-  type GPUCellFamily
+  type GPUCellAggregationFamily
 } from './cell-keys';
 import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 import {
   getCellTableNodes,
   getCellTableViews,
   hasCellKeyHighWord,
+  snapshotCellTable,
   validateCellTable,
   type GPUCellTable
 } from './cell-table';
@@ -34,9 +36,17 @@ import {
   validateCellPublishBindingCount,
   validateCellViewBindingRanges,
   validateCellTableScratchBindingSizes,
-  validateCellWritableViews
+  validateCellTableWritableViews
 } from './cell-validation';
-import {GPU_CELL_DEFAULT_SUM_SCALE, validateSumScale} from '../../analysis-core/cell-key-wgsl';
+import {
+  GPU_CELL_DEFAULT_SUM_SCALE,
+  validateSumScale
+} from '../../analysis-core/kernels/cell-key-wgsl';
+
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
 
 const OPERATION = 'GPUCellRollup';
 
@@ -50,7 +60,7 @@ export type GPUCellRollupProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'cell-rollup'`. */
   id?: string;
   /** Grid family of both tables. */
-  family: GPUCellFamily;
+  family: GPUCellAggregationFamily;
   /**
    * Optional `discrete-grid` context of the keys. Defaults to
    * `{coordinateSpace: 'discrete-grid', metric: 'none', gridFamily: family}`; a given
@@ -69,10 +79,8 @@ export type GPUCellRollupProps = {
   source: GPUCellTable;
   /** Fixed-point scale used by the source sums. Defaults to 65536. */
   sumScale?: number;
-  /** Caller-owned output table at `resolution`. */
+  /** Caller-owned table at `resolution`; `output.status.candidateOverflow` is required. */
   output: GPUCellTable;
-  /** Optional extra one-row destinations of the clamped output count. @internal */
-  extraCounts?: readonly GraphDataView<'uint32'>[];
 };
 
 /**
@@ -82,7 +90,8 @@ export type GPUCellRollupProps = {
  * in the child key, so the source order is already the parent order and no sort is needed: one
  * key pass, a head scan, and per-parent reductions of the child cells. Counts and fixed-point sums
  * are integer sums, so the result equals a direct aggregation at `resolution` bit for bit. The
- * output overflow flag includes the source overflow.
+ * output `candidateOverflow` includes source final and inherited loss; `overflow` describes only
+ * this destination. Its requirement is a lower bound on the full result after source loss.
  */
 export class GPUCellRollup implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -96,7 +105,29 @@ export class GPUCellRollup implements GPUCommandNodeProducer {
   /** Resolved `discrete-grid` spatial context. */
   readonly spatialContext: GPUSpatialContext;
 
-  constructor(props: GPUCellRollupProps) {
+  private readonly extraCounts: readonly GraphDataView<'uint32'>[];
+
+  constructor(props: GPUCellRollupProps);
+  constructor(props: GPUCellRollupProps, extraCounts: readonly GraphDataView<'uint32'>[] = []) {
+    const fields = snapshotConstructionFields(props, [
+      'id',
+      'family',
+      'spatialContext',
+      'sourceResolution',
+      'resolution',
+      'source',
+      'sumScale',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...fields,
+      source: snapshotCellTable(fields.source),
+      output: snapshotCellTable(fields.output),
+      spatialContext: fields.spatialContext
+        ? snapshotConstructionSpatialContext(fields.spatialContext)
+        : undefined
+    });
+    this.extraCounts = [...extraCounts];
     this.id = props.id ?? 'cell-rollup';
     this.props = props;
     const id = this.id;
@@ -116,6 +147,11 @@ export class GPUCellRollup implements GPUCommandNodeProducer {
     validateSumScale(id, this.sumScale);
     validateCellTable(id, 'source', props.source);
     validateCellTable(id, 'output', props.output);
+    validateRequirement(
+      id,
+      Boolean(props.output.status.candidateOverflow),
+      'output.status.candidateOverflow is required to report source loss'
+    );
     const {source, output} = props;
     if ((output.sums || output.sumValues) && !source.sums) {
       throw new Error(`${id} source.sums is required to roll up sums`);
@@ -123,17 +159,14 @@ export class GPUCellRollup implements GPUCommandNodeProducer {
     if ((output.minimums && !source.minimums) || (output.maximums && !source.maximums)) {
       throw new Error(`${id} source extremes are required to roll up extremes`);
     }
-    for (const [index, view] of (props.extraCounts ?? []).entries()) {
+    for (const [index, view] of this.extraCounts.entries()) {
       validateSinglePackedView(view, ['uint32'], `${id} extraCounts[${index}]`);
       validateCapacity(id, `extraCounts[${index}] rows`, view.length);
     }
-    validateCellWritableViews(id, [
-      ...getCellTableViews(output).map((view, index) => [`output field ${index}`, view] as const),
-      ...(props.extraCounts ?? []).map((view, index) => [`extraCounts[${index}]`, view] as const)
-    ]);
+    validateCellTableWritableViews(id, output, this.extraCounts, {rollup: true});
     validateGraphOutputsDisjointFromInputs(
       id,
-      [...getCellTableViews(output), ...(props.extraCounts ?? [])],
+      [...getCellTableViews(output), ...this.extraCounts],
       getCellTableViews(source)
     );
   }
@@ -147,13 +180,13 @@ export class GPUCellRollup implements GPUCommandNodeProducer {
       graph.device,
       id,
       Boolean(props.output.status.requiredCount),
-      1,
-      props.extraCounts?.length ?? 0
+      0,
+      this.extraCounts.length
     );
     validateCellViewBindingRanges(graph, id, [
       ...getCellTableViews(props.source),
       ...getCellTableViews(props.output),
-      ...(props.extraCounts ?? [])
+      ...this.extraCounts
     ]);
     const rows = props.source.cells.length;
     validateCellTableScratchBindingSizes(graph.device, id, rows, props.output.cells.length);
@@ -223,9 +256,19 @@ ${CELL_KEY_WGSL}`,
         source: {kind: 'cells', table: props.source},
         sumScale: this.sumScale,
         output: props.output,
-        overflowSources: [props.source.status.overflow],
-        extraCounts: props.extraCounts
+        candidateSources: [
+          props.source.status.overflow,
+          ...(props.source.status.candidateOverflow ? [props.source.status.candidateOverflow] : [])
+        ],
+        extraCounts: this.extraCounts
       })
     ];
   }
+}
+
+/** Adds composition-only destinations for a pyramid's level counts. @internal */
+export function createCellRollup(
+  props: GPUCellRollupProps & {extraCounts?: readonly GraphDataView<'uint32'>[]}
+): GPUCellRollup {
+  return Reflect.construct(GPUCellRollup, [props, props.extraCounts]) as GPUCellRollup;
 }

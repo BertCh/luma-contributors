@@ -25,10 +25,12 @@ function makeDeclaration(rows = 4, candidates = 25) {
     queryRows: view('uint32', rows),
     radii: [0.1, 0.4, 0.8],
     capacity: 64,
-    normals: view('float32x3', rows),
-    normalScales: view('float32', rows),
-    normalVariances: view('float32', rows),
-    status: view('uint32', rows)
+    output: {
+      normals: view('float32x3', rows),
+      normalScales: view('float32', rows),
+      normalVariances: view('float32', rows),
+      status: view('uint32', rows)
+    }
   };
   return {graph, props, view};
 }
@@ -48,21 +50,35 @@ it('validates scale, capacity, support, view and coordinate limits at constructi
     [0.4, 0.4 + 1e-10],
     Array.from({length: 33}, (_, index) => index + 1)
   ]) {
-    expect(() => new GPUPointCloudNormalScale({...props, radii})).toThrow(
-      /^gpu-pointcloud-normal-scale radii/
-    );
+    expect(
+      () =>
+        new GPUPointCloudNormalScale({
+          ...props,
+          radii
+        })
+    ).toThrow(/^gpu-pointcloud-normal-scale radii/);
   }
   for (const capacity of [0, 2, 65, 3.5]) {
-    expect(() => new GPUPointCloudNormalScale({...props, capacity})).toThrow(/capacity/);
+    expect(
+      () =>
+        new GPUPointCloudNormalScale({
+          ...props,
+          capacity
+        })
+    ).toThrow(/capacity/);
   }
   for (const minimumSupport of [2, 65, 3.5]) {
     expect(() => getGPUPointCloudNormalScaleParameterValues({minimumSupport})).toThrow(
       /minimumSupport/
     );
   }
-  expect(() => new GPUPointCloudNormalScale({...props, normals: view('float32x3', 3)})).toThrow(
-    /normals/
-  );
+  expect(
+    () =>
+      new GPUPointCloudNormalScale({
+        ...props,
+        output: {...props.output, normals: view('float32x3', 3)}
+      })
+  ).toThrow(/normals/);
   expect(() => getGPUPointCloudNormalScaleParameterValues({viewpoint: [Infinity, 0, 0]})).toThrow(
     /viewpoint/
   );
@@ -89,8 +105,9 @@ it('audits shaders and bounds command counts at 32 scales, with and without an i
     });
     const nodes = contributor.getCommandNodes(graph);
     expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
-    for (const [identifier, source] of getParsedKernelSources(nodes)) {
-      expect(auditWGSLModule(source), identifier).toEqual([]);
+    for (const {id: identifier, source, constants} of getParsedKernelSources(nodes)
+      .configurations) {
+      expect(auditWGSLModule(source, constants), identifier).toEqual([]);
     }
   }
 });
@@ -116,11 +133,19 @@ it('packs mutable eligibility/orientation settings and rejects parameter shape a
     )
   ).toEqual([6, 1, 2, 3, 1]);
   const {props, view} = makeDeclaration();
-  expect(() => new GPUPointCloudNormalScale({...props, parameters: view('float32', 4)})).toThrow(
-    /parameters/
-  );
   expect(
-    () => new GPUPointCloudNormalScale({...props, normalVariances: props.normalScales})
+    () =>
+      new GPUPointCloudNormalScale({
+        ...props,
+        parameters: view('float32', 4)
+      })
+  ).toThrow(/parameters/);
+  expect(
+    () =>
+      new GPUPointCloudNormalScale({
+        ...props,
+        output: {...props.output, normalVariances: props.output.normalScales}
+      })
   ).toThrow(
     /^gpu-pointcloud-normal-scale normalScales and normalVariances logical byte ranges must not overlap$/
   );

@@ -2,8 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {addPreparedRecipe, writeRecipeParameters} from './prepared-recipe';
+
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
-import {GPUParameterBuffer} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  GPUParameterBuffer,
+  validateCapacity,
+  validateSinglePackedView
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {
   GPUInferenceAlternative,
@@ -35,6 +41,8 @@ import {
   assertRecipe,
   createTransientSpatialWeights,
   getOrCreateView,
+  getRecipeView,
+  validateRecipeBoundary,
   RecipeBuilder,
   type GPURecipeOverrides,
   type GPURecipeResult
@@ -173,6 +181,8 @@ export type GPURateClusterMapRecipeProps = {
     /** Mirrors `result.status`. */
     status?: {
       weightsOverflow?: GPUStatusScalar;
+      /** Pair-candidate loss; grow pairCapacity before trusting weightsRequiredCount. */
+      weightsCandidateOverflow?: GPUStatusScalar;
       /** One-row unclamped neighbor-slot total of the contiguity weights (stage `weights`). */
       weightsRequiredCount?: GPUStatusScalar;
     };
@@ -198,7 +208,32 @@ export type GPURateClusterMapRecipeProps = {
 >;
 
 /** Named outputs of {@link addRateClusterMapRecipe}. */
-export type GPURateClusterMapRecipeResult = GPURecipeResult & {
+export type GPURateClusterMapRecipeOutputs = Pick<
+  GPURateClusterMapRecipeViews,
+  | 'analyzedRates'
+  | 'standardizedRates'
+  | 'smoothedRates'
+  | 'zScores'
+  | 'quadrants'
+  | 'colors'
+  | 'analytic'
+  | 'permutation'
+>;
+
+/** Ports between rate-cluster stages. */
+export type GPURateClusterMapRecipeIntermediates = Pick<
+  GPURateClusterMapRecipeViews,
+  'weights' | 'spatialLag'
+>;
+
+/** Rate-cluster outputs, intermediates and top-level convenience fields. */
+export type GPURateClusterMapRecipeResult = GPURecipeResult<
+  GPURateClusterMapRecipeOutputs,
+  GPURateClusterMapRecipeIntermediates
+> &
+  GPURateClusterMapRecipeViews;
+
+type GPURateClusterMapRecipeViews = {
   rowCount: number;
   /** The analysed rate (standardized or smoothed). */
   analyzedRates: GraphDataView<'float32'>;
@@ -239,11 +274,13 @@ export type GPURateClusterMapRecipeResult = GPURecipeResult & {
   };
   /** Status words next to the per-stage `stages`. */
   status: {
-    /** One-row flag: 1 when the contiguity weights overflowed `neighborCapacity` (stage `weights`). */
+    /** Final neighborCapacity loss (stage `weights`); pair loss is weightsCandidateOverflow. */
     weightsOverflow: GPUStatusScalar;
+    /** Pair-candidate loss; grow pairCapacity first. */
+    weightsCandidateOverflow: GPUStatusScalar;
     /**
      * Unclamped neighbor-slot total: feed it to `getGPUSpatialWeightsCapacityPlan` to size
-     * `neighborCapacity` (stage `weights`).
+     * `neighborCapacity` (stage `weights`). A lower bound while weightsCandidateOverflow is set.
      */
     weightsRequiredCount: GPUStatusScalar;
   } & GPURecipeStatusPort;
@@ -271,6 +308,13 @@ export function addRateClusterMapRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPURateClusterMapRecipeProps
 ): GPURateClusterMapRecipeResult {
+  return addPreparedRecipe(graph, props, declareRateClusterMapRecipe);
+}
+
+function declareRateClusterMapRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPURateClusterMapRecipeProps
+): GPURateClusterMapRecipeResult {
   const id = props.id ?? 'rate-cluster-map';
   const builder = new RecipeBuilder(graph);
   const outputs = props.outputs ?? {};
@@ -278,6 +322,8 @@ export function addRateClusterMapRecipe<Parameters>(
   const rowCount = props.polygons.featureOffsets.length - 1;
   const multipleTesting = props.multipleTesting ?? GPU_RATE_CLUSTER_MAP_DEFAULT_MULTIPLE_TESTING;
   assertRecipe(id, rowCount >= 3, 'needs at least three features');
+  validateSinglePackedView(props.palette, ['uint32'], `${id} palette`);
+  validateCapacity(id, 'palette.length', props.palette.length, GPU_RATE_CLUSTER_MAP_PALETTE_LENGTH);
   assertRecipe(
     id,
     props.events.length === rowCount && props.populations.length === rowCount,
@@ -301,6 +347,53 @@ export function addRateClusterMapRecipe<Parameters>(
   const permutationParameters = permutationBuffer?.importToGraph(
     graph,
     `${id}-permutation-parameters`
+  );
+  validateRecipeBoundary(
+    graph,
+    id,
+    [
+      props.events,
+      props.populations,
+      props.mask,
+      props.polygons.positions,
+      props.polygons.featureOffsets,
+      props.polygons.polygonOffsets,
+      props.polygons.ringOffsets,
+      props.polygons.sourceIds,
+      props.palette,
+      parameters,
+      permutationParameters
+    ],
+    [
+      outputs.standardizedRates,
+      outputs.smoothedRates,
+      outputs.zScores,
+      outputs.localI,
+      outputs.quadrants,
+      outputs.colors,
+      outputs.status?.weightsOverflow,
+      outputs.status?.weightsCandidateOverflow,
+      outputs.status?.weightsRequiredCount,
+      outputs.analytic?.pValues,
+      outputs.analytic?.adjustedPValues,
+      outputs.permutation?.exceedances,
+      outputs.permutation?.pseudoPValues,
+      outputs.permutation?.adjustedPValues,
+      outputs.permutation?.significant,
+      outputs.permutation?.status?.overflow,
+      scratch.rawRates,
+      scratch.summary,
+      scratch.spatialLag,
+      scratch.analyticQuadrants,
+      scratch.weights?.offsets,
+      scratch.weights?.neighbors,
+      scratch.weights?.weights,
+      outputs.status?.weightsOverflow ? undefined : scratch.weights?.status?.overflow,
+      outputs.status?.weightsCandidateOverflow
+        ? undefined
+        : scratch.weights?.status?.candidateOverflow,
+      outputs.status?.weightsRequiredCount ? undefined : scratch.weights?.status?.requiredCount
+    ]
   );
   const standardizedRates = getOrCreateView(
     graph,
@@ -341,8 +434,13 @@ export function addRateClusterMapRecipe<Parameters>(
     {
       ...scratch.weights,
       status: {
-        overflow: outputs.status?.weightsOverflow,
-        requiredCount: outputs.status?.weightsRequiredCount
+        candidateOverflow:
+          outputs.status?.weightsCandidateOverflow ??
+          scratch.weights?.status?.candidateOverflow ??
+          getOrCreateView(graph, `${id}-weights-candidate-overflow`, 'uint32', 1),
+        overflow: outputs.status?.weightsOverflow ?? scratch.weights?.status?.overflow,
+        requiredCount:
+          outputs.status?.weightsRequiredCount ?? scratch.weights?.status?.requiredCount
       }
     }
   );
@@ -484,14 +582,8 @@ export function addRateClusterMapRecipe<Parameters>(
     );
   }
 
-  const quadrants = getOrCreateView(
-    graph,
-    `${id}-quadrants`,
-    'uint32',
-    rowCount,
-    outputs.quadrants
-  );
-  const colors = getOrCreateView(graph, `${id}-colors`, 'uint32', rowCount, outputs.colors);
+  const quadrants = getRecipeView(graph, `${id}-quadrants`, 'uint32', rowCount, outputs.quadrants);
+  const colors = getRecipeView(graph, `${id}-colors`, 'uint32', rowCount, outputs.colors);
   builder.addGlue(
     'quadrant-colors',
     createWGSLKernelNode<Parameters>(graph, {
@@ -543,9 +635,9 @@ export function addRateClusterMapRecipe<Parameters>(
           })
         : null;
     const metadata = getSettingsInference(settings);
-    parameterBuffer.write(values);
+    writeRecipeParameters(graph, parameterBuffer, values);
     if (permutationValues) {
-      permutationBuffer!.write(permutationValues);
+      writeRecipeParameters(graph, permutationBuffer!, permutationValues);
     }
     return metadata;
   };
@@ -580,11 +672,12 @@ export function addRateClusterMapRecipe<Parameters>(
     intermediates: {weights, spatialLag},
     status: {
       weightsOverflow,
+      weightsCandidateOverflow: weights.status.candidateOverflow!,
       weightsRequiredCount,
       stages: [
         {
           stage: 'weights',
-          status: {overflow: weightsOverflow, requiredCount: weightsRequiredCount}
+          status: weights.status
         },
         ...(permutation ? [{stage: 'permutation', status: permutation.status}] : [])
       ]

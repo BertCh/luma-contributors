@@ -463,7 +463,7 @@ describe('fleet dwell recipes status', () => {
     expect(stages['zone-events']).toEqual({
       count: plain.recipe.events.status.count,
       overflow: plain.recipe.events.status.overflow,
-      candidateOverflow: plain.recipe.status.candidateOverflow,
+      candidateOverflow: plain.recipe.events.status.candidateOverflow,
       requiredCount: plain.recipe.events.status.requiredCount
     });
     const withTable = create(true);
@@ -642,7 +642,7 @@ describe('hot spot analysis recipe status', () => {
 });
 
 describe('period comparison recipe status', () => {
-  it('reports count, overflow and required count of both periods and the union', () => {
+  it('reports both period status ports and union count, final loss, source loss and required count', () => {
     const context = createContext();
     const {view} = context;
     const period = (name: string) => ({
@@ -675,8 +675,10 @@ describe('period comparison recipe status', () => {
     expect(stages['comparison']).toEqual({
       count: recipe.comparison.status.count,
       overflow: recipe.comparison.status.overflow,
+      candidateOverflow: recipe.comparison.status.candidateOverflow,
       requiredCount: recipe.comparison.status.requiredCount
     });
+    expect(recipe.comparison.status.candidateOverflow).toBeDefined();
     expect(recipe.comparison.status.requiredCount).toBeDefined();
   });
 });

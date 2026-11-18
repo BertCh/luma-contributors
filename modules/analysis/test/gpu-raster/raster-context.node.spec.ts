@@ -4,7 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
-import {resolveGPURasterContext} from '../../src/analysis-core/raster-grid';
+import {resolveGPURasterContext} from '../../src/analysis-core/contracts/raster-grid';
 import {
   getGPURasterReprojectionParameterValues,
   GPURasterReprojection
@@ -65,7 +65,9 @@ it('packs same-CRS origin differences before float32 rounding, with a reusable t
   expect(getGPURasterReprojectionParameterValues({sourceGrid: GRID, destinationGrid}, target)).toBe(
     target
   );
-  expect(Array.from(target.slice(4, 6))).toEqual([1.625, 1.21875]);
+  // The float64 origin difference is now expressed in source sample coordinates.
+  expect(Array.from(target.slice(0, 6))).toEqual([1, 0, 0, 1, 3.25, 6.5]);
+  expect(target[17]).toBe(3);
   expect(Array.from(target.slice(20))).toEqual([777, 777]);
   expect(() =>
     getGPURasterReprojectionParameterValues(
@@ -122,7 +124,7 @@ it('binds dynamic affine words for reprojection and every patch-metric measureme
     const sampler = getParsedKernelSources(reprojection.getCommandNodes(graph)).get(
       'raster-reprojection-sample'
     )!;
-    expect(sampler).toContain('readAffine(10u)');
+    expect(sampler).toContain('readAffine(17u)==3.0');
     expect(sampler).not.toContain('500000');
     for (const cellSizeMode of ['uniform', 'geographic', 'web-mercator'] as const) {
       const grid = {...GRID, affine: [1, 0, 0, 0, -1, 61] as const};

@@ -19,7 +19,7 @@ import {
 import {
   validateRasterCellSizeMode,
   type GPURasterCellSizeMode
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 import {getRasterGridWGSL} from '../../raster-analysis/cost-distance/raster-grid-utils';
 import {validateViewLength} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';

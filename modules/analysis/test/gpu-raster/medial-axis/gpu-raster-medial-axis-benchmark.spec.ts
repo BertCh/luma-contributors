@@ -8,7 +8,7 @@ import {requireTestDevice} from '../../utils/require-test-device';
 import {createMedialAxisFixture} from './medial-axis-fixture';
 import {computeFilledRectangleReference} from './medial-axis-oracle';
 
-// Opt in through VITE_RASTER_MEDIAL_AXIS_BENCHMARK=true yarn test-browser-benchmarks --maxWorkers=1 <file>.
+// Run with yarn test-benchmarks modules/analysis/test/gpu-raster/medial-axis/gpu-raster-medial-axis-benchmark.spec.ts
 const RUN_BENCHMARK =
   (import.meta as unknown as {env?: Record<string, string>}).env?.[
     'VITE_RASTER_MEDIAL_AXIS_BENCHMARK'

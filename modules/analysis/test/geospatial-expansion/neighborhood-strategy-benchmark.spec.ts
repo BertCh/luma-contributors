@@ -6,8 +6,8 @@ import type {Device} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
-import {GPUPointCloudNeighborhoods} from '../../src/pointcloud-analysis/gpu-pointcloud-neighborhoods';
-import {GPUPointCloudFeatures} from '../../src/pointcloud-analysis/gpu-pointcloud-features';
+import {GPUPointCloudNeighborhoods} from '../../src/pointcloud-analysis/operations/gpu-pointcloud-neighborhoods';
+import {GPUPointCloudFeatures} from '../../src/pointcloud-analysis/operations/gpu-pointcloud-features';
 import {makeSpatialFixture, readFloats, readIntegers} from '../spatial-test-utils';
 import {getBenchmarkDistribution, getBenchmarkSettings} from '../utils/benchmark-settings';
 import {requireTestDevice} from '../utils/require-test-device';
@@ -172,10 +172,12 @@ async function measureNeighborhoods(
             : 0.1,
       strategy,
       capacity,
-      indices: indices.view,
-      squaredDistances: squaredDistances.view,
-      counts: counts.view,
-      status: status.view
+      output: {
+        indices: indices.view,
+        squaredDistances: squaredDistances.view,
+        counts: counts.view,
+        status: status.view
+      }
     })
   );
   const featureOutputs = features
@@ -194,11 +196,13 @@ async function measureNeighborhoods(
         indices: indices.view,
         counts: counts.view,
         capacity,
-        normals: featureOutputs.normals.view,
-        eigenvalues: featureOutputs.eigenvalues.view,
-        shapes: featureOutputs.shapes.view,
-        covariance: featureOutputs.covariance.view,
-        status: featureOutputs.status.view
+        output: {
+          normals: featureOutputs.normals.view,
+          eigenvalues: featureOutputs.eigenvalues.view,
+          shapes: featureOutputs.shapes.view,
+          covariance: featureOutputs.covariance.view,
+          status: featureOutputs.status.view
+        }
       })
     );
   const expectedIndices: number[] = [];

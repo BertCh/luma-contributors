@@ -38,12 +38,14 @@ function expectKernelsWithinCoreLimits(nodes: readonly unknown[]): void {
   expect(kernels.length).toBeGreaterThan(0);
   for (const kernel of kernels) {
     expect(getStorageBindingCount(kernel.source), `${kernel.id} storage`).toBeLessThanOrEqual(8);
-    expect(getPrivateMemoryBytes(kernel.source), `${kernel.id} private`).toBeLessThanOrEqual(
-      CORE_PRIVATE_MEMORY_LIMIT_BYTES
-    );
-    expect(getWorkgroupMemoryBytes(kernel.source), `${kernel.id} workgroup`).toBeLessThanOrEqual(
-      CORE_WORKGROUP_STORAGE_LIMIT_BYTES
-    );
+    expect(
+      getPrivateMemoryBytes(kernel.source, kernel.constants),
+      `${kernel.id} private`
+    ).toBeLessThanOrEqual(CORE_PRIVATE_MEMORY_LIMIT_BYTES);
+    expect(
+      getWorkgroupMemoryBytes(kernel.source, kernel.constants),
+      `${kernel.id} workgroup`
+    ).toBeLessThanOrEqual(CORE_WORKGROUP_STORAGE_LIMIT_BYTES);
   }
 }
 

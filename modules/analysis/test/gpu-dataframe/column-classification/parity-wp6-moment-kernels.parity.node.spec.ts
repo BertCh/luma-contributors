@@ -39,10 +39,10 @@ for (const rowCount of [1, 4103, 1 << 24]) {
       });
       const sources = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph));
       expect(sources.length).toBeGreaterThan(0);
-      for (const {id, source} of sources) {
+      for (const {id, source, constants} of sources) {
         expect(() => new WgslReflect(source), id).not.toThrow();
         expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
-        expect(getWorkgroupMemoryBytes(source), id).toBeLessThanOrEqual(
+        expect(getWorkgroupMemoryBytes(source, constants), id).toBeLessThanOrEqual(
           CORE_WORKGROUP_STORAGE_LIMIT_BYTES
         );
       }

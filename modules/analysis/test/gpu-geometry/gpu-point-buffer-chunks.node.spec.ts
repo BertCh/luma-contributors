@@ -9,7 +9,7 @@ import {
   stripWGSLComments
 } from '../analysis-core/kernel-audit/kernel-audit-wgsl';
 import {readPointBufferRing} from './gpu-point-buffer-chunks.test-utils';
-import {GPUPointBuffer} from '../../src/geospatial-analysis/gpu-point-buffer';
+import {GPUPointBuffer} from '../../src/geospatial-analysis/point-buffer/index';
 import {
   createNullWebGPUDevice,
   createVectorView,

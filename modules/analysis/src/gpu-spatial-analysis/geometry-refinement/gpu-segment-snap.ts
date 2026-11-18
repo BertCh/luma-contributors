@@ -12,6 +12,8 @@ import type {
   GPUCommandNodeProducer,
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {createTransientView} from '@luma.gl/graph/gpu-core';
+import {snapshotSegmentSnapConstruction} from './segment-snap-construction';
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
@@ -56,6 +58,18 @@ const MAXIMUM_BATCH_LINE_COUNT = 256;
 /** Exhaustive insertion includes cubic duplicate searches; bound its worst-case scalar work. */
 export const MAXIMUM_SEGMENT_SNAP_EXHAUSTIVE_WORK = 16_777_216;
 
+/** Named flags in the per-line issueCode diagnostic. */
+export const GPU_SEGMENT_SNAP_ISSUE = {collapsed: 1, nonFinite: 2, incomplete: 4} as const;
+
+/** Decodes a per-line diagnostic; an empty, finite and complete line has code zero. */
+export function decodeGPUSegmentSnapIssueCode(issueCode: number) {
+  return {
+    collapsed: (issueCode & GPU_SEGMENT_SNAP_ISSUE.collapsed) !== 0,
+    nonFinite: (issueCode & GPU_SEGMENT_SNAP_ISSUE.nonFinite) !== 0,
+    incomplete: (issueCode & GPU_SEGMENT_SNAP_ISSUE.incomplete) !== 0
+  };
+}
+
 /** Shared with the CPU twin: every exhaustive route, including overflow, has the same work bound. */
 export function canExhaustivelySnap(
   positionCount: number,
@@ -65,6 +79,31 @@ export function canExhaustivelySnap(
   // Even empty lines scan references for nonfinite input on the explicit exhaustive route.
   return (
     (positionCount + lineCount) * (referenceCount + 1) ** 3 <= MAXIMUM_SEGMENT_SNAP_EXHAUSTIVE_WORK
+  );
+}
+
+/** A suppressible grid query must expose per-line completeness. @internal */
+export function validateSegmentSnapCompleteness(
+  id: string,
+  positionCount: number,
+  referenceCount: number,
+  lineCount: number,
+  options: Pick<
+    GPUSegmentSnapProps,
+    'searchStructure' | 'candidateCapacity' | 'candidateOverflowPolicy'
+  >,
+  hasSignal: boolean
+): void {
+  const canSuppress =
+    positionCount > 0 &&
+    options.searchStructure !== 'brute-force' &&
+    referenceCount > (options.candidateCapacity ?? DEFAULT_SEGMENT_SNAP_CANDIDATE_CAPACITY) &&
+    (options.candidateOverflowPolicy === 'incomplete' ||
+      !canExhaustivelySnap(positionCount, referenceCount, lineCount));
+  validateRequirement(
+    id,
+    !canSuppress || hasSignal,
+    'output must include validity, issueCode or status.candidateOverflow when grid candidate loss can suppress a line'
   );
 }
 
@@ -81,7 +120,7 @@ export type GPUSegmentSnapProps = {
   referencePositions: GraphDataView<'float32x2'>;
   /** Default grid route reuses bounded candidate batches. Explicit brute-force is work limited.
    * Overflowing lists use exhaustive insertion only within MAXIMUM_SEGMENT_SNAP_EXHAUSTIVE_WORK;
-   * otherwise the line has zero written/required vertices, capacity overflow=1 and validity bit 4.
+   * otherwise the line has zero written/required vertices, candidateOverflow=1 and issueCode bit 4.
    * Increase candidateCapacity or split the reference set before consuming incomplete geometry. */
   searchStructure?: 'grid' | 'brute-force';
   /** Reference IDs retained per line. Default 1024. Overflow is never silently truncated. */
@@ -99,9 +138,12 @@ export type GPUSegmentSnapProps = {
     sourceEdges: GraphDataView<'uint32'>;
     /** Per line [written vertices, required vertices, capacity overflow, nonfinite input]. */
     counts: GraphDataView<'uint32x4'>;
-    /** Optional line validity bits: too few distinct vertices=1, nonfinite=2, incomplete=4. Self-crossing is valid for lines. */
+    /** Optional diagnostics: collapse=1, nonfinite=2, incomplete=4. Decode with decodeGPUSegmentSnapIssueCode. */
+    issueCode?: GraphDataView<'uint32'>;
+    /** Optional nonzero-usable flag. Empty lines are usable; collapse, nonfinite or incomplete lines are not. */
     validity?: GraphDataView<'uint32'>;
-    /** Per-line diagnostics, independent of the counts column's final-capacity overflow. */
+    /** Per-line diagnostics, independent of final vertex capacity. If grid suppression is possible,
+     * supply this candidateOverflow port, issueCode or validity so an incomplete line is observable. */
     status?: GPUSegmentSnapStatus;
     /** @deprecated Use status.candidateOverflow. Both spellings must identify the same view. */
     candidateOverflow?: GPUSegmentSnapStatus['candidateOverflow'];
@@ -126,9 +168,23 @@ export class GPUSegmentSnap implements GPUCommandNodeProducer {
     sourceEdges: GraphDataView<'uint32'>;
     counts: GraphDataView<'uint32x4'>;
     validity?: GraphDataView<'uint32'>;
+    issueCode?: GraphDataView<'uint32'>;
     candidateOverflow?: GraphDataView<'uint32'>;
   };
   constructor(props: GPUSegmentSnapProps) {
+    props = snapshotSegmentSnapConstruction(props, [
+      'id',
+      'spatialContext',
+      'positions',
+      'lineOffsets',
+      'referencePositions',
+      'tolerance',
+      'maximumVerticesPerLine',
+      'searchStructure',
+      'candidateCapacity',
+      'candidateOverflowPolicy',
+      'output'
+    ]);
     this.id = props.id ?? 'segment-snap';
     this.props = props;
     this.outputViews = {
@@ -136,6 +192,7 @@ export class GPUSegmentSnap implements GPUCommandNodeProducer {
       sourceEdges: props.output.sourceEdges,
       counts: props.output.counts,
       validity: props.output.validity,
+      issueCode: props.output.issueCode,
       candidateOverflow: resolveGeometryUint32StatusView(
         this.id,
         'output.status.candidateOverflow',
@@ -153,8 +210,8 @@ export class GPUSegmentSnap implements GPUCommandNodeProducer {
     );
     this.estimatedCommandNodeCount =
       props.searchStructure === 'brute-force'
-        ? 2
-        : MAXIMUM_GRID_COMMAND_NODE_COUNT + 5 * (props.lineOffsets.length - 1);
+        ? 3
+        : MAXIMUM_GRID_COMMAND_NODE_COUNT + 5 * (props.lineOffsets.length - 1) + 1;
     validateRequirement(
       this.id,
       props.searchStructure === undefined ||
@@ -202,13 +259,17 @@ export class GPUSegmentSnap implements GPUCommandNodeProducer {
       validateSinglePackedView(view, ['uint32'], this.id);
     }
     validateSinglePackedView(props.output.counts, ['uint32x4'], this.id);
-    if (props.output.validity) {
-      validateSinglePackedView(props.output.validity, ['uint32'], this.id);
-      if (props.output.validity.length !== props.lineOffsets.length - 1) {
+    for (const [name, view] of [
+      ['validity', props.output.validity],
+      ['issueCode', props.output.issueCode]
+    ] as const) {
+      if (!view) continue;
+      validateSinglePackedView(view, ['uint32'], `${this.id} output.${name}`);
+      if (view.length !== props.lineOffsets.length - 1) {
         validateRequirement(
           this.id,
           false,
-          'output.validity.length must equal lineOffsets.length - 1'
+          `output.${name}.length must equal lineOffsets.length - 1`
         );
       }
     }
@@ -260,8 +321,21 @@ export class GPUSegmentSnap implements GPUCommandNodeProducer {
         'output.status.candidateOverflow.length must equal lineCount'
       );
     }
+    validateSegmentSnapCompleteness(
+      this.id,
+      props.positions.length,
+      props.referencePositions.length,
+      lines,
+      props,
+      Boolean(
+        this.outputViews.validity ||
+          this.outputViews.issueCode ||
+          this.outputViews.candidateOverflow
+      )
+    );
     validateOutlineOutputPasses(this.id, this.outputViews, [
-      ['positions', 'sourceEdges', 'counts', 'validity'],
+      ['positions', 'sourceEdges', 'counts'],
+      ['counts', 'validity', 'issueCode'],
       ['candidateOverflow']
     ]);
     const inputs = [props.positions, props.lineOffsets, props.referencePositions];
@@ -306,7 +380,7 @@ export class GPUSegmentSnap implements GPUCommandNodeProducer {
     const candidateByteLength = (3 + batchLineCapacity * (candidateCapacity + 2)) * 4;
     validateCommandNodeBudget(
       id,
-      grid ? MAXIMUM_GRID_COMMAND_NODE_COUNT + 5 * Math.ceil(lineCount / batchLineCapacity) : 2
+      grid ? MAXIMUM_GRID_COMMAND_NODE_COUNT + 5 * Math.ceil(lineCount / batchLineCapacity) + 1 : 3
     );
     if (grid) {
       // Includes the public grid builder's counts, cursors, per-row ranks/IDs and scan summaries,
@@ -335,6 +409,10 @@ export class GPUSegmentSnap implements GPUCommandNodeProducer {
         );
       }
     }
+    const incompleteLines =
+      this.outputViews.issueCode || this.outputViews.validity
+        ? createTransientView(graph, `${id}-incomplete-lines`, 'uint32', lineCount)
+        : undefined;
     const built = grid
       ? createSegmentSnapCandidates(graph, {...props, id, candidateCapacity, batchLineCapacity})
       : undefined;
@@ -371,19 +449,24 @@ export class GPUSegmentSnap implements GPUCommandNodeProducer {
                   }
                 ]
               : []),
-            {name: 'outPositions', view: props.output.positions, type: 'f32', access: 'read_write'},
+            {
+              name: 'outPositions',
+              view: this.outputViews.positions,
+              type: 'f32',
+              access: 'read_write'
+            },
             {
               name: 'sourceEdges',
-              view: props.output.sourceEdges,
+              view: this.outputViews.sourceEdges,
               type: 'u32',
               access: 'read_write'
             },
-            {name: 'counts', view: props.output.counts, type: 'u32', access: 'read_write'},
-            ...(props.output.validity
+            {name: 'counts', view: this.outputViews.counts, type: 'u32', access: 'read_write'},
+            ...(incompleteLines
               ? [
                   {
-                    name: 'validity',
-                    view: props.output.validity,
+                    name: 'incompleteLines',
+                    view: incompleteLines,
                     type: 'u32' as const,
                     access: 'read_write' as const
                   }
@@ -494,9 +577,9 @@ if (!invalid && !incomplete && last > first) {
 }
 counts[countsOffset + line * 4u] = min(required, CAPACITY);
 counts[countsOffset + line * 4u + 1u] = required;
-counts[countsOffset + line * 4u + 2u] = select(0u, 1u, required > CAPACITY || incomplete);
+counts[countsOffset + line * 4u + 2u] = select(0u, 1u, required > CAPACITY);
 counts[countsOffset + line * 4u + 3u] = select(0u, 1u, invalid);
-${props.output.validity ? 'validity[validityOffset + line] = select(0u, 1u, required == 1u) | select(0u, 2u, invalid) | select(0u, 4u, required > CAPACITY || incomplete);' : ''}`
+${incompleteLines ? 'incompleteLines[incompleteLinesOffset + line] = select(0u, 1u, incomplete);' : ''}`
         })
       );
       if (this.outputViews.candidateOverflow)
@@ -533,6 +616,46 @@ candidateOverflow[candidateOverflowOffset + candidates[candidatesOffset + 1u] + 
           })
         );
     }
+    const {issueCode, validity} = this.outputViews;
+    if (issueCode || validity)
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-line-validity`,
+          operation: 'GPUSegmentSnap',
+          variant: 'line-validity',
+          invocationCount: lineCount,
+          bindings: [
+            {name: 'counts', view: this.outputViews.counts, type: 'u32', access: 'read_write'},
+            {name: 'incompleteLines', view: incompleteLines!, type: 'u32', access: 'read'},
+            ...(issueCode
+              ? [
+                  {
+                    name: 'issueCode',
+                    view: issueCode,
+                    type: 'u32' as const,
+                    access: 'read_write' as const
+                  }
+                ]
+              : []),
+            ...(validity
+              ? [
+                  {
+                    name: 'validity',
+                    view: validity,
+                    type: 'u32' as const,
+                    access: 'read_write' as const
+                  }
+                ]
+              : [])
+          ],
+          body: `let required = counts[countsOffset + 4u * index + 1u];
+        let code = select(0u, 1u, required == 1u)
+          | select(0u, 2u, counts[countsOffset + 4u * index + 3u] != 0u)
+          | select(0u, 4u, counts[countsOffset + 4u * index + 2u] != 0u || incompleteLines[incompleteLinesOffset + index] != 0u);
+        ${issueCode ? 'issueCode[issueCodeOffset + index] = code;' : ''}
+        ${validity ? 'validity[validityOffset + index] = select(0u, 1u, code == 0u);' : ''}`
+        })
+      );
     return nodes;
   }
 }

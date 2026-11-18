@@ -12,6 +12,11 @@ import {
   type GPUPairGatherHow
 } from '../../../src/gpu-spatial-analysis/pair-gather/index';
 import {createGeometryFixture, expectClose} from '../outline-geometry/geometry-fixture';
+import {RecipeTestFixture} from '../recipes/recipe-harness';
+import {createWGSLKernelNode} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
+import {runExample as runPairExample} from '../../../../lenses/src/computation-lenses/scenarios/gpu-spatial-analysis/pair-gather.example';
+import {runExample as runPredicateExample} from '../../../../lenses/src/computation-lenses/scenarios/gpu-spatial-analysis/spatial-predicate-join.example';
+import {runExample as runPreparedExample} from '../../../../lenses/src/computation-lenses/scenarios/gpu-spatial-analysis/spatial-join-prepared.example';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -30,6 +35,156 @@ type ExpectedRow = {
   rcat: number | null;
   d?: number | null;
 };
+
+it('final1 compact pairs gather rows independently of permuted caller IDs and preserve inherited candidate loss', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = createGeometryFixture(device, {
+    inputs: {
+      left: {format: 'uint32', values: Uint32Array.of(0, 1)},
+      right: {format: 'uint32', values: Uint32Array.of(0, 1)},
+      callerIds: {format: 'uint32', values: Uint32Array.of(1, 0)},
+      attributes: {format: 'uint32', values: Uint32Array.of(10, 20)},
+      count: {format: 'uint32', values: Uint32Array.of(2)},
+      overflow: {format: 'uint32', values: Uint32Array.of(0)},
+      candidate: {format: 'uint32', values: Uint32Array.of(1)}
+    },
+    outputs: {
+      left: {format: 'uint32', length: 2},
+      right: {format: 'uint32', length: 2},
+      attributes: {format: 'uint32', length: 2},
+      callerIds: {format: 'uint32', length: 2},
+      count: {format: 'uint32', length: 1},
+      overflow: {format: 'uint32', length: 1},
+      candidate: {format: 'uint32', length: 1}
+    },
+    create: ({inputs, outputs}) => {
+      const input = (name: string) => inputs[name] as GraphDataView<'uint32'>;
+      const output = (name: string) => outputs[name] as GraphDataView<'uint32'>;
+      const status = Object.assign(
+        Object.create({
+          get candidateOverflow() {
+            return input('candidate');
+          }
+        }),
+        {
+          count: input('count'),
+          overflow: input('overflow')
+        }
+      );
+      return new GPUPairGather({
+        pairs: {leftRows: input('left'), rightRows: input('right'), status},
+        rightColumns: [
+          {source: input('attributes'), output: output('attributes')},
+          {source: input('callerIds'), output: output('callerIds')}
+        ],
+        output: {
+          leftRows: output('left'),
+          rightRows: output('right'),
+          rowCount: output('count'),
+          status: {overflow: output('overflow'), candidateOverflow: output('candidate')}
+        }
+      });
+    }
+  });
+  try {
+    const incomplete = await fixture.run();
+    expect(incomplete['attributes']).toEqual([10, 20]);
+    expect(incomplete['callerIds']).toEqual([1, 0]);
+    expect(incomplete['candidate']).toEqual([1]);
+    expect(incomplete['overflow']).toEqual([0]);
+    fixture.writeInput('candidate', Uint32Array.of(0));
+    const complete = await fixture.run();
+    expect(complete['attributes']).toEqual([10, 20]);
+    expect(complete['candidate']).toEqual([0]);
+    expect(complete['count']).toEqual([2]);
+  } finally {
+    fixture.destroy();
+  }
+});
+
+for (const kind of ['gather', 'predicate', 'prepared'] as const) {
+  it(`F5 ${kind} example clears the removed tract bin after the pair prefix shrinks`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const fixture = new RecipeTestFixture(device, `histogram-reuse-${kind}`);
+    let compiled: ReturnType<typeof fixture.graph.compile> | undefined;
+    let prepared: {destroy(): void} | undefined;
+    try {
+      const parkPositions = fixture.output('park-positions', 'float32x2', 4);
+      parkPositions.buffer.write(new Float32Array([0, 0, 3, 0, 3, 1, 0, 1]));
+      const parks = {
+        kind: 'polygons' as const,
+        positions: parkPositions.view,
+        featureOffsets: fixture.input('park-features', new Uint32Array([0, 1]), 'uint32', 2),
+        polygonOffsets: fixture.input('park-polygons', new Uint32Array([0, 1]), 'uint32', 2),
+        ringOffsets: fixture.input('park-rings', new Uint32Array([0, 4]), 'uint32', 2)
+      };
+      const tracts = {
+        kind: 'polygons' as const,
+        positions: fixture.input(
+          'tract-positions',
+          new Float32Array([0, 0, 1, 0, 1, 1, 0, 1, 2, 0, 3, 0, 3, 1, 2, 1]),
+          'float32x2',
+          8
+        ),
+        featureOffsets: fixture.input('tract-features', new Uint32Array([0, 1, 2]), 'uint32', 3),
+        polygonOffsets: fixture.input('tract-polygons', new Uint32Array([0, 1, 2]), 'uint32', 3),
+        ringOffsets: fixture.input('tract-rings', new Uint32Array([0, 4, 8]), 'uint32', 3)
+      };
+      const pairs = (name: string) => ({
+        leftRows: fixture.output(`${name}-left`, 'uint32', 2).view,
+        rightRows: fixture.output(`${name}-right`, 'uint32', 2).view,
+        status: {
+          count: fixture.output(`${name}-count`, 'uint32', 1).view,
+          overflow: fixture.output(`${name}-overflow`, 'uint32', 1).view
+        }
+      });
+      const input = {
+        parks,
+        tracts,
+        pairs: pairs('pairs'),
+        spatialContext: {coordinateSpace: 'planar' as const, metric: 'native' as const}
+      };
+      const preparedResult =
+        kind === 'prepared'
+          ? await runPreparedExample(fixture.graph, {...input, candidatePairs: pairs('candidates')})
+          : undefined;
+      prepared = preparedResult?.prepared;
+      const result =
+        preparedResult ??
+        (kind === 'gather'
+          ? await runPairExample(fixture.graph, {
+              ...input,
+              parkAreas: fixture.input('areas', new Float32Array([3]), 'float32', 1)
+            })
+          : await runPredicateExample(fixture.graph, input));
+      const bins = fixture.output('bins', 'uint32', 2);
+      fixture.graph.add(
+        createWGSLKernelNode(fixture.graph, {
+          id: 'capture-tract-bins',
+          operation: 'review',
+          invocationCount: 2,
+          bindings: [
+            {name: 'source', view: result.tractMatches, type: 'u32', access: 'read'},
+            {name: 'bins', view: bins.view, type: 'u32', access: 'read_write'}
+          ],
+          body: 'bins[binsOffset + index] = source[sourceOffset + index];'
+        })
+      );
+      compiled = fixture.graph.compile();
+      submitGraph(device, compiled, undefined);
+      expect(await fixture.readUint32(bins, 2)).toEqual([1, 1]);
+      parkPositions.buffer.write(new Float32Array([2.2, 0.2, 2.8, 0.2, 2.8, 0.8, 2.2, 0.8]));
+      submitGraph(device, compiled, undefined);
+      expect(await fixture.readUint32(bins, 2)).toEqual([0, 1]);
+    } finally {
+      compiled?.destroy();
+      prepared?.destroy();
+      fixture.destroy();
+    }
+  });
+}
 
 // Pinned from geopandas 1.2.0 (scratchpad build/D/gen_pairs.py). Predicate scene: 30 points
 // against 5 boxes, `sjoin(predicate='intersects', how='inner' | 'left')`; rows sorted by
@@ -183,8 +338,8 @@ it.each([
     graph.add(
       new GPUPairGather({
         pairs: {
-          leftIds: createInput('pair-left', [0]),
-          rightIds: createInput('pair-right', [0]),
+          leftRows: createInput('pair-left', [0]),
+          rightRows: createInput('pair-right', [0]),
           status: {
             count: createInput('pair-count', [1]),
             requiredCount: createInput('pair-required', [1]),
@@ -242,8 +397,8 @@ it('GPUPairGather fills unmatched and out-of-range uint32 column rows with all o
       return new GPUPairGather({
         how: 'left',
         pairs: {
-          leftIds: inputs['pairLeft'],
-          rightIds: inputs['pairRight'],
+          leftRows: inputs['pairLeft'],
+          rightRows: inputs['pairRight'],
           status: {
             count: inputs['pairCount'],
             requiredCount: inputs['pairRequired'],
@@ -299,6 +454,7 @@ function createOutputs(capacity: number) {
     rightRows: {format: 'uint32' as const, length: capacity},
     rowCount: {format: 'uint32' as const, length: 1},
     overflow: {format: 'uint32' as const, length: 1},
+    candidateOverflow: {format: 'uint32' as const, length: 1},
     matchedCount: {format: 'uint32' as const, length: 1},
     lvalOut: {format: 'float32' as const, length: capacity},
     lcatOut: {format: 'uint32' as const, length: capacity},
@@ -329,7 +485,11 @@ function createGather(
       leftRows: outputs['leftRows'],
       rightRows: outputs['rightRows'],
       rowCount: outputs['rowCount'],
-      status: {overflow: outputs['overflow'], matchedCount: outputs['matchedCount']}
+      status: {
+        overflow: outputs['overflow'],
+        matchedCount: outputs['matchedCount'],
+        candidateOverflow: outputs['candidateOverflow']
+      }
     }
   });
 }
@@ -392,8 +552,8 @@ function createPredicateFixture(device: TestDevice, how: GPUPairGatherHow, capac
     create: ({inputs, outputs}) =>
       createGather({inputs: inputs as never, outputs: outputs as never}, how, {
         pairs: {
-          leftIds: inputs['pairLeft'],
-          rightIds: inputs['pairRight'],
+          leftRows: inputs['pairLeft'],
+          rightRows: inputs['pairRight'],
           status: {
             count: inputs['pairCount'],
             requiredCount: inputs['pairRequired'],
@@ -453,7 +613,7 @@ function createNearestFixture(device: TestDevice, how: GPUPairGatherHow) {
   return createGeometryFixture(device, {
     inputs: {
       ...createColumnInputs(NEAREST),
-      neighborIds: {values: new Uint32Array(NEAREST.ids), format: 'uint32'},
+      neighborRows: {values: new Uint32Array(NEAREST.ids), format: 'uint32'},
       neighborCounts: {values: new Uint32Array(NEAREST.counts), format: 'uint32'},
       neighborDistances: {values: new Float32Array(NEAREST.dists), format: 'float32'},
       joinOverflow: {values: new Uint32Array([0]), format: 'uint32'}
@@ -462,11 +622,11 @@ function createNearestFixture(device: TestDevice, how: GPUPairGatherHow) {
     create: ({inputs, outputs}) =>
       createGather({inputs: inputs as never, outputs: outputs as never}, how, {
         neighbors: {
-          ids: inputs['neighborIds'],
+          rows: inputs['neighborRows'],
           counts: inputs['neighborCounts'],
           capacity: NEAREST.capacity
         },
-        overflowSources: [inputs['joinOverflow']],
+        candidateOverflowSources: [inputs['joinOverflow']],
         slotColumns: [{source: inputs['neighborDistances'], output: outputs['slotOut']}]
       })
   });
@@ -501,7 +661,7 @@ it('GPUPairGather ORs many overflow sources within the core binding limit', asyn
   const fixture = createGeometryFixture(device, {
     inputs: {
       ...createColumnInputs(NEAREST),
-      neighborIds: {values: new Uint32Array(NEAREST.ids), format: 'uint32'},
+      neighborRows: {values: new Uint32Array(NEAREST.ids), format: 'uint32'},
       neighborCounts: {values: new Uint32Array(NEAREST.counts), format: 'uint32'},
       neighborDistances: {values: new Float32Array(NEAREST.dists), format: 'float32'},
       ...flags
@@ -510,7 +670,7 @@ it('GPUPairGather ORs many overflow sources within the core binding limit', asyn
     create: ({inputs, outputs}) =>
       createGather({inputs: inputs as never, outputs: outputs as never}, 'left', {
         neighbors: {
-          ids: inputs['neighborIds'],
+          rows: inputs['neighborRows'],
           counts: inputs['neighborCounts'],
           capacity: NEAREST.capacity
         },

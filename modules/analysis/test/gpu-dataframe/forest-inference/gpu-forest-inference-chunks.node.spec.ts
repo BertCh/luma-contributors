@@ -92,6 +92,38 @@ function createFixture(
   return {device, graph, props, column};
 }
 
+it('accepts shared output storage at byte 256 but rejects aligned overlap at byte 4', () => {
+  const {device, graph, props} = createFixture([1]);
+  try {
+    const backing = createTransientView(graph, 'shared-output-storage', 'uint32', 128);
+    const predictions = graph.createDataView(backing.buffer, {format: 'float32', length: 1});
+    const output = {
+      ...props.output,
+      predictions: createVectorView('shared-predictions', 'float32', [predictions]),
+      validity: createVectorView('shared-validity', 'uint32', [
+        graph.createDataView(backing.buffer, {format: 'uint32', length: 1, byteOffset: 256})
+      ])
+    };
+    const contributor = new GPUForestInference({...props, output});
+    expect(contributor.getCommandNodes(graph).filter(node => node.type === 'compute')).toHaveLength(
+      2
+    );
+    expect(() =>
+      new GPUForestInference({
+        ...props,
+        output: {
+          ...output,
+          validity: createVectorView('overlapping-validity', 'uint32', [
+            graph.createDataView(backing.buffer, {format: 'uint32', length: 1, byteOffset: 4})
+          ])
+        }
+      }).getCommandNodes(graph)
+    ).toThrow(/aligned binding.*must not overlap/);
+  } finally {
+    device.destroy();
+  }
+});
+
 it('validates whole-row topology, uint32 totals and every overlapping writable range', () => {
   const {device, graph, props} = createFixture([1, 3, 2]);
   try {
@@ -104,6 +136,7 @@ it('validates whole-row topology, uint32 totals and every overlapping writable r
       () =>
         new GPUForestInference({
           ...props,
+          rasterStack: undefined,
           features: createVectorView('reversed', 'float32', [...features.data].reverse())
         })
     ).toThrow(/features chunk 0.*topology/);
@@ -113,6 +146,7 @@ it('validates whole-row topology, uint32 totals and every overlapping writable r
       () =>
         new GPUForestInference({
           ...props,
+          rasterStack: undefined,
           features: createVectorView('partial', 'float32', [first, second, features.data[2]])
         })
     ).toThrow(/features chunks must contain whole rows of 2 elements/);

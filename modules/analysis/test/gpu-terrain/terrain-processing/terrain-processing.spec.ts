@@ -16,7 +16,7 @@ import {GPUTerrainTiledFlow} from '../../../src/gpu-terrain/terrain-processing/g
 import {
   getRasterGridGeoreference,
   getRasterGroundCellSize
-} from '../../../src/analysis-core/raster-grid';
+} from '../../../src/analysis-core/contracts/raster-grid';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   createInputBuffer,

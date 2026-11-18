@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer, Device} from '@luma.gl/core';
-import {DrawCommandBuffer, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {DrawCommandBuffer, GPUCommandGraph, GPUGather} from '@luma.gl/graph/gpu-core';
 import {GPUData} from '@luma.gl/graph/gpu-data';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
@@ -27,6 +27,60 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {RecipeTestFixture} from '../../gpu-spatial-analysis/recipes/recipe-harness';
+
+it('final1b F9 sorted filter gathers source rows independently of reversed caller IDs', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new RecipeTestFixture(device, 'sorted-row-identities');
+  const rows = fixture.output('rows', 'uint32', 1);
+  const ids = fixture.output('ids', 'uint32', 1);
+  const count = fixture.output('count', 'uint32', 1);
+  const overflow = fixture.output('overflow', 'uint32', 1);
+  const candidate = fixture.output('candidate', 'uint32', 1);
+  const gathered = fixture.output('gathered', 'float32', 1);
+  const window = fixture.output('window', 'float32', GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH);
+  fixture.graph.add(
+    new GPUTimeWindowFilter({
+      sorted: true,
+      timestamps: fixture.input('times', new Float32Array([0, 10]), 'float32', 2),
+      sourceIds: fixture.input('source-ids', new Uint32Array([1, 0]), 'uint32', 2),
+      window: window.view,
+      output: {
+        rows: rows.view,
+        ids: ids.view,
+        status: {count: count.view, overflow: overflow.view, candidateOverflow: candidate.view}
+      }
+    })
+  );
+  fixture.graph.add(
+    new GPUGather({
+      source: fixture.input('attributes', new Float32Array([10, 20]), 'float32', 2),
+      indices: rows.view,
+      output: gathered.view
+    })
+  );
+  const compiled = fixture.graph.compile();
+  try {
+    for (const [start, row, identity, attribute] of [
+      [0, 0, 1, 10],
+      [10, 1, 0, 20]
+    ]) {
+      window.buffer.write(getGPUTimeWindowFilterParameterValues({start, end: start}));
+      candidate.buffer.write(new Uint32Array([37]));
+      submitGraph(device, compiled, undefined);
+      expect(await fixture.readUint32(count, 1)).toEqual([1]);
+      expect(await fixture.readUint32(rows, 1)).toEqual([row]);
+      expect(await fixture.readUint32(ids, 1)).toEqual([identity]);
+      expect(await fixture.readFloat32(gathered, 1)).toEqual([attribute]);
+      expect(await fixture.readUint32(overflow, 1)).toEqual([0]);
+      expect(await fixture.readUint32(candidate, 1)).toEqual([0]);
+    }
+  } finally {
+    compiled.destroy();
+    fixture.destroy();
+  }
+});
 
 /** Deterministic xorshift in [0, 1). */
 function createRandom(seed: number): () => number {
@@ -98,6 +152,7 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
   });
   const outputs = {
     ids: output(options.capacity),
+    rows: output(options.capacity),
     count: output(1),
     overflow: output(1),
     total: output(1),
@@ -156,7 +211,16 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
         : undefined,
       window: window.importToGraph(graph) as never,
       output: {
-        ids: importGraphBuffer(graph, 'ids', outputs.ids, 'uint32', options.capacity),
+        rows: importGraphBuffer(
+          graph,
+          'rows',
+          options.withSourceIds ? outputs.rows : outputs.ids,
+          'uint32',
+          options.capacity
+        ),
+        ids: options.withSourceIds
+          ? importGraphBuffer(graph, 'ids', outputs.ids, 'uint32', options.capacity)
+          : undefined,
         status: {
           count: importGraphBuffer(graph, 'count', outputs.count, 'uint32', 1),
           overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1),

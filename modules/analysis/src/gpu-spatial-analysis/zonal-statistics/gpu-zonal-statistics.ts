@@ -65,7 +65,7 @@ import {getSortedSegmentSumNodes} from '../../analysis-core/kernels/sorted-segme
 import {
   createLonLatPolygonCheckNode,
   hasLonLatPolygonStatus
-} from '../../analysis-core/lon-lat-ring-wgsl';
+} from '../../analysis-core/kernels/lon-lat-ring-wgsl';
 
 const OPERATION = 'GPUZonalStatistics';
 /** Planar points and polygons, or longitude/latitude degrees with caller-supplied areas. */

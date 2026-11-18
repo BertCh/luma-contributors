@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 /** Canonical kinds of data exchanged by GPU spatial-analysis contributors. */
-export const GPU_SPATIAL_ANALYSIS_DATA_KINDS = [
+export const GPU_SPATIAL_ANALYSIS_DATA_KINDS = Object.freeze([
   'parameters',
   'attributes',
   'points',
@@ -19,7 +19,7 @@ export const GPU_SPATIAL_ANALYSIS_DATA_KINDS = [
   'network',
   'summary',
   'render-geometry'
-] as const;
+] as const);
 
 /** A logical data shape, independent of its concrete `GraphDataView` storage. */
 export type GPUSpatialAnalysisDataKind = (typeof GPU_SPATIAL_ANALYSIS_DATA_KINDS)[number];
@@ -91,7 +91,7 @@ export type GPUSpatialAnalysisOutputBound =
 export type GPUSpatialAnalysisCapabilityStatus = 'available' | 'opportunity';
 
 /** Repeatable scale and execution evidence attached to an implemented capability family. */
-export type GPUSpatialAnalysisCapabilityEvidence = {
+export type GPUSpatialAnalysisCapabilityEvidence = Readonly<{
   /** Source rows exercised by the representative correctness/performance fixture. */
   representativeSourceRows: number;
   /** Capacity or fixed output rows exercised by that fixture when output is not source-sized. */
@@ -114,7 +114,7 @@ export type GPUSpatialAnalysisCapabilityEvidence = {
     | 'orchestrated';
   /** Repository-relative executable specification or independent oracle. */
   correctnessOracle: string;
-};
+}>;
 
 /** One named concept in the data ontology. */
 export type GPUSpatialAnalysisDataConcept = {
@@ -208,7 +208,7 @@ export const GPU_SPATIAL_ANALYSIS_DATA_ONTOLOGY: readonly GPUSpatialAnalysisData
 ];
 
 /** A discoverable family of related contributors or a named missing capability. */
-export type GPUSpatialAnalysisCapability = {
+export type GPUSpatialAnalysisCapability = Readonly<{
   /** Stable kebab-case identifier. */
   id: string;
   title: string;
@@ -228,7 +228,7 @@ export type GPUSpatialAnalysisCapability = {
   limitation?: string;
   /** Required executable evidence for available families; omitted for recorded opportunities. */
   evidence?: GPUSpatialAnalysisCapabilityEvidence;
-};
+}>;
 
 /** Filters accepted by {@link queryGPUSpatialAnalysisCapabilities}. */
 export type GPUSpatialAnalysisCapabilityQuery = {
@@ -264,11 +264,12 @@ export type GPUSpatialAnalysisSemantics =
   | 'unspecified';
 
 /** Readback behavior is explicit because contributors must not hide submissions or mapping. */
-export type GPUSpatialAnalysisReadback = 'none' | 'explicit-adapter';
+export type GPUSpatialAnalysisReadback = 'none' | 'explicit-adapter' | 'unknown';
 
 /** Status fields that an operator may publish on GPU-resident one-row views. */
 export type GPUSpatialAnalysisStatusKind =
   | 'count'
+  | 'matchedCount'
   | 'requiredCount'
   | 'overflow'
   | 'candidateOverflow'
@@ -276,6 +277,8 @@ export type GPUSpatialAnalysisStatusKind =
   | 'invalidCount'
   | 'converged'
   | 'iterationLimitReached'
+  | 'iterationCount'
+  | 'zeroWeightCycle'
   | 'approximation'
   | 'vertexCount'
   | 'requiredVertexCount'
@@ -295,11 +298,23 @@ export type GPUAnalysisPackage =
   | '@luma-contributors/analysis/geospatial-analysis'
   | '@luma-contributors/analysis/analysis-core';
 
+/** Public identity: the full entry-point subpath and its exported name. */
+export type GPUAnalysisOperatorIdentity = Readonly<{
+  package: GPUAnalysisPackage;
+  exportName: string;
+}>;
+
+/** All-entry family membership, including identities when export names overlap. */
+export type GPUAnalysisCapability = GPUSpatialAnalysisCapability &
+  Readonly<{
+    operatorIdentities: readonly GPUAnalysisOperatorIdentity[];
+  }>;
+
 /** Whether an operator is built for GPU-scale inputs or is a size-limited reference implementation. */
-export type GPUAnalysisTier = 'scale' | 'reference';
+export type GPUAnalysisTier = 'scale' | 'reference' | 'unknown';
 
 /** One enforced maximum size of an operator. */
-export type GPUAnalysisLimit = {
+export type GPUAnalysisLimit = Readonly<{
   /** The prop or quantity that is bounded, for example `nodeCount`. */
   name: string;
   /** Largest accepted value (inclusive). */
@@ -308,10 +323,10 @@ export type GPUAnalysisLimit = {
   reason: string;
   /** Repository-relative source file where the check lives. */
   source?: string;
-};
+}>;
 
 /** Operator-level descriptor used for discovery and generated audits. */
-export type GPUSpatialAnalysisOperator = {
+export type GPUSpatialAnalysisOperator = Readonly<{
   /** Public export name. Constructors are deliberately not stored here. */
   exportName: string;
   /** Capability that owns this operator. */
@@ -329,7 +344,7 @@ export type GPUSpatialAnalysisOperator = {
   deterministic: boolean | 'order-dependent' | 'unspecified';
   status: readonly GPUSpatialAnalysisStatusKind[];
   readback: GPUSpatialAnalysisReadback;
-  /** One-line summary, taken from the class documentation. Present on operators added later. */
+  /** One-line description from public documentation or an editorial override; populated for the original spatial catalog. */
   summary?: string;
   /**
    * `'operator'` (the default when absent) is a contributor or recipe. `'helper'` is an exported
@@ -345,10 +360,12 @@ export type GPUSpatialAnalysisOperator = {
   limits?: readonly GPUAnalysisLimit[];
   /** A boundary on the size or cost that is not a numeric maximum, for example a serial step. */
   limitation?: string;
-  evidence: {
+  evidence: Readonly<{
     status: GPUSpatialAnalysisEvidenceStatus;
     /** Repository-relative test root or focused specification. */
     tests: string;
+    /** Other focused specifications for modes not covered by the primary test. */
+    additionalTests?: readonly string[];
     /** Repository-relative documentation page. */
     documentation: string;
     /** Public contract implemented by the operator. */
@@ -359,8 +376,8 @@ export type GPUSpatialAnalysisOperator = {
     transientMemory: GPUSpatialAnalysisCapabilityEvidence['transientMemory'];
     dispatch: GPUSpatialAnalysisCapabilityEvidence['dispatch'];
     correctnessOracle: string;
-  };
-};
+  }>;
+}>;
 
 /** Filters accepted by {@link queryGPUSpatialAnalysisOperators}. */
 export type GPUSpatialAnalysisOperatorQuery = {
@@ -376,9 +393,12 @@ export type GPUSpatialAnalysisOperatorQuery = {
 };
 
 /** Filters accepted by `queryGPUAnalysisOperators`, which also covers the other entry points. */
-export type GPUAnalysisOperatorQuery = GPUSpatialAnalysisOperatorQuery & {
+export type GPUAnalysisOperatorQuery = Omit<GPUSpatialAnalysisOperatorQuery, 'status'> & {
   package?: GPUAnalysisPackage;
   tier?: GPUAnalysisTier;
+  /** Unknown metadata is queryable and never interpreted as absence. */
+  status?: GPUSpatialAnalysisStatusKind | 'unknown';
+  readback?: GPUSpatialAnalysisReadback;
   /** Matches `dimensionality`. */
   dimensionality?: GPUSpatialAnalysisOperator['dimensionality'];
   /** Includes helpers when true; they are left out of operator counts by default. */
@@ -390,18 +410,21 @@ export type GPUAnalysisOperatorQuery = GPUSpatialAnalysisOperatorQuery & {
  * family-scale evidence figures (`representativeSourceRows` and the like), which were measured
  * per family for the original capabilities; their `evidence` records tests and documentation only.
  */
-export type GPUAnalysisOperator = Omit<GPUSpatialAnalysisOperator, 'evidence'> & {
-  evidence: Omit<
-    GPUSpatialAnalysisOperator['evidence'],
-    'representativeSourceRows' | 'transientMemory' | 'dispatch' | 'correctnessOracle'
-  > &
-    Partial<
-      Pick<
-        GPUSpatialAnalysisOperator['evidence'],
-        'representativeSourceRows' | 'transientMemory' | 'dispatch' | 'correctnessOracle'
-      >
-    >;
-};
+export type GPUAnalysisOperator = Omit<GPUSpatialAnalysisOperator, 'evidence' | 'status'> &
+  Readonly<{
+    /** `'unknown'` means unaudited; an empty array means confirmed absence of scalar status. */
+    status: readonly GPUSpatialAnalysisStatusKind[] | 'unknown';
+    evidence: Omit<
+      GPUSpatialAnalysisOperator['evidence'],
+      'representativeSourceRows' | 'transientMemory' | 'dispatch' | 'correctnessOracle'
+    > &
+      Partial<
+        Pick<
+          GPUSpatialAnalysisOperator['evidence'],
+          'representativeSourceRows' | 'transientMemory' | 'dispatch' | 'correctnessOracle'
+        >
+      >;
+  }>;
 
 /** Generated, machine-readable baseline for the public spatial-analysis surface. */
 export type GPUSpatialAnalysisAudit = {

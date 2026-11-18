@@ -14,6 +14,12 @@ import {
 } from '../../../src/gpu-spatial-analysis/polygon-triangulation/index';
 import {createOutputBuffer, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
+import {CPUPolygonTriangulationOperation} from '../../../src/analysis-core/polygon-triangulation/cpu-polygon-triangulation-operation';
+import {
+  packOperationPolygons,
+  getTriangulationOperationProps
+} from './polygon-triangulation-operation-cases';
 import {createSegmentGeometry} from '../segment-intersection/segment-geometry-harness';
 import type {OracleSegmentFeature} from '../segment-intersection/segment-intersection-oracle';
 import largeFixture from '../../oracles/fixtures/geometry-triangulation-large.json';
@@ -201,6 +207,77 @@ it('GPUPolygonTriangulation monotone method leaves the Earcut path bitwise uncha
   expect(monotone.indices).toEqual(none.indices);
 });
 
+it('final3 monotone triangulation skips collinear holes and retains live-hole source rows', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const shell: Point[] = [
+    [-4, -4],
+    [4, -4],
+    [4, 4],
+    [-4, 4]
+  ];
+  const skipped: Point[] = [
+    [-1, 0],
+    [0, 0],
+    [1, 0]
+  ];
+  const hole: Point[] = [
+    [1, -1],
+    [1, 1],
+    [2, 1],
+    [2, -1]
+  ];
+  const options = {monotoneMinimumVertices: 1, maximumWork: 1};
+  for (const skippedHole of [false, true]) {
+    for (const liveHole of [false, true]) {
+      const polygons = [[shell, ...(skippedHole ? [skipped] : []), ...(liveHole ? [hole] : [])]];
+      const count = liveHole ? 8 : 2;
+      const gpu = await runTriangulation(device, polygons, options);
+      const input = packOperationPolygons(polygons);
+      const cpu = await runOperationGraph(device, {
+        inputs: {
+          positions: {format: 'float32x2', values: input.positions},
+          featureOffsets: {format: 'uint32', values: input.featureOffsets},
+          polygonOffsets: {format: 'uint32', values: input.polygonOffsets},
+          ringOffsets: {format: 'uint32', values: input.ringOffsets}
+        },
+        operations: [
+          new CPUPolygonTriangulationOperation({
+            ...getTriangulationOperationProps(input, gpu.indices.length),
+            ...options
+          })
+        ],
+        outputs: ['indices', 'valid', 'triangleCount', 'triangleOffsets']
+      });
+      expect([...gpu.valid, ...gpu.triangleCount]).toEqual([1, count]);
+      expect([...cpu['valid'], ...cpu['triangleCount']]).toEqual([1, count]);
+      expect(Array.from(cpu['triangleOffsets'])).toEqual([0, count]);
+      const sourceRows = [
+        0,
+        1,
+        2,
+        3,
+        ...(liveHole ? (skippedHole ? [7, 8, 9, 10] : [4, 5, 6, 7]) : [])
+      ];
+      for (const indices of [gpu.indices, cpu['indices']]) {
+        const triangles: [number, number, number][] = Array.from({length: count}, (_, triangle) => [
+          indices[3 * triangle],
+          indices[3 * triangle + 1],
+          indices[3 * triangle + 2]
+        ]);
+        expect(triangles.flat().every(row => sourceRows.includes(row))).toBe(true);
+        const local = triangles.map(
+          triangle => triangle.map(row => sourceRows.indexOf(row)) as [number, number, number]
+        );
+        const check = checkTriangulation([shell, ...(liveHole ? [hole] : [])], local);
+        expect(check.boundaryMatches).toBe(true);
+        expect(check.minimumSignedArea).toBeGreaterThanOrEqual(0);
+        expect(check.area).toBe(liveHole ? 62 : 64);
+      }
+    }
+  }
+});
+
 it("GPUPolygonTriangulation largePolygonMethod 'none' keeps valid = 0 past maximumWork and 'monotone' rescues it", async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
@@ -227,9 +304,57 @@ it("GPUPolygonTriangulation largePolygonMethod 'none' keeps valid = 0 past maxim
     expect(none.triangleCount[polygon]).toBe(0);
     expectDegenerateSlice(none, polygon, `polygon ${polygon}`);
   }
+  const input = packOperationPolygons(polygons);
+  const cpu = await runOperationGraph(device, {
+    inputs: {
+      positions: {format: 'float32x2', values: input.positions},
+      featureOffsets: {format: 'uint32', values: input.featureOffsets},
+      polygonOffsets: {format: 'uint32', values: input.polygonOffsets},
+      ringOffsets: {format: 'uint32', values: input.ringOffsets}
+    },
+    operations: [
+      new CPUPolygonTriangulationOperation({
+        ...getTriangulationOperationProps(input, none.indices.length),
+        largePolygonMethod: 'none',
+        maximumWork: 1000
+      })
+    ],
+    outputs: ['indices', 'valid', 'triangleCount', 'triangleOffsets']
+  });
+  expect(Array.from(cpu['valid'])).toEqual([1, 0, 0, 1]);
+  expect(Array.from(cpu['valid'])).toEqual(none.valid);
+  expect(Array.from(cpu['triangleCount'])).toEqual([2, 0, 0, 2]);
+  expect(Array.from(cpu['triangleCount'])).toEqual(none.triangleCount);
+  for (const polygon of [1, 2]) {
+    const start = 3 * cpu['triangleOffsets'][polygon];
+    const end = 3 * cpu['triangleOffsets'][polygon + 1];
+    expect(Array.from(cpu['indices'].slice(start, end))).toEqual(
+      none.indices.slice(none.sliceStarts[polygon], none.sliceStarts[polygon + 1])
+    );
+    expect(Array.from(cpu['indices'].slice(start, end))).toEqual(
+      new Array(end - start).fill(none.polygonRows[polygon])
+    );
+  }
   // With the monotone retry the same input completes, and the neighbors are untouched.
   const monotone = await runTriangulation(device, polygons, {maximumWork: 1000});
   expect(monotone.valid).toEqual([1, 1, 1, 1]);
+  const cpuMonotone = await runOperationGraph(device, {
+    inputs: {
+      positions: {format: 'float32x2', values: input.positions},
+      featureOffsets: {format: 'uint32', values: input.featureOffsets},
+      polygonOffsets: {format: 'uint32', values: input.polygonOffsets},
+      ringOffsets: {format: 'uint32', values: input.ringOffsets}
+    },
+    operations: [
+      new CPUPolygonTriangulationOperation({
+        ...getTriangulationOperationProps(input, monotone.indices.length),
+        maximumWork: 1000
+      })
+    ],
+    outputs: ['valid', 'triangleCount']
+  });
+  expect(Array.from(cpuMonotone['valid'])).toEqual(monotone.valid);
+  expect(Array.from(cpuMonotone['triangleCount'])).toEqual(monotone.triangleCount);
   for (const [polygon, rings] of [
     [1, wavy],
     [2, skyline]
@@ -243,6 +368,62 @@ it("GPUPolygonTriangulation largePolygonMethod 'none' keeps valid = 0 past maxim
     expect(
       monotone.indices.slice(monotone.sliceStarts[polygon], monotone.sliceStarts[polygon + 1])
     ).toEqual(none.indices.slice(none.sliceStarts[polygon], none.sliceStarts[polygon + 1]));
+  }
+});
+
+it.each([
+  215, 216
+])('final2 Earcut hole queue work boundary %s agrees with its CPU operation', async maximumWork => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const polygons: Point[][][] = [
+    [
+      [
+        [0, 0],
+        [10, 0],
+        [10, 10],
+        [0, 10]
+      ],
+      [
+        [1, 1],
+        [1, 3],
+        [3, 3],
+        [3, 1]
+      ],
+      [
+        [6, 6],
+        [6, 8],
+        [8, 8],
+        [8, 6]
+      ]
+    ]
+  ];
+  const options = {largePolygonMethod: 'none' as const, useZOrderHash: false, maximumWork};
+  const gpu = await runTriangulation(device, polygons, options);
+  const input = packOperationPolygons(polygons);
+  const cpu = await runOperationGraph(device, {
+    inputs: {
+      positions: {format: 'float32x2', values: input.positions},
+      featureOffsets: {format: 'uint32', values: input.featureOffsets},
+      polygonOffsets: {format: 'uint32', values: input.polygonOffsets},
+      ringOffsets: {format: 'uint32', values: input.ringOffsets}
+    },
+    operations: [
+      new CPUPolygonTriangulationOperation({
+        ...getTriangulationOperationProps(input, gpu.indices.length),
+        ...options
+      })
+    ],
+    outputs: ['indices', 'valid', 'triangleCount']
+  });
+  const expected = maximumWork === 215 ? [0, 0] : [1, 14];
+  expect([...gpu.valid, ...gpu.triangleCount]).toEqual(expected);
+  expect([...cpu['valid'], ...cpu['triangleCount']]).toEqual(expected);
+  if (maximumWork === 215) {
+    expectDegenerateSlice(gpu, 0, 'budget failure');
+    expect(Array.from(cpu['indices'])).toEqual(gpu.indices);
+  } else {
+    expect(checkTriangulation(polygons[0], getTriangles(gpu, 0, 14)).boundaryMatches).toBe(true);
   }
 });
 

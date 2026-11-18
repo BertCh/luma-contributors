@@ -15,6 +15,15 @@ export type NetworkStructureOperationProps = {
   edgeCount: number;
   topology: {offsets: string; neighbors: string; weights?: string; nodePositions?: string};
   reverseEdgeSlots?: string;
+  /** Selects exact or budgeted SCCs on both forms; CPU resilience uses iterative Tarjan. */
+  mode?: GPUNetworkStructureProps['mode'];
+  strongComponentsMaximumIterations?: number;
+  /** SCC scalars; exact iterationCount is one traversal, parallel counts state-machine steps. */
+  strongComponentsStatus?: {
+    converged: string;
+    iterationCount: string;
+    iterationLimitReached: string;
+  };
   output: {
     strongComponents?: string;
     bridges?: string;
@@ -23,17 +32,8 @@ export type NetworkStructureOperationProps = {
   };
 };
 
-/** GPU-only execution controls extend the original props shared with the CPU twin. */
-export type GPUNetworkStructureOperationProps = NetworkStructureOperationProps & {
-  mode?: GPUNetworkStructureProps['mode'];
-  strongComponentsMaximumIterations?: number;
-  /** Caller-selected graph value names for the three uint32 SCC status scalars. */
-  strongComponentsStatus?: {
-    converged: string;
-    iterationCount: string;
-    iterationLimitReached: string;
-  };
-};
+/** Properties shared by GPU and CPU operation forms. */
+export type GPUNetworkStructureOperationProps = NetworkStructureOperationProps;
 
 /** Vector operation form; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUNetworkStructureOperation extends GPUContributorOperation {

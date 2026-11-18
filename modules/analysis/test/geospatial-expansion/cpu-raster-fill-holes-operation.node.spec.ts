@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
+import * as neighbors from '../../src/raster-analysis/raster-morphology/raster-morphology-operation-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   computeRasterFillHolesOnCPU,
@@ -30,6 +31,30 @@ const PROPS: RasterFillHolesOperationProps = {
     status: {converged: 'converged', iterationCount: 'rounds', iterationLimitReached: 'limit'}
   }
 };
+
+it('R6 never expands cells beyond the budget frontier on a 101 by 101 empty grid', () => {
+  const visit = vi.spyOn(neighbors, 'visitRasterMorphologyNeighbors');
+  try {
+    const result = computeRasterFillHolesOnCPU(new Uint32Array(101 * 101), {
+      grid: {...GRID, width: 101, height: 101},
+      maximumIterations: 1
+    });
+    const deepest = Math.max(
+      ...visit.mock.calls.map(([cell]) => {
+        const row = Math.floor(cell / 101),
+          column = cell % 101;
+        return Math.min(row, column, 100 - row, 100 - column);
+      })
+    );
+    expect(deepest).toBe(1);
+    expect(visit).toHaveBeenCalledTimes(792);
+    expect(result.iterationCount[0]).toBe(2);
+    expect(result.converged[0]).toBe(0);
+    expect(result.values[50 * 101 + 50]).toBe(1);
+  } finally {
+    visit.mockRestore();
+  }
+});
 
 it('matches independent SciPy component filling for both connectivities and nonbinary foreground', () => {
   for (const fixture of fixtures.fillHoles) {
@@ -93,7 +118,9 @@ it('maps optional status names and the output callback exactly', async () => {
     }
   });
   expect(Object.keys(result).sort()).toEqual(['converged', 'filled', 'limit', 'rounds']);
-  expect(result['rounds']).toEqual(Uint32Array.of(4));
+  expect(result['rounds']).toEqual(Uint32Array.of(2));
+  expect(result['converged']).toEqual(Uint32Array.of(0));
+  expect(result['limit']).toEqual(Uint32Array.of(1));
   const minimal = new CPURasterFillHolesOperation({
     ...PROPS,
     output: {values: 'filled', status: {converged: 'done', iterationCount: undefined}}
@@ -107,6 +134,24 @@ it('maps optional status names and the output callback exactly', async () => {
       })
     ).sort()
   ).toEqual(['done', 'filled']);
+});
+
+it('keeps background beyond the one-round boundary flood marked as unfinished holes', () => {
+  const result = computeRasterFillHolesOnCPU(new Uint32Array(63), {
+    grid: GRID,
+    maximumIterations: 1
+  });
+  // Distance from the boundary is min(row, column, 6-row, 8-column).
+  expect(result.values).toEqual(
+    Uint32Array.from({length: 63}, (_, cell) => {
+      const row = Math.floor(cell / 9);
+      const column = cell % 9;
+      return Number(Math.min(row, column, 6 - row, 8 - column) > 1);
+    })
+  );
+  expect(result.converged[0]).toBe(0);
+  expect(result.iterationLimitReached[0]).toBe(1);
+  expect(result.iterationCount[0]).toBe(2);
 });
 
 it('ignores surplus input rows and returns only the unit-grid boundary background', () => {

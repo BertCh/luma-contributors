@@ -67,6 +67,8 @@ function createFixture(
   const featureCounts = scalar('featureCounts');
   const candidateCount = scalar('candidateCount');
   const candidateOverflow = scalar('candidateOverflow');
+  const compactCandidateOverflow =
+    kind === 'bounds' ? undefined : scalar('compactCandidateOverflow');
   const uncertainCount = scalar('uncertainCount');
   const joinOverflow = scalar('joinOverflow');
   const flagReadbackBuffer = createOutputBuffer(device, totalRows);
@@ -196,7 +198,10 @@ function createFixture(
             : createVectorView('assignment-chunks', 'uint32', assignmentChunks),
           candidateTruncated: flags,
           featureCounts,
-          matches: {ids, status: {count, overflow, requiredCount}},
+          matches: {
+            ids,
+            status: {count, overflow, requiredCount, candidateOverflow: compactCandidateOverflow}
+          },
           status: {overflow: joinOverflow, candidateCount, candidateOverflow, uncertainCount}
         }
       })
@@ -231,7 +236,10 @@ function createFixture(
           nearestFeatureIds: createVectorView('nearest-assignments', 'uint32', assignmentChunks),
           candidateTruncated: nearestFlags,
           featureCounts,
-          matches: {ids, status: {count, overflow, requiredCount}},
+          matches: {
+            ids,
+            status: {count, overflow, requiredCount, candidateOverflow: compactCandidateOverflow}
+          },
           status: {overflow: joinOverflow, candidateCount, candidateOverflow}
         }
       })
@@ -340,12 +348,13 @@ for (const capacity of [4, 5]) {
       expect(overflowing.ids).toEqual(Array.from({length: capacity}, (_, row) => 1000 + row));
       expect(overflowing.statuses).toEqual({
         count: capacity,
-        // GPUCompactOutput reports any contributor capacity overflow, including candidates.
-        overflow: 1,
+        // Retained candidates fit the final output; earlier loss has its own word.
+        overflow: 0,
         requiredCount: capacity,
         featureCounts: capacity,
         candidateCount: 10,
         candidateOverflow: 1,
+        compactCandidateOverflow: 1,
         uncertainCount: 0,
         joinOverflow: 1
       });
@@ -362,6 +371,7 @@ for (const capacity of [4, 5]) {
         featureCounts: 2,
         candidateCount: 2,
         candidateOverflow: 0,
+        compactCandidateOverflow: 0,
         uncertainCount: 0,
         joinOverflow: 0
       });
@@ -600,12 +610,13 @@ for (const capacity of [4, 5]) {
       expect(result.ids).toEqual(Array.from({length: capacity}, (_, row) => 1000 + row));
       expect(result.statuses).toEqual({
         count: capacity,
-        // GPUCompactOutput reports any contributor capacity overflow, including candidates.
-        overflow: 1,
+        // Retained candidates fit the final output; earlier loss has its own word.
+        overflow: 0,
         requiredCount: capacity,
         featureCounts: capacity,
         candidateCount: 10,
         candidateOverflow: 1,
+        compactCandidateOverflow: 1,
         uncertainCount: 0,
         joinOverflow: 1
       });
@@ -619,6 +630,7 @@ for (const capacity of [4, 5]) {
         featureCounts: 2,
         candidateCount: 2,
         candidateOverflow: 0,
+        compactCandidateOverflow: 0,
         uncertainCount: 0,
         joinOverflow: 0
       });
@@ -648,6 +660,7 @@ it('GPUPointInPolygonJoin preserves explicit source rows with query-sorted chunk
       featureCounts: 6,
       candidateCount: 6,
       candidateOverflow: 0,
+      compactCandidateOverflow: 0,
       uncertainCount: 0,
       joinOverflow: 0
     });
@@ -721,6 +734,7 @@ for (const kind of ['join', 'nearest'] as const) {
         featureCounts: 10,
         candidateCount: 10,
         candidateOverflow: 0,
+        compactCandidateOverflow: 0,
         uncertainCount: 0,
         joinOverflow: 1
       });
@@ -737,6 +751,7 @@ for (const kind of ['join', 'nearest'] as const) {
         featureCounts: 2,
         candidateCount: 2,
         candidateOverflow: 0,
+        compactCandidateOverflow: 0,
         uncertainCount: 0,
         joinOverflow: 0
       });
@@ -764,6 +779,7 @@ it('GPUPointInPolygonJoin resets prefilled scalar statuses with only empty point
         featureCounts: 0,
         candidateCount: 0,
         candidateOverflow: 0,
+        compactCandidateOverflow: 0,
         uncertainCount: 0,
         joinOverflow: 0
       });

@@ -229,11 +229,11 @@ export function intersectWithOracle(
   const leftSide = buildSegments(left);
   const rightSide = right ? buildSegments(right) : leftSide;
   const hits: OracleHit[] = [];
-  const leftIds = [...leftSide.segments.keys()].sort((x, y) => x - y);
-  const rightIds = [...rightSide.segments.keys()].sort((x, y) => x - y);
-  for (const leftId of leftIds) {
+  const leftRows = [...leftSide.segments.keys()].sort((x, y) => x - y);
+  const rightRows = [...rightSide.segments.keys()].sort((x, y) => x - y);
+  for (const leftId of leftRows) {
     const l = leftSide.segments.get(leftId) as OracleSegment;
-    for (const rightId of rightIds) {
+    for (const rightId of rightRows) {
       const r = rightSide.segments.get(rightId) as OracleSegment;
       if (!right && rightId <= leftId) {
         continue;

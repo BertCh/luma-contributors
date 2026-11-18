@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer} from '@luma.gl/core';
-import {DrawCommandBuffer, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {DrawCommandBuffer, GPUCommandGraph, GPUGather} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
@@ -29,6 +29,116 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {TIME_WINDOW_EDGE_POLICY} from '../dataframe-edge-policy';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {RecipeTestFixture} from '../../gpu-spatial-analysis/recipes/recipe-harness';
+
+it('final1b F9 unsorted filter gathers source rows independently of reversed caller IDs', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new RecipeTestFixture(device, 'time-row-identities');
+  const rows = fixture.output('rows', 'uint32', 1);
+  const ids = fixture.output('ids', 'uint32', 1);
+  const count = fixture.output('count', 'uint32', 1);
+  const overflow = fixture.output('overflow', 'uint32', 1);
+  const candidate = fixture.output('candidate', 'uint32', 1);
+  const gathered = fixture.output('gathered', 'float32', 1);
+  const window = fixture.output('window', 'float32', GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH);
+  fixture.graph.add(
+    new GPUTimeWindowFilter({
+      timestamps: fixture.input('times', new Float32Array([10, 0]), 'float32', 2),
+      sourceIds: fixture.input('source-ids', new Uint32Array([1, 0]), 'uint32', 2),
+      window: window.view,
+      output: {
+        rows: rows.view,
+        ids: ids.view,
+        status: {count: count.view, overflow: overflow.view, candidateOverflow: candidate.view}
+      }
+    })
+  );
+  fixture.graph.add(
+    new GPUGather({
+      source: fixture.input('attributes', new Float32Array([10, 20]), 'float32', 2),
+      indices: rows.view,
+      output: gathered.view
+    })
+  );
+  const compiled = fixture.graph.compile();
+  try {
+    for (const [start, row, identity, attribute] of [
+      [0, 1, 0, 20],
+      [10, 0, 1, 10]
+    ]) {
+      window.buffer.write(getGPUTimeWindowFilterParameterValues({start, end: start}));
+      candidate.buffer.write(new Uint32Array([37]));
+      submitGraph(device, compiled, undefined);
+      expect(await fixture.readUint32(count, 1)).toEqual([1]);
+      expect(await fixture.readUint32(rows, 1)).toEqual([row]);
+      expect(await fixture.readUint32(ids, 1)).toEqual([identity]);
+      expect(await fixture.readFloat32(gathered, 1)).toEqual([attribute]);
+      expect(await fixture.readUint32(overflow, 1)).toEqual([0]);
+      expect(await fixture.readUint32(candidate, 1)).toEqual([0]);
+    }
+  } finally {
+    compiled.destroy();
+    fixture.destroy();
+  }
+});
+
+it.each([
+  'rows',
+  'sourceIds'
+] as const)('final2 G5/G1 direct-ID publication preserves row 1, ID 99 and status after mutation to %s', async alias => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new RecipeTestFixture(device, 'time-candidate-status');
+  const ids = fixture.output('ids', 'uint32', 2),
+    count = fixture.output('count', 'uint32', 1),
+    overflow = fixture.output('overflow', 'uint32', 1),
+    candidate = fixture.output('candidate', 'uint32', 1);
+  const rows = fixture.output('rows', 'uint32', 2);
+  const sourceIds = fixture.output('source-ids', 'uint32', 2);
+  sourceIds.buffer.write(new Uint32Array([42, 99]));
+  const declaredStatus = {
+    count: count.view,
+    overflow: overflow.view,
+    candidateOverflow: candidate.view
+  };
+  const contributor = new GPUTimeWindowFilter({
+    timestamps: fixture.input('times', new Float32Array([0, 5]), 'float32', 2),
+    sourceIds: sourceIds.view,
+    window: fixture.input(
+      'window',
+      getGPUTimeWindowFilterParameterValues({start: 5, end: 5}),
+      'float32',
+      GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
+    ),
+    output: {
+      rows: rows.view,
+      ids: ids.view,
+      status: declaredStatus
+    }
+  });
+  declaredStatus.candidateOverflow = fixture.graph.createDataView(
+    (alias === 'rows' ? rows.view : sourceIds.view).buffer,
+    {format: 'uint32', length: 1}
+  );
+  fixture.graph.add(contributor);
+  const compiled = fixture.graph.compile();
+  try {
+    for (let frame = 0; frame < 2; frame++) {
+      candidate.buffer.write(new Uint32Array([37]));
+      submitGraph(device, compiled, undefined);
+      expect(await fixture.readUint32(rows, 1)).toEqual([1]);
+      expect(await fixture.readUint32(ids, 1)).toEqual([99]);
+      expect(await fixture.readUint32(sourceIds, 2)).toEqual([42, 99]);
+      expect(await fixture.readUint32(count, 1)).toEqual([1]);
+      expect(await fixture.readUint32(overflow, 1)).toEqual([0]);
+      expect(await fixture.readUint32(candidate, 1)).toEqual([0]);
+    }
+  } finally {
+    compiled.destroy();
+    fixture.destroy();
+  }
+});
 
 type OracleResult = {
   mask: number[];
@@ -107,6 +217,7 @@ it('GPUTimeWindowFilter clamps instant rows, fades, and updates without recompil
   const timestampsBuffer = createInputBuffer(device, Float32Array.from(timestamps));
   const sourceIdsBuffer = createInputBuffer(device, Uint32Array.from(sourceIds));
   const idsBuffer = createOutputBuffer(device, 3);
+  const rowsBuffer = createOutputBuffer(device, 3);
   const countBuffer = createOutputBuffer(device, 1);
   const overflowBuffer = createOutputBuffer(device, 1);
   const totalBuffer = createOutputBuffer(device, 1);
@@ -134,6 +245,7 @@ it('GPUTimeWindowFilter clamps instant rows, fades, and updates without recompil
       sourceIds: importGraphBuffer(graph, 'source-ids', sourceIdsBuffer, 'uint32', 8),
       window: window.importToGraph(graph),
       output: {
+        rows: importGraphBuffer(graph, 'rows', rowsBuffer, 'uint32', 3),
         ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', 3),
         status: {
           count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
@@ -181,6 +293,7 @@ it('GPUTimeWindowFilter clamps instant rows, fades, and updates without recompil
     timestampsBuffer,
     sourceIdsBuffer,
     idsBuffer,
+    rowsBuffer,
     countBuffer,
     overflowBuffer,
     totalBuffer,
@@ -220,7 +333,7 @@ it('GPUTimeWindowFilter clips trail segments and counts visible rows per track',
       endTimestamps: importGraphBuffer(graph, 'ends', endsBuffer, 'float32', 6),
       window: window.importToGraph(graph),
       output: {
-        ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', 6),
+        rows: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', 6),
         status: {
           count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
           overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
@@ -299,7 +412,7 @@ it('GPUTimeWindowFilter reversed windows reject interval rows too (B-13)', async
       endTimestamps: importGraphBuffer(graph, 'ends', endsBuffer, 'float32', 4),
       window: window.importToGraph(graph),
       output: {
-        ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', 4),
+        rows: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', 4),
         status: {
           count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
           overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
@@ -355,7 +468,7 @@ it('GPUTimeWindowFilter separates epoch timestamps with double-single parts', as
       timestampsLow: importGraphBuffer(graph, 'low', lowBuffer, 'float32', 5),
       window: window.importToGraph(graph),
       output: {
-        ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', 5),
+        rows: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', 5),
         status: {
           count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
           overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
@@ -404,7 +517,7 @@ it('GPUTimeWindowFilter ANDs extra predicates across vector chunks', async () =>
         }
       ],
       output: {
-        ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', 5),
+        rows: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', 5),
         status: {
           count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
           overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
@@ -470,7 +583,7 @@ it('GPUTimeWindowFilter follows the time window edge policy', async () => {
         endTimestamps: importGraphBuffer(graph, 'ends', endsBuffer, 'float32', rows),
         window: window.importToGraph(graph),
         output: {
-          ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', rows),
+          rows: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', rows),
           status: {
             count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
             overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)

@@ -5,7 +5,7 @@
 import type {
   GPURasterCellSizeMode,
   RasterGridGeoreference
-} from '../../../src/analysis-core/raster-grid';
+} from '../../../src/analysis-core/contracts/raster-grid';
 import {
   GPU_RASTER_D8_DIRECTIONS,
   getRasterD8Distance

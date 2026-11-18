@@ -129,12 +129,12 @@ for (const kind of ['knox', 'mantel'] as const) {
       const {nodes} = getNodes(kind, 200, {stopAfterExceedances: 10, permutationCount: true});
       const sources = getGPUCommandNodeKernelSources(nodes);
       expect(sources.length).toBeGreaterThan(0);
-      for (const {id, source} of sources) {
+      for (const {id, source, constants} of sources) {
         expect(getStorageBindingCount(source), `${id} bindings`).toBeLessThanOrEqual(8);
-        expect(getPrivateMemoryBytes(source), id).toBeLessThanOrEqual(
+        expect(getPrivateMemoryBytes(source, constants), id).toBeLessThanOrEqual(
           CORE_PRIVATE_MEMORY_LIMIT_BYTES
         );
-        expect(getWorkgroupMemoryBytes(source), id).toBeLessThanOrEqual(
+        expect(getWorkgroupMemoryBytes(source, constants), id).toBeLessThanOrEqual(
           CORE_WORKGROUP_STORAGE_LIMIT_BYTES
         );
       }

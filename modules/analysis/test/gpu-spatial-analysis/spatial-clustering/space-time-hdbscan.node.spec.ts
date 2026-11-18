@@ -112,7 +112,7 @@ it('the generated scaled metric shares the BVH and tree, respects eight bindings
         expect(nodes.some(node => node.id.endsWith('-space-time-core'))).toBe(minimumSamples > 1);
         // Avoid retaining thousands of parsed kernels for the maximum-row cases.
         if (rows === 257) {
-          for (const [identifier, source] of getParsedKernelSources(nodes)) {
+          for (const {id: identifier, source} of getParsedKernelSources(nodes).configurations) {
             expect(getStorageBindingCount(source), identifier).toBeLessThanOrEqual(8);
           }
         }

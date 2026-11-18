@@ -412,6 +412,7 @@ export class GPULocationAllocation implements GPUCommandNodeProducer {
       Number(Boolean(props.sparseCosts)) +
       1 +
       setupNodeCount +
+      Number(props.operation === 'p-median' || (hasSwaps && props.demandWeights !== undefined)) +
       // score, choose and update per greedy step
       3 * props.maximumFacilityCount +
       // swap initialization, then list, prepare, totals, score, choose and apply per iteration
@@ -454,6 +455,7 @@ export class GPULocationAllocation implements GPUCommandNodeProducer {
     context: {
       declarations: string;
       swapState: GraphDataView<'uint32'>;
+      scoreScale: GraphDataView<'uint32'>;
       weightBinding: WGSLKernelBinding[];
       coverageBinding: WGSLKernelBinding[];
       demandWeightExpression: string;
@@ -468,6 +470,64 @@ export class GPULocationAllocation implements GPUCommandNodeProducer {
     const slots = props.maximumFacilityCount;
     const pairCount = slots * facilityCount;
     const coverageMode = props.operation === 'maximum-coverage';
+    // Bound comparisons by the current objective when all positive-weight demand is reachable.
+    // Larger costs cannot improve it; capping them also prevents sparse loss/extra cancellation
+    // against an unused, enormous second-nearest cost. Public costs remain in caller units.
+    const scoreScaleBinding: WGSLKernelBinding[] = [
+      {name: 'scoreScale', view: context.scoreScale, type: 'u32', access: 'read'}
+    ];
+    const removalScalePrologue = coverageMode
+      ? `let costScoreExponent = 0;
+  let reachScoreExponent = getAllocationWeightExponent(scoreScale[scoreScaleOffset + 2u]);
+  let costScoreLimit = getUnreachableCost();`
+      : `// High bit requests the full input scale when a positive-weight row is unreachable.
+  var requiredScale = 0u;
+  for (var demand = localInvocationIndex; demand < DEMAND_COUNT; demand += SWAP_WORKGROUP_SIZE) {
+    let weight = bitcast<u32>(${demandWeightExpression});
+    let nearest = demandData[demandDataOffset + demand * 3u];
+    if (weight != 0u && weight < 0x7f800000u) {
+      var rowScale = 0u;
+      if ((nearest & 0x7fffffffu) >= 0x7f800000u) {
+        rowScale = 0x80000000u | scoreScale[scoreScaleOffset + 1u];
+      } else if ((nearest & 0x7fffffffu) != 0u) {
+        // Extra demand-count headroom bounds a whole sparse loss/extra sum of capped costs.
+        rowScale = u32(max(0, getAllocationValueExponent(nearest) + getAllocationValueExponent(weight) + ${2 * Math.ceil(Math.log2(demandCount))} - 120));
+      }
+      requiredScale = max(requiredScale, rowScale);
+    }
+  }
+  sharedScale[localInvocationIndex] = requiredScale;
+  workgroupBarrier();
+  for (var stride = SWAP_WORKGROUP_SIZE / 2u; stride > 0u; stride >>= 1u) {
+    if (localInvocationIndex < stride) {
+      sharedScale[localInvocationIndex] = max(sharedScale[localInvocationIndex], sharedScale[localInvocationIndex + stride]);
+    }
+    workgroupBarrier();
+  }
+  let costScoreExponent = i32(sharedScale[0] & 0x7fffffffu);
+  let reachScoreExponent = getAllocationWeightExponent(scoreScale[scoreScaleOffset + 2u]);
+  var sumObjective = 0.0;
+  for (var demand = localInvocationIndex; demand < DEMAND_COUNT; demand += SWAP_WORKGROUP_SIZE) {
+    let nearest = bitcast<f32>(demandData[demandDataOffset + demand * 3u]);
+    if (isReachable(nearest)) {
+      sumObjective += getAllocationScoreCost(nearest, ${demandWeightExpression}, costScoreExponent);
+    }
+  }
+  sharedB[localInvocationIndex] = sumObjective;
+  workgroupBarrier();
+  for (var stride = SWAP_WORKGROUP_SIZE / 2u; stride > 0u; stride >>= 1u) {
+    if (localInvocationIndex < stride) { sharedB[localInvocationIndex] += sharedB[localInvocationIndex + stride]; }
+    workgroupBarrier();
+  }
+  let currentObjective = sharedB[0];
+  var costScoreLimit = getUnreachableCost();
+  if ((sharedScale[0] & 0x80000000u) == 0u) { costScoreLimit = 2.0 * currentObjective; }
+  // All lanes must finish reading the objective before the next reduction reuses sharedB.
+  workgroupBarrier();`;
+    // Carry the exponents in the totals buffer so weighted coverage stays within eight bindings.
+    const scoreScalePrologue = `let costScoreExponent = i32(swapTotals[swapTotalsOffset + 3u * SWAP_SLOTS + 2u]);
+  let reachScoreExponent = i32(swapTotals[swapTotalsOffset + 3u * SWAP_SLOTS + 3u]);
+  let costScoreLimit = swapTotals[swapTotalsOffset + 3u * SWAP_SLOTS + 4u];`;
     const view = <Format extends 'uint32' | 'float32'>(
       name: string,
       format: Format,
@@ -482,8 +542,8 @@ export class GPULocationAllocation implements GPUCommandNodeProducer {
     // Slot (rank among the selected facilities) per facility, NONE for an unselected candidate.
     const slotOfFacility = view('slot-of-facility', 'uint32', facilityCount);
     // Three values per slot: the loss(r) terms (reach weight, cost; coverage uses the first) and
-    // 1 when the slot holds a facility; then the objective scale and the total demand weight.
-    const swapTotals = view('totals', 'float32', 3 * slots + 2);
+    // 1 when the slot holds a facility; then objective scale, total weight, their exponents and cap.
+    const swapTotals = view('totals', 'float32', 3 * slots + 5);
     // Two values per pair: first the extra(i, r) terms, then the final (primary, secondary)
     // improvement, -1 when the pair is not a swap.
     const pairScores = view('pair-scores', 'float32', 2 * pairCount);
@@ -513,18 +573,18 @@ export class GPULocationAllocation implements GPUCommandNodeProducer {
     } else if (cost < secondCost) {
       secondCost = cost;
     }
-    if (cost <= threshold) {
+    if (isReachable(cost) && cost <= threshold) {
       coveringCount++;
       coveringSlot = slot;
     }`;
     const denseSelectedLoop = `for (var slot = 0u; slot < SWAP_SLOTS; slot++) {
     let facility = selectedList[selectedListOffset + slot];
     if (facility == NONE) { break; }
-    let cost = min(${
+    let cost = ${
       sparse
         ? 'getSparseRowCost(demand, facility)'
         : 'costs[costsOffset + demand * FACILITY_COUNT + facility]'
-    }, LARGE_COST);
+    };
     ${considerSlot}
   }`;
     // Sparse rows are scanned when they are no longer than the slot list, otherwise the slots are
@@ -536,7 +596,7 @@ export class GPULocationAllocation implements GPUCommandNodeProducer {
     for (var entry = rowStart; entry < rowEnd; entry++) {
       let slot = slotOfFacility[slotOfFacilityOffset + rowFacilities[rowFacilitiesOffset + entry]];
       if (slot == NONE) { continue; }
-      let cost = min(rowCosts[rowCostsOffset + entry], LARGE_COST);
+      let cost = rowCosts[rowCostsOffset + entry];
       ${considerSlot}
     }
   } else {
@@ -561,11 +621,11 @@ export class GPULocationAllocation implements GPUCommandNodeProducer {
         ? `let columnEnd = columnOffsets[columnOffsetsOffset + candidate + 1u];
   for (var entry = columnOffsets[columnOffsetsOffset + candidate]; entry < columnEnd; entry++) {
     let demand = columnEntries[columnEntriesOffset + 2u * entry];
-    let c = min(bitcast<f32>(columnEntries[columnEntriesOffset + 2u * entry + 1u]), LARGE_COST);
+    let c = bitcast<f32>(columnEntries[columnEntriesOffset + 2u * entry + 1u]);
     ${body}
   }`
         : `for (var demand = 0u; demand < DEMAND_COUNT; demand++) {
-    let c = min(costs[costsOffset + demand * FACILITY_COUNT + candidate], LARGE_COST);
+    let c = costs[costsOffset + demand * FACILITY_COUNT + candidate];
     ${body}
   }`;
     const scoreBindings: WGSLKernelBinding[] = [
@@ -583,8 +643,8 @@ export class GPULocationAllocation implements GPUCommandNodeProducer {
       ...coverageBinding
     ];
     const sparseScoreBody = coverageMode
-      ? entryLoop(`let weight = ${demandWeightExpression};
-    if (c <= threshold) {
+      ? entryLoop(`let weight = getAllocationScoreCost(1.0, ${demandWeightExpression}, reachScoreExponent);
+    if (isReachable(c) && c <= threshold) {
       let count = demandData[demandDataOffset + demand * 3u];
       let sole = demandData[demandDataOffset + demand * 3u + 2u];
       if (count == 0u) {
@@ -594,25 +654,29 @@ export class GPULocationAllocation implements GPUCommandNodeProducer {
       }
     }`)
       : entryLoop(`let weight = ${demandWeightExpression};
+    let scoreWeight = getAllocationScoreCost(1.0, weight, reachScoreExponent);
     let nearest = bitcast<f32>(demandData[demandDataOffset + demand * 3u]);
     let second = bitcast<f32>(demandData[demandDataOffset + demand * 3u + 1u]);
     let slot = demandData[demandDataOffset + demand * 3u + 2u];
     if (c < nearest) {
       // gain(i): the candidate beats the nearest selected facility (or reaches an unreached row).
       if (isReachable(nearest)) {
-        gainCost += weight * (nearest - c);
+        gainCost += getAllocationSwapCost(nearest, weight, costScoreExponent, costScoreLimit) - getAllocationSwapCost(c, weight, costScoreExponent, costScoreLimit);
       } else {
-        gainReach += weight;
-        gainCost -= weight * c;
+        gainReach += scoreWeight;
+        gainCost -= getAllocationSwapCost(c, weight, costScoreExponent, costScoreLimit);
       }
     }
     if (slot != NONE && c < second) {
       // extra(i, r): the row loses its nearest facility r but the candidate beats the second.
       var extraReach = 0.0;
-      var extraCost = weight * (second - max(c, nearest));
-      if (!isReachable(second)) {
-        extraReach = weight;
-        extraCost = weight * (min(nearest, c) - c - nearest);
+      var extraCost = 0.0;
+      if (isReachable(second)) {
+        extraCost = getAllocationSwapCost(second, weight, costScoreExponent, costScoreLimit) - max(getAllocationSwapCost(c, weight, costScoreExponent, costScoreLimit), getAllocationSwapCost(nearest, weight, costScoreExponent, costScoreLimit));
+      } else {
+        extraReach = scoreWeight;
+        // min(nearest, c) - c - nearest = -max(nearest, c), without an overflowing intermediate.
+        extraCost = -max(getAllocationSwapCost(nearest, weight, costScoreExponent, costScoreLimit), getAllocationSwapCost(c, weight, costScoreExponent, costScoreLimit));
       }
       let pair = pairScoresOffset + 2u * (slot * FACILITY_COUNT + candidate);
       pairScores[pair] += extraReach;
@@ -622,25 +686,26 @@ export class GPULocationAllocation implements GPUCommandNodeProducer {
     // `ct(min(d1, c)) - ct(min(d2, c))` (cost) and the reach weight lost when neither d2 nor c
     // reaches it. Every term is a modest difference; no loss(r) and extra(i, r) cancel.
     const denseScoreBody = coverageMode
-      ? entryLoop(`let weight = ${demandWeightExpression};
+      ? entryLoop(`let weight = getAllocationScoreCost(1.0, ${demandWeightExpression}, reachScoreExponent);
     let count = demandData[demandDataOffset + demand * 3u];
     let sole = demandData[demandDataOffset + demand * 3u + 2u];
     if (count == 0u) {
-      if (c <= threshold) { gainCover += weight; }
-    } else if (sole != NONE && c > threshold) {
+      if (isReachable(c) && c <= threshold) { gainCover += weight; }
+    } else if (sole != NONE && (!isReachable(c) || c > threshold)) {
       // The only covering facility leaves and the candidate does not cover the row.
       pairScores[pairScoresOffset + 2u * (sole * FACILITY_COUNT + candidate)] -= weight;
     }`)
       : entryLoop(`let weight = ${demandWeightExpression};
+    let scoreWeight = getAllocationScoreCost(1.0, weight, reachScoreExponent);
     let nearest = bitcast<f32>(demandData[demandDataOffset + demand * 3u]);
     let second = bitcast<f32>(demandData[demandDataOffset + demand * 3u + 1u]);
     let slot = demandData[demandDataOffset + demand * 3u + 2u];
     if (c < nearest) {
       if (isReachable(nearest)) {
-        gainCost += weight * (nearest - c);
+        gainCost += getAllocationSwapCost(nearest, weight, costScoreExponent, costScoreLimit) - getAllocationSwapCost(c, weight, costScoreExponent, costScoreLimit);
       } else {
-        gainReach += weight;
-        gainCost -= weight * c;
+        gainReach += scoreWeight;
+        gainCost -= getAllocationSwapCost(c, weight, costScoreExponent, costScoreLimit);
       }
     } else if (slot != NONE) {
       // The row loses its nearest facility and falls back to the cheaper of the second and the
@@ -649,10 +714,10 @@ export class GPULocationAllocation implements GPUCommandNodeProducer {
       if (kept > nearest) {
         let pair = pairScoresOffset + 2u * (slot * FACILITY_COUNT + candidate);
         if (isReachable(kept)) {
-          pairScores[pair + 1u] += weight * (nearest - kept);
+          pairScores[pair + 1u] += getAllocationSwapCost(nearest, weight, costScoreExponent, costScoreLimit) - getAllocationSwapCost(kept, weight, costScoreExponent, costScoreLimit);
         } else {
-          pairScores[pair] -= weight;
-          pairScores[pair + 1u] += weight * nearest;
+          pairScores[pair] -= scoreWeight;
+          pairScores[pair + 1u] += getAllocationSwapCost(nearest, weight, costScoreExponent, costScoreLimit);
         }
       }
     }`);
@@ -685,25 +750,25 @@ export class GPULocationAllocation implements GPUCommandNodeProducer {
     pairScores[pairScoresOffset + pair] = primary;
     pairScores[pairScoresOffset + pair + 1u] = secondary;`;
     const removalBody = coverageMode
-      ? `let weight = ${demandWeightExpression};
+      ? `let weight = getAllocationScoreCost(1.0, ${demandWeightExpression}, reachScoreExponent);
     if (removalTarget == SWAP_SLOTS) {
       sumA += weight;
     } else if (demandData[demandDataOffset + demand * 3u + 2u] == removalTarget) {
       sumA -= weight;
     }`
       : `let weight = ${demandWeightExpression};
+    let scoreWeight = getAllocationScoreCost(1.0, weight, reachScoreExponent);
     let nearest = bitcast<f32>(demandData[demandDataOffset + demand * 3u]);
     let second = bitcast<f32>(demandData[demandDataOffset + demand * 3u + 1u]);
     if (removalTarget == SWAP_SLOTS) {
-      sumA += weight;
-      if (isReachable(nearest)) { sumB += weight * nearest; }
+      sumA += scoreWeight;
     } else if (demandData[demandDataOffset + demand * 3u + 2u] == removalTarget) {
       // loss(r): the row falls back to its second-nearest facility, or becomes unreachable.
       if (isReachable(second)) {
-        sumB += weight * (nearest - second);
+        sumB += getAllocationSwapCost(nearest, weight, costScoreExponent, costScoreLimit) - getAllocationSwapCost(second, weight, costScoreExponent, costScoreLimit);
       } else {
-        sumA -= weight;
-        sumB += weight * nearest;
+        sumA -= scoreWeight;
+        sumB += getAllocationSwapCost(nearest, weight, costScoreExponent, costScoreLimit);
       }
     }`;
     const nodes: GPUCommandNode<Parameters>[] = [
@@ -765,8 +830,8 @@ for (var facility = 0u; facility < FACILITY_COUNT; facility++) {
           bindings: prepareBindings,
           declarations: sparse ? `${declarations}\n${SPARSE_ROW_COST_WGSL}` : declarations,
           body: `let demand = index;
-  var nearestCost = LARGE_COST;
-  var secondCost = LARGE_COST;
+  var nearestCost = getUnreachableCost();
+  var secondCost = getUnreachableCost();
   var nearestSlot = NONE;
   var coveringCount = 0u;
   var coveringSlot = NONE;
@@ -788,19 +853,22 @@ for (var facility = 0u; facility < FACILITY_COUNT; facility++) {
             {name: 'demandData', view: demandData, type: 'u32', access: 'read'},
             {name: 'selectedList', view: selectedList, type: 'u32', access: 'read'},
             {name: 'swapTotals', view: swapTotals, type: 'f32', access: 'read_write'},
+            ...scoreScaleBinding,
             ...weightBinding
           ],
           declarations: `${declarations}
 const SWAP_WORKGROUP_SIZE: u32 = ${CHOOSE_WORKGROUP_SIZE}u;
 var<workgroup> sharedA: array<f32, ${CHOOSE_WORKGROUP_SIZE}>;
-var<workgroup> sharedB: array<f32, ${CHOOSE_WORKGROUP_SIZE}>;`,
+var<workgroup> sharedB: array<f32, ${CHOOSE_WORKGROUP_SIZE}>;
+${coverageMode ? '' : `var<workgroup> sharedScale: array<u32, ${CHOOSE_WORKGROUP_SIZE}>;`}`,
           // Workgroup r (< SWAP_SLOTS) sums loss(r) over the rows served by slot r; the last
           // workgroup sums the total demand weight (A) and the objective scale (B). Strided lane
           // partials and a fixed tree make the sums independent of scheduling. No early return:
           // every invocation must reach the barriers.
           body: `let removalTarget = ${sparse ? 'workgroupIndex' : 'SWAP_SLOTS'};
+  ${removalScalePrologue}
   var sumA = 0.0;
-  var sumB = 0.0;
+  var sumB = ${coverageMode ? '0.0' : 'select(0.0, currentObjective, removalTarget == SWAP_SLOTS && localInvocationIndex == 0u)'};
   for (var demand = localInvocationIndex; demand < DEMAND_COUNT; demand += SWAP_WORKGROUP_SIZE) {
     ${removalBody}
   }
@@ -818,6 +886,9 @@ var<workgroup> sharedB: array<f32, ${CHOOSE_WORKGROUP_SIZE}>;`,
     if (removalTarget == SWAP_SLOTS) {
       swapTotals[swapTotalsOffset + 3u * SWAP_SLOTS] = ${coverageMode ? 'sharedA[0]' : 'sharedB[0]'};
       swapTotals[swapTotalsOffset + 3u * SWAP_SLOTS + 1u] = sharedA[0];
+      swapTotals[swapTotalsOffset + 3u * SWAP_SLOTS + 2u] = f32(costScoreExponent);
+      swapTotals[swapTotalsOffset + 3u * SWAP_SLOTS + 3u] = f32(reachScoreExponent);
+      swapTotals[swapTotalsOffset + 3u * SWAP_SLOTS + 4u] = costScoreLimit;
     } else {
       swapTotals[swapTotalsOffset + 3u * removalTarget] = sharedA[0];
       swapTotals[swapTotalsOffset + 3u * removalTarget + 1u] = sharedB[0];
@@ -839,6 +910,7 @@ var<workgroup> sharedB: array<f32, ${CHOOSE_WORKGROUP_SIZE}>;`,
           // weight gained for maximum coverage. A pair is only kept when it beats the noise
           // tolerance. Only this thread touches the candidate's pair entries, so no atomics.
           body: `let candidate = index;
+  ${scoreScalePrologue}
   let isCandidate = slotOfFacility[slotOfFacilityOffset + candidate] == NONE;
   let threshold = ${threshold};
   for (var slot = 0u; slot < SWAP_SLOTS; slot++) {
@@ -1076,7 +1148,7 @@ swapState[swapStateOffset + 1u] = swapState[swapStateOffset + 1u] + 1u;`
       ['facility scores', facilityCount * 8],
       [
         'swap totals',
-        this.maximumSwapIterations > 0 ? (3 * props.maximumFacilityCount + 2) * 4 : 0
+        this.maximumSwapIterations > 0 ? (3 * props.maximumFacilityCount + 5) * 4 : 0
       ],
       [
         'swap pair scores',
@@ -1103,7 +1175,8 @@ swapState[swapStateOffset + 1u] = swapState[swapStateOffset + 1u] + 1u;`
       'float32',
       2 * facilityCount
     );
-    const chosenFacility = createTransientView(graph, `${id}-chosen-facility`, 'uint32', 1);
+    // Word 0 is the chosen facility; word 1 is the common product exponent; word 2 is max weight.
+    const chosenFacility = createTransientView(graph, `${id}-chosen-facility`, 'uint32', 3);
     const demandObjectives = createTransientView(
       graph,
       `${id}-demand-objectives`,
@@ -1126,11 +1199,50 @@ const FACILITY_COUNT: u32 = ${facilityCount}u;${
 const MAXIMUM_FACILITIES: u32 = ${props.maximumFacilityCount}u;
 const MODE: u32 = ${mode}u;
 const NONE: u32 = 0xffffffffu;
-const LARGE_COST: f32 = 1e30;
 ${IS_NAN_BITS_WGSL}
 fn isInvalid(value: f32) -> bool { return isNanBits(value) || value < 0.0; }
-// Unreachable costs (+Infinity, or the LARGE_COST sentinel of an unassigned row) are never summed.
-fn isReachable(cost: f32) -> bool { return cost < LARGE_COST; }`;
+// Non-finite constant-expression bitcasts are invalid WGSL; a function-local var is runtime.
+fn getUnreachableCost() -> f32 {
+  var bits = 0x7f800000u;
+  return bitcast<f32>(bits);
+}
+// Inspect the representation explicitly: every finite nonnegative cost is reachable.
+fn isReachable(cost: f32) -> bool { return (bitcast<u32>(cost) & 0x7fffffffu) < 0x7f800000u; }
+// Leave ordinary scores in caller units. At overflow risk, all candidates share the same
+// binary exponent, with headroom for the complete demand sum and finite weighted products.
+fn getAllocationValueExponent(bits: u32) -> i32 {
+  let exponent = i32((bits >> 23u) & 255u);
+  if (exponent != 0) { return exponent - 127; }
+  return 31 - i32(countLeadingZeros(bits & 0x7fffffu)) - 149;
+}
+fn getAllocationWeightExponent(weightMaximum: u32) -> i32 {
+  return max(0, getAllocationValueExponent(weightMaximum) + ${Math.ceil(Math.log2(demandCount))} - 120);
+}
+fn getAllocationProductExponent(cost: u32, weight: u32) -> u32 {
+  // Exclude zero products; independent maxima can belong to different, noncontributing rows.
+  if (cost == 0u || weight == 0u || cost >= 0x7f800000u || weight >= 0x7f800000u) { return 0u; }
+  return u32(max(0, getAllocationValueExponent(cost) + getAllocationValueExponent(weight) + ${Math.ceil(Math.log2(demandCount))} - 120));
+}
+fn getAllocationScoreCost(cost: f32, weight: f32, exponent: i32) -> f32 {
+  if (!isReachable(weight)) { return cost * weight; }
+  if (exponent == 0) { return cost * weight; }
+  if (cost == 0.0 || weight == 0.0) { return 0.0; }
+  let costParts = frexp(cost);
+  let weightParts = frexp(weight);
+  return ldexp(costParts.fract * weightParts.fract, costParts.exp + weightParts.exp - exponent);
+}
+// A cost above twice the current objective cannot improve a fully reachable solution. Clip
+// weighted costs before differencing, so a huge sparse loss and its extra term cannot erase
+// the useful gain. Check the exponent before ldexp, avoiding an overflowing intermediate.
+fn getAllocationSwapCost(cost: f32, weight: f32, exponent: i32, limit: f32) -> f32 {
+  if (!isReachable(limit)) { return getAllocationScoreCost(cost, weight, exponent); }
+  if (limit == 0.0 || cost == 0.0 || weight == 0.0) { return 0.0; }
+  let costParts = frexp(cost);
+  let weightParts = frexp(weight);
+  let productExponent = costParts.exp + weightParts.exp - exponent;
+  if (productExponent > getAllocationValueExponent(bitcast<u32>(limit)) + 2) { return limit; }
+  return min(ldexp(costParts.fract * weightParts.fract, productExponent), limit);
+}`;
     const swapDeclarations = `${declarations}
 const MAXIMUM_SWAPS: u32 = ${swaps}u;
 const SWAP_SLOTS: u32 = ${props.maximumFacilityCount}u;
@@ -1202,7 +1314,7 @@ const SWAP_TOLERANCE: f32 = ${GPU_LOCATION_ALLOCATION_SWAP_TOLERANCE};`;
     selected[selectedOffset + index] = 0u;
   }
   if (index < DEMAND_COUNT) {
-    bestCosts[bestCostsOffset + index] = LARGE_COST;
+    bestCosts[bestCostsOffset + index] = getUnreachableCost();
     assignments[assignmentsOffset + index] = NONE;
   }
   if (index < ${GPU_LOCATION_ALLOCATION_STATUS.length}u) {
@@ -1212,6 +1324,8 @@ const SWAP_TOLERANCE: f32 = ${GPU_LOCATION_ALLOCATION_SWAP_TOLERANCE};`;
     objective[objectiveOffset] = 0.0;
     // Any value but NONE: the first choose step is not stopped.
     chosen[chosenOffset] = 0u;
+    chosen[chosenOffset + 1u] = 0u;
+    chosen[chosenOffset + 2u] = ${props.demandWeights ? '0u' : '0x3f800000u'};
     ${greedyGate ? greedyGate.armWGSL : ''}
   }`
       }),
@@ -1238,6 +1352,55 @@ const SWAP_TOLERANCE: f32 = ${GPU_LOCATION_ALLOCATION_SWAP_TOLERANCE};`;
           ])
     ];
 
+    if (mode === 0 || (swaps > 0 && props.demandWeights !== undefined)) {
+      const entryCount = sparse ? sparse.costs.length : props.costs!.length;
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-score-scale`,
+          operation: OPERATION,
+          variant: 'score-scale',
+          invocationCount: mode === 0 ? Math.max(entryCount, demandCount) : demandCount,
+          bindings: [
+            ...(mode !== 0
+              ? []
+              : sparse
+                ? [
+                    {
+                      name: 'columnEntries',
+                      view: sparseSetup!.transpose.columnEntries,
+                      type: 'u32',
+                      access: 'read'
+                    } as const
+                  ]
+                : [{name: 'costs', view: props.costs!, type: 'u32', access: 'read'} as const]),
+            ...weightBinding,
+            {name: 'chosen', view: chosenFacility, type: 'atomic<u32>', access: 'read_write'}
+          ],
+          declarations,
+          body: `${
+            mode !== 0
+              ? ''
+              : `if (index < ${entryCount}u) {
+    let demand = ${sparse ? 'columnEntries[columnEntriesOffset + 2u * index]' : 'index / FACILITY_COUNT'};
+    let bits = ${sparse ? 'columnEntries[columnEntriesOffset + 2u * index + 1u]' : 'costs[costsOffset + index]'};
+    if (demand < DEMAND_COUNT) {
+      let weight = bitcast<u32>(${demandWeightExpression});
+      atomicMax(&chosen[chosenOffset + 1u], getAllocationProductExponent(bits, weight));
+    }
+  }`
+          }
+  ${
+    props.demandWeights
+      ? `if (index < DEMAND_COUNT) {
+    let bits = bitcast<u32>(demandWeights[demandWeightsOffset + index]);
+    if (bits < 0x7f800000u) { atomicMax(&chosen[chosenOffset + 2u], bits); }
+  }`
+      : ''
+  }`
+        })
+      );
+    }
+
     for (let step = 0; step < props.maximumFacilityCount; step++) {
       nodes.push(
         createWGSLKernelNode(graph, {
@@ -1254,18 +1417,23 @@ const SWAP_TOLERANCE: f32 = ${GPU_LOCATION_ALLOCATION_SWAP_TOLERANCE};`;
             {name: 'bestCosts', view: bestCosts, type: 'f32', access: 'read'},
             {name: 'scores', view: facilityScores, type: 'f32', access: 'read_write'},
             {name: 'status', view: output.status, type: 'u32', access: 'read'},
+            ...(mode === 0
+              ? [{name: 'chosen', view: chosenFacility, type: 'u32', access: 'read'} as const]
+              : []),
             ...weightBinding,
             ...coverageBinding
           ],
           declarations,
           body: `let facility = index;
-  let unavailableScore = select(-1.0, LARGE_COST, MODE == 0u);
+  let unavailableScore = select(-1.0, getUnreachableCost(), MODE == 0u);
   if (status[statusOffset + 3u] != 0u || selected[selectedOffset + facility] != 0u) {
     scores[scoresOffset + 2u * facility] = unavailableScore;
     scores[scoresOffset + 2u * facility + 1u] = unavailableScore;
     return;
   }
   let threshold = ${needsCoverage ? 'coverageDistance[coverageDistanceOffset]' : '0.0'};
+  let costScoreExponent = ${mode === 0 ? 'i32(chosen[chosenOffset + 1u])' : '0'};
+  let reachScoreExponent = ${mode === 0 ? 'getAllocationWeightExponent(chosen[chosenOffset + 2u])' : '0'};
   // p-median scores are lexicographic: (demand weight left unreachable, weighted cost of the
   // reachable rows). Coverage modes use only the first value: maximum coverage the demand weight
   // newly covered, set covering the number of rows newly covered (a row of weight 0 must still
@@ -1280,18 +1448,18 @@ const SWAP_TOLERANCE: f32 = ${GPU_LOCATION_ALLOCATION_SWAP_TOLERANCE};`;
   let columnEnd = columnOffsets[columnOffsetsOffset + facility + 1u];
   for (var entry = columnOffsets[columnOffsetsOffset + facility]; entry < columnEnd; entry++) {
     let demand = columnEntries[columnEntriesOffset + 2u * entry];
-    let candidate = min(bitcast<f32>(columnEntries[columnEntriesOffset + 2u * entry + 1u]), LARGE_COST);
+    let candidate = bitcast<f32>(columnEntries[columnEntriesOffset + 2u * entry + 1u]);
     let current = bestCosts[bestCostsOffset + demand];
     if (MODE == 0u) {
       if (candidate < current) {
         if (isReachable(current)) {
-          reachableCost += ${demandWeightExpression} * (current - candidate);
+          reachableCost += getAllocationScoreCost(current - candidate, ${demandWeightExpression}, costScoreExponent);
         } else {
-          score += ${demandWeightExpression};
-          reachableCost -= ${demandWeightExpression} * candidate;
+          score += getAllocationScoreCost(1.0, ${demandWeightExpression}, reachScoreExponent);
+          reachableCost -= getAllocationScoreCost(candidate, ${demandWeightExpression}, costScoreExponent);
         }
       }
-    } else if (current > threshold && candidate <= threshold) {
+    } else if ((!isReachable(current) || current > threshold) && isReachable(candidate) && candidate <= threshold) {
       score += ${demandWeightExpression};
       newlyCoveredRowCount += 1u;
     }
@@ -1306,11 +1474,11 @@ const SWAP_TOLERANCE: f32 = ${GPU_LOCATION_ALLOCATION_SWAP_TOLERANCE};`;
     if (MODE == 0u) {
       let next = min(current, candidate);
       if (isReachable(next)) {
-        reachableCost += ${demandWeightExpression} * next;
+        reachableCost += getAllocationScoreCost(next, ${demandWeightExpression}, costScoreExponent);
       } else {
-        score += ${demandWeightExpression};
+        score += getAllocationScoreCost(1.0, ${demandWeightExpression}, reachScoreExponent);
       }
-    } else if (current > threshold && candidate <= threshold) {
+    } else if ((!isReachable(current) || current > threshold) && isReachable(candidate) && candidate <= threshold) {
       score += ${demandWeightExpression};
       newlyCoveredRowCount += 1u;
     }
@@ -1360,8 +1528,8 @@ fn isBetterCandidate(
           // so the scores are stale. Every lane reads chosen before the first barrier and lane 0
           // writes it after the last one.
           body: `var bestFacility = NONE;
-  var bestScore = select(-1.0, LARGE_COST, MODE == 0u);
-  var bestSecondary = select(-1.0, LARGE_COST, MODE == 0u);
+  var bestScore = select(-1.0, getUnreachableCost(), MODE == 0u);
+  var bestSecondary = select(-1.0, getUnreachableCost(), MODE == 0u);
   let stopped = MODE != 0u && chosen[chosenOffset] == NONE;
   if (status[statusOffset + 3u] == 0u && !stopped) {
     for (var facility = localInvocationIndex; facility < FACILITY_COUNT; facility += CHOOSE_WORKGROUP_SIZE) {
@@ -1440,6 +1608,7 @@ fn isBetterCandidate(
         ...this.getSwapNodes(graph, {
           declarations: swapDeclarations,
           swapState,
+          scoreScale: chosenFacility,
           weightBinding,
           coverageBinding,
           demandWeightExpression,
@@ -1501,13 +1670,13 @@ fn isBetterCandidate(
           declarations,
           body: `let demand = index;
   var assigned = NONE;
-  var assignedCost = LARGE_COST;
+  var assignedCost = getUnreachableCost();
   let rowEnd = min(rowOffsets[rowOffsetsOffset + demand + 1u], SPARSE_ENTRY_COUNT);
   for (var entry = rowOffsets[rowOffsetsOffset + demand]; entry < rowEnd; entry++) {
     let facility = rowFacilities[rowFacilitiesOffset + entry];
     if (facility >= FACILITY_COUNT || selected[selectedOffset + facility] == 0u) { continue; }
     let cost = rowCosts[rowCostsOffset + entry];
-    if (cost < assignedCost) {
+    if (isReachable(cost) && (cost < assignedCost || (cost == assignedCost && facility < assigned))) {
       assignedCost = cost;
       assigned = facility;
     }
@@ -1549,11 +1718,11 @@ fn isBetterCandidate(
           declarations,
           body: `let demand = index;
   var assigned = NONE;
-  var assignedCost = LARGE_COST;
+  var assignedCost = getUnreachableCost();
   for (var facility = 0u; facility < FACILITY_COUNT; facility++) {
     if (selected[selectedOffset + facility] == 0u) { continue; }
     let cost = costs[costsOffset + demand * FACILITY_COUNT + facility];
-    if (cost < assignedCost || (cost == assignedCost && facility < assigned)) {
+    if (isReachable(cost) && (cost < assignedCost || (cost == assignedCost && facility < assigned))) {
       assignedCost = cost;
       assigned = facility;
     }

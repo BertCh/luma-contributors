@@ -92,6 +92,18 @@ describe('GPUGeographicalDetector', () => {
     expect(getGeographicalDetectorPValue(perfect)).toBe(0);
   });
 
+  it('returns a zero p-value for perfect strata above the host mixture noncentrality limit', async () => {
+    const words = await runDetector([100, 101, 101, 101, 101], [0, 1, 1, 1, 1]);
+    expect(words[layout.q]).toBe(1);
+    expect(words[layout.fStatistic]).toBe(Infinity);
+    expect(words[layout.numeratorDegreesOfFreedom]).toBe(1);
+    expect(words[layout.denominatorDegreesOfFreedom]).toBe(3);
+    expect(Number.isFinite(words[layout.nonCentrality])).toBe(true);
+    expect(words[layout.nonCentrality]).toBeGreaterThan(10000);
+    expect(Math.abs(words[layout.nonCentrality] / 12251.25 - 1)).toBeLessThan(1e-3);
+    expect(getGeographicalDetectorPValue(words)).toBe(0);
+  });
+
   for (const reference of fixture.geographicalDetector) {
     it(`agrees with geodetector ${fixture.versions.geodetector} on the ${reference.name} case`, async () => {
       const words = await runDetector(reference.values, reference.labels);

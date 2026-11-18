@@ -21,7 +21,7 @@ import {
   toSparseCosts,
   getObjective,
   getPMedianObjectiveParts,
-  runGreedyOnCPU as runReachabilityAwareGreedyOnCPU,
+  runGreedyOnCPU,
   runSwapPhaseOnCPU,
   UNREACHABLE_SENTINEL_CASE,
   type LocationAllocationOracleOperation,
@@ -287,11 +287,7 @@ function getSubsets(facilityCount: number, size: number): number[][] {
 }
 
 function getMedianCost(costs: Float32Array, facilityCount: number, subset: number[]): number {
-  let total = 0;
-  for (let row = 0; row < costs.length / facilityCount; row++) {
-    total += Math.min(...subset.map(facility => costs[row * facilityCount + facility]));
-  }
-  return total;
+  return getObjective('p-median', costs, facilityCount, subset, 0);
 }
 
 function getCoveredCount(
@@ -300,52 +296,16 @@ function getCoveredCount(
   distance: number,
   subset: number[]
 ): number {
-  let covered = 0;
-  for (let row = 0; row < costs.length / facilityCount; row++) {
-    covered += subset.some(facility => costs[row * facilityCount + facility] <= distance) ? 1 : 0;
-  }
-  return covered;
+  return getObjective('maximum-coverage', costs, facilityCount, subset, distance);
 }
 
-/** The documented greedy rule: take the best marginal gain, ties to the lowest facility row. */
-function runGreedyOnCPU(
-  operation: GPULocationAllocationOperation,
-  costs: Float32Array,
-  facilityCount: number,
-  maximumFacilityCount: number,
-  distance: number
-): number[] {
-  const demandCount = costs.length / facilityCount;
-  const best = new Array<number>(demandCount).fill(1e30);
-  const selected: number[] = [];
-  for (let step = 0; step < maximumFacilityCount; step++) {
-    let chosen = -1;
-    let chosenScore = operation === 'p-median' ? Infinity : 0;
-    for (let facility = 0; facility < facilityCount; facility++) {
-      if (selected.includes(facility)) continue;
-      let score = 0;
-      for (let row = 0; row < demandCount; row++) {
-        const candidate = costs[row * facilityCount + facility];
-        if (operation === 'p-median') {
-          score += Math.min(best[row], candidate);
-        } else if (best[row] > distance && candidate <= distance) {
-          score += 1;
-        }
-      }
-      const improves = operation === 'p-median' ? score < chosenScore : score > chosenScore;
-      if (improves) {
-        chosen = facility;
-        chosenScore = score;
-      }
-    }
-    if (chosen < 0) break;
-    selected.push(chosen);
-    for (let row = 0; row < demandCount; row++) {
-      best[row] = Math.min(best[row], costs[row * facilityCount + chosen]);
-    }
-  }
-  return selected;
-}
+it('the shared greedy and objective oracles retain large finite costs and exclude unreachable coverage', () => {
+  expect(runGreedyOnCPU('p-median', Float32Array.of(2e30, 1e30), 2, 1, 0)).toEqual([1]);
+  expect(runGreedyOnCPU('maximum-coverage', Float32Array.of(1, Infinity), 2, 1, Infinity)).toEqual([
+    0
+  ]);
+  expect(getCoveredCount(Float32Array.of(1, Infinity), 2, Infinity, [1])).toBe(0);
+});
 
 function getSelectedFacilities(flags: ArrayLike<number>): number[] {
   return Array.from(flags, (flag, facility) => (flag ? facility : -1)).filter(f => f >= 0);
@@ -434,8 +394,9 @@ it('GPULocationAllocation set covering covers every reachable row within the har
     );
     if (!result) return;
     const label = `seed ${seed}`;
+    // Unit-weight maximum coverage has the same newly-covered-row greedy rule as set covering.
     const greedy = runGreedyOnCPU(
-      'set-covering',
+      'maximum-coverage',
       costs,
       EXACT_FACILITY_COUNT,
       EXACT_FACILITY_COUNT,
@@ -552,6 +513,86 @@ it('GPULocationAllocation swap phase closes the classic p-median greedy gap and 
   expect(limited.status[GPU_LOCATION_ALLOCATION_STATUS.converged]).toBe(0);
 });
 
+for (const sparse of [false, true])
+  for (const scale of [1, 2 ** 124])
+    it(`GPULocationAllocation swaps to a finite objective from an overflowing total, scale ${scale}, sparse ${sparse}`, async () => {
+      // Greedy {0,1} costs 18 * scale; swapping facility 1 for 2 costs 15 * scale.
+      const costs = Float32Array.from(
+        [5, 13, 14, 4, 4, 8, 4, 5, 13, 15, 5, 2],
+        value => value * scale
+      );
+      const result = await runAllocation('p-median', costs, 3, 2, undefined, 2, undefined, sparse);
+      expect(result.selected).toEqual([1, 0, 1]);
+      expect(result.assignments).toEqual([0, 0, 0, 2]);
+      expect(result.assignedCosts).toEqual([5, 4, 4, 2].map(value => value * scale));
+      expect(Number.isFinite(result.objective)).toBe(true);
+      expect(result.objective).toBe(15 * scale);
+      expect(result.status.slice(4)).toEqual([1, 1, 0]);
+    });
+
+for (const sparse of [false, true])
+  for (const unusedCost of [0, 2 ** 125])
+    it(`GPULocationAllocation keeps tiny p-median gains beside unused costs, sparse ${sparse}, unused cost ${unusedCost}`, async () => {
+      const scale = 2 ** -40;
+      const costs = Float32Array.from([
+        2 ** 125,
+        2 ** 125,
+        2 ** 125,
+        unusedCost,
+        0,
+        0,
+        ...[5, 13, 14, 4, 4, 8, 4, 5, 13, 15, 5, 2].map(value => value * scale)
+      ]);
+      const result = await runAllocation(
+        'p-median',
+        costs,
+        3,
+        2,
+        undefined,
+        1,
+        Float32Array.of(0, 2 ** 125, 1, 1, 1, 1),
+        sparse
+      );
+      expect(result.selected).toEqual([1, 0, 1]);
+      // Row 1 is a tie only when unusedCost is zero; otherwise selected facility 2 is cheaper.
+      expect(result.assignments).toEqual([0, unusedCost === 0 ? 0 : 2, 0, 0, 0, 2]);
+      expect(result.assignedCosts).toEqual([
+        2 ** 125,
+        0,
+        5 * scale,
+        4 * scale,
+        4 * scale,
+        2 * scale
+      ]);
+      expect(Number.isFinite(result.objective)).toBe(true);
+      expect(result.objective).toBe(15 * scale);
+      expect(result.status.slice(4)).toEqual([1, 0, 1]);
+    });
+
+for (const sparse of [false, true])
+  it(`GPULocationAllocation scales maximum-coverage swap tolerance, sparse ${sparse}`, async () => {
+    // A={0,1}, B={0,2}, C={1,3}. The uncovered fifth row contributes only to tolerance.
+    const scale = 2 ** 125;
+    const costs = Float32Array.of(0, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1);
+    const result = await runAllocation(
+      'maximum-coverage',
+      costs,
+      3,
+      2,
+      0,
+      1,
+      Float32Array.of(scale, scale, scale, scale, 2 ** 127),
+      sparse
+    );
+    expect(result.selected).toEqual([0, 1, 1]);
+    expect(result.assignments).toEqual([1, 2, 1, 2, 1]);
+    expect(result.assignedCosts).toEqual([0, 0, 0, 0, 1]);
+    expect(Number.isFinite(result.objective)).toBe(true);
+    expect(result.objective).toBe(4 * scale);
+    expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.uncoveredDemandCount]).toBe(1);
+    expect(result.status.slice(4)).toEqual([1, 0, 1]);
+  });
+
 it('GPULocationAllocation rejects a NaN cost instead of treating it as a valid cost', async () => {
   // A NaN built at runtime from its bit pattern: the kernel must flag it through the bit test,
   // not through a self-comparison that shader compilers may fold away.
@@ -578,13 +619,7 @@ it('GPULocationAllocation p-median never sums unreachable rows into the objectiv
     const sparse = createPartlyReachableCostMatrix(seed, EXACT_DEMAND_COUNT, EXACT_FACILITY_COUNT);
     for (const count of [1, 2, 3]) {
       const label = `seed ${seed} p ${count}`;
-      const greedy = runReachabilityAwareGreedyOnCPU(
-        'p-median',
-        sparse,
-        EXACT_FACILITY_COUNT,
-        count,
-        0
-      );
+      const greedy = runGreedyOnCPU('p-median', sparse, EXACT_FACILITY_COUNT, count, 0);
       const mirror = runSwapPhaseOnCPU('p-median', sparse, EXACT_FACILITY_COUNT, greedy, 0, 100);
       const parts = getPMedianObjectiveParts(sparse, EXACT_FACILITY_COUNT, mirror.selected);
       const swapped = await runAllocation(

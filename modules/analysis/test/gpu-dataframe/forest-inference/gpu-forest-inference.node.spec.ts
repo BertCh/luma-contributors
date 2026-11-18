@@ -13,6 +13,10 @@ import {
   type GPUForestInferenceProps
 } from '../../../src/dataframe-analysis/forest-inference/index';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  makeGPURasterBand,
+  makeGPURasterMetadata
+} from '../../../src/raster-analysis/raster-grid/index';
 import sklearnFixtures from './sklearn-fixtures.json';
 import handwrittenFixtures from './handwritten-fixtures.json';
 const {xgboostBinary, lightgbmBinary, tiedSklearn} = handwrittenFixtures;
@@ -157,11 +161,33 @@ function fixtureProps() {
 }
 
 describe('construction and binding limits', () => {
+  it('rejects JavaScript featureLayout on raster inputs and accepts a raster-only control', () => {
+    const {device, props, view} = fixtureProps();
+    try {
+      const {features: _features, featureLayout: _featureLayout, ...shared} = props;
+      const grid = makeGPURasterMetadata({width: 1, height: 1});
+      const rasterProps = {
+        ...shared,
+        rowCount: 1,
+        rasterStack: {bands: [makeGPURasterBand(view('float32', 1), grid)], grid},
+        output: {predictions: view('float32', 1), validity: view('uint32', 1)}
+      };
+      expect(() => new GPUForestInference(rasterProps)).not.toThrow();
+      expect(() =>
+        Reflect.construct(GPUForestInference, [{...rasterProps, featureLayout: 'row-major'}])
+      ).toThrow(/featureLayout.*features/);
+    } finally {
+      device.destroy();
+    }
+  });
+
   it('validates shape, mask, layouts, output lengths and output aliasing once', () => {
     const {device, props, view} = fixtureProps();
     try {
       const build = (updates: Partial<GPUForestInferenceProps>) => () =>
-        new GPUForestInference({...props, ...updates});
+        // Deliberately invalid JavaScript inputs exercise runtime validation; the public union
+        // is checked independently by core-api-exceptions.node.spec.ts.
+        new GPUForestInference({...props, ...updates} as GPUForestInferenceProps);
       expect(build({model: {...props.model, maximumDepth: 65}})).toThrow(
         /GPUForestInference.*maximumDepth.*64/
       );

@@ -54,6 +54,63 @@ const square: Point[] = [
   [1, 1],
   [0, 1]
 ];
+
+it.each([
+  'own',
+  'prototype'
+] as const)('final1 study window writes a %s summary output', async form => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const graph = new GPUCommandGraph(device);
+  const buffers: Buffer[] = [];
+  const input = <Format extends 'float32x2' | 'uint32'>(
+    name: string,
+    format: Format,
+    values: Float32Array | Uint32Array
+  ) => {
+    const buffer = createInputBuffer(device, values);
+    buffers.push(buffer);
+    return importGraphBuffer(
+      graph,
+      name,
+      buffer,
+      format,
+      values.length / (format === 'float32x2' ? 2 : 1)
+    );
+  };
+  const summary = createOutputBuffer(device, 8);
+  buffers.push(summary);
+  summary.write(new Float32Array(8).fill(-99));
+  const summaryView = importGraphBuffer(graph, 'caller-summary', summary, 'float32', 8);
+  const props = {
+    positions: input('positions', 'float32x2', Float32Array.from(square.flat())),
+    featureOffsets: input('features', 'uint32', Uint32Array.of(0, 1)),
+    polygonOffsets: input('polygons', 'uint32', Uint32Array.of(0, 1)),
+    ringOffsets: input('rings', 'uint32', Uint32Array.of(0, 4)),
+    samplingGrid: [2, 2] as const
+  };
+  const output = {
+    get output() {
+      return {summary: summaryView};
+    },
+    get crossingCapacity() {
+      return 16;
+    }
+  };
+  const producer = new GPUStudyWindowPreparation(
+    form === 'own' ? {...props, ...output} : Object.setPrototypeOf(props, output)
+  );
+  graph.add(producer);
+  const compiled = graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    expect((await readFloat32(summary, 8)).slice(0, 6)).toEqual([0, 0, 1, 1, 1, 4]);
+  } finally {
+    compiled.destroy();
+    producer.destroy();
+    for (const buffer of buffers) buffer.destroy();
+  }
+});
 const shell: Point[] = [
   [0, 0],
   [0, 4],

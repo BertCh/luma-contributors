@@ -20,10 +20,16 @@ import {
   GPUPeriodIndex,
   GPU_PERIOD_INDEX_INVALID,
   GPU_PERIOD_INDEX_OUT_OF_RANGE,
+  GPU_PERIOD_INDEX_MAXIMUM_COUNT,
+  getGPUPeriodIndexCalendarPeriod,
   type GPUPeriodIndexCalendarPeriods,
   type GPUPeriodIndexFixedPeriods
 } from '../../../src/dataframe-analysis/period-index/index';
 import {getInt64TimeWords} from '../../../src/dataframe-analysis/time-window-filter/index';
+import {
+  formatTimestampTicks,
+  getTimestampCalendarMilliseconds
+} from '../../../src/dataframe-analysis/temporal-reduction/index';
 import {
   createVectorView,
   createInputBuffer,
@@ -47,6 +53,95 @@ const TICKS_PER_MILLISECOND = {
   microsecond: 1000n,
   nanosecond: 1_000_000n
 };
+
+it('indexes hours across signed boundaries and the full unsigned period count', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const hourIndices = [-0x80000001, -1, 0, 0x7ffffffc, 0x7ffffffd, 0x7fffffff, 0x80000000];
+  for (const originHour of [0, -24, -0x80000000]) {
+    const instant = new Date(originHour * 3_600_000);
+    const origin = {
+      year: instant.getUTCFullYear(),
+      month: instant.getUTCMonth() + 1,
+      day: instant.getUTCDate(),
+      hour: instant.getUTCHours()
+    };
+    for (const interval of [1, 3]) {
+      const step = {calendarUnit: 'hour', interval} as const;
+      const expected = hourIndices.map(hourIndex => {
+        const difference = hourIndex - originHour;
+        const candidate = Math.floor(difference / interval);
+        return difference >= 0 && candidate < GPU_PERIOD_INDEX_MAXIMUM_COUNT
+          ? candidate
+          : GPU_PERIOD_INDEX_OUT_OF_RANGE;
+      });
+      const cpuPeriods = hourIndices.map(hourIndex => {
+        const date = new Date(hourIndex * 3_600_000);
+        const period = getGPUPeriodIndexCalendarPeriod(
+          step,
+          origin,
+          GPU_PERIOD_INDEX_MAXIMUM_COUNT,
+          {
+            year: date.getUTCFullYear(),
+            month: date.getUTCMonth() + 1,
+            day: date.getUTCDate(),
+            hour: date.getUTCHours()
+          }
+        );
+        return period < 0 ? GPU_PERIOD_INDEX_OUT_OF_RANGE : period;
+      });
+      expect(cpuPeriods).toEqual(expected);
+      for (const chunkLengths of [undefined, [1, 3, 3]]) {
+        const result = await runCalendar(
+          device,
+          hourIndices.map(hourIndex => BigInt(hourIndex) * 3_600_000n),
+          'millisecond',
+          {kind: 'calendar', step, origin, count: GPU_PERIOD_INDEX_MAXIMUM_COUNT},
+          {chunkLengths, withStatus: true}
+        );
+        expect(result.periods).toEqual(expected);
+        expect(result.invalidCount).toBe(
+          expected.filter(period => period === GPU_PERIOD_INDEX_OUT_OF_RANGE).length
+        );
+      }
+    }
+  }
+});
+
+it('keeps pre-epoch fractional ticks on the same calendar day in display and bucketing', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const ticks = [-1n, 0n, 1n];
+  for (const [unit, arrowUnit] of [
+    ['microsecond', 2],
+    ['nanosecond', 3]
+  ] as const) {
+    const result = await runCalendar(
+      device,
+      ticks,
+      unit,
+      {
+        kind: 'calendar',
+        step: {calendarUnit: 'day'},
+        origin: {year: 1969, month: 12, day: 31},
+        count: 2
+      },
+      {withStatus: true}
+    );
+    expect(result.periods).toEqual([0, 1, 1]);
+    expect(result.invalidCount).toBe(0);
+    expect(
+      ticks.map(
+        tick => Math.floor(getTimestampCalendarMilliseconds(tick, arrowUnit) / 86_400_000) + 1
+      )
+    ).toEqual(result.periods);
+    expect(ticks.map(tick => formatTimestampTicks(tick, arrowUnit).slice(0, 10))).toEqual([
+      '1969-12-31',
+      '1970-01-01',
+      '1970-01-01'
+    ]);
+  }
+});
 
 it('compiles maximum signed calendar divisors for packed and chunked rows', async () => {
   const device = await getWebGPUTestDevice();

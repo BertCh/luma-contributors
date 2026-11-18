@@ -67,7 +67,7 @@ it('parses all kernels within the eight storage binding device default', () => {
     const kernels = getParsedKernelSources(nodes);
     expect(kernels.size).toBeGreaterThan(0);
     expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
-    for (const [name, source] of kernels) {
+    for (const {id: name, source} of kernels.configurations) {
       expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
     }
   }
@@ -142,7 +142,7 @@ it('bounds actual indexed node counts and parses the shared grid kernels, includ
     const nodes = contributor.getCommandNodes(graph);
     expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
     const kernels = getParsedKernelSources(nodes);
-    for (const [name, source] of kernels) {
+    for (const {id: name, source} of kernels.configurations) {
       expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
     }
     expect(nodes.some(node => node.id.includes('cell-sort'))).toBe(true);

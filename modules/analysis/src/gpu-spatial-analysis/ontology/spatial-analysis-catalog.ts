@@ -11,6 +11,7 @@ import type {
 import {KEPLER_ANALYSIS_CAPABILITIES} from './kepler-analysis-catalog';
 import {COVERAGE_EXPANSION_CAPABILITIES} from './coverage-expansion-catalog';
 import {NESTED_VALIDATION_CAPABILITY} from '../spatial-validation/spatial-validation-descriptors';
+import {freezeCatalog} from './freeze-catalog';
 
 const AVAILABLE = 'available' as const;
 const OPPORTUNITY = 'opportunity' as const;
@@ -1067,10 +1068,12 @@ const CAPABILITY_EVIDENCE: Readonly<Record<string, GPUSpatialAnalysisCapabilityE
 
 /** Capability catalogue with executable evidence attached to every available family. */
 export const GPU_SPATIAL_ANALYSIS_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] =
-  CAPABILITY_DEFINITIONS.map(capability =>
-    capability.status === AVAILABLE
-      ? {...capability, evidence: capability.evidence ?? CAPABILITY_EVIDENCE[capability.id]}
-      : capability
+  freezeCatalog(
+    CAPABILITY_DEFINITIONS.map(capability =>
+      capability.status === AVAILABLE
+        ? {...capability, evidence: capability.evidence ?? CAPABILITY_EVIDENCE[capability.id]}
+        : capability
+    )
   );
 
 const CAPABILITY_BY_ID = new Map(

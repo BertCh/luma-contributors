@@ -24,6 +24,52 @@ import {
   type OracleJoinResult
 } from './key-join-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {RecipeTestFixture} from '../../gpu-spatial-analysis/recipes/recipe-harness';
+
+it('final1b F1 candidate publication preserves left key 7 across two submissions', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new RecipeTestFixture(device, 'key-candidate-status');
+  const leftKeys = fixture.output('left-keys', 'uint32', 1);
+  leftKeys.buffer.write(new Uint32Array([7]));
+  const rows = fixture.output('rows', 'uint32', 1);
+  const count = fixture.output('count', 'uint32', 1);
+  const overflow = fixture.output('overflow', 'uint32', 1);
+  const candidate = fixture.output('candidate', 'uint32', 1);
+  const declaredStatus = {
+    count: count.view,
+    overflow: overflow.view,
+    candidateOverflow: candidate.view
+  };
+  const contributor = new GPUKeyJoin({
+    leftKeys: leftKeys.view,
+    rightKeys: fixture.input('right-keys', new Uint32Array([7]), 'uint32', 1),
+    kind: 'inner',
+    output: {
+      rows: {
+        ids: rows.view,
+        status: declaredStatus
+      }
+    }
+  });
+  declaredStatus.candidateOverflow = leftKeys.view;
+  fixture.graph.add(contributor);
+  const compiled = fixture.graph.compile();
+  try {
+    for (let frame = 0; frame < 2; frame++) {
+      candidate.buffer.write(new Uint32Array([37]));
+      submitGraph(device, compiled, undefined);
+      expect(await fixture.readUint32(leftKeys, 1)).toEqual([7]);
+      expect(await fixture.readUint32(rows, 1)).toEqual([0]);
+      expect(await fixture.readUint32(count, 1)).toEqual([1]);
+      expect(await fixture.readUint32(overflow, 1)).toEqual([0]);
+      expect(await fixture.readUint32(candidate, 1)).toEqual([0]);
+    }
+  } finally {
+    compiled.destroy();
+    fixture.destroy();
+  }
+});
 
 const SUM_SCALE = 65536;
 const AGGREGATES: {

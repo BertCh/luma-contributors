@@ -4,6 +4,7 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
+import {expectNumericArrayClose} from '../../../src/testing/expect-numeric-array-close';
 import {
   GPUContiguityWeights,
   GPULatticeWeights,
@@ -30,14 +31,149 @@ import {
 } from './spatial-weights-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {LIBPYSAL_CONSTRUCTION_REFERENCE, type LibpysalRows} from './spatial-weights-u4-oracle';
+import {createPairStarvedContiguityFixture} from './contiguity-loss.test-utils';
+import {
+  GPUGlobalSpatialStatistics,
+  GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT
+} from '../../../src/gpu-spatial-analysis/global-spatial-statistics/index';
+import {submitGraph} from '../../utils/gpu-contributor-test-utils';
+import {GPUFuzzyContiguity} from '../../../src/gpu-spatial-analysis/spatial-weights/gpu-fuzzy-contiguity';
+
+it('final1 fuzzy contiguity clears a reused candidate word before a finite Moran statistic', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new WeightsRig(device);
+  try {
+    const fixture = createPairStarvedContiguityFixture();
+    const candidate = rig.output('uint32', 1);
+    const overflow = rig.output('uint32', 1);
+    const fuzzy = new GPUFuzzyContiguity({
+      polygons: {
+        ...rig.polygons(fixture.input),
+        positions: rig.input(fixture.input.positions, 'float32x2', 8)
+      },
+      tolerance: 0,
+      output: {
+        ...rig.weightsOutput(2, 2).spatialWeights,
+        status: {overflow: overflow.view, candidateOverflow: candidate.view},
+        featureStatus: rig.output('uint32', 2).view,
+        added: rig.output('uint32', 2).view
+      }
+    });
+    rig.graph.add(fuzzy);
+    const summary = rig.output('float32', GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length);
+    rig.graph.add(
+      new GPUGlobalSpatialStatistics({
+        weights: fuzzy.outputWeights,
+        values: rig.input(new Float32Array([1, 2]), 'float32', 2),
+        statistics: ['moran'],
+        output: {summary: summary.view}
+      })
+    );
+    const compiled = rig.graph.compile();
+    try {
+      candidate.buffer.write(new Uint32Array([1]));
+      submitGraph(device, compiled, undefined);
+      expect(await readUint32(candidate.buffer, 1)).toEqual([0]);
+      const value = (
+        await readFloat32(summary.buffer, GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length)
+      )[GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.moran];
+      expect(Number.isFinite(value)).toBe(true);
+      expect(value).toBeCloseTo(-1, 6);
+    } finally {
+      compiled.destroy();
+    }
+  } finally {
+    rig.destroy();
+  }
+});
+
+it('final1 direct contiguity reports pair-only loss separately from sufficient final slots', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new WeightsRig(device);
+  try {
+    const fixture = createPairStarvedContiguityFixture();
+    const overflow = rig.output('uint32', 1);
+    const candidate = rig.output('uint32', 1);
+    const required = rig.output('uint32', 1);
+    const output = rig.weightsOutput(2, fixture.options.capacity);
+    const producer = new GPUContiguityWeights({
+      ...fixture.options,
+      polygons: rig.polygons(fixture.input),
+      output: {
+        ...output.spatialWeights,
+        status: {
+          overflow: overflow.view,
+          candidateOverflow: candidate.view,
+          requiredCount: required.view
+        }
+      }
+    });
+    rig.run(producer);
+    expect(await readUint32(overflow.buffer, 1)).toEqual([0]);
+    expect(await readUint32(candidate.buffer, 1)).toEqual([1]);
+    expect(await readUint32(required.buffer, 1)).toEqual([1]);
+    expect((await output.read()).neighbors).toEqual([1]);
+  } finally {
+    rig.destroy();
+  }
+});
+
+it('final1 lattice clears a stale candidate word before global Moran on every submission', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new WeightsRig(device);
+  try {
+    const candidate = rig.output('uint32', 1);
+    const overflow = rig.output('uint32', 1);
+    const lattice = new GPULatticeWeights({
+      width: 2,
+      height: 2,
+      criterion: 'rook',
+      output: {
+        ...rig.weightsOutput(4, 8).spatialWeights,
+        status: {overflow: overflow.view, candidateOverflow: candidate.view}
+      }
+    });
+    rig.graph.add(lattice);
+    const summary = rig.output('float32', GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length);
+    rig.graph.add(
+      new GPUGlobalSpatialStatistics({
+        weights: lattice.outputWeights,
+        values: rig.input(new Float32Array([1, 2, 4, 8]), 'float32', 4),
+        statistics: ['moran'],
+        output: {summary: summary.view}
+      })
+    );
+    const compiled = rig.graph.compile();
+    try {
+      for (let submission = 0; submission < 2; submission++) {
+        candidate.buffer.write(new Uint32Array([1]));
+        submitGraph(device, compiled, undefined);
+        expect(await readUint32(candidate.buffer, 1)).toEqual([0]);
+        expect(await readUint32(overflow.buffer, 1)).toEqual([0]);
+        const result = await readFloat32(
+          summary.buffer,
+          GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length
+        );
+        expect(Number.isFinite(result[GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.moran])).toBe(true);
+        expect(result[GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.moran]).toBeCloseTo(-9 / 115, 5);
+      }
+    } finally {
+      compiled.destroy();
+    }
+  } finally {
+    rig.destroy();
+  }
+});
 
 function expectClose(actual: number[], expected: number[], label: string, relative = 2e-5): void {
-  expect(actual.length, `${label} length`).toBe(expected.length);
-  for (let index = 0; index < expected.length; index++) {
-    if (Math.abs(actual[index] - expected[index]) > 1e-6 + relative * Math.abs(expected[index])) {
-      throw new Error(`${label}: [${index}] ${actual[index]} != ${expected[index]}`);
-    }
-  }
+  expectNumericArrayClose(actual, expected, {
+    absoluteTolerance: 1e-6,
+    relativeTolerance: relative,
+    label
+  });
 }
 
 /** Squares on a grid; every ring is rotated and half are reversed so vertex order is varied. */
@@ -443,7 +579,7 @@ it('GPUContiguityWeights reports capacity and pair overflow with consistent rows
     capacity: expected.neighbors.length,
     pairCapacity: 10
   });
-  expect(pairs.overflow).toBe(1);
+  expect(pairs.overflow).toBe(0);
   expect(pairs.candidateOverflow).toBe(1);
   for (let row = 0; row < polygons.length; row++) {
     expect(pairs.csr.offsets[row + 1]).toBeGreaterThanOrEqual(pairs.csr.offsets[row]);

@@ -102,9 +102,9 @@ it('GPUNetworkCostTable kernels parse and stay within the core limits', () => {
   for (const variant of ['init', 'finalize']) {
     expect(sources.has(`table-${variant}`)).toBe(true);
   }
-  for (const [id, source] of sources) {
+  for (const {id, source: source, constants} of sources.configurations) {
     expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
-    expect(getWorkgroupMemoryBytes(source), id).toBeLessThanOrEqual(
+    expect(getWorkgroupMemoryBytes(source, constants), id).toBeLessThanOrEqual(
       CORE_WORKGROUP_STORAGE_LIMIT_BYTES
     );
   }
@@ -199,6 +199,32 @@ it('GPUNetworkCostTable omits status kernels bindings it was not asked for', () 
   expect(sources.get('table-batch-0-scan')).not.toContain('batchConverged');
 });
 
+it('complete alone tracks every batch and requires convergence without capacity overflow', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const props = createProps(graph, 35);
+  const complete = createView(graph, 'uint32', 1);
+  const contributor = new GPUNetworkCostTable({
+    ...props,
+    output: {...props.output, status: {complete}}
+  });
+  const nodes = contributor.getCommandNodes(graph);
+  expect(nodes.length).toBe(contributor.estimatedCommandNodeCount);
+  const sources = getParsedKernelSources(nodes);
+  expect(sources.get('table-batch-0-scan')).toContain('batchConverged[batchConvergedOffset]');
+  const finalize = sources.get('table-finalize') ?? '';
+  expect(getStorageBindingCount(finalize)).toBe(2);
+  expect(finalize).toContain('state[stateOffset + CONVERGED_FLAG] != 0u && total <= CAPACITY');
+  for (const length of [0, 2]) {
+    expect(
+      () =>
+        new GPUNetworkCostTable({
+          ...props,
+          output: {...props.output, status: {complete: createView(graph, 'uint32', length)}}
+        })
+    ).toThrow(/output.status.complete must contain exactly one row/);
+  }
+});
+
 for (const withConverged of [false, true]) {
   it(`tracks cost-table round exhaustion with converged requested: ${withConverged}`, () => {
     const device = createNullWebGPUDevice();
@@ -216,7 +242,7 @@ for (const withConverged of [false, true]) {
         contributor.batchCount + 1
       );
       const sources = getParsedKernelSources(nodes);
-      for (const source of sources.values())
+      for (const {source} of sources.configurations)
         expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
       expect(sources.get('table-finalize')).toContain(
         'iterationLimitReached[iterationLimitReachedOffset] = 1u - state[stateOffset + CONVERGED_FLAG];'

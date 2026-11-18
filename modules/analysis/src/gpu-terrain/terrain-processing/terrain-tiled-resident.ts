@@ -14,7 +14,7 @@ import {
   GRAPH_CHUNK_GROUP_EXTRA_PARAMETER_OFFSET
 } from '../../analysis-core/kernels/graph-chunk-groups';
 import {getTerrainFlowTracingWGSL} from '../hydrology/terrain-flow-tracing';
-import {GPUTerrainBranchingFlow} from './gpu-terrain-branching-flow';
+import {createTerrainBranchingFlowNodes} from './gpu-terrain-branching-flow';
 import type {GPUTerrainTiledFlowProps} from './gpu-terrain-tiled-flow';
 import {createTerrainResolutionStatusNodes} from './terrain-resolution-status';
 import {terrainBinding, TERRAIN_FINITE_WGSL} from './terrain-processing-utils';
@@ -84,7 +84,7 @@ for (var direction = 0u; direction < 8u; direction++) { fractions[fractionsOffse
   });
   const maximumIterations =
     props.maximumIterations ?? clamp(props.grid.width + props.grid.height, 128, 1024);
-  const solver = new GPUTerrainBranchingFlow({
+  const solver = createTerrainBranchingFlowNodes(graph, {
     id: `${id}-dag`,
     grid: props.grid,
     fractions,
@@ -92,7 +92,7 @@ for (var direction = 0u; direction < 8u; direction++) { fractions[fractionsOffse
     mode: 'transport',
     maximumIterations,
     output: {values: accumulation, status, unresolvedCount: unresolved}
-  }).getCommandNodesWithIterationStatus(graph);
+  });
   nodes.push(...solver.nodes);
   nodes.push(
     createWGSLKernelNode(graph, {

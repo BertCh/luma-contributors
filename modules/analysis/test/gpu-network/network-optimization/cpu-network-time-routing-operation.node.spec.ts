@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {type GPUCPUVector} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
   computeNetworkTimeRoutingOnCPU,
@@ -24,6 +25,65 @@ const PROPS: NetworkTimeRoutingOperationProps = {
   departure: 'departure',
   output: {arrivals: 'arrivals', predecessorTransitions: 'predecessors', summary: 'summary'}
 };
+
+it.each([
+  0, 1, 2, 3
+])('preserves partial routing labels and exact stopping status at budget %s', async maximumRelaxations => {
+  const input = {
+    stateVertices: Uint32Array.of(0, 1, 2),
+    // Reverse edge order requires two sweeps, then one unchanged sweep to certify convergence.
+    transitions: Uint32Array.of(1, 2, 0, 1),
+    costs: Float32Array.of(1, 0, 1, 0),
+    endpoints: Uint32Array.of(0, 2),
+    departure: Float32Array.of(0),
+    maximumRelaxations
+  };
+  const result = computeNetworkTimeRoutingOnCPU(input);
+  expect(result.arrivals).toEqual(
+    Float32Array.of(
+      0,
+      maximumRelaxations >= 1 ? 1 : Infinity,
+      maximumRelaxations >= 2 ? 2 : Infinity
+    )
+  );
+  expect(result.summary[1]).toBe(Number(maximumRelaxations === 3));
+  expect(result.status.iterationCount).toEqual(Uint32Array.of(maximumRelaxations));
+  expect(result.status.iterationLimitReached).toEqual(
+    Uint32Array.of(Number(maximumRelaxations < 3))
+  );
+  const operation = new CPUNetworkTimeRoutingOperation({
+    ...PROPS,
+    stateCount: 3,
+    transitionCount: 2,
+    maximumRelaxations,
+    output: {
+      ...PROPS.output,
+      status: {iterationCount: 'iterations', converged: 'converged', iterationLimitReached: 'limit'}
+    }
+  });
+  const vector = (
+    format: GPUCPUVector['format'],
+    values: Uint32Array | Float32Array
+  ): GPUCPUVector => {
+    const length = values.length / (format.endsWith('x2') ? 2 : 1);
+    return {format, length, chunks: [{values, length}], pack: () => values};
+  };
+  const actual = await operation.execute({
+    inputs: {
+      stateVertices: vector('uint32', input.stateVertices),
+      transitions: vector('uint32x2', input.transitions),
+      costs: vector('float32x2', input.costs),
+      endpoints: vector('uint32', input.endpoints),
+      departure: vector('float32', input.departure)
+    }
+  });
+  expect(actual['arrivals']).toEqual(result.arrivals);
+  expect(actual['predecessors']).toEqual(result.predecessorTransitions);
+  expect(actual['summary']).toEqual(result.summary);
+  expect(actual['iterations']).toEqual(result.status.iterationCount);
+  expect(actual['converged']).toEqual(result.status.converged);
+  expect(actual['limit']).toEqual(result.status.iterationLimitReached);
+});
 
 it('matches exhaustive simple-path enumeration on an expanded-state affine network', () => {
   const stateVertices = new Uint32Array([10, 11, 12, 12, 99]);

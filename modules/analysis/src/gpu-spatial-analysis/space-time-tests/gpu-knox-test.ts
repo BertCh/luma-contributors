@@ -1,6 +1,8 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {createSpatialWeightsSuppressionNodes} from '../spatial-weights/spatial-weights-suppression';
+import {snapshotSpaceTimeTestProps} from './space-time-construction';
 
 import {
   validateTrajectoryBindings,
@@ -55,7 +57,7 @@ import {
   type SpaceTimeBatchNodeProps,
   validateSpaceTimeStopping
 } from './space-time-stopping';
-import type {GPUInferenceMetadata} from '../../analysis-core/contracts/index';
+import type {GPUSpaceTimeInferenceMetadata} from './space-time-parameters';
 import {
   DECODE_ORDERED_KEY_WGSL,
   GET_ORDERED_KEY_WGSL
@@ -181,6 +183,19 @@ export class GPUKnoxTest implements GPUCommandNodeProducer {
   /** Number of events. */
   readonly rows: number;
   constructor(props: GPUKnoxTestProps) {
+    props = snapshotSpaceTimeTestProps(
+      props,
+      [
+        'id',
+        'pairs',
+        'times',
+        'parameters',
+        'maximumPermutations',
+        'stopAfterExceedances',
+        'output'
+      ],
+      'pairs'
+    );
     const id = props.id ?? 'knox-test';
     this.id = id;
     this.props = props;
@@ -233,7 +248,9 @@ export class GPUKnoxTest implements GPUCommandNodeProducer {
         props.parameters,
         props.pairs.offsets,
         props.pairs.neighbors,
-        props.pairs.weights
+        props.pairs.weights,
+        props.pairs.status?.overflow,
+        props.pairs.status?.candidateOverflow
       ]
     );
     if (
@@ -249,12 +266,19 @@ export class GPUKnoxTest implements GPUCommandNodeProducer {
   /**
    * CPU-side description of how the `output.summary` p-values are produced, for building a
    * legend: alternative `'greater'`, Monte Carlo, no multiple-testing correction.
+   * With stopping enabled, only `requestedPermutationCount` is known. Decode final metadata with
+   * `decodeGPUSpaceTimeInferenceMetadata(metadata, publishedPermutationCount)` after caller readback.
    *
    * @param settings The per-frame settings packed into `parameters` (validated as
    * `getGPUSpaceTimeParameterValues` does; the count is clamped to `maximumPermutations`).
    */
-  getInferenceMetadata(settings: GPUSpaceTimeSettings): GPUInferenceMetadata {
-    return getGPUSpaceTimeInferenceMetadata('knox', settings, this.props.maximumPermutations);
+  getInferenceMetadata(settings: GPUSpaceTimeSettings): GPUSpaceTimeInferenceMetadata {
+    return getGPUSpaceTimeInferenceMetadata(
+      'knox',
+      settings,
+      this.props.maximumPermutations,
+      this.props.stopAfterExceedances
+    );
   }
 
   /**
@@ -550,6 +574,24 @@ var<workgroup> groupCarry: atomic<u32>;`,
   ${getSpaceTimeSummaryBodyWGSL('u32', stopAfterExceedances)}`
       })
     ];
-    return nodes;
+    return [
+      ...nodes,
+      ...createSpatialWeightsSuppressionNodes(
+        graph,
+        id,
+        OPERATION,
+        props.pairs,
+        {
+          statistics: props.output.statistics,
+          summary: props.output.summary,
+          permutationCount: props.output.permutationCount
+        },
+        {
+          summary: GPU_SPACE_TIME_SUMMARY_LENGTH,
+          permutationCount: 1,
+          statistics: props.maximumPermutations + 1
+        }
+      )
+    ];
   }
 }

@@ -7,7 +7,7 @@ import {expect, it} from 'vitest';
 import {
   GPUDatumGridTransform,
   GPU_DATUM_GRID_TRANSFORM_STATUS
-} from '../../src/geospatial-analysis/gpu-datum-grid-transform';
+} from '../../src/geospatial-analysis/datum-grid-transform/index';
 import {
   createNullWebGPUDevice,
   getGPUCommandNodeKernelSources

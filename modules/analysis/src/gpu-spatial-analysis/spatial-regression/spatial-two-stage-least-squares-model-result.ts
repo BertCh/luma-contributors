@@ -9,6 +9,7 @@ import {
   type GPURegressionModelResult
 } from '../../analysis-core/contracts/model-result';
 import {getChiSquareSurvival} from './ordinary-least-squares-statistics';
+import {getRegressionTablePredictorCount} from './regression-table-layout';
 import {
   GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ANSELIN_KELEJIAN,
   GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ANSELIN_KELEJIAN_P_VALUE,
@@ -29,7 +30,7 @@ import {
 
 /** Read-back arrays of one `GPUSpatialTwoStageLeastSquares` fit. */
 export type GPUSpatialTwoStageLeastSquaresReadback = {
-  /** `(predictorCount + 2) * 4` values, see `GPUSpatialTwoStageLeastSquaresOutput.table`. */
+  /** Active prefix: `(predictorCount + 2) * 4` values. Pass options.predictorCount for spare capacity. */
   table: Float32Array;
   /** At least `GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH` values. */
   summary: Float32Array;
@@ -38,6 +39,8 @@ export type GPUSpatialTwoStageLeastSquaresReadback = {
 
 /** Options of {@link getGPUSpatialTwoStageLeastSquaresModelResult}. */
 export type GPUSpatialTwoStageLeastSquaresModelResultOptions = {
+  /** Fitted predictor count; required for a capacity-sized table. Omit only for an exact-length table. */
+  predictorCount?: number;
   /** Predictor names after `'CONSTANT'`; missing entries default to `'x0'`, `'x1'`, ... */
   predictorNames?: readonly string[];
 };
@@ -103,13 +106,12 @@ export function getGPUSpatialTwoStageLeastSquaresModelResult(
       `Spatial two-stage least squares summary must hold ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH} values`
     );
   }
-  const rowCount = table.length / GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE;
-  const predictorCount = rowCount - 2;
-  if (!Number.isInteger(predictorCount) || predictorCount < 1) {
-    throw new Error(
-      'Spatial two-stage least squares table must hold (predictorCount + 2) * 4 values'
-    );
-  }
+  const predictorCount = getRegressionTablePredictorCount(
+    'Spatial two-stage least squares',
+    table,
+    GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE,
+    options.predictorCount
+  );
   const names = getGPURegressionPredictorNames(predictorCount, options.predictorNames);
   names.push('W_y');
   const stride = GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE;

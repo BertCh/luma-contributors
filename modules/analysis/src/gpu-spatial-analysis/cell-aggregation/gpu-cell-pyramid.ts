@@ -21,18 +21,29 @@ import {getCellKeyLayout} from './cell-keys';
 import {
   getCellTableFirstRow,
   getCellTableViews,
+  snapshotCellTable,
   validateCellTable,
   type GPUCellTable
 } from './cell-table';
-import {GPUCellAggregation, type GPUCellAggregationProps} from './gpu-cell-aggregation';
+import {
+  createCellAggregation,
+  validateCellAggregationBindings,
+  type GPUCellAggregation,
+  type GPUCellAggregationProps
+} from './gpu-cell-aggregation';
 import {
   validateCellPublishBindingCount,
   validateCellViewBindingRanges,
   validateCellTableScratchBindingSizes,
-  validateCellWritableViews
+  validateCellWritableViews,
+  validateCellTableWritableViews
 } from './cell-validation';
-import {GPUCellRollup} from './gpu-cell-rollup';
+import {createCellRollup} from './gpu-cell-rollup';
 import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
 
 /** Words per level-count slot: 64 words = 256 bytes, the storage binding offset alignment. */
 const LEVEL_COUNT_SLOT_STRIDE = 64;
@@ -75,7 +86,8 @@ export type GPUCellPyramidProps = Omit<
  *
  * Coarser levels that request sums or extremes need them on every finer level; missing
  * intermediate columns become graph transients. Every level is exact (see
- * {@link GPUCellRollup}), and a level's overflow flag includes every finer level's overflow.
+ * {@link GPUCellRollup}). Each level's `overflow` describes only its own capacity;
+ * `candidateOverflow` propagates losses from finer levels, making its requirement a lower bound.
  */
 export class GPUCellPyramid implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -86,6 +98,33 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUCellPyramidProps) {
+    const fields = snapshotConstructionFields(props, [
+      'id',
+      'family',
+      'spatialContext',
+      'positions',
+      'cells',
+      'wordOrder',
+      'values',
+      'mask',
+      'sumScale',
+      'scratchMode',
+      'scratchTileSize',
+      'resolutions',
+      'output'
+    ]);
+    const outputFields = snapshotConstructionFields(fields.output, ['levels', 'levelCounts']);
+    props = Object.freeze({
+      ...fields,
+      resolutions: Object.freeze([...fields.resolutions]),
+      output: Object.freeze({
+        ...outputFields,
+        levels: Object.freeze(outputFields.levels.map(snapshotCellTable))
+      }),
+      spatialContext: fields.spatialContext
+        ? snapshotConstructionSpatialContext(fields.spatialContext)
+        : undefined
+    });
     this.id = props.id ?? 'cell-pyramid';
     this.props = props;
     const id = this.id;
@@ -99,6 +138,11 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
     for (const [levelIndex, resolution] of resolutions.entries()) {
       getCellKeyLayout(props.family, resolution);
       validateCellTable(id, `output.levels[${levelIndex}]`, output.levels[levelIndex]);
+      validateRequirement(
+        id,
+        levelIndex === 0 || Boolean(output.levels[levelIndex].status.candidateOverflow),
+        `output.levels[${levelIndex}].status.candidateOverflow is required to report source loss`
+      );
       if (levelIndex > 0 && resolution >= resolutions[levelIndex - 1]) {
         throw new Error(`${id} resolutions must strictly decrease`);
       }
@@ -120,8 +164,11 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
     const outputViews = [...output.levels.flatMap(getCellTableViews), output.levelCounts];
     validateCellWritableViews(
       id,
-      outputViews.map((view, index) => [`output field ${index}`, view] as const)
+      outputViews.map((view, index) => [`output field ${index}`, view] as const),
+      {separateDispatches: true}
     );
+    for (const table of output.levels.slice(1))
+      validateCellTableWritableViews(id, table, [], {rollup: true});
     validateGraphOutputsDisjointFromInputs(id, outputViews, [
       props.positions,
       props.cells,
@@ -147,7 +194,7 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
     const {id, props} = this;
     const {levelCounts} = props.output;
     // Every stage is checked before declaring even the level-count or intermediate-column scratch.
-    this.createAggregation(props.output.levels[0], []).validateBindings(graph);
+    validateCellAggregationBindings(graph, this.createAggregation(props.output.levels[0], []));
     validateCellViewBindingRanges(graph, id, [
       ...props.output.levels.flatMap(getCellTableViews),
       levelCounts
@@ -157,7 +204,7 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
         graph.device,
         id,
         Boolean(table.status.requiredCount),
-        Number(levelIndex > 0),
+        0,
         Number(Boolean(levelCounts))
       );
       const sourceRows =
@@ -214,7 +261,7 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
     ];
     for (let levelIndex = 1; levelIndex < tables.length; levelIndex++) {
       nodes.push(
-        ...new GPUCellRollup({
+        ...createCellRollup({
           id: `${id}-level-${levelIndex}`,
           family: props.family,
           sourceResolution: props.resolutions[levelIndex - 1],
@@ -252,7 +299,7 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
     extraCounts: readonly GraphDataView<'uint32'>[]
   ): GPUCellAggregation {
     const {resolutions, output: _output, ...rowProps} = this.props;
-    return new GPUCellAggregation({
+    return createCellAggregation({
       ...rowProps,
       id: `${this.id}-level-0`,
       resolution: resolutions[0],

@@ -66,7 +66,9 @@ export type GPUGaussianPredictiveScoresProps<
 /**
  * Closed-form continuous ranked probability score of a Gaussian predictive distribution, for
  * kriging predictions `N(mean, variance)` (scoringRules 1.1.3 `crps_norm`, Gneiting et al. 2005):
- * with `z = (y - mean) / sd`, `CRPS = sd * (z * (2 Phi(z) - 1) + 2 phi(z) - 1 / sqrt(pi))`.
+ * with `z = |y - mean| / sd`, `CRPS = |y - mean| erf(z / sqrt(2)) +
+ * sd * (2 phi(z) - 1 / sqrt(pi))`. Large errors use `|y - mean| - sd / sqrt(pi)` before
+ * forming the standardized error, so a representable score cannot overflow that ratio.
  *
  * `2 Phi(z) - 1 = erf(z / sqrt(2))` is evaluated as the all-positive series
  * `erf(x) = 2 / sqrt(pi) * exp(-x^2) * sum_n 2^n x^(2n+1) / (2n + 1)!!` for `|x| <= 4` (no
@@ -196,8 +198,15 @@ fn errorFunction(x: f32) -> f32 {
     score = abs(error);
   } else if (variance > 0.0) {
     let deviation = sqrt(variance);
-    let z = abs(error) / deviation;
-    score = deviation * (z * errorFunction(z * 0.7071067812) + SQRT_TWO_OVER_PI * exp(-0.5 * z * z) - INVERSE_SQRT_PI);
+    let absoluteError = abs(error);
+    // Match the erf cutoff before division; the ratio may exceed the float32 range.
+    if (absoluteError > 5.6568542495 * deviation) {
+      score = absoluteError - deviation * INVERSE_SQRT_PI;
+    } else {
+      let standardizedError = absoluteError / deviation;
+      score = absoluteError * errorFunction(standardizedError * 0.7071067812) +
+        deviation * (SQRT_TWO_OVER_PI * exp(-0.5 * standardizedError * standardizedError) - INVERSE_SQRT_PI);
+    }
   }
   crps[crpsOffset + index] = score;`
     };

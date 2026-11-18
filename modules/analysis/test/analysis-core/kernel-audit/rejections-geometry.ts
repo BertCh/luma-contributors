@@ -110,17 +110,17 @@ export const GEOMETRY_REJECTIONS: readonly KernelAuditRejection[] = [
     exportName: 'GPUPolygonOverlay',
     name: 'vertices above the maximum',
     kind: 'binding',
-    limit: 4194304,
+    limit: 134217728,
     rejects:
-      /^Error: polygon-overlay left \+ right positions rows \+ rings must be at most 4194304$/
+      /^Error: polygon-overlay hotPixelSegmentTables needs 600871040 bytes in one binding \(limit 134217728\); reduce capacities or split input features$/
   },
   {
     exportName: 'GPUPolygonOverlay',
     name: 'hot pixels above the maximum',
     kind: 'binding',
-    limit: 1048576,
+    limit: 134217728,
     rejects:
-      /^Error: polygon-overlay left \+ right positions rows \+ rings \+ capacity\.intersections must be at most 1048576$/
+      /^Error: polygon-overlay hotPixelSegmentTables needs 134217856 bytes in one binding \(limit 134217728\); reduce capacities or split input features$/
   },
   {
     exportName: 'GPUCoverageSimplification',
@@ -133,7 +133,8 @@ export const GEOMETRY_REJECTIONS: readonly KernelAuditRejection[] = [
     exportName: 'GPUCoverageValidity',
     name: 'vertices above the maximum',
     kind: 'binding',
-    limit: 4194304,
-    rejects: /^Error: coverage-validity positions rows must be at most 4194304$/
+    limit: 134217728,
+    rejects:
+      /^Error: coverage-validity segmentTable needs 134217760 bytes in one binding \(limit 134217728\); split the input or reduce capacity$/
   }
 ];

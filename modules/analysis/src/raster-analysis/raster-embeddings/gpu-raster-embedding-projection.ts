@@ -181,7 +181,9 @@ export class GPURasterEmbeddingProjection<
       validateSinglePackedView(props.components, ['float32'], `${id} components`);
     if (props.parameters)
       validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
-    validateRasterEmbeddingViews(id, this.getInputs(), this.getOutputs());
+    const inputs = this.getInputs();
+    const outputs = this.getOutputs();
+    validateRasterEmbeddingViews(id, inputs, outputs, [{inputs, outputs}]);
     this.chunks = planRasterEmbeddingChunks(
       id,
       pixelCount,

@@ -16,7 +16,7 @@ import {
   type GPURasterRowDirection,
   validateRasterRowDirection,
   writeRasterGridParameterValues
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 
 /**
  * Resolves the row direction of a terrain contributor from its grid, the single source of truth.

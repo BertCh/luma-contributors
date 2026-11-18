@@ -6,7 +6,7 @@ import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {getBenchmarkSettings, getBenchmarkDistribution} from '../../utils/benchmark-settings';
-import {GPUDatumGridTransform} from '../../../src/geospatial-analysis/gpu-datum-grid-transform';
+import {GPUDatumGridTransform} from '../../../src/geospatial-analysis/datum-grid-transform/index';
 import {GPUS2CellHierarchy} from '../../../src/gpu-spatial-analysis/cell-topology/gpu-s2-cell-hierarchy';
 import {GPUS2CapCovering} from '../../../src/gpu-spatial-analysis/cell-topology/gpu-s2-cap-covering';
 import {GPUSphericalConvexIntersection} from '../../../src/gpu-spatial-analysis/global-coordinates/gpu-spherical-convex-intersection';

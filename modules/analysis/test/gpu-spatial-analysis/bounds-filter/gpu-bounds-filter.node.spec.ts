@@ -57,7 +57,7 @@ for (const mode of ['intersects', 'within', 'contains'] as GPUBoundsFilterMode[]
       expect(new Set(nodes.map(node => node.id)).size).toBe(nodes.length);
       const sources = getParsedKernelSources(nodes);
       expect([...sources.keys()].filter(id => /^bounds-test-mask-\d+$/.test(id))).toHaveLength(3);
-      for (const source of sources.values()) {
+      for (const {source} of sources.configurations) {
         expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
         expect(getReservedWGSLWords(source)).toEqual([]);
       }

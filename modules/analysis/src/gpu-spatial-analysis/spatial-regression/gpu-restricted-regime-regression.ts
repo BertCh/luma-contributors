@@ -425,6 +425,7 @@ return true;
         id: `${id}-fit`,
         operation: 'GPURestrictedRegimeRegression',
         variant: 'nested-models',
+        // contract-allow: single-invocation -- <=16 coefficients, <=8 regimes; rows already reduced into moments.
         invocationCount: 1,
         bindings: [
           {name: 'segmentOffsets', view: moments.views.segmentOffsets, type: 'u32', access: 'read'},
@@ -514,6 +515,7 @@ fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
         id: `${id}-finish`,
         operation: 'GPURestrictedRegimeRegression',
         variant: 'finish',
+        // contract-allow: single-invocation -- <=16 coefficients and <=256 covariance entries; no row scan.
         invocationCount: 1,
         bindings: [
           {name: 'workspace', view: workspace, type: 'f32', access: 'read'},

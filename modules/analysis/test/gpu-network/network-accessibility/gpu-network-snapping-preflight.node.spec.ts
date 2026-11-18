@@ -42,8 +42,8 @@ it('snapping treats candidateCapacity as total pairs, independently of the point
   const {context, contributor} = createFixture(33, 4, 32);
   try {
     const nodes = contributor.getCommandNodes(context.graph);
-    for (const [name, source] of getParsedKernelSources(nodes)) {
-      expect(auditWGSLModule(source), name).toEqual([]);
+    for (const {id: name, source, constants} of getParsedKernelSources(nodes).configurations) {
+      expect(auditWGSLModule(source, constants), name).toEqual([]);
     }
     expect(() => nodes.forEach(node => context.graph.add(node))).not.toThrow();
   } finally {

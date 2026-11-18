@@ -19,7 +19,7 @@ import {
   writeRasterGridParameterValues,
   type GPURasterCellSizeMode,
   type RasterGridAffine
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 import type {GPUStatusScalar} from '../../analysis-core/contracts/index';
 import {
   getRasterBufferBandNodes,

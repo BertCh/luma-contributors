@@ -211,9 +211,9 @@ it('handles empty adjacency, a singleton loop and ignored invalid/unowned slots'
       'bridges',
       'articulationPoints',
       'biconnectedComponents'
-    ]) {
+    ] as const) {
       expect(parallel[name]).toEqual(exact[name]);
-      expect(parallel[name]).toEqual(Array.from(expected[name as keyof typeof expected]));
+      expect(parallel[name]).toEqual(Array.from(expected[name]));
     }
     expect(parallel['converged']).toEqual([1]);
   }

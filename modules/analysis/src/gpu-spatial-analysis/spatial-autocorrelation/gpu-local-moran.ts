@@ -73,8 +73,10 @@ export type GPULocalMoranQuadrantGating = 'analytic' | 'none';
 export type GPULocalMoranOutput = {
   /**
    * Optional input diagnostics. invalidCount counts unmasked nonfinite values (not islands or
-   * undefined analytic tests); overflow is one when the input weights report capacity overflow.
-   * Both scalars are overwritten on every encoding. Masked rows do not count as invalid.
+   * undefined analytic tests); overflow and candidateOverflow separately forward the input
+   * weights' overflow (final capacity) and candidateOverflow (intermediate loss) flags.
+   * Scalars are overwritten on every encoding.
+   * Masked rows do not count as invalid.
    */
   status?: GPUSpatialAutocorrelationStatusPort;
   /** Caller-owned analytic z-score of local Moran's I per row; quiet NaN when undefined. */
@@ -109,7 +111,10 @@ export type GPULocalMoranOutput = {
    * quiet NaN where z is NaN. The test family is every row with a defined z-score, never a viewport.
    */
   adjustedPValues?: GraphDataView<'float32'>;
-  /** Optional caller-owned count of active neighbors per row (the row itself excluded); 0 for rows outside the analysis. */
+  /**
+   * Optional active-neighbor counts (self excluded). Zero for rows outside the analysis and,
+   * when either weights loss flag is set, zero for every row means unavailable, not no neighbors.
+   */
   neighborCounts?: GraphDataView<'uint32'>;
   /** Optional caller-owned `[n, mean, variance, standardDeviation, islandCount]` actually used this frame. */
   globalStatistics?: GraphDataView<'float32'>;
@@ -134,7 +139,11 @@ export type GPULocalMoranProps = {
    * that remain after masking, so a row still sums to 1 instead of shrinking toward 0. Row-standardized
    * weights reproduce esda's default `Moran_Local(transform='r')`; binary weights give the `'b'`
    * variant. Each packed row view and CSR chunk must fit a device storage binding. A neighbor is a slot with a positive weight that points at
-   * another included row. If `weights.status.overflow` is nonzero every output is NaN.
+   * another included row. If `weights.status.overflow` or `candidateOverflow` is nonzero,
+   * floating statistic and inference outputs are NaN and quadrants are 0, even with ungated
+   * quadrants. Optional output.status forwards the producer's two flags independently.
+   * Chunked inputs must aggregate loss flags on the outer weights.status port; flags on
+   * individual chunks are rejected at construction.
    */
   weights: GPUSpatialWeights | GPUChunkedSpatialWeights;
   /**
@@ -326,6 +335,7 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
       [
         ...getGPUSpatialWeightsOrChunksViews(props.weights),
         props.weights.status?.overflow,
+        props.weights.status?.candidateOverflow,
         props.values,
         props.parameters,
         props.mask
@@ -382,6 +392,7 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [
       ...getGPUSpatialWeightsOrChunksViews(weights),
       weights.status?.overflow,
+      weights.status?.candidateOverflow,
       props.values,
       parameters,
       props.mask,

@@ -215,6 +215,7 @@ function buildCompare(
         status: {
           count: view('uint32', 1),
           overflow: view('uint32', 1),
+          candidateOverflow: view('uint32', 1),
           requiredCount: view('uint32', 1)
         }
       }
@@ -1679,8 +1680,8 @@ function buildTwoStage(context: KernelAuditContext, rows: number, instrumentOrde
       predictors: view('float32', rows * k),
       response: view('float32', rows),
       predictorCount: k,
-      tileRowCount: 64,
       instrumentOrder,
+      ...(rows <= ROWS ? {tileRowCount: 64} : {}),
       output: {
         table: view('float32', (k + 3) * 4),
         summary: view('float32', GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH),
@@ -1709,7 +1710,7 @@ function buildErrorGM(
       traceMode,
       traceProbeCount: 64,
       traceParameters: view('uint32', 1),
-      tileRowCount: 64,
+      ...(rows <= ROWS ? {tileRowCount: 64} : {}),
       output: {
         table: view('float32', (k + 3) * 4),
         summary: view('float32', GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH),
@@ -1790,7 +1791,7 @@ function buildWeightsTraces(
       probeCount: 64,
       parameters: view('uint32', 1),
       includeGramTraces,
-      tileRowCount: 64,
+      ...(rows <= ROWS ? {tileRowCount: 64} : {}),
       probeBatchSize: 16,
       output: {
         powerTraces: view('float32', POWER),

@@ -156,9 +156,9 @@ it('parses all filter kernels and bounds actual nodes at the minimum and maximum
           expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
           const sources = getParsedKernelSources(nodes);
           expect(sources.size).toBeGreaterThan(0);
-          for (const source of sources.values()) {
+          for (const {source, constants} of sources.configurations) {
             expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
-            expect(auditWGSLModule(source)).toEqual([]);
+            expect(auditWGSLModule(source, constants)).toEqual([]);
           }
         }
       }
@@ -201,8 +201,8 @@ it('validates optional peak-ratio outputs for both registration modes', () => {
         new GPURasterRegistration(registration).getCommandNodes(graph)
       );
       expect([...sources.values()].some(source => source.includes('secondPeakRatio'))).toBe(true);
-      for (const source of sources.values()) {
-        expect(auditWGSLModule(source)).toEqual([]);
+      for (const {source, constants} of sources.configurations) {
+        expect(auditWGSLModule(source, constants)).toEqual([]);
         expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
       }
       expect(
@@ -258,8 +258,8 @@ it('supports calibrated texture bands with padded validity within the same comma
     });
     const nodes = contributor.getCommandNodes(graph);
     expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
-    for (const source of getParsedKernelSources(nodes).values()) {
-      expect(auditWGSLModule(source)).toEqual([]);
+    for (const {source, constants} of getParsedKernelSources(nodes).configurations) {
+      expect(auditWGSLModule(source, constants)).toEqual([]);
       expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
     }
   } finally {
@@ -396,7 +396,8 @@ it('accepts float32 metadata limits, NaN float nodata and exact integer nodata l
       const contributor = new GPURasterSpectralFilter({...props, id: input.id, input});
       const sources = getParsedKernelSources(contributor.getCommandNodes(graph));
       expect(sources.size).toBeGreaterThan(0);
-      for (const source of sources.values()) expect(auditWGSLModule(source)).toEqual([]);
+      for (const {source, constants} of sources.configurations)
+        expect(auditWGSLModule(source, constants)).toEqual([]);
     }
   } finally {
     device.destroy();
@@ -572,7 +573,8 @@ it('accepts supported scalar and RGBA channels and a single selected mip and arr
       const contributor = new GPURasterSpectralFilter({...props, id: input.id, input});
       const sources = getParsedKernelSources(contributor.getCommandNodes(graph));
       expect(sources.size).toBeGreaterThan(0);
-      for (const source of sources.values()) expect(auditWGSLModule(source)).toEqual([]);
+      for (const {source, constants} of sources.configurations)
+        expect(auditWGSLModule(source, constants)).toEqual([]);
     }
   } finally {
     device.destroy();

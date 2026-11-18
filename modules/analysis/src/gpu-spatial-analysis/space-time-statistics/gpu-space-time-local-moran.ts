@@ -5,6 +5,7 @@
 import {
   validateTrajectoryBindings,
   validateTrajectoryOutputRanges,
+  validateTrajectoryWritableDispatches,
   getTrajectoryBindingViews
 } from '../trajectory-analysis/trajectory-binding-validation';
 import {
@@ -26,6 +27,7 @@ import {
   GPULocalPermutationTest,
   type GPULocalPermutationTestProps
 } from '../permutation-inference/gpu-local-permutation-test';
+import {snapshotLocalPermutationProps} from '../permutation-inference/permutation-construction';
 import {
   validateGPUSpatialWeights,
   type GPUSpatialWeights
@@ -93,6 +95,28 @@ export class GPUSpaceTimeLocalMoran implements GPUCommandNodeProducer {
   readonly props: GPUSpaceTimeLocalMoranProps;
 
   constructor(props: GPUSpaceTimeLocalMoranProps) {
+    props = snapshotLocalPermutationProps(props, [
+      'id',
+      'weights',
+      'mask',
+      'alternative',
+      'islands',
+      'parameters',
+      'maximumPermutations',
+      'stopAfterExceedances',
+      'maximumNeighbors',
+      'extendedNeighborScratch',
+      'rowTileSize',
+      'multipleTesting',
+      'output',
+      'cube',
+      'layout',
+      'periodCount',
+      'period',
+      'lag',
+      'variant',
+      'direction'
+    ]);
     this.id = props.id ?? 'space-time-local-moran';
     this.props = props;
     const id = this.id;
@@ -105,6 +129,9 @@ export class GPUSpaceTimeLocalMoran implements GPUCommandNodeProducer {
     validateViewLength(id, 'cube', props.cube, cellCount * props.periodCount);
     validateCapacity(id, 'cube rows', cellCount * props.periodCount);
     validateTrajectoryOutputRanges(id, props.output);
+    validateTrajectoryWritableDispatches(id, [
+      {overflow: props.output.status.overflow, quadrants: props.output.quadrants}
+    ]);
     validateGraphOutputsDisjointFromInputs(
       id,
       Object.values(getTrajectoryBindingViews(props.output)),

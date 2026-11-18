@@ -5,7 +5,7 @@
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPUSpatialEdgeModel} from '../../analysis-core/contracts/index';
 import {SCAN_TOTAL_WGSL} from '../../analysis-core/kernels/scan-total';
-import {LON_LAT_RING_WGSL} from '../../analysis-core/lon-lat-ring-wgsl';
+import {LON_LAT_RING_WGSL} from '../../analysis-core/kernels/lon-lat-ring-wgsl';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
 import {
   createWGSLKernelNode,

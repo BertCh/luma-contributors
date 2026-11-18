@@ -9,6 +9,7 @@ import {
   type GPURegressionModelResult
 } from '../../analysis-core/contracts/model-result';
 import {getChiSquareSurvival} from './ordinary-least-squares-statistics';
+import {getRegressionTablePredictorCount} from './regression-table-layout';
 import {
   GPU_SPATIAL_ERROR_GM_SUMMARY_CONDITION_NUMBER,
   GPU_SPATIAL_ERROR_GM_SUMMARY_CORRELATION_CONDITION_NUMBER,
@@ -22,7 +23,7 @@ import {
 
 /** Read-back arrays of one `GPUSpatialErrorGM` fit. */
 export type GPUSpatialErrorGMReadback = {
-  /** `(predictorCount + 2) * 4` values, see `GPUSpatialErrorGMOutput.table`. */
+  /** Active prefix: `(predictorCount + 2) * 4` values. Pass options.predictorCount for spare capacity. */
   table: Float32Array;
   /** At least `GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH` values. */
   summary: Float32Array;
@@ -31,6 +32,8 @@ export type GPUSpatialErrorGMReadback = {
 
 /** Options of {@link getGPUSpatialErrorGMModelResult}. */
 export type GPUSpatialErrorGMModelResultOptions = {
+  /** Fitted predictor count; required for a capacity-sized table. Omit only for an exact-length table. */
+  predictorCount?: number;
   /** Predictor names after `'CONSTANT'`; missing entries default to `'x0'`, `'x1'`, ... */
   predictorNames?: readonly string[];
 };
@@ -60,11 +63,12 @@ export function getGPUSpatialErrorGMModelResult(
       `Spatial error GM summary must hold ${GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH} values`
     );
   }
-  const rowCount = table.length / GPU_SPATIAL_ERROR_GM_TABLE_STRIDE;
-  const predictorCount = rowCount - 2;
-  if (!Number.isInteger(predictorCount) || predictorCount < 1) {
-    throw new Error('Spatial error GM table must hold (predictorCount + 2) * 4 values');
-  }
+  const predictorCount = getRegressionTablePredictorCount(
+    'Spatial error GM',
+    table,
+    GPU_SPATIAL_ERROR_GM_TABLE_STRIDE,
+    options.predictorCount
+  );
   const names = getGPURegressionPredictorNames(predictorCount, options.predictorNames);
   names.push('lambda');
   const coefficients: GPURegressionCoefficient[] = names.map((name, index) => {

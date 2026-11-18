@@ -62,10 +62,12 @@ it('Surfaces: south (the default) is the row mirror of north', async () => {
             {origin: [0, 0] as [number, number], cellSize: 1, width: WIDTH, height: HEIGHT},
             rowDirection
           ),
-          terrain: outputs.terrain.view,
-          surface: outputs.surface.view,
-          canopy: outputs.canopy.view,
-          coverage: outputs.coverage.view
+          output: {
+            terrain: outputs.terrain.view,
+            surface: outputs.surface.view,
+            canopy: outputs.canopy.view,
+            coverage: outputs.coverage.view
+          }
         })
       );
       return {label, rowDirection, outputs};
@@ -187,8 +189,7 @@ for (const {method, interpolation, expected, status: expectedStatus} of HEIGHT_M
             terrain: terrain.view,
             coverage: coverage.view,
             interpolation,
-            heights: heights.view,
-            status: status.view
+            output: {heights: heights.view, status: status.view}
           })
         );
         await fixture.run();
@@ -236,6 +237,10 @@ for (const {label, rowDirection} of POINT_CLOUD_ROW_DIRECTIONS) {
             {origin: [0, 0] as [number, number], cellSize: 1, width: size, height: size},
             rowDirection
           ),
+          radii: [1],
+          initialThreshold: 0.3,
+          slope: 0,
+          maximumThreshold: 1,
           minimumSurface: fixture.view(
             'float32',
             new Float32Array(arrangeRasterRows(surface, size, size, rowDirection))
@@ -244,13 +249,11 @@ for (const {label, rowDirection} of POINT_CLOUD_ROW_DIRECTIONS) {
             'uint32',
             new Uint32Array(arrangeRasterRows(covered, size, size, rowDirection))
           ).view,
-          radii: [1],
-          initialThreshold: 0.3,
-          slope: 0,
-          maximumThreshold: 1,
-          groundMask: groundMask.view,
-          outputClassifications: fixture.view('uint32', new Uint32Array(size * size)).view,
-          status: status.view
+          output: {
+            groundMask: groundMask.view,
+            outputClassifications: fixture.view('uint32', new Uint32Array(size * size)).view,
+            status: status.view
+          }
         })
       );
       await fixture.run();

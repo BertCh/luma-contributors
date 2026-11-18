@@ -2,9 +2,21 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {addPreparedRecipe} from './prepared-recipe';
+
+import {
+  getViewBindingRange,
+  type GPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {GPUGroupStatistics} from '../../dataframe-analysis/group-statistics/index';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+import type {GPUTemporalContext} from '../../analysis-core/contracts/temporal-context';
+import {resolveGPUTrajectoryTemporalContext} from '../trajectory-analysis/trajectory-common';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
@@ -174,6 +186,17 @@ export type GPUFleetDwellTrajectories = GPUPackedGeometryPort<GPUTrajectoryGeome
   timestampsLow?: GraphDataView<'float32'>;
 };
 
+/** Zone events support single float32 or Int64 time columns; double-single needs the stops variant. */
+export type GPUFleetDwellZoneEventsTrajectories = Omit<
+  GPUFleetDwellTrajectories,
+  'timestampsLow' | 'temporalContext'
+> & {
+  timestampsLow?: never;
+  temporalContext?: Omit<GPUTemporalContext, 'encoding'> & {
+    encoding: 'float32-relative' | 'int64-words';
+  };
+};
+
 /** Properties for {@link addFleetDwellRecipe}. */
 export type GPUFleetDwellRecipeProps = GPURecipeOverrides<
   Record<never, never>,
@@ -223,7 +246,19 @@ export type GPUFleetDwellRecipeProps = GPURecipeOverrides<
 };
 
 /** Named outputs of {@link addFleetDwellRecipe}. */
-export type GPUFleetDwellRecipeResult = GPURecipeResult & {
+export type GPUFleetDwellRecipeOutputs = Pick<GPUFleetDwellRecipeViews, 'stops' | 'table'>;
+
+/** Ports between the fleet stop stages. */
+export type GPUFleetDwellRecipeIntermediates = Pick<GPUFleetDwellRecipeViews, 'stopZones'>;
+
+/** Fleet stop outputs, intermediates and top-level convenience fields. */
+export type GPUFleetDwellRecipeResult = GPURecipeResult<
+  GPUFleetDwellRecipeOutputs,
+  GPUFleetDwellRecipeIntermediates
+> &
+  GPUFleetDwellRecipeViews;
+
+type GPUFleetDwellRecipeViews = {
   /** Resolved coordinate context shared by the metrics, join and zone stages. */
   spatialContext: GPUSpatialContext;
   stops: {
@@ -256,8 +291,8 @@ export type GPUFleetDwellRecipeResult = GPURecipeResult & {
 /**
  * Fleet dwell recipe (stops variant): where do vehicles stop and for how long, per zone.
  *
- * Chain: `GPUTrajectoryMetrics` stops -> `GPUPointInPolygonJoin` of the stop centroids against the
- * zones -> adapter mask (stop slots past the GPU-written stop count are excluded) ->
+ * Chain: `GPUTrajectoryMetrics` stops -> adapter (mask and join positions restricted to the
+ * GPU-written stop count) -> `GPUPointInPolygonJoin` of the active stop centroids against the zones ->
  * dense `GPUGroupStatistics` (`keyCount` = zone rows) of stop duration keyed by zone, one row per
  * zone. Stops outside every zone carry the reserved no-zone key and are skipped.
  *
@@ -271,6 +306,13 @@ export function addFleetDwellRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUFleetDwellRecipeProps
 ): GPUFleetDwellRecipeResult {
+  return addPreparedRecipe(graph, props, declareFleetDwellRecipe);
+}
+
+function declareFleetDwellRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUFleetDwellRecipeProps
+): GPUFleetDwellRecipeResult {
   const id = props.id ?? 'fleet-dwell';
   const spatialContext = resolveGPUSpatialContext(
     id,
@@ -278,14 +320,47 @@ export function addFleetDwellRecipe<Parameters>(
     SPATIAL_CONTEXT_SUPPORT
   );
   const builder = new RecipeBuilder(graph);
-  const outputs = props.outputs ?? {};
-  const scratch = props.scratch ?? {};
+  const outputs = snapshotConstructionFields(props.outputs ?? {}, ['stops', 'table', 'status']);
+  const scratch = snapshotConstructionFields(props.scratch ?? {}, ['stopMask', 'stopZones']);
   const capacity = props.stopCapacity;
   const zoneCount = props.zones.featureOffsets.length - 1;
   const {trajectories} = props;
+  resolveGPUTrajectoryTemporalContext(
+    id,
+    trajectories.timestamps,
+    trajectories.temporalContext,
+    trajectories.timestampsLow
+  );
   assertRecipe(ID, capacity >= 1, 'stopCapacity must be positive');
   assertRecipe(ID, zoneCount >= 1, 'needs at least one zone');
-  const provided = outputs.stops ?? {};
+  const capturedStops = snapshotConstructionFields(outputs.stops ?? {}, [
+    'ids',
+    'centroids',
+    'durations',
+    'startRows',
+    'endRows',
+    'status'
+  ]);
+  const provided = {
+    ...capturedStops,
+    ...(capturedStops.status
+      ? {
+          status: snapshotConstructionFields(capturedStops.status, [
+            'count',
+            'overflow',
+            'requiredCount'
+          ])
+        }
+      : {})
+  };
+  // The mask is a cross-stage write: even a status word or optional row output must survive it.
+  for (const [name, view] of Object.entries({...provided, status: undefined, ...provided.status}))
+    if (view)
+      validateDisjointWritableViews(
+        id,
+        {[name]: view, stopMask: scratch.stopMask},
+        {separateDispatches: true}
+      );
   const stops = {
     ids: getOrCreateView(graph, `${id}-stop-ids`, 'uint32', capacity, provided.ids),
     status: {
@@ -327,6 +402,7 @@ export function addFleetDwellRecipe<Parameters>(
       positions: trajectories.positions,
       timestamps: trajectories.timestamps,
       timestampsLow: trajectories.timestampsLow,
+      temporalContext: trajectories.temporalContext,
       trackOffsets: trajectories.trackOffsets,
       parameters: props.parameters,
       output: {
@@ -363,34 +439,72 @@ export function addFleetDwellRecipe<Parameters>(
     1,
     outputs.status?.joinUncertainCount
   );
+  // The join rejects nonfinite coordinates before counting candidates. Hide padding in a private
+  // positions view, preserving the metrics output's zero-filled centroids for callers.
+  const mask = getOrCreateView(graph, `${id}-stop-mask`, 'uint32', capacity, scratch.stopMask);
+  const joinPositions = getOrCreateView(graph, `${id}-join-positions`, 'float32x2', capacity);
+  const centroidBuffer = stops.centroids.buffer.defaultBuffer
+    ? getCoreDefaultBuffer(stops.centroids.buffer.defaultBuffer)
+    : stops.centroids.buffer;
+  const maskBuffer = mask.buffer.defaultBuffer
+    ? getCoreDefaultBuffer(mask.buffer.defaultBuffer)
+    : mask.buffer;
+  const centroidRange = getViewBindingRange(stops.centroids);
+  const maskRange = getViewBindingRange(mask);
+  const splitAdapter =
+    centroidBuffer === maskBuffer &&
+    centroidRange.offset < maskRange.offset + maskRange.size &&
+    maskRange.offset < centroidRange.offset + centroidRange.size;
+  builder.addGlue(
+    splitAdapter ? 'join-positions' : 'stop-mask',
+    createWGSLKernelNode<Parameters>(graph, {
+      id: splitAdapter ? `${id}-join-positions-kernel` : `${id}-stop-mask-kernel`,
+      operation: 'GPURecipeFleetDwell',
+      variant: 'stop-mask',
+      bindings: [
+        {name: 'stopCount', view: stops.status.count, type: 'u32', access: 'read'},
+        {name: 'centroids', view: stops.centroids, type: 'f32', access: 'read'},
+        ...(!splitAdapter
+          ? [{name: 'stopMask', view: mask, type: 'u32', access: 'read_write'} as const]
+          : []),
+        {name: 'joinPositions', view: joinPositions, type: 'f32', access: 'read_write'}
+      ],
+      invocationCount: capacity,
+      body: `let isStop = index < stopCount[stopCountOffset];
+  ${!splitAdapter ? 'stopMask[stopMaskOffset + index] = select(0u, 1u, isStop);' : ''}
+  // Nonfinite floats cannot be WGSL constant expressions; construct this NaN at runtime.
+  let excluded = bitcast<f32>(0x7fc00000u | (index & 0u));
+  joinPositions[joinPositionsOffset + 2u * index] = select(excluded, centroids[centroidsOffset + 2u * index], isStop);
+  joinPositions[joinPositionsOffset + 2u * index + 1u] = select(excluded, centroids[centroidsOffset + 2u * index + 1u], isStop);`
+    })
+  );
+  if (splitAdapter) {
+    builder.addGlue(
+      'stop-mask',
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-stop-mask-kernel`,
+        operation: 'GPURecipeFleetDwell',
+        variant: 'stop-mask',
+        bindings: [
+          {name: 'stopCount', view: stops.status.count, type: 'u32', access: 'read'},
+          {name: 'stopMask', view: mask, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: capacity,
+        body: 'stopMask[stopMaskOffset + index] = select(0u, 1u, index < stopCount[stopCountOffset]);'
+      })
+    );
+  }
   builder.add(
     new GPUPointInPolygonJoin({
       id: `${id}-join`,
       spatialContext,
-      points: {kind: 'points', positions: stops.centroids},
+      points: {kind: 'points', positions: joinPositions},
       polygons: props.zones,
       candidateCapacity: props.zones.candidateCapacity,
       output: {
         pointFeatureIds: stopZones,
         status: {overflow: joinOverflow, uncertainCount: joinUncertainCount}
       }
-    })
-  );
-
-  // Adapter: the stop list is compacted at the front; slots past the GPU-written count are stale.
-  const mask = getOrCreateView(graph, `${id}-stop-mask`, 'uint32', capacity, scratch.stopMask);
-  builder.addGlue(
-    'stop-mask',
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-stop-mask-kernel`,
-      operation: 'GPURecipeFleetDwell',
-      variant: 'stop-mask',
-      bindings: [
-        {name: 'stopCount', view: stops.status.count, type: 'u32', access: 'read'},
-        {name: 'stopMask', view: mask, type: 'u32', access: 'read_write'}
-      ],
-      invocationCount: capacity,
-      body: 'stopMask[stopMaskOffset + index] = select(0u, 1u, index < stopCount[stopCountOffset]);'
     })
   );
 
@@ -455,8 +569,8 @@ export type GPUFleetDwellZoneEventsRecipeProps = GPURecipeOverrides<
    * returned as `result.spatialContext`.
    */
   spatialContext?: GPUSpatialContext;
-  /** Planar tracks (`timestampsLow` is not used by this variant). */
-  trajectories: GPUFleetDwellTrajectories;
+  /** Planar tracks with float32-relative or Int64 timestamps; double-single is rejected. */
+  trajectories: GPUFleetDwellZoneEventsTrajectories;
   /**
    * Zones in the four-level `GPUPolygonGeometryPort` layout (one packed `positions` view), one zone
    * per feature; holes and extra parts share the zone index.
@@ -474,7 +588,26 @@ export type GPUFleetDwellZoneEventsRecipeProps = GPURecipeOverrides<
 };
 
 /** Named outputs of {@link addFleetDwellZoneEventsRecipe}. */
-export type GPUFleetDwellZoneEventsRecipeResult = GPURecipeResult & {
+export type GPUFleetDwellZoneEventsRecipeOutputs = Pick<
+  GPUFleetDwellZoneEventsRecipeViews,
+  'events' | 'dwellTimes' | 'visitCounts' | 'trackEventCounts' | 'table'
+>;
+
+/** Ports between the fleet zone-event stages. */
+export type GPUFleetDwellZoneEventsRecipeIntermediates = {
+  visitTable?: GPUZoneVisitTableOutput;
+  cellZones: GraphDataView<'uint32'>;
+  cellMask: GraphDataView<'uint32'>;
+};
+
+/** Fleet zone-event outputs, intermediates and top-level convenience fields. */
+export type GPUFleetDwellZoneEventsRecipeResult = GPURecipeResult<
+  GPUFleetDwellZoneEventsRecipeOutputs,
+  GPUFleetDwellZoneEventsRecipeIntermediates
+> &
+  GPUFleetDwellZoneEventsRecipeViews;
+
+type GPUFleetDwellZoneEventsRecipeViews = {
   /** Resolved coordinate context of the zone events stage. */
   spatialContext: GPUSpatialContext;
   events: {
@@ -483,6 +616,8 @@ export type GPUFleetDwellZoneEventsRecipeResult = GPURecipeResult & {
     status: {
       count: GPUStatusScalar;
       overflow: GPUStatusScalar;
+      /** Candidate scratch or per-track event loss; distinct from final event capacity. */
+      candidateOverflow: GPUStatusScalar;
       /** Unclamped event count, for sizing `eventCapacity`. */
       requiredCount: GPUStatusScalar;
     };
@@ -503,8 +638,8 @@ export type GPUFleetDwellZoneEventsRecipeResult = GPURecipeResult & {
   /**
    * One-row `GPUZoneEvents` status words next to the per-stage `stages`: `candidateCount` is the
    * unclamped candidate count (the `candidateCapacity` needed), and `candidateOverflow`,
-   * `trackOverflow` and `eventOverflow` split `events.status.overflow` into candidate scratch,
-   * per-track bound and event list capacity.
+   * `trackOverflow` and `eventOverflow` identify candidate scratch, per-track bound and final
+   * event-list loss. The zone-events stage uses the compact combined candidate flag.
    */
   status: {
     candidateCount: GPUStatusScalar;
@@ -532,6 +667,13 @@ export function addFleetDwellZoneEventsRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUFleetDwellZoneEventsRecipeProps
 ): GPUFleetDwellZoneEventsRecipeResult {
+  return addPreparedRecipe(graph, props, declareFleetDwellZoneEventsRecipe);
+}
+
+function declareFleetDwellZoneEventsRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUFleetDwellZoneEventsRecipeProps
+): GPUFleetDwellZoneEventsRecipeResult {
   const id = props.id ?? 'fleet-dwell-zone-events';
   const spatialContext = resolveGPUSpatialContext(
     id,
@@ -542,6 +684,12 @@ export function addFleetDwellZoneEventsRecipe<Parameters>(
   const outputs = props.outputs ?? {};
   const scratch = props.scratch ?? {};
   const {trajectories, zones} = props;
+  validateRequirement(
+    id,
+    trajectories.timestampsLow === undefined,
+    'trajectories.timestampsLow is unsupported; use the stops variant for double-single times'
+  );
+  resolveGPUTrajectoryTemporalContext(id, trajectories.timestamps, trajectories.temporalContext);
   const trackCount = trajectories.trackOffsets.length - 1;
   const zoneCount = zones.featureOffsets.length - 1;
   assertRecipe(ID, trackCount >= 1 && zoneCount >= 1, 'needs tracks and zones');
@@ -553,6 +701,13 @@ export function addFleetDwellZoneEventsRecipe<Parameters>(
     status: {
       count: getOrCreateView(graph, `${id}-event-count`, 'uint32', 1, given.status?.count),
       overflow: getOrCreateView(graph, `${id}-event-overflow`, 'uint32', 1, given.status?.overflow),
+      candidateOverflow: getOrCreateView(
+        graph,
+        `${id}-event-candidate-overflow`,
+        'uint32',
+        1,
+        given.status?.candidateOverflow
+      ),
       requiredCount: getOrCreateView(
         graph,
         `${id}-event-required-count`,
@@ -627,6 +782,7 @@ export function addFleetDwellZoneEventsRecipe<Parameters>(
         kind: 'trajectories',
         positions: trajectories.positions,
         timestamps: trajectories.timestamps,
+        temporalContext: trajectories.temporalContext,
         trackOffsets: trajectories.trackOffsets
       },
       zones,
@@ -695,7 +851,7 @@ export function addFleetDwellZoneEventsRecipe<Parameters>(
       stages: [
         {
           stage: 'zone-events',
-          status: {...events.status, candidateOverflow: diagnostics.candidateOverflow}
+          status: events.status
         },
         ...(scratch.visitTable
           ? [

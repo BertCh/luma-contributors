@@ -18,8 +18,8 @@ import {
 } from '../utils/gpu-contributor-test-utils';
 
 function getDistinctComputePipelineCount(nodes: readonly unknown[]): number {
-  for (const [name, source] of getParsedKernelSources(nodes))
-    expect(auditWGSLModule(source), name).toEqual([]);
+  for (const {id: name, source, constants} of getParsedKernelSources(nodes).configurations)
+    expect(auditWGSLModule(source, constants), name).toEqual([]);
   return getGPUCommandNodePipelineKeys(nodes, {includeShaderLayout: true}).size;
 }
 

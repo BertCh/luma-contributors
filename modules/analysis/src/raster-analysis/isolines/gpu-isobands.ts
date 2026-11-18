@@ -20,6 +20,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   getBreakSearchWGSL,
   getRasterAlgebraValueWGSL,
+  getNamedRasterOutputViews,
   validateRasterAlgebraAliasing,
   validateRasterAlgebraCount,
   validateRasterAlgebraGraph,
@@ -31,6 +32,7 @@ import type {GPURasterBand, GPURasterHaloStage, GPURasterMetadata} from '@luma.g
 import {
   getRasterAlgebraInputNodes,
   getRasterAlgebraInputViews,
+  getNamedRasterAlgebraInputViews,
   isRasterAlgebraBand,
   validateRasterAlgebraInput,
   validateRasterAlgebraInputBindings
@@ -278,23 +280,12 @@ export class GPUIsobands implements GPUCommandNodeProducer, GPURasterHaloStage {
         throw new Error(`${id} output.triangles must be packed float32x2`);
       }
     }
-    const writable = [
-      output.bandClasses,
-      output.triangleBands,
-      output.status?.count,
-      output.status?.overflow,
-      output.status?.requiredCount,
-      output.status?.vertexCount,
-      output.edgeBands,
-      output.status?.edgeCount,
-      output.status?.edgeOverflow,
-      output.status?.edgeRequiredCount
-    ];
-    validateRasterAlgebraAliasing(
-      id,
-      [...writable, output.triangles, output.edges] as (GraphDataView | undefined)[],
-      [...getRasterAlgebraInputViews(props.values), props.mask, props.breaks, props.parameters]
-    );
+    validateRasterAlgebraAliasing(id, getNamedRasterOutputViews(output), {
+      ...getNamedRasterAlgebraInputViews(props.values, 'values'),
+      mask: props.mask,
+      breaks: props.breaks,
+      parameters: props.parameters
+    });
   }
 
   /** Returns the optional class kernel and, for geometry, count, scan, total, scatter and publish nodes. */

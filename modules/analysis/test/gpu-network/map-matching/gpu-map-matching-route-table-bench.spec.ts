@@ -176,6 +176,7 @@ it('GPUMapMatching route table bench: A* search against a prebuilt cost table', 
     tableTargets: output(TABLE_CAPACITY),
     tableCosts: output(TABLE_CAPACITY),
     tableOverflow: output(1),
+    tableComplete: output(1),
     tableRequired: output(1),
     tableConverged: output(1)
   };
@@ -221,7 +222,7 @@ it('GPUMapMatching route table bench: A* search against a prebuilt cost table', 
               costs: view('table-costs', sharedBuffers.tableCosts, 'float32', TABLE_CAPACITY),
               costLimit: view('table-limit', sharedBuffers.tableCostLimit, 'float32', 1),
               status: {
-                overflow: view('table-overflow', sharedBuffers.tableOverflow, 'uint32', 1)
+                complete: view('table-complete', sharedBuffers.tableComplete, 'uint32', 1)
               }
             }
           : undefined,
@@ -265,6 +266,7 @@ it('GPUMapMatching route table bench: A* search against a prebuilt cost table', 
         costs: buildView('table-costs', sharedBuffers.tableCosts, 'float32', TABLE_CAPACITY),
         status: {
           overflow: buildView('table-overflow', sharedBuffers.tableOverflow, 'uint32', 1),
+          complete: buildView('table-complete', sharedBuffers.tableComplete, 'uint32', 1),
           requiredCount: buildView('table-required', sharedBuffers.tableRequired, 'uint32', 1),
           converged: buildView('table-converged', sharedBuffers.tableConverged, 'uint32', 1)
         }

@@ -1,6 +1,7 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
 
 import {clamp} from '@math.gl/core';
 import {
@@ -173,9 +174,10 @@ export function getGPUSnapRoundedNodingMaximumVertexCount(
  * `sourceFeatureIds` the line's `sourceIds` entry or the line index, `sourceEdgeIds` the segment
  * ID, and the parameters are the projections of the piece ends on the rounded source segment.
  *
- * `requiredCount` is exact when `candidateOverflow` is zero. `overflow` is set by any capacity
- * (output, crossings, candidates), a non-finite vertex or a coordinate range that does not fit
- * the lattice, and a segment pair the exact predicates could not certify.
+ * `overflow` reports only final segment capacity. `candidateOverflow` reports intermediate
+ * crossing/incidence capacity, candidate loss in either intersection BVH, non-finite or
+ * out-of-lattice coordinates and uncertifiable pairs.
+ * `requiredCount` is exact only when `candidateOverflow` is zero; inspect `uncertainCount` too.
  *
  * @internal
  */
@@ -190,6 +192,7 @@ export class GPUSnapRoundedNoding implements GPUCommandNodeProducer {
   constructor(props: GPUSnapRoundedNodingProps) {
     this.id = props.id ?? 'snap-rounded-noding';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    props = {...props, lines: snapshotSinglePartGeometryPort(this.id, 'lines', props.lines)};
     this.props = props;
     const {id} = this;
     const {lines, output} = props;
@@ -541,6 +544,7 @@ const KEY_SENTINEL: u32 = ${LATTICE_KEY_SENTINEL}u;`,
     const crossingRight = transient('crossing-right', 'uint32', crossingCapacity);
     const crossingCount = transient('crossing-count', 'uint32', 1);
     const crossingOverflow = transient('crossing-overflow', 'uint32', 1);
+    const crossingCandidateOverflow = transient('crossing-candidate-overflow', 'uint32', 1);
     const crossingRequired = transient('crossing-required', 'uint32', 1);
     const crossingKinds = transient('crossing-kinds', 'uint32', crossingCapacity);
     const uncertainCount =
@@ -553,11 +557,12 @@ const KEY_SENTINEL: u32 = ${LATTICE_KEY_SENTINEL}u;`,
         leafCapacity: props.leafCapacity,
         output: {
           pairs: {
-            leftIds: crossingLeft,
-            rightIds: crossingRight,
+            leftRows: crossingLeft,
+            rightRows: crossingRight,
             status: {
               count: crossingCount,
               overflow: crossingOverflow,
+              candidateOverflow: crossingCandidateOverflow,
               requiredCount: crossingRequired
             }
           },
@@ -759,6 +764,7 @@ fn readTerms(index: u32) -> array<u32, 12> {
     const candidateRight = transient('candidate-right', 'uint32', candidateCapacity);
     const candidateCount = transient('candidate-count', 'uint32', 1);
     const candidateOverflow = transient('candidate-overflow', 'uint32', 1);
+    const incidenceCandidateOverflow = transient('incidence-candidate-overflow', 'uint32', 1);
     const candidateRequired = transient('candidate-required', 'uint32', 1);
     nodes.push(
       ...new GPUSegmentIntersection({
@@ -767,11 +773,12 @@ fn readTerms(index: u32) -> array<u32, 12> {
         right: {kind: 'lines', positions: diagonalPositions, lineOffsets: diagonalOffsets},
         output: {
           pairs: {
-            leftIds: candidateLeft,
-            rightIds: candidateRight,
+            leftRows: candidateLeft,
+            rightRows: candidateRight,
             status: {
               count: candidateCount,
               overflow: candidateOverflow,
+              candidateOverflow: incidenceCandidateOverflow,
               requiredCount: candidateRequired
             }
           }
@@ -1119,6 +1126,21 @@ ${latticePointWGSL.replace(/fn segmentUsable[\s\S]*$/, '')}`,
           {name: 'crossingOverflow', view: crossingOverflow, type: 'u32', access: 'read'},
           {name: 'incidenceOverflow', view: candidateOverflow, type: 'u32', access: 'read'},
           {
+            name: 'crossingCandidateOverflow',
+            view: crossingCandidateOverflow,
+            type: 'u32',
+            access: 'read'
+          },
+          {
+            name: 'incidenceCandidateOverflow',
+            view: incidenceCandidateOverflow,
+            type: 'u32',
+            access: 'read'
+          },
+          {name: 'candidateScan', view: candidateScan, type: 'u32', access: 'read'},
+          {name: 'state', view: state, type: 'u32', access: 'read'},
+          {name: 'uncertainCount', view: uncertainCount, type: 'u32', access: 'read_write'},
+          {
             name: 'candidateOverflow',
             view: output.status.candidateOverflow,
             type: 'u32',
@@ -1127,7 +1149,7 @@ ${latticePointWGSL.replace(/fn segmentUsable[\s\S]*$/, '')}`,
         ],
         invocationCount: 1,
         body: `candidateOverflow[candidateOverflowOffset] =
-    select(0u, 1u, crossingOverflow[crossingOverflowOffset] != 0u || incidenceOverflow[incidenceOverflowOffset] != 0u);`
+    select(0u, 1u, crossingOverflow[crossingOverflowOffset] != 0u || incidenceOverflow[incidenceOverflowOffset] != 0u || crossingCandidateOverflow[crossingCandidateOverflowOffset] != 0u || incidenceCandidateOverflow[incidenceCandidateOverflowOffset] != 0u || candidateScan[candidateScanOffset + ${candidateCapacity - 1}u] > ${incidenceCapacity}u || state[stateOffset] != 0u || uncertainCount[uncertainCountOffset] != 0u);`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-status`,
@@ -1136,13 +1158,6 @@ ${latticePointWGSL.replace(/fn segmentUsable[\s\S]*$/, '')}`,
         bindings: [
           {name: 'candidateScan', view: candidateScan, type: 'u32', access: 'read'},
           {name: 'state', view: state, type: 'u32', access: 'read'},
-          {
-            name: 'candidateOverflow',
-            view: output.status.candidateOverflow,
-            type: 'u32',
-            access: 'read'
-          },
-          {name: 'uncertainCount', view: uncertainCount, type: 'u32', access: 'read'},
           {name: 'count', view: output.status.count, type: 'u32', access: 'read_write'},
           {
             name: 'requiredCount',
@@ -1153,17 +1168,14 @@ ${latticePointWGSL.replace(/fn segmentUsable[\s\S]*$/, '')}`,
           {name: 'overflow', view: output.status.overflow, type: 'u32', access: 'read_write'}
         ],
         invocationCount: 1,
-        declarations: `const OUTPUT_CAPACITY: u32 = ${outputCapacity}u;
-const INCIDENCE_CAPACITY: u32 = ${incidenceCapacity}u;`,
+        declarations: `const OUTPUT_CAPACITY: u32 = ${outputCapacity}u;`,
         // Every usable segment has an incidence at each end, so pieces = incidences - segments.
         body: `let incidences = candidateScan[candidateScanOffset + ${candidateCapacity - 1}u];
   let segments = min(state[stateOffset + 1u], incidences);
   let required = incidences - segments;
   requiredCount[requiredCountOffset] = required;
   count[countOffset] = min(required, OUTPUT_CAPACITY);
-  overflow[overflowOffset] = select(0u, 1u,
-    required > OUTPUT_CAPACITY || incidences > INCIDENCE_CAPACITY || state[stateOffset] != 0u ||
-    candidateOverflow[candidateOverflowOffset] != 0u || uncertainCount[uncertainCountOffset] != 0u);`
+  overflow[overflowOffset] = select(0u, 1u, required > OUTPUT_CAPACITY);`
       })
     );
     return nodes;

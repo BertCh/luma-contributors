@@ -18,6 +18,61 @@ import {
 } from './network-routing-operation-test-utils';
 
 const NONE = 0xffffffff;
+it.each([
+  false,
+  true
+])('network:G7 CPU reachability snapshots budgets and keeps activeIterations live (inherited=%s)', async inherited => {
+  let maximumIterations = 1;
+  const props: NetworkReachabilityOperationProps = Object.assign(
+    inherited
+      ? Object.create({
+          get maximumIterations() {
+            return maximumIterations;
+          }
+        })
+      : {},
+    {
+      nodeCount: 3,
+      localIterations: 1,
+      topology: {offsets: 'offsets', neighbors: 'neighbors', weights: 'weights'},
+      startNodes: 'starts',
+      activeIterations: 'active',
+      output: {costs: 'costs', status: {converged: 'complete'}}
+    }
+  );
+  if (!inherited) props.maximumIterations = maximumIterations;
+  const operation = new CPUNetworkReachabilityOperation(props);
+  maximumIterations = 3;
+  if (!inherited) props.maximumIterations = maximumIterations;
+  const active = Uint32Array.of(1);
+  const values = {
+    offsets: Uint32Array.of(0, 1, 2, 2),
+    neighbors: Uint32Array.of(1, 2),
+    weights: Float32Array.of(1, 1),
+    startNodes: Uint32Array.of(0),
+    activeIterations: active
+  };
+  const inputs = Object.fromEntries(
+    Object.entries(values).map(([port, rows]) => [
+      port,
+      {
+        format: port === 'weights' ? ('float32' as const) : ('uint32' as const),
+        length: rows.length,
+        chunks: [{values: rows, length: rows.length}],
+        pack: () => rows
+      }
+    ])
+  );
+  active[0] = 3;
+  const result = await operation.execute({inputs});
+  expect(result['costs']).toEqual(Float32Array.of(0, 1, Infinity));
+  expect(result['complete']).toEqual(Uint32Array.of(0));
+  active[0] = 0;
+  expect((await operation.execute({inputs}))['costs']).toEqual(
+    Float32Array.of(0, Infinity, Infinity)
+  );
+});
+
 it('reuses slot-indexed tie flags across overlapping CSR rows', () => {
   const result = computeNetworkReachabilityOnCPU({
     topology: getOverlappingRoutingTopology(),
@@ -77,7 +132,7 @@ it('matches exhaustive simple paths, hand-computed tie parents and inclusive ban
   expect(Array.from(result.unresolvedCount)).toEqual([0]);
 });
 
-it('finishes tie plateaus exactly and keeps separate lanes and one-round output arithmetic', () => {
+it('finishes uncapped tie plateaus and keeps separate lanes and one-round output arithmetic', () => {
   const topology = {
     offsets: Uint32Array.of(0, 1, 2, 3, 4, 4),
     neighbors: Uint32Array.of(1, 2, 3, 4),
@@ -85,8 +140,7 @@ it('finishes tie plateaus exactly and keeps separate lanes and one-round output 
   };
   const result = computeNetworkReachabilityOnCPU({
     topology,
-    startNodes: Uint32Array.of(0),
-    activeIterations: Uint32Array.of(0)
+    startNodes: Uint32Array.of(0)
   });
   expect(Array.from(result.costs)).toEqual([0, 16777216, 16777216, 16777218, 16777218]);
   expect(Array.from(result.predecessors)).toEqual([NONE, 0, 1, 2, 3]);

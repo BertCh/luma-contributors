@@ -9,10 +9,7 @@ import {
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getCPUOperationFloat32Rows} from '../../analysis-core/operations/cpu-operation-rows';
-import {
-  getMultipleTestingAdjustedPValues,
-  GPU_MULTIPLE_TESTING_MAXIMUM_ROWS
-} from './gpu-multiple-testing-adjustment';
+import {getMultipleTestingAdjustedPValues} from './gpu-multiple-testing-adjustment';
 import type {MultipleTestingAdjustmentOperationProps} from './gpu-multiple-testing-adjustment-operation';
 
 /**
@@ -21,10 +18,10 @@ import type {MultipleTestingAdjustmentOperationProps} from './gpu-multiple-testi
  *
  * What differs from the GPU contributor:
  * - Float64 arithmetic replaces float32 intermediate arithmetic; compare with relative tolerance 2e-6.
- * - Benjamini-Yekutieli sums the full harmonic series instead of the GPU approximation above 64.
+ * - Benjamini-Yekutieli uses a binary64 Euler-Maclaurin expansion above 64 terms.
  * - The GPU sort row and minimumFamilySize limits at 2^31 are dropped; the uint32 family-size
- *   layout limit remains. Above the public helper's minimumFamilySize cap, virtual p=1 rows pin
- *   the family instead. That path allocates and sorts the padded family inside the public helper.
+ *   layout limit remains. The logical family size does not allocate virtual rows: only supplied
+ *   p-values are stored and sorted, and the harmonic factor takes bounded work.
  * - Subnormal p-values may be flushed to zero on the GPU and are kept by the twin.
  */
 export function computeMultipleTestingAdjustmentOnCPU(
@@ -45,27 +42,7 @@ export function computeMultipleTestingAdjustmentOnCPU(
     }
   }
   const familySize = Math.max(tested, minimumFamilySize);
-  let adjusted: Float64Array;
-  if (method === 'none') {
-    adjusted = getMultipleTestingAdjustedPValues(pValues, method);
-  } else if (minimumFamilySize < GPU_MULTIPLE_TESTING_MAXIMUM_ROWS) {
-    adjusted = getMultipleTestingAdjustedPValues(pValues, method, minimumFamilySize);
-  } else {
-    // The public helper accepts larger row counts but caps its minimumFamilySize argument.
-    // Its documented equivalent is to append p=1 rows, then discard their outputs. A read-only
-    // virtual input avoids allocating another input column; the helper still owns its full result.
-    const paddedValues: ArrayLike<number> = new Proxy(
-      {length: pValues.length + familySize - tested},
-      {
-        get(target, property) {
-          if (property === 'length') return target.length;
-          const row = Number(property);
-          return row < pValues.length ? pValues[row] : 1;
-        }
-      }
-    );
-    adjusted = getMultipleTestingAdjustedPValues(paddedValues, method).subarray(0, pValues.length);
-  }
+  const adjusted = getMultipleTestingAdjustedPValues(pValues, method, minimumFamilySize);
   const adjustedPValues = Float32Array.from(adjusted, value => (value === 0 ? 0 : value));
   return {adjustedPValues, testedCount: Uint32Array.of(familySize)};
 }

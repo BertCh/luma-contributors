@@ -59,6 +59,15 @@ it('matches transitive closure on every directed graph with three vertices', () 
         }).strongComponents
       )
     ).toEqual(expected);
+    const bounded = computeNetworkStructureOnCPU(
+      {
+        offsets: Uint32Array.from(offsets),
+        neighbors: Uint32Array.from(neighbors)
+      },
+      {maximumIterations: 32}
+    );
+    expect(Array.from(bounded.strongComponents)).toEqual(expected);
+    expect(bounded.strongComponentsStatus.converged).toEqual(Uint32Array.of(1));
   }
 });
 
@@ -133,6 +142,90 @@ it('ignores an unused empty reverse table when only SCC output is requested', as
   });
   expect(Object.keys(result)).toEqual(['components']);
   expect(result['components']).toEqual(expected);
+});
+
+it('returns every declared SCC status graph value from the exact CPU traversal', async () => {
+  const props = {
+    nodeCount: 4,
+    edgeCount: 3,
+    topology: {offsets: 'offsets', neighbors: 'neighbors'},
+    output: {strongComponents: 'labels'},
+    strongComponentsStatus: {
+      converged: 'finished',
+      iterationCount: 'steps',
+      iterationLimitReached: 'limited'
+    }
+  };
+  const vector = (values: Uint32Array): GPUCPUVector => ({
+    format: 'uint32',
+    length: values.length,
+    chunks: [{values, length: values.length}],
+    pack: () => values
+  });
+  const operation = new CPUNetworkStructureOperation(props);
+  const rows = await operation.execute({
+    inputs: {
+      offsets: vector(Uint32Array.of(0, 1, 2, 3, 3)),
+      neighbors: vector(Uint32Array.of(1, 2, 0))
+    }
+  });
+  expect(Object.keys(rows).sort()).toEqual(Object.keys(operation.outputs).sort());
+  expect(rows['labels']).toEqual(Uint32Array.of(0, 0, 0, 3));
+  expect(rows['finished']).toEqual(Uint32Array.of(1));
+  expect(rows['steps']).toEqual(Uint32Array.of(1));
+  expect(rows['limited']).toEqual(Uint32Array.of(0));
+});
+
+it('honors an explicit parallel SCC step budget and invalidates exhausted labels', async () => {
+  const vector = (values: Uint32Array): GPUCPUVector => ({
+    format: 'uint32',
+    length: values.length,
+    chunks: [{values, length: values.length}],
+    pack: () => values
+  });
+  for (const maximumIterations of [1, 32]) {
+    const operation = new CPUNetworkStructureOperation({
+      mode: 'parallel',
+      strongComponentsMaximumIterations: maximumIterations,
+      nodeCount: 4,
+      edgeCount: 3,
+      topology: {offsets: 'offsets', neighbors: 'neighbors'},
+      output: {strongComponents: 'labels'},
+      strongComponentsStatus: {
+        converged: 'finished',
+        iterationCount: 'steps',
+        iterationLimitReached: 'limited'
+      }
+    });
+    const rows = await operation.execute({
+      inputs: {
+        offsets: vector(Uint32Array.of(0, 1, 2, 3, 3)),
+        neighbors: vector(Uint32Array.of(1, 2, 0))
+      }
+    });
+    const finished = maximumIterations > 1;
+    expect(rows['labels']).toEqual(
+      finished ? Uint32Array.of(0, 0, 0, 3) : new Uint32Array(4).fill(0xffffffff)
+    );
+    expect(rows['finished']).toEqual(Uint32Array.of(Number(finished)));
+    expect(rows['limited']).toEqual(Uint32Array.of(Number(!finished)));
+    expect((rows['steps'] as Uint32Array)[0]).toBeLessThanOrEqual(maximumIterations);
+  }
+});
+
+it('retains exact resilience outputs when the SCC phase budget is exhausted', () => {
+  const result = computeNetworkStructureOnCPU(
+    {
+      offsets: Uint32Array.of(0, 1, 2, 2),
+      neighbors: Uint32Array.of(1, 0),
+      reverseEdgeSlots: Uint32Array.of(1, 0)
+    },
+    {maximumIterations: 1}
+  );
+  expect(result.strongComponents).toEqual(new Uint32Array(3).fill(0xffffffff));
+  expect(result.strongComponentsStatus.iterationLimitReached).toEqual(Uint32Array.of(1));
+  expect(result.bridges).toEqual(Uint32Array.of(1, 1));
+  expect(result.articulationPoints).toEqual(Uint32Array.of(0, 0, 0));
 });
 
 it('validates inconsistent arrays and both operation constructions', () => {

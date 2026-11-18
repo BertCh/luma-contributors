@@ -33,7 +33,7 @@ for (const fixture of fixtures) {
     const result = computeMultiscaleGeographicallyWeightedRegressionOnCPU(getInput(fixture), {
       predictorCount: fixture.predictorCount,
       kernel: fixture.kernel as 'gaussian' | 'bisquare',
-      maximumIterations: 1
+      maximumIterations: 128
     });
     expect(Array.from(result.codes)).toEqual(fixture.mask.map(keep => (keep ? 0 : 1)));
     expect(result.iterationCount[0]).toBeGreaterThan(1);

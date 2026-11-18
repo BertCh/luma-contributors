@@ -155,7 +155,12 @@ it('GPUMakeValid source-parity filter kernels parse', () => {
         dangleCount: view('uint32', 1),
         unusedEdgeCount: view('uint32', 1)
       },
-      status: status()
+      status: {
+        count: view('uint32', 1),
+        requiredRingCount: view('uint32', 1),
+        overflow: view('uint32', 1),
+        candidateOverflow: view('uint32', 1)
+      }
     }
   } as never);
   expectKernelsParse(makeValid.getCommandNodes(graph), 'make-valid');

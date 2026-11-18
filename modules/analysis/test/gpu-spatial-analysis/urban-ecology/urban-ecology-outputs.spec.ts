@@ -486,9 +486,9 @@ it('population support alignment writes its populations and certificate into cal
         targetIds: fixture.input('target', new Uint32Array([10, 20, 30]), 'uint32', 3),
         output
       });
-      return {...result.outputs, status: result.status};
+      return {...result.outputs, status: result.packedStatus};
     },
-    expectWritten: ['.populations', '.validity', '.status']
+    expectWritten: ['.populations', '.alignmentCode', '.matchedMask', '.status']
   });
 });
 

@@ -132,6 +132,7 @@ function createFixture(device: Device, props: FixtureProps): Fixture {
     ids: output(capacity),
     count: output(1),
     overflow: output(1),
+    candidateOverflow: output(1),
     total: output(1),
     categories: output(capacity),
     failed: output(1),
@@ -189,6 +190,13 @@ function createFixture(device: Device, props: FixtureProps): Fixture {
       status: {
         count: importGraphBuffer(graph, 'o-count', outputs.count, 'uint32', 1),
         overflow: importGraphBuffer(graph, 'o-overflow', outputs.overflow, 'uint32', 1),
+        candidateOverflow: importGraphBuffer(
+          graph,
+          'o-candidate-overflow',
+          outputs.candidateOverflow,
+          'uint32',
+          1
+        ),
         requiredCount: importGraphBuffer(graph, 'o-total', outputs.total, 'uint32', 1)
       }
     },
@@ -247,6 +255,7 @@ function createFixture(device: Device, props: FixtureProps): Fixture {
       return {
         count,
         overflow: (await readUint32(outputs.overflow, 1))[0],
+        candidateOverflow: (await readUint32(outputs.candidateOverflow, 1))[0],
         requiredCount: (await readUint32(outputs.total, 1))[0],
         failedCount: (await readUint32(outputs.failed, 1))[0],
         slotCounts: Uint32Array.from(await readUint32(outputs.slotCounts, slotCount)),
@@ -276,6 +285,7 @@ function expectMatchesOracle(
   expect(actual.requiredCount).toBe(expected.requiredCount);
   expect(actual.count).toBe(expected.count);
   expect(actual.overflow).toBe(expected.overflow);
+  expect(actual.candidateOverflow).toBe(expected.candidateOverflow);
   expect(Array.from(actual.featureIds.slice(0, actual.count))).toEqual(
     Array.from(expected.featureIds)
   );

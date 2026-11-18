@@ -22,7 +22,7 @@ import {
   getRasterGridGeoreference,
   getRasterGroundScaleWGSL,
   type GPURasterCellSizeMode
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 import {rasterBinding} from '../../raster-analysis/remote-sensing/raster-kernel-utils';
 import {
   createWGSLKernelNode,

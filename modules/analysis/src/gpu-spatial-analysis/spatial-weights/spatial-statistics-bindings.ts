@@ -9,7 +9,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 
 /**
  * Preflights the metadata of every caller view in a statistics configuration, including nested

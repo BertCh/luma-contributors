@@ -126,6 +126,7 @@ it('GPUOrdinaryLeastSquares emits a deterministic node chain with stable IDs', (
   expect(contributor.tileCount).toBe(3);
   const nodes = contributor.getCommandNodes(graph);
   expect(nodes.map(node => node.id)).toEqual([
+    'ols-means-origins',
     'ols-means-tiles',
     'ols-means-merge',
     'ols-moments-tiles',
@@ -135,6 +136,7 @@ it('GPUOrdinaryLeastSquares emits a deterministic node chain with stable IDs', (
     'ols-residual-tiles',
     'ols-residual-merge',
     'ols-finish',
+    'ols-bp-means-origins',
     'ols-bp-means-tiles',
     'ols-bp-means-merge',
     'ols-bp-moments-tiles',

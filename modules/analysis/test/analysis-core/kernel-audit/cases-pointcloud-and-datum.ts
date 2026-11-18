@@ -59,10 +59,12 @@ function buildNeighborhoods(
       queryRows: view('uint32', queries),
       radius: 1,
       capacity,
-      indices: view('uint32', queries * capacity),
-      squaredDistances: view('float32', queries * capacity),
-      counts: view('uint32', queries),
-      ...(extra.grid ? {grid: extra.grid} : {})
+      ...(extra.grid ? {grid: extra.grid} : {}),
+      output: {
+        indices: view('uint32', queries * capacity),
+        squaredDistances: view('float32', queries * capacity),
+        counts: view('uint32', queries)
+      }
     })
   );
 }
@@ -76,15 +78,17 @@ function buildGround(context: KernelAuditContext, radii: readonly number[]) {
       positions: view('float32x3', 16),
       classifications: view('uint32', 16),
       grid,
-      minimumSurface: view('float32', 4096),
-      coverage: view('uint32', 4096),
       radii,
       initialThreshold: 0.25,
       slope: 0.15,
       maximumThreshold: 3,
-      groundMask: view('uint32', 16),
-      outputClassifications: view('uint32', 16),
-      status: view('uint32', 16)
+      minimumSurface: view('float32', 4096),
+      coverage: view('uint32', 4096),
+      output: {
+        groundMask: view('uint32', 16),
+        outputClassifications: view('uint32', 16),
+        status: view('uint32', 16)
+      }
     })
   );
 }
@@ -99,10 +103,12 @@ function buildSMRF(context: KernelAuditContext, window: number, cut: number) {
       grid: {origin: [0, 0], cellSize: 1, width: 8, height: 8},
       window,
       cut,
-      groundSurface: view('float32', 64),
-      groundMask: view('uint32', 16),
-      outputClassifications: view('uint32', 16),
-      status: view('uint32', 16)
+      output: {
+        groundSurface: view('float32', 64),
+        groundMask: view('uint32', 16),
+        outputClassifications: view('uint32', 16),
+        status: view('uint32', 16)
+      }
     })
   );
 }
@@ -116,10 +122,12 @@ function buildICP(context: KernelAuditContext, iterations: number, source: numbe
       target: view('float32x3', target),
       maximumDistance: 1,
       iterations,
-      transform: view('float32', 16),
-      history: view('float32x3', iterations),
-      inlierMask: view('uint32', source),
-      status: view('uint32', 1)
+      output: {
+        transform: view('float32', 16),
+        history: view('float32x3', iterations),
+        inlierMask: view('uint32', source),
+        status: view('uint32', 1)
+      }
     })
   );
 }
@@ -138,10 +146,12 @@ function buildIndexedChange(context: KernelAuditContext, radius: number, halfDep
       grid: {origin: [0, 0, 0], cellSize: 1, dimensions: [8, 8, 8]},
       radius,
       halfDepth,
-      changes: view('float32x3', cores),
-      roughness: view('float32x3', cores),
-      counts: view('uint32', cores * 2),
-      status: view('uint32', cores)
+      output: {
+        changes: view('float32x3', cores),
+        roughness: view('float32x3', cores),
+        counts: view('uint32', cores * 2),
+        status: view('uint32', cores)
+      }
     })
   );
 }
@@ -161,10 +171,12 @@ function getPointCloudLimitCases(): KernelAuditCase[] {
             radii: Array.from({length: 32}, (_, index) => 0.1 + index * 0.1),
             capacity: 64,
             grid: {origin: [-4, -4, -4], cellSize: 1, dimensions: [8, 8, 8]},
-            normals: view('float32x3', 16),
-            normalScales: view('float32', 16),
-            normalVariances: view('float32', 16),
-            status: view('uint32', 16)
+            output: {
+              normals: view('float32x3', 16),
+              normalScales: view('float32', 16),
+              normalVariances: view('float32', 16),
+              status: view('uint32', 16)
+            }
           })
         )
     },
@@ -178,10 +190,12 @@ function getPointCloudLimitCases(): KernelAuditCase[] {
             parameters: view('float32', 5),
             radii: Array.from({length: 33}, (_, index) => index + 1),
             capacity: 64,
-            normals: view('float32x3', 16),
-            normalScales: view('float32', 16),
-            normalVariances: view('float32', 16),
-            status: view('uint32', 16)
+            output: {
+              normals: view('float32x3', 16),
+              normalScales: view('float32', 16),
+              normalVariances: view('float32', 16),
+              status: view('uint32', 16)
+            }
           })
         )
     },
@@ -229,10 +243,12 @@ function getPointCloudLimitCases(): KernelAuditCase[] {
             indices: view('uint32', rows * capacity),
             counts: view('uint32', rows),
             capacity,
-            normals: view('float32x3', rows),
-            eigenvalues: view('float32x3', rows),
-            shapes: view('float32x3', rows),
-            status: view('uint32', rows)
+            output: {
+              normals: view('float32x3', rows),
+              eigenvalues: view('float32x3', rows),
+              shapes: view('float32x3', rows),
+              status: view('uint32', rows)
+            }
           })
         );
       }
@@ -249,8 +265,7 @@ function getPointCloudLimitCases(): KernelAuditCase[] {
             squaredDistances: view('float32', rows * capacity),
             counts: view('uint32', rows),
             capacity,
-            meanDistances: view('float32', rows),
-            validity: view('uint32', rows)
+            output: {meanDistances: view('float32', rows), validity: view('uint32', rows)}
           })
         );
       }
@@ -302,8 +317,7 @@ function getPointCloudLimitCases(): KernelAuditCase[] {
             terrain: view('float32', 64),
             coverage: view('uint32', 64),
             interpolation: {method: 'idw', radius: 65},
-            heights: view('float32', 16),
-            status: view('uint32', 16)
+            output: {heights: view('float32', 16), status: view('uint32', 16)}
           })
         );
       }
@@ -320,8 +334,7 @@ function getPointCloudLimitCases(): KernelAuditCase[] {
             terrain: view('float32', 64),
             coverage: view('uint32', 64),
             interpolation: {method: 'idw', radius: 4, power: 9},
-            heights: view('float32', 16),
-            status: view('uint32', 16)
+            output: {heights: view('float32', 16), status: view('uint32', 16)}
           })
         );
       }
@@ -372,10 +385,12 @@ export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
           registrationCovariance: SYMMETRIC_COVARIANCE,
           uncertaintyCombination: 'quadrature',
           confidenceMultiplier: 2.58,
-          changes: view('float32x3', cores),
-          roughness: view('float32x3', cores),
-          counts: view('uint32', cores * 2),
-          status: view('uint32', cores)
+          output: {
+            changes: view('float32x3', cores),
+            roughness: view('float32x3', cores),
+            counts: view('uint32', cores * 2),
+            status: view('uint32', cores)
+          }
         })
       );
     }
@@ -396,10 +411,12 @@ export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
           alignment: 'already-aligned',
           radius: 2,
           halfDepth: 4,
-          changes: view('float32x3', cores),
-          roughness: view('float32x3', cores),
-          counts: view('uint32', cores * 2),
-          status: view('uint32', cores)
+          output: {
+            changes: view('float32x3', cores),
+            roughness: view('float32x3', cores),
+            counts: view('uint32', cores * 2),
+            status: view('uint32', cores)
+          }
         })
       );
     }
@@ -418,7 +435,6 @@ export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
           cores: view('float32x3', cores),
           normals: view('float32x3', cores),
           alignment: {transform: view('float32', 16)},
-          // 1024 x 1024 x 31 cells: the cell offsets plus one fill most of one binding.
           grid: {origin: [-100, -100, -100], dimensions: [1024, 1024, 31], cellSize: 0.5},
           radius: 2,
           halfDepth: 4,
@@ -427,10 +443,12 @@ export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
           registrationCovariance: SYMMETRIC_COVARIANCE,
           uncertaintyCombination: 'quadrature',
           confidenceMultiplier: 2.58,
-          changes: view('float32x3', cores),
-          roughness: view('float32x3', cores),
-          counts: view('uint32', cores * 2),
-          status: view('uint32', cores)
+          output: {
+            changes: view('float32x3', cores),
+            roughness: view('float32x3', cores),
+            counts: view('uint32', cores * 2),
+            status: view('uint32', cores)
+          }
         })
       );
     }
@@ -455,10 +473,12 @@ export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
             comparisonVariance: 0.02,
             correlationLength: 1
           },
-          changes: view('float32x3', cores),
-          roughness: view('float32x3', cores),
-          counts: view('uint32', cores * 2),
-          status: view('uint32', cores)
+          output: {
+            changes: view('float32x3', cores),
+            roughness: view('float32x3', cores),
+            counts: view('uint32', cores * 2),
+            status: view('uint32', cores)
+          }
         })
       );
     }
@@ -483,10 +503,12 @@ export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
             comparisonVariance: 0.02,
             correlationLength: 1
           },
-          changes: view('float32x3', cores),
-          roughness: view('float32x3', cores),
-          counts: view('uint32', cores * 2),
-          status: view('uint32', cores)
+          output: {
+            changes: view('float32x3', cores),
+            roughness: view('float32x3', cores),
+            counts: view('uint32', cores * 2),
+            status: view('uint32', cores)
+          }
         })
       );
     }
@@ -504,11 +526,13 @@ export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
           counts: view('uint32', rows),
           capacity: NEIGHBOR_CAPACITY,
           viewpoint: [0, 0, 100],
-          normals: view('float32x3', rows),
-          eigenvalues: view('float32x3', rows),
-          covariance: view('float32', rows * 6),
-          shapes: view('float32x3', rows),
-          status: view('uint32', rows)
+          output: {
+            normals: view('float32x3', rows),
+            eigenvalues: view('float32x3', rows),
+            covariance: view('float32', rows * 6),
+            shapes: view('float32x3', rows),
+            status: view('uint32', rows)
+          }
         })
       );
     }
@@ -525,15 +549,17 @@ export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
           positions: view('float32x3', points),
           classifications: view('uint32', points),
           grid,
-          minimumSurface: view('float32', cells),
-          coverage: view('uint32', cells),
           radii: Array.from({length: 32}, (_, index) => index + 1),
           initialThreshold: 0.25,
           slope: 0.15,
           maximumThreshold: 3,
-          groundMask: view('uint32', points),
-          outputClassifications: view('uint32', points),
-          status: view('uint32', points)
+          minimumSurface: view('float32', cells),
+          coverage: view('uint32', cells),
+          output: {
+            groundMask: view('uint32', points),
+            outputClassifications: view('uint32', points),
+            status: view('uint32', points)
+          }
         })
       );
     }
@@ -551,17 +577,18 @@ export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
           origin: [500000, 4000000, 100],
           initialTransform: ROTATION_TRANSFORM,
           maximumDistance: 5,
-          // 1024 x 1024 x 31 cells: the cell offsets plus one fill most of one binding.
           targetGrid: {origin: [-100, -100, -100], dimensions: [1024, 1024, 31], cellSize: 0.5},
           metric: 'point-to-plane',
           targetNormals: view('float32x3', points),
           iterations: 100,
           translationTolerance: 1e-6,
           rotationTolerance: 1e-6,
-          transform: view('float32', 16),
-          history: view('float32x3', 100),
-          inlierMask: view('uint32', points),
-          status: view('uint32', 1)
+          output: {
+            transform: view('float32', 16),
+            history: view('float32x3', 100),
+            inlierMask: view('uint32', points),
+            status: view('uint32', 1)
+          }
         })
       );
     }
@@ -579,10 +606,12 @@ export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
           maximumDistance: 5,
           robust: {method: 'huber', scale: 1},
           iterations: 100,
-          transform: view('float32', 16),
-          history: view('float32x3', 100),
-          inlierMask: view('uint32', source),
-          status: view('uint32', 1)
+          output: {
+            transform: view('float32', 16),
+            history: view('float32x3', 100),
+            inlierMask: view('uint32', source),
+            status: view('uint32', 1)
+          }
         })
       );
     }
@@ -602,11 +631,13 @@ export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
             radius: 2,
             capacity: NEIGHBOR_CAPACITY,
             strategy,
-            indices: view('uint32', queries * NEIGHBOR_CAPACITY),
-            squaredDistances: view('float32', queries * NEIGHBOR_CAPACITY),
-            counts: view('uint32', queries),
             grid: {origin: [-100, -100, -100], cellSize: 2, dimensions: [1024, 1024, 31]},
-            status: view('uint32', queries)
+            output: {
+              indices: view('uint32', queries * NEIGHBOR_CAPACITY),
+              squaredDistances: view('float32', queries * NEIGHBOR_CAPACITY),
+              counts: view('uint32', queries),
+              status: view('uint32', queries)
+            }
           })
         );
       }
@@ -625,9 +656,11 @@ export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
             radius: 1,
             capacity: NEIGHBOR_CAPACITY,
             strategy,
-            indices: view('uint32', queries * NEIGHBOR_CAPACITY),
-            squaredDistances: view('float32', queries * NEIGHBOR_CAPACITY),
-            counts: view('uint32', queries)
+            output: {
+              indices: view('uint32', queries * NEIGHBOR_CAPACITY),
+              squaredDistances: view('float32', queries * NEIGHBOR_CAPACITY),
+              counts: view('uint32', queries)
+            }
           })
         );
       }
@@ -654,10 +687,12 @@ export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
           groundClass: 2,
           otherClass: 1,
           onlyGround: true,
-          groundSurface: view('float32', cells),
-          groundMask: view('uint32', points),
-          outputClassifications: view('uint32', points),
-          status: view('uint32', points)
+          output: {
+            groundSurface: view('float32', cells),
+            groundMask: view('uint32', points),
+            outputClassifications: view('uint32', points),
+            status: view('uint32', points)
+          }
         })
       );
     }
@@ -674,8 +709,7 @@ export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
           counts: view('uint32', rows),
           capacity: NEIGHBOR_CAPACITY,
           standardDeviations: 3,
-          meanDistances: view('float32', rows),
-          validity: view('uint32', rows)
+          output: {meanDistances: view('float32', rows), validity: view('uint32', rows)}
         })
       );
     }
@@ -693,10 +727,12 @@ export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
           classifications: view('uint32', points),
           groundClass: 2,
           grid,
-          terrain: view('float32', cells),
-          surface: view('float32', cells),
-          canopy: view('float32', cells),
-          coverage: view('uint32', cells)
+          output: {
+            terrain: view('float32', cells),
+            surface: view('float32', cells),
+            canopy: view('float32', cells),
+            coverage: view('uint32', cells)
+          }
         })
       );
     }
@@ -719,8 +755,7 @@ export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
             coverage: view('uint32', cells),
             coverageBit: 2,
             interpolation,
-            heights: view('float32', points),
-            status: view('uint32', points)
+            output: {heights: view('float32', points), status: view('uint32', points)}
           })
         );
       }
@@ -743,11 +778,13 @@ export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
         new GPUPointCloudVoxelMerge({
           partitionPolicy: 'disjoint-owned-rows',
           parts: [part(0), part(1_000_000), part(2_000_000_000), part(0xfffffffe)],
-          counts: view('uint32', voxels),
-          centroids: view('float32x3', voxels),
-          representatives: view('uint32', voxels),
-          attribute: {means: view('float32x4', voxels), counts: view('uint32', voxels)},
-          status: view('uint32', voxels)
+          output: {
+            counts: view('uint32', voxels),
+            centroids: view('float32x3', voxels),
+            representatives: view('uint32', voxels),
+            attribute: {means: view('float32x4', voxels), counts: view('uint32', voxels)},
+            status: view('uint32', voxels)
+          }
         })
       );
     }
@@ -768,10 +805,12 @@ export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
         new GPUPointCloudVoxelMerge({
           partitionPolicy: 'disjoint-owned-rows',
           parts: [part(0), part(1000)],
-          counts: view('uint32', voxels),
-          centroids: view('float32x3', voxels),
-          representatives: view('uint32', voxels),
-          status: view('uint32', voxels)
+          output: {
+            counts: view('uint32', voxels),
+            centroids: view('float32x3', voxels),
+            representatives: view('uint32', voxels),
+            status: view('uint32', voxels)
+          }
         })
       );
     }

@@ -131,7 +131,7 @@ function fixture(
         },
         intersectionCapacity: capacity,
         leafCapacity: options.leafCapacity,
-        output: {mask: column(1), status: {overflow: column(1)}}
+        output: {issueCode: column(1), status: {overflow: column(1)}}
       });
       break;
     case 'density':
@@ -209,7 +209,7 @@ function fixture(
         left: lines,
         leafCapacity: options.leafCapacity,
         output: {
-          pairs: {leftIds: column(capacity), rightIds: column(capacity), status: scalarStatus()}
+          pairs: {leftRows: column(capacity), rightRows: column(capacity), status: scalarStatus()}
         }
       });
       break;
@@ -279,7 +279,7 @@ it('includes a caller binding alignment prefix in preflight', () => {
   }
 });
 
-it('ignores optional views that are not bound by the selected predicate, validity or simplification route', () => {
+it('ignores unbound predicate/simplification views but validates supplied validity status', () => {
   const graph = new GPUCommandGraph(device);
   const foreign = new GPUCommandGraph(device);
   const unused = foreign.createDataView(
@@ -305,9 +305,9 @@ it('ignores optional views that are not bound by the selected predicate, validit
   expect(() =>
     new GPUGeometryValidity({
       points: {kind: 'points', positions},
-      output: {mask, status: {overflow: ignoredStatus}}
+      output: {issueCode: mask, status: {overflow: ignoredStatus}}
     }).getCommandNodes(graph)
-  ).not.toThrow();
+  ).toThrow(/target graph/);
   expect(() =>
     new GPULineSimplification({
       positions,

@@ -91,7 +91,8 @@ it('GPUStudyWindowPreparation registers persistent graph-local views and orders 
   expect(() => producer.getViews(new GPUCommandGraph(graph.device))).toThrow(message);
   const ids = nodes.map(node => node.id);
   expect(new Set(ids).size).toBe(ids.length);
-  expect(ids.slice(0, 7)).toEqual([
+  expect(ids[0]).toBe('study-window-snapshot-prepare');
+  expect(ids.filter(id => !id.includes('-snapshot-')).slice(0, 7)).toEqual([
     'study-window-ring-terms',
     'study-window-ring-reduce-1',
     'study-window-ring-reduce-2',
@@ -112,7 +113,8 @@ it('GPUStudyWindowPreparation registers persistent graph-local views and orders 
   expect(ids.indexOf('study-window-sample-compact')).toBeLessThan(
     ids.indexOf('study-window-pack-summary')
   );
-  expect(ids.at(-1)).toBe('study-window-copy-summary');
+  expect(ids.at(-2)).toBe('study-window-copy-summary');
+  expect(ids.at(-1)).toBe('study-window-snapshot-commit');
   expect(views.packed.length).toBe(
     getStudyWindowPackedLayout({
       vertexCount: 9,
@@ -121,7 +123,7 @@ it('GPUStudyWindowPreparation registers persistent graph-local views and orders 
       sampleCellCapacity: 32
     }).length
   );
-  for (const source of getParsedKernelSources(nodes).values()) {
+  for (const {source} of getParsedKernelSources(nodes).configurations) {
     expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
   }
   expect(() => producer.getCommandNodes(graph)).toThrow('study-window is already added to a graph');
@@ -151,27 +153,26 @@ it('GPUStudyWindowPreparation latches rebuild decisions once per encoding and re
   const nodes = producer.getCommandNodes(graph);
   expect(producer.isDeclaredIn(graph)).toBe(true);
   expect(producer.isDeclaredIn(new GPUCommandGraph(graph.device))).toBe(false);
-  const encode = (changed: boolean, expected: boolean) => {
+  const encode = (changed: boolean) => {
     for (const node of nodes) {
-      expect(node.condition?.id).toBe('study-window-rebuild');
-      expect(node.condition?.source).toBe('cpu');
       if (node.condition?.source === 'cpu') {
-        expect(node.condition.evaluate({changed})).toBe(expected);
+        expect(node.condition.id).toBe('study-window-rebuild');
+        expect(node.condition.evaluate({changed})).toBe(true);
       }
     }
   };
   expect(producer.encodedBuildCount).toBe(0);
-  encode(false, true);
+  encode(false);
   expect(producer.encodedBuildCount).toBe(1);
-  encode(false, false);
+  encode(false);
   expect(rebuildWhen).toHaveBeenCalledTimes(1);
   producer.invalidate();
-  encode(false, true);
+  encode(false);
   expect(producer.encodedBuildCount).toBe(2);
-  encode(false, false);
-  encode(true, true);
+  encode(false);
+  encode(true);
   expect(producer.encodedBuildCount).toBe(3);
-  encode(false, false);
+  encode(false);
   const views = producer.getViews(graph);
   const owned = [
     views.edges,
@@ -227,12 +228,9 @@ it('GPUStudyWindowPreparation combines nested scan conditions without losing the
     const nodes = producer.getCommandNodes(graph);
     for (let encoding = 0; encoding < 2; encoding++) {
       for (const node of nodes) {
-        expect(node.condition?.id).toBe('study-window-rebuild');
         if (node.condition?.source === 'cpu') {
           const result = node.condition.evaluate(undefined);
-          if (encoding === 1) {
-            expect(result).toBe(false);
-          }
+          expect(result).toBe(node.condition.id !== 'nested-scan');
         }
       }
       expect(producer.encodedBuildCount).toBe(1);

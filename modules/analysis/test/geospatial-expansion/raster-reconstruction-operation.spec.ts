@@ -13,6 +13,67 @@ import {runOperationGraph} from '../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../utils/require-test-device';
 import fixtures from './raster-morphology-operation-fixtures.json';
 
+it('both forms publish only budgeted propagation and verify convergence without advancing it', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const width of [2, 4]) {
+    for (const maximumIterations of [1, 2, 3, 4, 5]) {
+      for (const method of ['dilation', 'erosion'] as const) {
+        const dilation = method === 'dilation';
+        const props: RasterReconstructionOperationProps = {
+          grid: {width, height: 1, affine: [1, 0, 0, 0, -1, 1], pixelInterpretation: 'area'},
+          marker: 'marker',
+          mask: 'mask',
+          maximumIterations,
+          method,
+          output: {
+            values: 'values',
+            validity: 'validity',
+            status: {
+              converged: 'converged',
+              iterationCount: 'rounds',
+              iterationLimitReached: 'limit'
+            }
+          }
+        };
+        const expected = Array.from({length: width}, (_, cell) =>
+          Number(dilation ? cell <= maximumIterations : cell > maximumIterations)
+        );
+        for (const Operation of [
+          CPURasterReconstructionOperation,
+          GPURasterReconstructionOperation
+        ]) {
+          const operation = new Operation(props);
+          try {
+            const result = await runOperationGraph(device, {
+              inputs: {
+                marker: {
+                  format: 'float32',
+                  values: Float32Array.from({length: width}, (_, cell) =>
+                    Number(dilation ? cell === 0 : cell !== 0)
+                  )
+                },
+                mask: {format: 'float32', values: new Float32Array(width).fill(Number(dilation))}
+              },
+              operations: [operation],
+              outputs: ['values', 'validity', 'converged', 'rounds', 'limit']
+            });
+            expect(Array.from(result['values'])).toEqual(expected);
+            expect(Array.from(result['validity'])).toEqual(new Array(width).fill(1));
+            expect(Array.from(result['converged'])).toEqual([
+              Number(maximumIterations >= width - 1)
+            ]);
+            expect(Array.from(result['limit'])).toEqual([Number(maximumIterations < width - 1)]);
+            expect(Array.from(result['rounds'])).toEqual([Math.min(maximumIterations + 1, width)]);
+          } finally {
+            if (operation instanceof GPURasterReconstructionOperation) operation.destroy();
+          }
+        }
+      }
+    }
+  }
+});
+
 it('compares every reconstruction output exactly for both methods/connectivities and all-invalid input', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

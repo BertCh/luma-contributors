@@ -4,6 +4,7 @@
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUProfilePeaks} from './gpu-profile-peaks';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 /** Graph-value names shared by the GPU operation and its CPU twin. */
 export type ProfilePeaksOperationProps = {
@@ -27,15 +28,67 @@ export type ProfilePeaksOperationProps = {
     peaks?: {
       ids: string;
       capacity: number;
-      status: {count: string; requiredCount?: string; overflow: string};
+      status: {count: string; requiredCount?: string; overflow: string; candidateOverflow?: string};
     };
     status?: {converged?: string; iterationLimitReached?: string};
   };
 };
 
+/** @internal Capture operation topology once without enumerating caller getters. */
+export function snapshotProfilePeaksOperationProps(
+  props: ProfilePeaksOperationProps
+): ProfilePeaksOperationProps {
+  const captured = snapshotConstructionFields(props, [
+    'id',
+    'values',
+    'validity',
+    'offsets',
+    'parameters',
+    'sampleCount',
+    'window',
+    'minimumSide',
+    'suppressionRadius',
+    'wrap',
+    'maximumSuppressionIterations',
+    'output'
+  ]);
+  const output = snapshotConstructionFields(captured.output, [
+    'prominence',
+    'refinedIndex',
+    'refinedValue',
+    'peakMask',
+    'peaks',
+    'status'
+  ]);
+  const peaks = output.peaks
+    ? snapshotConstructionFields(output.peaks, ['ids', 'capacity', 'status'])
+    : undefined;
+  return Object.freeze({
+    ...captured,
+    output: Object.freeze({
+      ...output,
+      peaks: peaks
+        ? Object.freeze({
+            ...peaks,
+            status: snapshotConstructionFields(peaks.status, [
+              'count',
+              'requiredCount',
+              'overflow',
+              'candidateOverflow'
+            ])
+          })
+        : undefined,
+      status: output.status
+        ? snapshotConstructionFields(output.status, ['converged', 'iterationLimitReached'])
+        : undefined
+    })
+  });
+}
+
 /** Packed-vector operation form of GPUProfilePeaks. All props are compile-time except input rows. */
 export class GPUProfilePeaksOperation extends GPUContributorOperation {
   constructor(props: ProfilePeaksOperationProps) {
+    props = snapshotProfilePeaksOperationProps(props);
     const id = props.id ?? 'profile-peaks';
     const {output, sampleCount} = props;
     super({
@@ -64,6 +117,15 @@ export class GPUProfilePeaksOperation extends GPUContributorOperation {
               ids: {value: output.peaks.ids, format: 'uint32', length: output.peaks.capacity},
               count: {value: output.peaks.status.count, format: 'uint32', length: 1},
               overflow: {value: output.peaks.status.overflow, format: 'uint32', length: 1},
+              ...(output.peaks.status.candidateOverflow !== undefined
+                ? {
+                    candidateOverflow: {
+                      value: output.peaks.status.candidateOverflow,
+                      format: 'uint32' as const,
+                      length: 1
+                    }
+                  }
+                : {}),
               ...(output.peaks.status.requiredCount !== undefined
                 ? {
                     requiredCount: {
@@ -110,6 +172,10 @@ export class GPUProfilePeaksOperation extends GPUContributorOperation {
                   status: {
                     count: getView<'uint32'>('count'),
                     overflow: getView<'uint32'>('overflow'),
+                    candidateOverflow:
+                      output.peaks.status.candidateOverflow !== undefined
+                        ? getView<'uint32'>('candidateOverflow')
+                        : undefined,
                     requiredCount:
                       output.peaks.status.requiredCount !== undefined
                         ? getView<'uint32'>('requiredCount')

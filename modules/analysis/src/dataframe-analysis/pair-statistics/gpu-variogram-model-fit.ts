@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -82,6 +83,22 @@ export class GPUVariogramModelFit implements GPUCommandNodeProducer {
   readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUVariogramModelFitProps) {
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'distances',
+      'semivariances',
+      'pairCounts',
+      'models',
+      'weighting',
+      'rangeSteps',
+      'maximumIterations',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...snapshot,
+      models: Object.freeze([...(snapshot.models ?? ['spherical', 'exponential', 'gaussian'])]),
+      output: snapshotConstructionFields(snapshot.output, ['parameters', 'diagnostics', 'status'])
+    });
     this.props = props;
     this.id = props.id ?? 'variogram-model-fit';
     this.models = props.models ?? ['spherical', 'exponential', 'gaussian'];

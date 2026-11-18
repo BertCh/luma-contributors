@@ -184,7 +184,9 @@ export class GPURasterEmbeddingSimilarity<
     if (props.queries) validateSinglePackedView(props.queries, ['float32'], `${id} queries`);
     if (props.parameters)
       validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
-    validateRasterEmbeddingViews(id, this.getInputs(), this.getOutputs());
+    const inputs = this.getInputs();
+    const outputs = this.getOutputs();
+    validateRasterEmbeddingViews(id, inputs, outputs, [{inputs, outputs}]);
     this.chunks = planRasterEmbeddingChunks(
       id,
       pixelCount,

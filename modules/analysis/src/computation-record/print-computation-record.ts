@@ -31,10 +31,19 @@ export function printGPUComputationGraph(graph: GPUComputationGraph): string {
   }
   if (graph.resources?.length) {
     lines.push('resources:');
-    for (const resource of graph.resources)
+    for (const resource of graph.resources) {
+      const ownership =
+        resource.ownership === 'imported' && resource.bytesKind === undefined
+          ? 'unknown'
+          : resource.ownership;
+      const size =
+        resource.bytesKind === 'unavailable'
+          ? 'size unavailable'
+          : `${resource.bytesKind === 'lower-bound' ? '>=' : resource.bytesKind === 'estimated' ? '~' : ''}${resource.bytes}B${resource.bytesKind === undefined ? ' (precision unknown)' : ''}`;
       lines.push(
-        `  ${resource.id} ${resource.ownership} ${resource.bytes}B alloc=${resource.allocation ?? '-'} life=${resource.firstNode ?? '-'}..${resource.lastNode ?? '-'}`
+        `  ${resource.id} ${ownership} ${size} alloc=${resource.allocation ?? '-'} life=${resource.firstNode ?? '-'}..${resource.lastNode ?? '-'}`
       );
+    }
   }
   return lines.join('\n');
 }

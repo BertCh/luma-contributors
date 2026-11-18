@@ -4,9 +4,14 @@
 
 import {expect, it} from 'vitest';
 import {
+  CPUCoregionalizationFitOperation,
   computeCoregionalizationFitOnCPU,
   fitLinearModelOfCoregionalization
 } from '../../../src/dataframe-analysis/pair-statistics/cpu-coregionalization-fit-operation';
+import {
+  GPUCoregionalizationFitOperation,
+  type CoregionalizationFitOperationProps
+} from '../../../src/dataframe-analysis/pair-statistics/gpu-coregionalization-fit-operation';
 import {GPUCoregionalizationFit} from '../../../src/dataframe-analysis/pair-statistics/gpu-coregionalization-fit';
 import {getGPUCoregionalizationFitParameterValues} from '../../../src/dataframe-analysis/pair-statistics/coregionalization-parameters';
 import {GPULocalKriging} from '../../../src/gpu-spatial-analysis/spatial-interpolation/gpu-local-kriging';
@@ -20,6 +25,58 @@ import {
   getVariogramModelShape,
   type VariogramModelType
 } from '../../../src/dataframe-analysis/pair-statistics/variogram-model';
+
+it('CORE-08 retains two-variable shader shape after caller mutation to five variables', () => {
+  const context = createKernelAuditContext('coregionalization-shape-snapshot');
+  try {
+    const props = {
+      ...createCoregionalizationAuditProps(context),
+      variableCount: 2,
+      structureCount: 1,
+      maximumIterations: 2,
+      distances: context.view('float32', 1),
+      semivariances: context.view('float32', 3),
+      pairCounts: context.view('uint32', 1)
+    };
+    const contributor = new GPUCoregionalizationFit(props);
+    props.variableCount = 5;
+    props.structureCount = 3;
+    props.maximumIterations = 100;
+    const nodes = contributor.getCommandNodes(context.graph);
+    const sources = getGPUCommandNodeKernelSources(nodes)
+      .map(kernel => kernel.source)
+      .join('\n');
+    expect(sources).toContain('const VARIABLE_COUNT: u32 = 2u;');
+    expect(sources).not.toContain('const VARIABLE_COUNT: u32 = 5u;');
+    expect(sources).toContain('const STRUCTURE_COUNT: u32 = 1u;');
+    expect(nodes).toHaveLength(7);
+  } finally {
+    context.device.destroy();
+  }
+});
+
+it('CORE-08 retains getter-backed ports and nested status view identities', () => {
+  const context = createKernelAuditContext('coregionalization-port-snapshot');
+  try {
+    const props = {...createCoregionalizationAuditProps(context), maximumIterations: 0};
+    const matrices = props.output.matrices;
+    const validity = props.output.status.validity;
+    const distances = props.distances;
+    let matrixView = matrices;
+    Object.defineProperty(props.output, 'matrices', {enumerable: false, get: () => matrixView});
+    const contributor = new GPUCoregionalizationFit(props);
+    matrixView = context.view('float32', 1);
+    props.output.status.validity = context.view('uint32', 2);
+    props.distances = context.view('float32', 0);
+    contributor.getCommandNodes(context.graph);
+    expect(contributor.props.output.matrices).toBe(matrices);
+    expect(contributor.props.output.status.validity).toBe(validity);
+    expect(contributor.props.distances).toBe(distances);
+    expect(Object.isFrozen(contributor.props.output.status)).toBe(true);
+  } finally {
+    context.device.destroy();
+  }
+});
 
 for (const fixture of fixtures) {
   it(`matches the independent NumPy Goulard–Voltz oracle: ${fixture.name}`, () => {
@@ -81,6 +138,112 @@ const input = {
   pairCounts: new Uint32Array([10]),
   parameters: getGPUCoregionalizationFitParameterValues([{model: 'spherical', range: 1, sill: 1}])
 };
+
+function getSnapshotOperationProps(): CoregionalizationFitOperationProps {
+  return {
+    variableCount: 2,
+    structureCount: 1,
+    maximumIterations: 0,
+    distances: 'distances',
+    semivariances: 'semivariances',
+    pairCounts: 'pairCounts',
+    parameters: 'parameters',
+    output: {
+      matrices: 'matrices',
+      loadings: 'loadings',
+      diagnostics: 'diagnostics',
+      status: {
+        validity: 'validity',
+        iterationCount: 'iterationCount',
+        converged: 'converged',
+        iterationLimitReached: 'iterationLimitReached',
+        invalidCount: 'invalidCount'
+      }
+    }
+  };
+}
+
+for (const mutation of ['budget', 'shape-and-names'] as const) {
+  it(`final1b CPU coregionalization keeps its declared ${mutation} on repeated execution`, async () => {
+    const props = getSnapshotOperationProps();
+    const operation = new CPUCoregionalizationFitOperation(props);
+    const rows = (values: Float32Array | Uint32Array) => ({
+      format: values instanceof Float32Array ? ('float32' as const) : ('uint32' as const),
+      length: values.length,
+      chunks: [{values, length: values.length}],
+      pack: () => values
+    });
+    const execute = () =>
+      operation.execute({
+        inputs: {
+          distances: rows(input.distances),
+          semivariances: rows(input.semivariances),
+          pairCounts: rows(input.pairCounts),
+          parameters: rows(input.parameters)
+        }
+      });
+    expect((await execute())['iterationCount']).toEqual(Uint32Array.of(0));
+    if (mutation === 'budget') props.maximumIterations = 1;
+    else {
+      props.variableCount = 3;
+      props.structureCount = 2;
+      props.parameters = 'changed-input';
+      props.output.matrices = 'changed-matrices';
+      props.output.status.iterationCount = 'changed-iterations';
+    }
+    const result = await execute();
+    expect(result['iterationCount']).toEqual(Uint32Array.of(0));
+    expect(result['matrices']).toEqual(new Float32Array(4));
+    expect(Object.keys(result).sort()).toEqual(Object.keys(operation.outputs).sort());
+    expect(operation.outputs['matrices'].length).toBe(4);
+  });
+}
+
+it('final1b GPU coregionalization lowers its original shape, budget and getter-backed ports', () => {
+  const context = createKernelAuditContext('coregionalization-operation-snapshot');
+  const props = getSnapshotOperationProps();
+  let iterationCountName = 'iterationCount';
+  Object.defineProperty(props.output.status, 'iterationCount', {
+    enumerable: false,
+    get: () => iterationCountName
+  });
+  const operation = new GPUCoregionalizationFitOperation(props);
+  props.variableCount = 3;
+  props.structureCount = 2;
+  props.maximumIterations = 1;
+  props.output.matrices = 'changed-matrices';
+  iterationCountName = 'changed-iterations';
+  try {
+    const views = {
+      distances: context.view('float32', 1),
+      semivariances: context.view('float32', 3),
+      pairCounts: context.view('uint32', 1),
+      parameters: context.view('float32', 5),
+      matrices: context.view('float32', 4),
+      loadings: context.view('float32', 4),
+      diagnostics: context.view('float32x4', 1),
+      validity: context.view('uint32', 1),
+      iterationCount: context.view('uint32', 1),
+      converged: context.view('uint32', 1),
+      iterationLimitReached: context.view('uint32', 1),
+      invalidCount: context.view('uint32', 1)
+    };
+    const contributor = operation.createContributor(
+      name => views[name as keyof typeof views] as never
+    ) as GPUCoregionalizationFit;
+    expect(contributor.maximumIterations).toBe(0);
+    expect(contributor.props.variableCount).toBe(2);
+    expect(contributor.props.structureCount).toBe(1);
+    expect(contributor.props.output.matrices).toBe(views.matrices);
+    expect(contributor.props.output.status.iterationCount).toBe(views.iterationCount);
+    expect(operation.outputs['iterationCount'].value).toBe('iterationCount');
+    expect(operation.outputs['matrices'].length).toBe(4);
+    expect(contributor.getCommandNodes(context.graph)).toHaveLength(3);
+  } finally {
+    operation.destroy();
+    context.device.destroy();
+  }
+});
 
 it('returns loadings accepted by the existing supplied-LMC parameter packer', () => {
   const result = fitLinearModelOfCoregionalization(input, {

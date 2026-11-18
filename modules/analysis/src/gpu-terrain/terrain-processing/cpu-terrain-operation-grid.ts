@@ -9,7 +9,7 @@ import {
   getRasterGroundCellSize,
   validateRasterCellSizeMode,
   type GPURasterCellSizeMode
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 import {validateTerrainDrainageOptions} from '../hydrology/cpu-terrain-drainage-utils';
 
 /** Largest packed scalar output length: graph shapes and shader offsets use uint32. @internal */

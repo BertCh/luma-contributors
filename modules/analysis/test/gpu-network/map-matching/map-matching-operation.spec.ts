@@ -30,11 +30,72 @@ const OUTPUTS = [
   'matchedCount',
   'breakCount',
   'overflow',
+  'candidateOverflow',
+  'traversedCandidateOverflow',
   'routeOverflow',
   'traversedEdges',
   'traversedCounts',
   'traversedOverflow'
 ];
+
+for (const scene of ['remote', 'midpoint', 'reversed-midpoint'] as const) {
+  it(`keeps endpoint and interior snap positions consistent across CPU and GPU: ${scene}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const {input, props} = createMatchingFixture();
+    const remote = scene === 'remote';
+    input.positions = Float32Array.of(0, remote ? 0 : 1);
+    input.trackOffsets = Uint32Array.of(0, 1);
+    input.parameters = getGPUMapMatchingParameterValues({
+      sigma: remote ? 100 : 1,
+      beta: 1,
+      searchRadius: remote ? 120 : 2
+    });
+    input.topology = {
+      nodePositions: remote
+        ? Float32Array.of(100, 0, -100, 0)
+        : scene === 'midpoint'
+          ? Float32Array.of(-0.0002, 0, 0.0002, 0)
+          : Float32Array.of(0.0002, 0, -0.0002, 0),
+      offsets: Uint32Array.of(0, 1, 1),
+      neighbors: Uint32Array.of(1)
+    };
+    props.pointCount = 1;
+    props.trackCount = 1;
+    props.nodeCount = 2;
+    props.edgeCount = 1;
+    props.topology = {...props.topology, weights: undefined};
+    props.cellSize = remote ? 100 : 1;
+    props.candidateCount = 1;
+    props.traversedEdgeCapacity = 0;
+    props.bounds = remote
+      ? {minimum: [-180, -2], maximum: [180, 2]}
+      : {minimum: [-1, -1], maximum: [1, 2]};
+    props.spatialContext = {
+      coordinateSpace: 'longitude-latitude',
+      metric: 'great-circle',
+      sphereRadius: 180 / Math.PI
+    };
+    props.output = {
+      matchedEdges: 'matchedEdges',
+      matchedFractions: 'matchedFractions',
+      snapDistances: 'snapDistances',
+      snappedPositions: 'snappedPositions'
+    };
+    for (const Operation of [GPUMapMatchingOperation, CPUMapMatchingOperation]) {
+      const result = await runOperationGraph(device, {
+        inputs: getMatchingGraphInputs(input),
+        operations: [new Operation(props)],
+        outputs: ['matchedEdges', 'matchedFractions', 'snapDistances', 'snappedPositions']
+      });
+      expect(Array.from(result['matchedEdges'])).toEqual([0]);
+      expect(Array.from(result['matchedFractions'])).toEqual([remote ? 0 : 0.5]);
+      expect(result['snapDistances'][0]).toBeCloseTo(remote ? 100 : 1, 3);
+      expect(result['snappedPositions'][0]).toBeCloseTo(remote ? 100 : 0, 6);
+      expect(result['snappedPositions'][1]).toBe(0);
+    }
+  });
+}
 
 for (const scene of [
   'competing-roads',
@@ -110,7 +171,7 @@ for (const scene of [
         targets: Uint32Array.from(targets),
         costs: Float32Array.from(costs),
         costLimit: new Float32Array([100]),
-        overflow: new Uint32Array([scene === 'table-overflow' ? 1 : 0])
+        complete: new Uint32Array([scene === 'table-overflow' ? 0 : 1])
       };
       props.routeTable = {
         entryCount: targets.length,
@@ -118,7 +179,7 @@ for (const scene of [
         targets: 'tableTargets',
         costs: 'tableCosts',
         costLimit: 'tableCostLimit',
-        status: {overflow: 'tableOverflow'}
+        status: {complete: 'tableComplete'}
       };
     }
     const outputNames = scene === 'unused-capacity' ? ['matchedEdges'] : OUTPUTS;

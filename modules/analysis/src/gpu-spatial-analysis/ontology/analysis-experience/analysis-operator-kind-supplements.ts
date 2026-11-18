@@ -4,7 +4,12 @@
 
 import {getGPUAnalysisOperatorCatalog} from '../all-entry-points/analysis-operator-catalog';
 import {GPU_SPATIAL_ANALYSIS_DATA_KINDS} from '../spatial-analysis-ontology';
-import type {GPUAnalysisOperator, GPUSpatialAnalysisDataKind} from '../spatial-analysis-ontology';
+import {isGPUSpatialAnalysisDataKind} from '../spatial-analysis-operators';
+import type {
+  GPUAnalysisOperator,
+  GPUAnalysisOperatorIdentity,
+  GPUSpatialAnalysisDataKind
+} from '../spatial-analysis-ontology';
 import {getGPUAnalysisOperatorQuestions} from './analysis-operator-questions';
 import {
   GPU_ANALYSIS_OPERATOR_KIND_RECORDS,
@@ -52,7 +57,7 @@ export type GPUAnalysisOperatorKindRecord = Pick<
 >;
 
 function validateDataKind(functionName: string, argumentName: string, value: unknown): void {
-  if (!GPU_SPATIAL_ANALYSIS_DATA_KINDS.includes(value as GPUSpatialAnalysisDataKind)) {
+  if (typeof value !== 'string' || !isGPUSpatialAnalysisDataKind(value)) {
     throw new Error(
       `${functionName} ${argumentName} ${JSON.stringify(value)} is not a data kind; accepted: ${GPU_SPATIAL_ANALYSIS_DATA_KINDS.join(', ')}`
     );
@@ -114,7 +119,6 @@ type OperatorIndex = {
   inCatalogueOrder: readonly IndexedOperator[];
   /** Non-helper operators sorted by name. */
   byName: readonly IndexedOperator[];
-  indexedByName: ReadonlyMap<string, IndexedOperator>;
   /** For each input kind and then output kind, the operators making that step, sorted by name. */
   transitions: ReadonlyMap<
     GPUSpatialAnalysisDataKind,
@@ -143,8 +147,10 @@ function getOperatorIndex(): OperatorIndex {
       isPlumbing: getGPUAnalysisOperatorQuestions(operator)[0] === 'prepare-data',
       isRecipe: /^add[A-Z]/.test(operator.exportName)
     }));
-  const byName = [...inCatalogueOrder].sort((left, right) =>
-    compareNames(left.operator.exportName, right.operator.exportName)
+  const byName = [...inCatalogueOrder].sort(
+    (left, right) =>
+      compareNames(left.operator.exportName, right.operator.exportName) ||
+      compareNames(left.operator.package, right.operator.package)
   );
   const transitions = new Map<
     GPUSpatialAnalysisDataKind,
@@ -165,7 +171,6 @@ function getOperatorIndex(): OperatorIndex {
     catalogue,
     inCatalogueOrder,
     byName,
-    indexedByName: new Map(byName.map(indexed => [indexed.operator.exportName, indexed])),
     transitions
   };
   return cachedIndex;
@@ -199,23 +204,23 @@ export function queryGPUAnalysisOperatorsByKind(query: {
 }
 
 /**
- * Names of the operators that can take data of `outputKind` as an input, sorted by name: "what can
+ * Qualified identities of operators that can take data of `outputKind` as an input, sorted by name: "what can
  * I do next with this result". Uses resolved kinds, so it includes supplemented operators. Throws
  * for a kind that is not an ontology kind.
  */
 export function getGPUAnalysisNextOperators(
   outputKind: GPUSpatialAnalysisDataKind
-): readonly string[] {
+): readonly GPUAnalysisOperatorIdentity[] {
   validateDataKind('getGPUAnalysisNextOperators', 'outputKind', outputKind);
   return getOperatorIndex()
     .byName.filter(({kinds}) => kinds.inputs.includes(outputKind))
-    .map(({operator}) => operator.exportName);
+    .map(({operator}) => ({package: operator.package, exportName: operator.exportName}));
 }
 
 /** Result of {@link findGPUAnalysisOperatorPaths}. */
 export type GPUAnalysisOperatorPathResult = {
-  /** Chains of operator names, best first, at most `maximumPaths`. */
-  paths: readonly (readonly string[])[];
+  /** Chains of qualified identities, best first, at most `maximumPaths`. */
+  paths: readonly (readonly GPUAnalysisOperatorIdentity[])[];
   /** True when more chains were found (or may exist) than `paths` holds. */
   truncated: boolean;
   /**
@@ -228,7 +233,7 @@ export type GPUAnalysisOperatorPathResult = {
 
 /**
  * Chains of operators that turn data of `fromKind` into data of `toKind`, as lists of operator
- * names. A chain has between 1 and `maximumSteps` operators (capped at
+ * qualified identities. Each step resolves through `getGPUAnalysisOperator`. A chain has between 1 and `maximumSteps` operators (capped at
  * {@link GPU_ANALYSIS_MAXIMUM_PATH_STEPS}), never visits a kind twice and never repeats an
  * operator. Shorter chains come first (breadth-first: all chains of one length are found before the
  * next length is searched). Within a length, chains with fewer plumbing operators (primary question
@@ -278,7 +283,7 @@ export function findGPUAnalysisOperatorPaths(
   if (fromDistance === undefined || fromDistance > stepLimit) return empty;
 
   // Enumerate rank buckets before names: the cutoff can only discard worse-ranked chains.
-  const found = new Map<string, readonly string[]>();
+  const found = new Map<string, readonly GPUAnalysisOperatorIdentity[]>();
   for (let length = fromDistance; length <= stepLimit; length++) {
     for (let plumbing = 0; plumbing <= length; plumbing++) {
       for (let recipes = length; recipes >= 0; recipes--) {
@@ -352,8 +357,8 @@ function collectChains(
   remainingSteps: number,
   remainingPlumbing: number,
   remainingRecipes: number,
-  chain: string[],
-  found: Map<string, readonly string[]>
+  chain: GPUAnalysisOperatorIdentity[],
+  found: Map<string, readonly GPUAnalysisOperatorIdentity[]>
 ): void {
   for (const indexed of index.byName) {
     if (found.size >= GPU_ANALYSIS_MAXIMUM_PATH_CANDIDATES) return;
@@ -361,8 +366,9 @@ function collectChains(
     const recipes = remainingRecipes - Number(indexed.isRecipe);
     const nextSteps = remainingSteps - 1;
     if (plumbing < 0 || plumbing > nextSteps || recipes < 0 || recipes > nextSteps) continue;
-    const name = indexed.operator.exportName;
-    if (chain.includes(name)) continue;
+    const {exportName, package: packageName} = indexed.operator;
+    if (chain.some(step => step.exportName === exportName && step.package === packageName))
+      continue;
     const nextStates: ChainState[] = [];
     for (const state of states) {
       if (!indexed.kinds.inputs.includes(state.kind)) continue;
@@ -375,9 +381,9 @@ function collectChains(
       }
     }
     if (nextStates.length === 0) continue;
-    chain.push(name);
+    chain.push({package: packageName, exportName});
     if (nextSteps === 0) {
-      found.set(chain.join('\u0000'), [...chain]);
+      found.set(JSON.stringify(chain), [...chain]);
     } else {
       collectChains(
         index,

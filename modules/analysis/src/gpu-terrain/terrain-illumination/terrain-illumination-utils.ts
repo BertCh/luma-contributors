@@ -9,7 +9,7 @@ import {
   getRasterGridGeoreference,
   RASTER_DEGREES_TO_RADIANS_WGSL,
   type RasterGridAffine
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 import {
   GET_QUIET_NAN_SEEDED_WGSL,
   IS_FINITE_VALUE_WGSL

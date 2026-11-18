@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {addPreparedRecipe, writeRecipeParameters} from './prepared-recipe';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -23,7 +25,7 @@ import {
   IS_FINITE_VALUE_WGSL
 } from '../../analysis-core/kernels/wgsl-common';
 import {GPUCellAggregation} from '../cell-aggregation/index';
-import type {GPUCellFamily, GPUCellTable} from '../cell-aggregation/index';
+import type {GPUCellAggregationFamily, GPUCellTable} from '../cell-aggregation/index';
 import {CELL_KEY_WGSL} from '../cell-aggregation/cell-keys';
 import {getPointInPolygonContainmentContext} from '../spatial-join/gpu-point-in-polygon-join';
 import {GPULonLatPolygonPreparation} from '../lon-lat-polygons/index';
@@ -118,7 +120,7 @@ export type GPUHotSpotPointsSource = {
   /** Optional per-point mask. */
   mask?: GraphDataView<'uint32'>;
   /** Cell family. `'quadbin'` bins the points directly; `'h3'` goes through `GPUPointToCell`. */
-  family: GPUCellFamily;
+  family: GPUCellAggregationFamily;
   /** Cell resolution. */
   resolution: number;
   /** Study area whose cells are the analysis rows. */
@@ -360,12 +362,14 @@ export type GPUHotSpotAnalysisRecipeProps = GPURecipeOverrides<
    */
   analyze?: 'density' | 'count';
   /**
-   * Minimum number of neighbors other than the row itself for a row to be tested. Rows below it
+   * Minimum number of neighbors other than the row itself for the analytic Gi* test. Rows below it
    * get NaN `zScores` and `pValues` and bin 0, are excluded from the multiple-testing family, and
    * are counted in the `minimum-neighbors` status `invalidCount` (together with any other included
    * row whose z-score is undefined). Defaults to 8 (ArcGIS guidance for Gi*). Values 0 and 1 both
    * only reject rows with no neighbor (the minimum `GPUHotSpotAnalysis` accepts). Rows below the
-   * minimum still count in the global moments and in the neighbor sums of other rows.
+   * minimum still count in the global moments and in the neighbor sums of other rows. Permutation
+   * confirmation uses its own family (1 to `permutation.maximumNeighbors` positive-weight
+   * neighbors), described by `result.permutationInference.testedRowsDefinition`.
    */
   minimumNeighbors?: number;
   /**
@@ -386,7 +390,25 @@ export type GPUHotSpotAnalysisRecipeProps = GPURecipeOverrides<
 };
 
 /** Named outputs of {@link addHotSpotAnalysisRecipe}. Views are caller-owned when passed in. */
-export type GPUHotSpotAnalysisRecipeResult = GPURecipeResult & {
+export type GPUHotSpotAnalysisRecipeOutputs = Pick<
+  GPUHotSpotAnalysisRecipeViews,
+  'zScores' | 'bins' | 'pValues' | 'neighborCounts' | 'globalStatistics' | 'permutation' | 'color'
+>;
+
+/** Ports between hot-spot stages. */
+export type GPUHotSpotAnalysisRecipeIntermediates = Pick<
+  GPUHotSpotAnalysisRecipeViews,
+  'table' | 'centers' | 'values' | 'mask' | 'weights'
+>;
+
+/** Hot-spot outputs, intermediates and top-level convenience fields. */
+export type GPUHotSpotAnalysisRecipeResult = GPURecipeResult<
+  GPUHotSpotAnalysisRecipeOutputs,
+  GPUHotSpotAnalysisRecipeIntermediates
+> &
+  GPUHotSpotAnalysisRecipeViews;
+
+type GPUHotSpotAnalysisRecipeViews = {
   /** Rows of every per-cell output. */
   rowCount: number;
   /**
@@ -486,7 +508,7 @@ fn getQuadbinAreaKilometers(key: vec2u) -> f32 {
 }
 
 /** Fixed neighbors per disk used only to size defaults. */
-function getDiskNeighborCount(family: GPUCellFamily, rings: number): number {
+function getDiskNeighborCount(family: GPUCellAggregationFamily, rings: number): number {
   return getCellTopologyStride(family, {type: 'disk', k: rings}) - 1;
 }
 
@@ -525,6 +547,13 @@ function getDiskNeighborCount(family: GPUCellFamily, rings: number): number {
  * `minimum-neighbors`; and with `permutation`, `permutation`.
  */
 export function addHotSpotAnalysisRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUHotSpotAnalysisRecipeProps
+): GPUHotSpotAnalysisRecipeResult {
+  return addPreparedRecipe(graph, props, declareHotSpotAnalysisRecipe);
+}
+
+function declareHotSpotAnalysisRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUHotSpotAnalysisRecipeProps
 ): GPUHotSpotAnalysisRecipeResult {
@@ -608,10 +637,8 @@ export function addHotSpotAnalysisRecipe<Parameters>(
     outputs.status?.weightsRequiredCount
   );
   const weightsStatus = {overflow: weightsOverflow, requiredCount: weightsRequiredCount};
-  let testedRows: string;
 
   if (source.kind === 'points') {
-    testedRows = 'study-area cells';
     rowCount = source.cellCapacity;
     assertRecipe(ID, Number.isInteger(rowCount) && rowCount >= 1, 'cellCapacity must be positive');
     const analyze = props.analyze ?? 'density';
@@ -806,6 +833,9 @@ export function addHotSpotAnalysisRecipe<Parameters>(
       ),
       status: {
         count: getOrCreateView(graph, `${id}-count`, 'uint32', 1, studyProvided.status?.count),
+        ...(studyProvided.status?.candidateOverflow
+          ? {candidateOverflow: studyProvided.status.candidateOverflow}
+          : {}),
         overflow: getOrCreateView(
           graph,
           `${id}-table-overflow`,
@@ -873,6 +903,9 @@ export function addHotSpotAnalysisRecipe<Parameters>(
           1,
           pointProvided.status?.overflow
         ),
+        ...(pointProvided.status?.candidateOverflow
+          ? {candidateOverflow: pointProvided.status.candidateOverflow}
+          : {}),
         requiredCount: getOrCreateView(
           graph,
           `${id}-point-required-count`,
@@ -1146,7 +1179,7 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
       cells: studyTable.cells,
       counts: joinedCounts,
       sumValues: joinedSums,
-      status: {count: studyTable.status.count, overflow: studyTable.status.overflow}
+      status: studyTable.status
     };
     stages.push(
       {
@@ -1163,7 +1196,6 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
       }
     );
   } else {
-    testedRows = 'lattice cells';
     rowCount = source.width * source.height;
     values = source.values;
     mask = source.mask;
@@ -1368,13 +1400,7 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
   function writeSettings(settings: GPUHotSpotAnalysisRecipeSettings): void {
     const {seed, permutationCount, ...autocorrelation} = settings;
     const values = getGPUSpatialAutocorrelationParameterValues(autocorrelation);
-    const inference: GPUInferenceMetadata = {
-      ...hotSpots.getInferenceMetadata(autocorrelation),
-      testedRowsDefinition:
-        minimumNeighbors > 0
-          ? `${testedRows} with at least ${minimumNeighbors} neighbors`
-          : testedRows
-    };
+    const inference = hotSpots.getInferenceMetadata(autocorrelation);
     let permutationValues: Uint32Array | undefined;
     let permutationInference: GPUInferenceMetadata | undefined;
     if (permutationTest && permutation) {
@@ -1384,14 +1410,11 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
         significanceLevel: autocorrelation.significanceLevel
       };
       permutationValues = permutationTest.getParameterValues(permutationSettings);
-      permutationInference = {
-        ...permutationTest.getInferenceMetadata(permutationSettings),
-        testedRowsDefinition: inference.testedRowsDefinition
-      };
+      permutationInference = permutationTest.getInferenceMetadata(permutationSettings);
     }
-    props.parameters.write(values);
+    writeRecipeParameters(graph, props.parameters, values);
     if (permutationValues) {
-      permutation!.parameters.write(permutationValues);
+      writeRecipeParameters(graph, permutation!.parameters, permutationValues);
     }
     result.inference = inference;
     if (permutationInference) {

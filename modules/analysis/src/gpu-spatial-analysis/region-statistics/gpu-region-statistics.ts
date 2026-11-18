@@ -250,6 +250,7 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
       ids: output?.ids,
       selectedCount: output?.status.count,
       selectedOverflow: output?.status.overflow,
+      selectedCandidateOverflow: output?.status.candidateOverflow,
       selectedRequiredCount: output?.status.requiredCount,
       drawInstanceCount,
       ...props.output.status
@@ -262,6 +263,7 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
         output?.ids,
         output?.status.count,
         output?.status.overflow,
+        output?.status.candidateOverflow,
         output?.status.requiredCount,
         drawInstanceCount,
         props.output.status?.antimeridianUncertainCount,
@@ -292,6 +294,7 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
       output?.ids,
       output?.status.count,
       output?.status.overflow,
+      output?.status.candidateOverflow,
       output?.status.requiredCount,
       drawInstanceCount,
       props.output.status?.antimeridianUncertainCount,
@@ -516,10 +519,14 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
           operation: OPERATION,
           requiredCount: selectionTotal,
           compactIds: selectionIds,
-          output,
-          overflowSources: candidates
-            ? [regionOverflow, candidates.candidateFlag]
-            : [regionOverflow],
+          output: {
+            ids: output.ids,
+            status: {
+              count: output.status.count,
+              overflow: output.status.overflow,
+              requiredCount: output.status.requiredCount
+            }
+          },
           extraCounts: drawInstanceCount ? [drawInstanceCount] : []
         })
       );
@@ -546,6 +553,17 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
     if (overflow || candidateOverflow) {
       nodes.push(getStatusNode(graph, {id: `${id}-status`, summary, overflow, candidateOverflow}));
     }
+    // Separate publication keeps the selection copy below the eight-storage-binding limit.
+    if (output?.status.candidateOverflow) {
+      nodes.push(
+        getStatusNode(graph, {
+          id: `${id}-selection-candidate-status`,
+          summary,
+          includeRegionLoss: true,
+          candidateOverflow: output.status.candidateOverflow
+        })
+      );
+    }
     return nodes;
   }
 }
@@ -558,6 +576,7 @@ function getStatusNode<Parameters>(
     summary: GraphDataView<'uint32'>;
     overflow?: GraphDataView<'uint32'>;
     candidateOverflow?: GraphDataView<'uint32'>;
+    includeRegionLoss?: boolean;
   }
 ): GPUCommandNode<Parameters> {
   const {overflow, candidateOverflow} = props;
@@ -585,7 +604,7 @@ function getStatusNode<Parameters>(
     invocationCount: 1,
     body: `let flags = summary[summaryOffset + ${flags}u];
   ${overflow ? `overflow[overflowOffset] = select(0u, 1u, (flags & ${selectionTruncated | regionTruncated}u) != 0u);` : ''}
-  ${candidateOverflow ? `candidateOverflow[candidateOverflowOffset] = select(0u, 1u, (flags & ${candidatesTruncated}u) != 0u);` : ''}`
+  ${candidateOverflow ? `candidateOverflow[candidateOverflowOffset] = select(0u, 1u, (flags & ${candidatesTruncated | (props.includeRegionLoss ? regionTruncated : 0)}u) != 0u);` : ''}`
   });
 }
 

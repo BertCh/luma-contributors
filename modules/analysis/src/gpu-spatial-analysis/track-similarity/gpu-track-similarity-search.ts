@@ -1,6 +1,7 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
 
 import {
   validateTrajectoryBindings,
@@ -136,13 +137,18 @@ export class GPUTrackSimilaritySearch implements GPUCommandNodeProducer {
   readonly sphereRadius: number | undefined;
   constructor(props: GPUTrackSimilaritySearchProps) {
     this.id = props.id ?? 'track-similarity-search';
-    this.props = props;
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
       props.spatialContext,
       SPATIAL_CONTEXT_SUPPORT
     );
     this.sphereRadius = getGPUGreatCircleRadius(this.spatialContext);
+    props = {
+      ...props,
+      linesA: snapshotSinglePartGeometryPort(this.id, 'linesA', props.linesA),
+      linesB: props.linesB && snapshotSinglePartGeometryPort(this.id, 'linesB', props.linesB)
+    };
+    this.props = props;
     const value =
       props.metric === 'longest-common-subsequence'
         ? props.output.similarity

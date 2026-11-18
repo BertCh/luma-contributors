@@ -8,9 +8,17 @@ values; it must not count arbitrary scalar/coordinate inputs as a tested mode.
 """
 import hashlib
 import json
+import argparse
 import subprocess
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[4]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--repository-root', type=Path, default=ROOT)
+parser.add_argument('--output-directory', type=Path, required=True,
+                    help='Directory for the JSON and Markdown source inventories, not fixtures.')
+parser.add_argument('--node', default='node', help='Node executable with workspace TypeScript available.')
+arguments = parser.parse_args()
+ROOT = arguments.repository_root.resolve()
 PROGRAM=r'''
 const fs=require('fs');const path=require('path');const ts=require('typescript');
 const root=process.cwd();const folder=path.join(root,'examples/deck/spatial-analysis-showcase/src');
@@ -33,10 +41,11 @@ for(const filename of files(folder).filter(value=>value.endsWith('.ts'))){
 }
 process.stdout.write(JSON.stringify({calls,schemas}));
 '''
-result=subprocess.run(['node','-e',PROGRAM],cwd=ROOT,text=True,capture_output=True,check=True)
+result=subprocess.run([arguments.node,'-e',PROGRAM],cwd=ROOT,text=True,capture_output=True,check=True)
 data=json.loads(result.stdout)
 data['generatorSha256']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-path=Path('/private/tmp/claude-501/-Users-robertchristie-Documents-GitHub-deck-gl-master/82c646e8-3e98-44d4-84b8-212745483f4a/scratchpad/eval/handoffs/parity-wp5-round8-showcase.json')
+arguments.output_directory.mkdir(parents=True, exist_ok=True)
+path=arguments.output_directory / 'parity-wp5-round8-showcase.json'
 path.write_text(json.dumps(data,indent=2)+'\n')
 print(path,len(data['calls']),'calls',len(data['schemas']),'option declarations')
 # Focused human-readable exact source excerpts: no claims of transitive closure.

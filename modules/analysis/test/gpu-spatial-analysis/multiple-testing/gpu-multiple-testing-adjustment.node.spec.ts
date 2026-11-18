@@ -99,9 +99,27 @@ it('resolveGPUMultipleTestingMethod and the CPU reference validate their argumen
   );
   expect(() => getMultipleTestingAdjustedPValues([0.1], 'holm', -1)).toThrow(/minimumFamilySize/);
   expect(() => getMultipleTestingAdjustedPValues([0.1], 'holm', 1.5)).toThrow(/minimumFamilySize/);
-  expect(() =>
-    getMultipleTestingAdjustedPValues([0.1], 'holm', GPU_MULTIPLE_TESTING_MAXIMUM_ROWS)
-  ).toThrow(/minimumFamilySize/);
+  expect(() => getMultipleTestingAdjustedPValues([0.1], 'holm', 2 ** 32)).toThrow(
+    /minimumFamilySize/
+  );
+});
+
+it('computes the BY harmonic factor accurately with bounded work across the series boundary', () => {
+  // SciPy digamma(m+1) + Euler-gamma, independent of the adjustment implementation.
+  for (const [familySize, harmonic] of [
+    [63, 4.728265903705768],
+    [64, 4.743890903705768],
+    [65, 4.759275519090384],
+    [2 ** 31 - 1, 22.06477826202701],
+    [2 ** 31 + 1, 22.06477826295833],
+    [0xffffffff, 22.757925442703367]
+  ]) {
+    const actual = getMultipleTestingAdjustedPValues([2 ** -40], 'benjamini-yekutieli', familySize);
+    const expected = 2 ** -40 * familySize * harmonic;
+    expect(actual).toHaveLength(1);
+    expect(Number.isFinite(actual[0])).toBe(true);
+    expect(Math.abs(actual[0] / expected - 1)).toBeLessThan(2e-15);
+  }
 });
 
 let serial = 0;

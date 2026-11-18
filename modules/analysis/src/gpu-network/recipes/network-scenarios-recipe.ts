@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {addPreparedRecipe} from '../../gpu-spatial-analysis/recipes/prepared-recipe';
+
 import {GPUReduction, type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   GPUNetworkCostMatrix,
@@ -10,10 +12,11 @@ import {
 import {GPUNetworkAccessibility} from '../network-accessibility/gpu-network-accessibility';
 import {
   createRecipeKernelNode as createWGSLKernelNode,
-  getRecipeView as getOrCreateView
+  getRecipeView as getOrCreateView,
+  validateRecipeBoundary
 } from '../../gpu-spatial-analysis/recipes/recipe-utils';
 import {validateGraphOutputsDisjointFromInputs} from '../../analysis-core/kernels/gpu-contributor-utils';
-import {getGPUNetworkTopologyViews} from '../../analysis-core/network-topology';
+import {getGPUNetworkTopologyViews} from '../../analysis-core/contracts/network-topology';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   addRecipeCountNodes,
@@ -47,6 +50,13 @@ export type GPUNetworkDisruptionRecipeProps = {
 
 /** Compare directed routing scenarios without compaction or Infinity - Infinity arithmetic. */
 export function addNetworkDisruptionRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUNetworkDisruptionRecipeProps
+): GPURecipeResult<GPUNetworkDisruptionOutput> {
+  return addPreparedRecipe(graph, props, declareNetworkDisruptionRecipe);
+}
+
+function declareNetworkDisruptionRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUNetworkDisruptionRecipeProps
 ): GPURecipeResult<GPUNetworkDisruptionOutput> {
@@ -119,7 +129,7 @@ export function addNetworkDisruptionRecipe<Parameters>(
       provided.accessibilityDifferences
     )
   };
-  validateOutputOwnership(id, Object.values(outputs), [
+  validateOutputOwnership(graph, id, Object.values(outputs), [
     ...getGPUNetworkTopologyViews(props.search.topology),
     props.search.startNodes,
     props.search.startRows,
@@ -287,6 +297,13 @@ export function addFacilityScenarioRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUFacilityScenarioRecipeProps
 ): GPURecipeResult<GPUFacilityScenarioOutput> {
+  return addPreparedRecipe(graph, props, declareFacilityScenarioRecipe);
+}
+
+function declareFacilityScenarioRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUFacilityScenarioRecipeProps
+): GPURecipeResult<GPUFacilityScenarioOutput> {
   const id = props.id ?? 'facility-scenario-recipe';
   const builder = new RecipeBuilder(graph);
   const demandCount = props.demand.length;
@@ -337,7 +354,7 @@ export function addFacilityScenarioRecipe<Parameters>(
       provided.invalidDemandCount
     )
   };
-  validateOutputOwnership(id, Object.values(outputs), [
+  validateOutputOwnership(graph, id, Object.values(outputs), [
     props.costs,
     props.demand,
     props.supply,
@@ -428,13 +445,11 @@ uncovered[uncoveredOffset + index] = select(0.0, weight, valid && !reached);`,
 }
 
 /** Ownership is checked across stages, not only for bindings within one arithmetic pass. */
-function validateOutputOwnership(
+function validateOutputOwnership<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
   id: string,
   outputs: readonly GraphDataView[],
   inputs: readonly (GraphDataView | undefined)[]
 ): void {
-  const buffers = outputs.map(view => view.buffer);
-  if (new Set(buffers).size !== buffers.length)
-    throw new Error(`${id}: outputs must use distinct buffers`);
-  validateGraphOutputsDisjointFromInputs(id, outputs, inputs);
+  validateRecipeBoundary(graph, id, inputs, outputs);
 }

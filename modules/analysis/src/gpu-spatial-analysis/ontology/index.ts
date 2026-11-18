@@ -32,6 +32,8 @@ export {
 } from './all-entry-points/analysis-operator-catalog';
 export type {
   GPUAnalysisLimit,
+  GPUAnalysisCapability,
+  GPUAnalysisOperatorIdentity,
   GPUAnalysisOperator,
   GPUAnalysisOperatorQuery,
   GPUAnalysisPackage,

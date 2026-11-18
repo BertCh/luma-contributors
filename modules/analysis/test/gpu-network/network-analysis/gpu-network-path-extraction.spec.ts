@@ -28,6 +28,7 @@ import {
 } from '../network-reachability/network-reachability-oracle';
 import {extractPathsOracle} from './network-path-extraction-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {formatNetworkPathReadout} from '../../../../../examples/deck/spatial-analysis-shared/network-path-readout';
 
 type HarnessOptions = {
   nodeCount: number;
@@ -83,20 +84,38 @@ function createHarness(device: Device, options: HarnessOptions) {
     nodeCount
   );
   const costs = importGraphBuffer(graph, 'costs', costsBuffer, 'float32', nodeCount);
-  const createParameter = <Format extends 'uint32' | 'float32'>(
+  function createParameter(
     name: string,
-    format: Format,
+    format: 'uint32',
     values: number[]
-  ) => {
-    const parameter = new GPUParameterBuffer(device, {
-      id: `path-${name}`,
-      format,
-      length: values.length,
-      values: format === 'uint32' ? Uint32Array.from(values) : Float32Array.from(values)
-    });
+  ): GPUParameterBuffer<'uint32'>;
+  function createParameter(
+    name: string,
+    format: 'float32',
+    values: number[]
+  ): GPUParameterBuffer<'float32'>;
+  function createParameter(
+    name: string,
+    format: 'uint32' | 'float32',
+    values: number[]
+  ): GPUParameterBuffer<'uint32'> | GPUParameterBuffer<'float32'> {
+    const parameter =
+      format === 'uint32'
+        ? new GPUParameterBuffer(device, {
+            id: `path-${name}`,
+            format,
+            length: values.length,
+            values: Uint32Array.from(values)
+          })
+        : new GPUParameterBuffer(device, {
+            id: `path-${name}`,
+            format,
+            length: values.length,
+            values: Float32Array.from(values)
+          });
     parameters.push(parameter);
     return parameter;
-  };
+  }
   if (options.reachabilitySource !== undefined) {
     const sources = createParameter('sources', 'uint32', [options.reachabilitySource]);
     graph.add(
@@ -125,6 +144,7 @@ function createHarness(device: Device, options: HarnessOptions) {
   const outputIds = track(createOutputBuffer(device, options.capacity));
   const outputCount = track(createOutputBuffer(device, 1));
   const outputOverflow = track(createOutputBuffer(device, 1));
+  const outputCandidate = track(createOutputBuffer(device, 1));
   const outputTotal = track(createOutputBuffer(device, 1));
   const pathOffsets = track(createOutputBuffer(device, targetCapacity + 1));
   const pathCosts = track(createOutputBuffer(device, targetCapacity));
@@ -132,6 +152,7 @@ function createHarness(device: Device, options: HarnessOptions) {
   const edgeIdsOut = track(createOutputBuffer(device, options.edgeCapacity ?? 1));
   const edgeCountOut = track(createOutputBuffer(device, 1));
   const edgeOverflowOut = track(createOutputBuffer(device, 1));
+  const edgeCandidate = track(createOutputBuffer(device, 1));
   const edgeTotalOut = track(createOutputBuffer(device, 1));
   const edgePathOffsets = track(createOutputBuffer(device, targetCapacity + 1));
   const contributor = new GPUNetworkPathExtraction({
@@ -147,6 +168,7 @@ function createHarness(device: Device, options: HarnessOptions) {
       status: {
         count: importGraphBuffer(graph, 'out-count', outputCount, 'uint32', 1),
         overflow: importGraphBuffer(graph, 'out-overflow', outputOverflow, 'uint32', 1),
+        candidateOverflow: importGraphBuffer(graph, 'out-candidate', outputCandidate, 'uint32', 1),
         requiredCount: importGraphBuffer(graph, 'out-total', outputTotal, 'uint32', 1)
       },
       lineOffsets: importGraphBuffer(
@@ -168,6 +190,13 @@ function createHarness(device: Device, options: HarnessOptions) {
             status: {
               count: importGraphBuffer(graph, 'edge-count', edgeCountOut, 'uint32', 1),
               overflow: importGraphBuffer(graph, 'edge-overflow', edgeOverflowOut, 'uint32', 1),
+              candidateOverflow: importGraphBuffer(
+                graph,
+                'edge-candidate',
+                edgeCandidate,
+                'uint32',
+                1
+              ),
               requiredCount: importGraphBuffer(graph, 'edge-total', edgeTotalOut, 'uint32', 1)
             },
             lineOffsets: importGraphBuffer(
@@ -220,6 +249,7 @@ function createHarness(device: Device, options: HarnessOptions) {
       expect(await readUint32(outputIds, count)).toEqual(expected.ids);
       expect(await readUint32(outputTotal, 1)).toEqual([expected.requiredCount]);
       expect(await readUint32(outputOverflow, 1)).toEqual([expected.overflow]);
+      expect(await readUint32(outputCandidate, 1)).toEqual([expected.candidateOverflow]);
       expect(await readUint32(pathOffsets, targetCapacity + 1)).toEqual(expected.pathOffsets);
       expect(await readFloat32(pathCosts, targetCapacity)).toEqual(expected.pathCosts);
       expect(await readUint32(pathFound, targetCapacity)).toEqual(expected.found);
@@ -229,6 +259,7 @@ function createHarness(device: Device, options: HarnessOptions) {
         expect(await readUint32(edgeIdsOut, edgeCountValue)).toEqual(expected.edgeIds);
         expect(await readUint32(edgeTotalOut, 1)).toEqual([expected.edgeTotalCount]);
         expect(await readUint32(edgeOverflowOut, 1)).toEqual([expected.edgeOverflow]);
+        expect(await readUint32(edgeCandidate, 1)).toEqual([expected.candidateOverflow]);
         expect(await readUint32(edgePathOffsets, targetCapacity + 1)).toEqual(
           expected.edgePathOffsets
         );
@@ -315,6 +346,92 @@ it('GPUNetworkPathExtraction matches the oracle on a random network', async () =
   harness.destroy();
 });
 
+it('path readouts distinguish a three-node chain beyond a two-node walk budget from a disconnected target', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const reachable of [true, false]) {
+    const harness = createHarness(device, {
+      nodeCount: 3,
+      csr: buildCSR(
+        3,
+        reachable
+          ? [
+              [0, 1, 1],
+              [1, 2, 1]
+            ]
+          : [[0, 1, 1]]
+      ),
+      reachabilitySource: 0,
+      targets: [2],
+      capacity: 3,
+      edgeCapacity: 2,
+      maxPathLength: 2,
+      maxIterations: 4
+    });
+    try {
+      const result = await harness.run();
+      expect(result.found).toEqual([0]);
+      expect([result.count, result.overflow, result.candidateOverflow]).toEqual([
+        0,
+        0,
+        Number(reachable)
+      ]);
+      expect(
+        formatNetworkPathReadout(
+          {
+            found: result.found[0] === 1,
+            converged: 1,
+            overflow: result.overflow,
+            candidateOverflow: result.candidateOverflow
+          },
+          'found'
+        )
+      ).toBe(reachable ? 'incomplete batch (path walk budget exhausted)' : 'no route found');
+    } finally {
+      harness.destroy();
+    }
+  }
+});
+
+it('mixed path batch preserves the found target cost when another walk exhausts its budget', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createHarness(device, {
+    nodeCount: 3,
+    csr: buildCSR(3, [
+      [0, 1, 60],
+      [1, 2, 60]
+    ]),
+    reachabilitySource: 0,
+    targets: [1, 2],
+    capacity: 6,
+    edgeCapacity: 4,
+    maxPathLength: 2,
+    maxIterations: 4
+  });
+  try {
+    const result = await harness.run();
+    expect(result.found).toEqual([1, 0]);
+    expect(result.pathCosts).toEqual([60, Infinity]);
+    expect([result.count, result.overflow, result.candidateOverflow]).toEqual([2, 0, 1]);
+    expect(
+      result.found.map((found, index) =>
+        formatNetworkPathReadout(
+          {
+            found: found === 1,
+            converged: 1,
+            overflow: result.overflow,
+            candidateOverflow: result.candidateOverflow
+          },
+          `${result.pathCosts[index] / 60} min`
+        )
+      )
+    ).toEqual(['1 min', 'incomplete batch (path walk budget exhausted)']);
+  } finally {
+    harness.destroy();
+  }
+});
+
 it('GPUNetworkPathExtraction terminates on garbage predecessors', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
@@ -331,16 +448,18 @@ it('GPUNetworkPathExtraction terminates on garbage predecessors', async () => {
   });
   const result = await harness.run();
   expect(result.found).toEqual([0, 0, 0, 1, 1, 1]);
-  expect(result.overflow).toBe(1);
+  expect(result.overflow).toBe(0);
+  expect(result.candidateOverflow).toBe(1);
   expect(result.ids).toEqual([6, 6, 7, 0]);
   harness.setTargets([5, 6, 7, 0, 5, 6]);
   const clean = await harness.run();
   expect(clean.overflow).toBe(0);
+  expect(clean.candidateOverflow).toBe(0);
   expect(clean.found).toEqual([0, 1, 1, 1, 0, 1]);
   harness.destroy();
 });
 
-it('GPUNetworkPathExtraction reports capacity overflow with a clamped count', async () => {
+it('GPUNetworkPathExtraction separates final capacity overflow from bounded-path loss', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const harness = createHarness(device, {
@@ -360,6 +479,7 @@ it('GPUNetworkPathExtraction reports capacity overflow with a clamped count', as
   expect(result.edgeCount).toBe(2);
   expect(result.edgeTotalCount).toBe(4);
   expect(result.edgeOverflow).toBe(1);
+  expect(result.candidateOverflow).toBe(0);
   harness.destroy();
 
   const tight = createHarness(device, {
@@ -374,6 +494,8 @@ it('GPUNetworkPathExtraction reports capacity overflow with a clamped count', as
   });
   const exact = await tight.run();
   expect(exact.overflow).toBe(0);
+  expect(exact.edgeOverflow).toBe(0);
+  expect(exact.candidateOverflow).toBe(0);
   expect(exact.count).toBe(5);
   tight.destroy();
 
@@ -389,8 +511,19 @@ it('GPUNetworkPathExtraction reports capacity overflow with a clamped count', as
   });
   const truncatedResult = await truncated.run();
   expect(truncatedResult.found).toEqual([0, 1]);
-  expect(truncatedResult.overflow).toBe(1);
-  expect(truncatedResult.edgeOverflow).toBe(1);
+  expect(truncatedResult.ids).toEqual([0]);
+  expect([truncatedResult.count, truncatedResult.requiredCount, truncatedResult.edgeCount]).toEqual(
+    [1, 1, 0]
+  );
+  expect(truncatedResult.overflow).toBe(0);
+  expect(truncatedResult.edgeOverflow).toBe(0);
+  expect(truncatedResult.candidateOverflow).toBe(1);
+  // Reuse the same compiled graph with only root targets; both candidate words must clear.
+  truncated.setTargets([0, 0]);
+  const clean = await truncated.run();
+  expect(clean.found).toEqual([1, 1]);
+  expect(clean.ids).toEqual([0, 0]);
+  expect([clean.overflow, clean.edgeOverflow, clean.candidateOverflow]).toEqual([0, 0, 0]);
   truncated.destroy();
 });
 

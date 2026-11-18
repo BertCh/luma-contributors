@@ -12,6 +12,90 @@ import fixtureJson from '../../oracles/fixtures/parity-wp1-huff-trade-areas.json
 import {decodeOracleFixture} from '../../oracles/oracle-fixture';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {GraphRig} from '../areal-interpolation/areal-interpolation-harness';
+import {GPUNeighborSearch} from '../../../src/gpu-spatial-analysis/neighbor-search/gpu-neighbor-search';
+
+it.each([
+  'demand',
+  'facility'
+] as const)('showcase described weights suppress %s loss and recover without edge-probability output', async role => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new GraphRig(device, 'showcase-described-weights');
+  try {
+    const loss = rig.output('uint32', 1);
+    const forwardOffsets = rig.output('uint32', 2);
+    const reverseOffsets = rig.output('uint32', 3);
+    loss.buffer.write(Uint32Array.of(1));
+    forwardOffsets.buffer.write(Uint32Array.from(role === 'demand' ? [0, 1] : [0, 2]));
+    reverseOffsets.buffer.write(Uint32Array.from(role === 'facility' ? [0, 1, 1] : [0, 1, 2]));
+    const facilities = rig.input(Float32Array.of(0, 0, 1, 0), 'float32x2', 2);
+    const demands = rig.input(Float32Array.of(0, 0), 'float32x2', 1);
+    const parameters = rig.input(new Float32Array(12), 'float32');
+    // Resident CSR and loss views stand in for the search output so the flag can change on
+    // resubmission. Pass the real producer's described port, as both trade-area demos must do.
+    const forwardSearch = new GPUNeighborSearch({
+      mode: 'radius',
+      gridSize: [2, 2],
+      positions: facilities,
+      queryPositions: demands,
+      parameters,
+      output: {
+        offsets: forwardOffsets.view,
+        neighbors: rig.input(Uint32Array.of(0, 1), 'uint32'),
+        weights: rig.input(Float32Array.of(1, 1), 'float32'),
+        status: {overflow: role === 'demand' ? loss.view : rig.input(Uint32Array.of(0), 'uint32')}
+      }
+    });
+    const reverseSearch = new GPUNeighborSearch({
+      mode: 'radius',
+      gridSize: [2, 2],
+      positions: demands,
+      queryPositions: facilities,
+      parameters,
+      output: {
+        offsets: reverseOffsets.view,
+        neighbors: rig.input(Uint32Array.of(0, 0), 'uint32'),
+        weights: rig.input(Float32Array.of(1, 1), 'float32'),
+        status: {overflow: role === 'facility' ? loss.view : rig.input(Uint32Array.of(0), 'uint32')}
+      }
+    });
+    const tradeArea = rig.output('uint32', 1);
+    const tradeProbability = rig.output('float32', 1);
+    const expectedDemand = rig.output('float32', 2);
+    rig.run(
+      new GPUHuffTradeAreas({
+        attractiveness: rig.input(Float32Array.of(1, 1), 'float32'),
+        demand: rig.input(Float32Array.of(10), 'float32'),
+        demandWeights: forwardSearch.outputWeights,
+        facilityWeights: reverseSearch.outputWeights,
+        output: {
+          tradeArea: tradeArea.view,
+          tradeAreaProbability: tradeProbability.view,
+          expectedDemand: expectedDemand.view
+        }
+      })
+    );
+    if (role === 'demand') {
+      expect(await tradeArea.readUint32()).toEqual([0xffffffff]);
+      expect((await tradeProbability.readFloat32())[0]).toBeNaN();
+    } else {
+      expect(await tradeArea.readUint32()).toEqual([0]);
+      expect((await tradeProbability.readFloat32())[0]).toBeCloseTo(0.5, 6);
+    }
+    expect((await expectedDemand.readFloat32()).every(Number.isNaN)).toBe(true);
+    loss.buffer.write(Uint32Array.of(0));
+    forwardOffsets.buffer.write(Uint32Array.of(0, 2));
+    reverseOffsets.buffer.write(Uint32Array.of(0, 1, 2));
+    rig.resubmit();
+    expect(await tradeArea.readUint32()).toEqual([0]);
+    expect((await tradeProbability.readFloat32())[0]).toBeCloseTo(0.5, 6);
+    const captured = await expectedDemand.readFloat32();
+    expect(captured[0]).toBeCloseTo(5, 6);
+    expect(captured[1]).toBeCloseTo(5, 6);
+  } finally {
+    rig.destroy();
+  }
+});
 
 type HuffCase = {
   name: string;

@@ -19,7 +19,7 @@ import {
 import {
   getRasterGridGeoreference,
   getRasterGroundScale
-} from '../../../src/analysis-core/raster-grid';
+} from '../../../src/analysis-core/contracts/raster-grid';
 import {
   computeTerrainViewshed,
   computeTerrainSightLine,

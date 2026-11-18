@@ -25,15 +25,6 @@ export const GPU_CONFORMAL_MAXIMUM_FOLD_COUNT = 64;
 /** Number of float32 elements in a conformal parameter buffer. */
 export const GPU_CONFORMAL_PREDICTION_PARAMETER_LENGTH = 4;
 
-/**
- * Relative slack applied to the rank products `(1 - alpha) (n + 1)` and `alpha (n + 1)` before
- * they are rounded to an integer, `2^-20`. A product that is an integer in exact arithmetic
- * (`alpha = 0.1`, `n = 99`) lands within a few float32 ulps of it either way; the slack makes the
- * kernel round it to that integer. Products within `2^-20` relative of an integer are therefore
- * treated as that integer, which moves a rank by one only for such a product.
- */
-export const GPU_CONFORMAL_RANK_SLACK = 9.5367431640625e-7;
-
 /** Per-frame settings packed for the conformal interval contributors. */
 export type GPUConformalPredictionSettings = {
   /** Target miscoverage `alpha` in the open interval (0, 1): intervals cover at least `1 - alpha`. */

@@ -235,6 +235,7 @@ export function createPathWriteNodesNode<Parameters>(
     nodeStarts: GraphDataView<'uint32'>;
     nodeIds?: GraphDataView<'uint32'>;
     ids: GraphDataView<'uint32'>;
+    nodeRows?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
@@ -247,6 +248,8 @@ export function createPathWriteNodesNode<Parameters>(
   if (props.nodeIds) {
     bindings.push({name: 'nodeIds', view: props.nodeIds, type: 'u32', access: 'read'});
   }
+  if (props.nodeRows)
+    bindings.push({name: 'nodeRows', view: props.nodeRows, type: 'u32', access: 'read_write'});
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
@@ -262,9 +265,39 @@ export function createPathWriteNodesNode<Parameters>(
     let position = start + length - 1u - step;
     if (position < CAPACITY) {
       ids[idsOffset + position] = ${props.nodeIds ? 'nodeIds[nodeIdsOffset + node]' : 'node'};
+      ${props.nodeRows ? 'nodeRows[nodeRowsOffset + position] = node;' : ''}
     }
     node = predecessors[predecessorsOffset + node];
   }`
+  });
+}
+
+/** Maps resolved CSR rows to caller IDs in a separate pass, keeping each pass within eight bindings. @internal */
+export function createPathMapEdgeIdsNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    rows: GraphDataView<'uint32'>;
+    edgeIds?: GraphDataView<'uint32'>;
+    ids: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'map-edge-ids',
+    invocationCount: props.ids.length,
+    bindings: [
+      {name: 'rows', view: props.rows, type: 'u32', access: 'read'},
+      {name: 'ids', view: props.ids, type: 'u32', access: 'read_write'},
+      ...(props.edgeIds
+        ? [{name: 'edgeIds', view: props.edgeIds, type: 'u32' as const, access: 'read' as const}]
+        : [])
+    ],
+    body: `let row = rows[rowsOffset + index];
+      var identity = row;
+      ${props.edgeIds ? 'if (row != 0xffffffffu) { identity = edgeIds[edgeIdsOffset + row]; }' : ''}
+      ids[idsOffset + index] = identity;`
   });
 }
 

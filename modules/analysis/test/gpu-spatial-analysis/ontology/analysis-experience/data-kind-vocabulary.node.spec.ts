@@ -308,7 +308,9 @@ describe('operator kind supplements', () => {
       'GPUSpatialJoinPrepared'
     );
     for (const {paths} of [findGPUAnalysisOperatorPaths('points', 'attributes', 3, 500)]) {
-      expect(paths.some(path => path.includes('GPUSpatialJoinPrepared'))).toBe(false);
+      expect(
+        paths.some(path => path.some(step => step.exportName === 'GPUSpatialJoinPrepared'))
+      ).toBe(false);
     }
     expect(
       resolveGPUAnalysisOperatorKinds({
@@ -352,6 +354,15 @@ describe('operator kind supplements', () => {
 
   // Evidence for a spread of rows. `ports` are strings that must occur in the source file (relative
   // to modules/analysis/src); the kinds are an independent statement of what those ports imply.
+  const POINT_INPUT_PORT = [
+    'points: PointGeometry &',
+    '    (0 extends 1 & PointGeometry',
+    '      ? unknown',
+    '      : [PointGeometry] extends [GPUMultipartPointGeometryPort]',
+    '        ? never',
+    '        : unknown)'
+  ].join('\n');
+
   const EVIDENCE: readonly {
     name: string;
     file: string;
@@ -445,7 +456,8 @@ describe('operator kind supplements', () => {
       ports: [
         'polygons?: GPUPackedGeometryPort<GPUPolygonGeometryPort>',
         'lines?: GPUPackedGeometryPort<GPULineGeometryPort>',
-        "mask: GraphDataView<'uint32'>"
+        "issueCode: GraphDataView<'uint32'>",
+        "validity?: GraphDataView<'uint32'>"
       ],
       inputs: ['polygons', 'lines', 'points'],
       outputs: ['attributes']
@@ -498,11 +510,22 @@ describe('operator kind supplements', () => {
       name: 'GPUPointInPolygonJoin',
       file: 'gpu-spatial-analysis/spatial-join/gpu-point-in-polygon-join.ts',
       ports: [
-        'points: GPUPointGeometryPort',
+        POINT_INPUT_PORT,
         'polygons: GPUPackedGeometryPort<GPUPolygonGeometryPort>',
         'pointFeatureIds: GPUUint32Rows'
       ],
       inputs: ['points', 'polygons'],
+      outputs: ['attributes']
+    },
+    {
+      name: 'GPUBufferSelection',
+      file: 'gpu-spatial-analysis/spatial-join/gpu-buffer-selection.ts',
+      ports: [
+        POINT_INPUT_PORT,
+        'features: GPUNearestFeatureSource',
+        'output: GPUBufferSelectionOutput'
+      ],
+      inputs: ['points', 'lines', 'polygons', 'attributes'],
       outputs: ['attributes']
     },
     {
@@ -830,7 +853,7 @@ describe('operator paths', () => {
     );
 
   it('lists next operators sorted, including supplemented ones', () => {
-    const next = getGPUAnalysisNextOperators('spatial-weights');
+    const next = getGPUAnalysisNextOperators('spatial-weights').map(step => step.exportName);
     expect(next).toContain('GPULocalMoran');
     expect(next).toContain('GPUSpatialWeightsTransform');
     expect([...next]).toEqual([...next].sort());
@@ -841,8 +864,10 @@ describe('operator paths', () => {
     const {paths} = findGPUAnalysisOperatorPaths('points', 'polygons', 1);
     expect(paths.length).toBeGreaterThan(0);
     for (const path of paths) expect(path.length).toBe(1);
-    expect(paths.some(([name]) => /Hull|Buffer/.test(name))).toBe(true);
-    expect(paths).toContainEqual(['GPUGroupConvexHull']);
+    expect(paths.some(([step]) => /Hull|Buffer/.test(step.exportName))).toBe(true);
+    expect(paths.map(path => path.map(step => step.exportName))).toContainEqual([
+      'GPUGroupConvexHull'
+    ]);
   });
 
   it('finds multi-step chains that use a supplemented operator', () => {
@@ -854,7 +879,10 @@ describe('operator paths', () => {
       2,
       GPU_ANALYSIS_MAXIMUM_PATH_COUNT_LIMIT
     );
-    expect(paths).toContainEqual(['GPUCellGeometry', 'GPUKernelDensity']);
+    expect(paths.map(path => path.map(step => step.exportName))).toContainEqual([
+      'GPUCellGeometry',
+      'GPUKernelDensity'
+    ]);
   });
 
   it('returns nothing for an unreachable pair and for the same kind', () => {
@@ -899,9 +927,9 @@ describe('operator paths', () => {
 
   it('keeps recipes and non-plumbing operators in a capped answer', () => {
     const {paths} = findGPUAnalysisOperatorPaths('points', 'attributes', 1);
-    expect(paths.some(([name]) => name.startsWith('add'))).toBe(true);
+    expect(paths.some(([step]) => step.exportName.startsWith('add'))).toBe(true);
     // Plumbing (prepare-data) operators are not ahead of analysis operators.
-    const names = paths.map(([name]) => name);
+    const names = paths.map(([step]) => step.exportName);
     expect(names.indexOf('GPUSpatialJoinCandidates')).toBe(-1);
   });
 
@@ -910,13 +938,14 @@ describe('operator paths', () => {
     expect(findGPUAnalysisOperatorPaths('points', 'summary', 3)).toEqual(first);
     const lengths = first.paths.map(path => path.length);
     expect(lengths).toEqual([...lengths].sort((left, right) => left - right));
-    for (const path of first.paths) expect(new Set(path).size).toBe(path.length);
-    expect(new Set(first.paths.map(path => path.join('>'))).size).toBe(first.paths.length);
+    for (const path of first.paths)
+      expect(new Set(path.map(step => JSON.stringify(step))).size).toBe(path.length);
+    expect(new Set(first.paths.map(path => JSON.stringify(path))).size).toBe(first.paths.length);
   });
 
   it('chains consecutive operators whose kinds connect, without revisiting a kind', () => {
     for (const path of findGPUAnalysisOperatorPaths('points', 'polygons', 3).paths) {
-      const resolved = path.map(kindOf);
+      const resolved = path.map(step => kindOf(step.exportName));
       expect(resolved[0].inputs).toContain('points');
       expect(resolved[resolved.length - 1].outputs).toContain('polygons');
       for (let index = 1; index < resolved.length; index++) {
@@ -1048,12 +1077,16 @@ describe('vocabulary input checks and immutability', () => {
 });
 
 describe('operator path ranking beyond the candidate limit', () => {
-  it('returns the globally best 500 cells-to-network chains', () => {
+  it.each([
+    'cells',
+    'points'
+  ] as const)('returns the globally best 500 %s-to-network chains', fromKind => {
     // Independent exhaustive enumeration from the review probe, without the production search cap.
+    // Corrected recipe kinds put cells below the cap; points still exercises capped ranking.
     const operators = getGPUAnalysisOperatorCatalog()
       .filter(operator => operator.role !== 'helper')
       .map(operator => ({
-        name: operator.exportName,
+        name: `${operator.exportName}\u0000${operator.package}`,
         kinds: resolveGPUAnalysisOperatorKinds(operator),
         plumbing: getGPUAnalysisOperatorQuestions(operator)[0] === 'prepare-data',
         recipe: /^add[A-Z]/.test(operator.exportName)
@@ -1076,7 +1109,7 @@ describe('operator path ranking beyond the candidate limit', () => {
         }
       }
     };
-    enumerate('cells', [], new Set(['cells']));
+    enumerate(fromKind, [], new Set([fromKind]));
     const count = (chain: readonly string[], property: 'plumbing' | 'recipe'): number =>
       chain.reduce((sum, name) => sum + Number(byName.get(name)?.[property]), 0);
     const compareNames = (left: string, right: string): number =>
@@ -1088,15 +1121,21 @@ describe('operator path ranking beyond the candidate limit', () => {
         count(right, 'recipe') - count(left, 'recipe') ||
         compareNames(left.join('\u0000'), right.join('\u0000'))
     );
-    expect(chains.size).toBeGreaterThan(GPU_ANALYSIS_MAXIMUM_PATH_CANDIDATES);
-    const result = findGPUAnalysisOperatorPaths('cells', 'network', 3, 500);
-    expect(result.paths).toEqual(expected.slice(0, 500));
+    if (fromKind === 'points')
+      expect(chains.size).toBeGreaterThan(GPU_ANALYSIS_MAXIMUM_PATH_CANDIDATES);
+    else expect(chains.size).toBeLessThan(GPU_ANALYSIS_MAXIMUM_PATH_CANDIDATES);
+    const result = findGPUAnalysisOperatorPaths(fromKind, 'network', 3, 500);
+    expect(
+      result.paths.map(path => path.map(step => `${step.exportName}\u0000${step.package}`))
+    ).toEqual(expected.slice(0, 500));
     expect(result).toMatchObject({
-      totalFound: GPU_ANALYSIS_MAXIMUM_PATH_CANDIDATES,
+      totalFound: Math.min(chains.size, GPU_ANALYSIS_MAXIMUM_PATH_CANDIDATES),
       truncated: true
     });
-    expect(findGPUAnalysisOperatorPaths('cells', 'network', 3).paths).toEqual(
-      expected.slice(0, 50)
-    );
+    expect(
+      findGPUAnalysisOperatorPaths(fromKind, 'network', 3).paths.map(path =>
+        path.map(step => `${step.exportName}\u0000${step.package}`)
+      )
+    ).toEqual(expected.slice(0, 50));
   }, 60000);
 });

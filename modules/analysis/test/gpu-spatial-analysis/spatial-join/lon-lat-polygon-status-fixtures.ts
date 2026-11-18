@@ -98,8 +98,8 @@ export function createPolygonStatusJoin(
       candidateCapacity: 4,
       output: {
         pairs: {
-          leftIds: scalar('left-ids'),
-          rightIds: scalar('right-ids'),
+          leftRows: scalar('left-ids'),
+          rightRows: scalar('right-ids'),
           status: {count: result, overflow: scalar('pair-overflow')}
         },
         status: outputStatus

@@ -29,6 +29,60 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {RecipeTestFixture} from '../../gpu-spatial-analysis/recipes/recipe-harness';
+
+it('final2 G1 temporal publication keeps cell 7 and original status after a caller mutation', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new RecipeTestFixture(device, 'temporal-status-mutation');
+  const cellIds = fixture.output('cells', 'uint32', 1);
+  cellIds.buffer.write(new Uint32Array([7]));
+  const candidate = fixture.output('candidate', 'uint32', 1);
+  const ids = fixture.output('ids', 'uint32', 1);
+  const count = fixture.output('count', 'uint32', 1);
+  const status = {
+    count: count.view,
+    overflow: fixture.output('overflow', 'uint32', 1).view,
+    candidateOverflow: candidate.view
+  };
+  const contributor = new GPUTemporalReduction({
+    cellIds: cellIds.view,
+    timestamps: fixture.input('times', new Float32Array([0]), 'float32', 1),
+    values: fixture.input('values', new Float32Array([3]), 'float32', 1),
+    parameters: fixture.input(
+      'parameters',
+      getGPUTemporalReductionParameterValues(0, 1),
+      'float32',
+      2
+    ),
+    cellCount: 8,
+    bucketCount: 1,
+    output: {
+      counts: fixture.output('counts', 'uint32', 8).view,
+      minimums: fixture.output('minimums', 'float32', 8).view,
+      maximums: fixture.output('maximums', 'float32', 8).view,
+      first: fixture.output('first', 'float32', 8).view,
+      last: fixture.output('last', 'float32', 8).view,
+      occupiedSlots: {ids: ids.view, status}
+    }
+  });
+  status.candidateOverflow = cellIds.view;
+  fixture.graph.add(contributor);
+  const compiled = fixture.graph.compile();
+  try {
+    for (let submission = 0; submission < 2; submission++) {
+      candidate.buffer.write(new Uint32Array([37]));
+      submitGraph(device, compiled, undefined);
+      expect(await fixture.readUint32(cellIds, 1)).toEqual([7]);
+      expect(await fixture.readUint32(candidate, 1)).toEqual([0]);
+      expect(await fixture.readUint32(count, 1)).toEqual([1]);
+      expect(await fixture.readUint32(ids, 1)).toEqual([7]);
+    }
+  } finally {
+    compiled.destroy();
+    fixture.destroy();
+  }
+});
 
 type Scene = {
   cellIds: Uint32Array;

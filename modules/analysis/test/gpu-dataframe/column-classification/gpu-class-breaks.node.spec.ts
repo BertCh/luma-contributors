@@ -355,9 +355,9 @@ it('GPUClassBreaks natural-breaks kernels fit core limits at 64 classes and 2048
     ...createProps(graph, {methods: ['natural-breaks'], naturalBreaksBinCount: 2048}, 1 << 24, 64),
     id: 'l'
   }).getCommandNodes(graph);
-  for (const {id, source} of getGPUCommandNodeKernelSources(nodes)) {
+  for (const {id, source, constants} of getGPUCommandNodeKernelSources(nodes)) {
     expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
-    expect(getWorkgroupMemoryBytes(source), id).toBeLessThanOrEqual(
+    expect(getWorkgroupMemoryBytes(source, constants), id).toBeLessThanOrEqual(
       CORE_WORKGROUP_STORAGE_LIMIT_BYTES
     );
   }
@@ -365,7 +365,9 @@ it('GPUClassBreaks natural-breaks kernels fit core limits at 64 classes and 2048
   const layer = getGPUCommandNodeKernelSources(nodes).find(
     ({id}) => id === 'l-natural-breaks-layer-1'
   )!;
-  expect(getWorkgroupMemoryBytes(layer.source)).toBe(2048 * 4 + 256 * 4 + 256 * 4 + 4);
+  expect(getWorkgroupMemoryBytes(layer.source, layer.constants)).toBe(
+    2048 * 4 + 256 * 4 + 256 * 4 + 16
+  );
 });
 
 it('GPUClassBreaks natural breaks build for one class, two bins and a handful of rows', () => {
@@ -409,10 +411,10 @@ it('GPUClassBreaks exact kernels parse within default storage limits', () => {
   const nodes = new GPUClassBreaks(
     createProps(graph, {naturalBreaksMode: 'exact', methods: ['natural-breaks']}, 1024, 64)
   ).getCommandNodes(graph);
-  for (const {id, source} of getGPUCommandNodeKernelSources(nodes)) {
+  for (const {id, source, constants} of getGPUCommandNodeKernelSources(nodes)) {
     expect(() => new WgslReflect(source), id).not.toThrow();
     expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
-    expect(getWorkgroupMemoryBytes(source), id).toBeLessThanOrEqual(
+    expect(getWorkgroupMemoryBytes(source, constants), id).toBeLessThanOrEqual(
       CORE_WORKGROUP_STORAGE_LIMIT_BYTES
     );
   }
@@ -495,10 +497,10 @@ it('GPUClassBreaks monotone search spans workgroups and reuses all level pipelin
     expect(
       getGPUCommandNodePipelineKeys(nodes, {idPattern: /monotone-natural-breaks-search-/}).size
     ).toBe(1);
-    for (const {id, source} of getGPUCommandNodeKernelSources(nodes)) {
+    for (const {id, source, constants} of getGPUCommandNodeKernelSources(nodes)) {
       expect(() => new WgslReflect(source), id).not.toThrow();
       expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
-      expect(getWorkgroupMemoryBytes(source), id).toBeLessThanOrEqual(
+      expect(getWorkgroupMemoryBytes(source, constants), id).toBeLessThanOrEqual(
         CORE_WORKGROUP_STORAGE_LIMIT_BYTES
       );
     }

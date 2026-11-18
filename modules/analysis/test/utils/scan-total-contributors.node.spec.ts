@@ -4,6 +4,7 @@
 
 import type {GPUCommandNode} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
+import type {Device} from '@luma.gl/core';
 import {getPolygonEdgeSlabNodes} from '../../src/gpu-spatial-analysis/spatial-join/polygon-edge-slabs';
 import {CELLS_AND_JOINS_CASES} from '../analysis-core/kernel-audit/cases-cells-and-joins';
 import {COVERAGE_GEOMETRY_CASES} from '../analysis-core/kernel-audit/cases-coverage-geometry';
@@ -29,6 +30,43 @@ const CASES = [
   ...RASTER_CASES,
   ...STATISTICS_CASES
 ];
+
+function requireStorageBudget(nodes: readonly unknown[], parseSources = true) {
+  // Keep the existing raw-source sites independent of WGSL parser support.
+  const configurations = parseSources ? undefined : getGPUCommandNodeKernelSources(nodes);
+  const sources = configurations
+    ? Object.assign(new Map(configurations.map(kernel => [kernel.id, kernel.source])), {
+        configurations
+      })
+    : getParsedKernelSources(nodes);
+  for (const {id, source} of sources.configurations)
+    expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
+  return sources;
+}
+
+it.each([
+  [true, false],
+  [true, true],
+  [false, false],
+  [false, true]
+] as const)('final3 H5 scan-total gate rejects nine/one shared-ID requests, parsed=%s reversed=%s', (parseSources, reversed) => {
+  const counts = reversed ? [1, 9] : [9, 1];
+  const requests = counts.map(count => ({
+    compile: ({device}: {device: Device}) => {
+      const source = Array.from(
+        {length: count},
+        (_, binding) =>
+          `@group(0) @binding(${binding}) var<storage, read> data${binding}: array<u32>;`
+      ).join('\n');
+      const shader = device.createShader({stage: 'compute', source});
+      device.createComputePipeline({id: 'shared', shader});
+      return {destroy: () => shader.destroy()};
+    }
+  }));
+  const sources = getParsedKernelSources(requests);
+  expect(sources.configurations.map(({source}) => getStorageBindingCount(source))).toEqual(counts);
+  expect(() => requireStorageBudget(requests, parseSources)).toThrow();
+});
 
 const SCAN_SITES = [
   {
@@ -109,14 +147,11 @@ for (const site of SCAN_SITES) {
           ...carryOutput,
           usage: 'storage-read'
         });
-        const sources = getParsedKernelSources(nodes);
+        const sources = requireStorageBudget(nodes);
         expect(sources.get(`${site.prefix}-carry`)).toContain(
           'atomicStore(&total[totalOffset + TOTAL_ROW], 4294967295u);'
         );
         expect(sources.get(site.consumer)).toContain(site.totalRead);
-        for (const source of sources.values()) {
-          expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
-        }
       } finally {
         context.device.destroy();
       }
@@ -178,8 +213,8 @@ it('polygon edge slabs detect carry before clearing counts and disable wrapped i
     expect(sources.get('slabs-slab-entry-fallback')).toContain(
       'edgeSlabParams[edgeSlabParamsOffset + index * 6u] = 0u;'
     );
-    for (const source of sources.values()) {
-      expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
+    for (const {id, source} of sources.configurations) {
+      expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
     }
   } finally {
     context.device.destroy();
@@ -232,9 +267,7 @@ for (const site of [
       auditCase!.build(context);
       const nodes = getDeclaredNodes(context) as readonly GPUCommandNode[];
       const ids = nodes.map(node => node.id);
-      const sources = new Map(
-        getGPUCommandNodeKernelSources(nodes).map(kernel => [kernel.id, kernel.source])
-      );
+      const sources = requireStorageBudget(nodes, false);
       for (const [index, scan] of site.scans.entries()) {
         const saturationIndex = ids.indexOf(`${scan}-saturate`);
         expect(saturationIndex, ids.join(', ')).toBeGreaterThanOrEqual(0);
@@ -283,8 +316,8 @@ for (const site of [
           'getSaturatedScanSum(leafOffsets[leafOffsetsOffset+seed],leaves)'
         );
       }
-      for (const source of sources.values()) {
-        expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
+      for (const {id, source} of sources.configurations) {
+        expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
       }
     } finally {
       context.device.destroy();

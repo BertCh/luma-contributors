@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotRegressionOperationProps} from './regression-construction-snapshot';
+
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
@@ -21,7 +23,11 @@ import {
   GPU_SPATIAL_WEIGHTS_TRACES_PARAMETER_LENGTH,
   getSpatialWeightsTracesProbeValue
 } from './spatial-weights-traces-parameters';
-import {validateCPURegressionWeights, type CPURegressionWeights} from './cpu-regression-weights';
+import {
+  validateCPURegressionWeights,
+  validateCompleteRegressionWeights,
+  type CPURegressionWeights
+} from './cpu-regression-weights';
 
 /** CSR input and the optional seed view packed by getGPUSpatialWeightsTracesParameterValues. */
 export type CPUSpatialWeightsTracesInput = {
@@ -87,6 +93,7 @@ export function computeSpatialWeightsTracesOnCPU(
   options: CPUSpatialWeightsTracesOptions
 ): CPUSpatialWeightsTracesResult {
   const id = 'computeSpatialWeightsTracesOnCPU';
+  validateCompleteRegressionWeights(id, input.weights);
   validateOptions(id, options);
   const chunked = 'chunks' in input.weights;
   const rowCount =
@@ -251,6 +258,8 @@ export function computeSpatialWeightsTracesOnCPU(
 /** CPU whole/chunked CSR twin; shader iteration and exact-size caps are dropped. */
 export class CPUSpatialWeightsTracesOperation extends GPUCPUOperation {
   constructor(props: SpatialWeightsTracesOperationProps) {
+    props = snapshotRegressionOperationProps(props);
+    validateCompleteRegressionWeights(props.id ?? 'spatial-weights-traces', props.weights);
     const id = props.id ?? 'spatial-weights-traces';
     const includeGramTraces = props.includeGramTraces ?? props.output.gramTraces !== undefined;
     validateOptions(id, props);

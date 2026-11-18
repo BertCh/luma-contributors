@@ -200,6 +200,8 @@ const TOLERANCE: f32 = ${Math.fround(props.tolerance)};`,
       var minimum = vec2f(1.0); var maximum = vec2f(0.0);
       for (var row = first; row < last; row++) {
         let value = vec2f(positions[positionsOffset + row * 2u], positions[positionsOffset + row * 2u + 1u]);
+        // An invalid line cannot be snapped. Do not report candidate capacity loss for it.
+        if (!finitePoint(value)) { candidates[record] = 0u; candidates[record + 1u] = 0u; return; }
         // Endpoints may move by tolerance before insertion, so the conservative radius is twice
         // tolerance. Add in half units to avoid overflowing the literal or multiplication.
         // Cover f32 rounding in snapping and convex interpolation too. Otherwise a reference

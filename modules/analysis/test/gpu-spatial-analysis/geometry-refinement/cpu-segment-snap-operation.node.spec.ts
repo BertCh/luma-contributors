@@ -12,6 +12,29 @@ import {
   type SegmentSnapOperationProps
 } from '../../../src/gpu-spatial-analysis/geometry-refinement/gpu-segment-snap-operation';
 
+it('reports candidate-only incompleteness across 40000 lines without vertex-capacity overflow', () => {
+  const lineCount = 40_000;
+  const result = computeSegmentSnapOnCPU(
+    {
+      positions: new Float32Array(4),
+      lineOffsets: Uint32Array.from({length: lineCount + 1}, (_, index) => (index === 0 ? 0 : 2)),
+      referencePositions: new Float32Array(1025 * 2)
+    },
+    {tolerance: 0, maximumVerticesPerLine: 2}
+  );
+  const expectedCounts = new Uint32Array(lineCount * 4);
+  expect(result.counts).toEqual(expectedCounts);
+  const expectedCandidates = new Uint32Array(lineCount);
+  expectedCandidates[0] = 1;
+  expect(result.candidateOverflow).toEqual(expectedCandidates);
+  const expectedIssues = new Uint32Array(lineCount);
+  expectedIssues[0] = 4;
+  expect(result.issueCode).toEqual(expectedIssues);
+  const expectedValidity = new Uint32Array(lineCount).fill(1);
+  expectedValidity[0] = 0;
+  expect(result.validity).toEqual(expectedValidity);
+});
+
 it('matches hand-ordered insertions, duplicate suppression, source edges and per-line overflow', () => {
   const result = computeSegmentSnapOnCPU(
     {
@@ -26,7 +49,8 @@ it('matches hand-ordered insertions, duplicate suppression, source edges and per
   expect(Array.from(result.sourceEdges.slice(0, 5))).toEqual([0, 0, 0, 0, 1]);
   expect(Array.from(result.positions.slice(10, 14))).toEqual([20, 0, 21, 0]);
   expect(Array.from(result.sourceEdges.slice(5, 7))).toEqual([3, 4]);
-  expect(Array.from(result.validity)).toEqual([4, 0]);
+  expect(Array.from(result.issueCode)).toEqual([4, 0]);
+  expect(Array.from(result.validity)).toEqual([0, 1]);
 });
 
 it('uses inclusive tolerance, reference-row ties and excludes endpoint projections', () => {
@@ -54,7 +78,8 @@ it('matches clamp, empty, collapsed and nonfinite status conventions', () => {
   expect(Array.from(result.counts)).toEqual([
     1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0
   ]);
-  expect(Array.from(result.validity)).toEqual([1, 0, 2, 0, 0]);
+  expect(Array.from(result.issueCode)).toEqual([1, 0, 2, 0, 0]);
+  expect(Array.from(result.validity)).toEqual([0, 1, 0, 1, 1]);
   const invalidReference = computeSegmentSnapOnCPU(
     {
       positions: new Float32Array([1, 2]),
@@ -64,7 +89,8 @@ it('matches clamp, empty, collapsed and nonfinite status conventions', () => {
     {tolerance: 0, maximumVerticesPerLine: 1}
   );
   expect(Array.from(invalidReference.counts)).toEqual([0, 0, 0, 1, 0, 0, 0, 1]);
-  expect(Array.from(invalidReference.validity)).toEqual([2, 2]);
+  expect(Array.from(invalidReference.issueCode)).toEqual([2, 2]);
+  expect(Array.from(invalidReference.validity)).toEqual([0, 0]);
 });
 
 it('rejects malformed arrays and checks both operation contracts at construction', () => {

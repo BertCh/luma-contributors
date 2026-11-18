@@ -402,6 +402,16 @@ fn getFeatureDistance(first:u32,second:u32)->f32{
         declarations
       });
     return [
+      ...(props.output.status.candidateOverflow
+        ? [
+            node(
+              'candidate-status',
+              1,
+              [binding('candidateOverflow', props.output.status.candidateOverflow, 'read_write')],
+              'candidateOverflow[candidateOverflowOffset] = 0u;'
+            )
+          ]
+        : []),
       node(
         'validate',
         rows,

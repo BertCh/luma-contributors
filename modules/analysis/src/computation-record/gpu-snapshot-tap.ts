@@ -11,6 +11,8 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {GPUSnapshotArena, GPUSnapshotLabel} from './gpu-snapshot-arena';
 import type {GPUComputationRecorder} from './computation-recorder';
+import {validateRequirement} from '../analysis-core/kernels/gpu-contributor-utils';
+import {snapshotConstructionFields} from '../analysis-core/kernels/construction-snapshot';
 
 /** One snapshot tap: copies named views into the next frame of an arena. */
 export type GPUSnapshotTapProps = {
@@ -21,7 +23,8 @@ export type GPUSnapshotTapProps = {
   /**
    * Views to copy. The underlying buffers must have `Buffer.COPY_SRC` usage; the tap declares the
    * `copy-source` use, so the graph orders it after earlier writers and keeps transients alive.
-   * Whole-buffer handles are copied from byte offset 0; data views from their `byteOffset`.
+   * Whole-buffer handles are copied from byte offset 0; packed data views from their `byteOffset`.
+   * Each slot's byteLength must fit within its logical view; strided views are rejected.
    */
   views: Readonly<Record<string, GraphDataView | GraphBufferHandle>>;
   /** Node the observation follows; stored as the capture's `afterNode` and as an explicit dependency. */
@@ -42,23 +45,80 @@ export type GPUSnapshotTapProps = {
  * the record's `GPUComputationEncodingFlags.taps`. Call `arena.read()` after the encoding is submitted.
  */
 export class GPUSnapshotTap implements GPUCommandNodeProducer<any> {
-  constructor(readonly props: GPUSnapshotTapProps) {}
+  readonly props: GPUSnapshotTapProps;
+  private readonly sources: readonly {
+    name: string;
+    buffer: GraphBufferHandle;
+    byteOffset: number;
+  }[];
+
+  constructor(props: GPUSnapshotTapProps) {
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'arena',
+      'views',
+      'afterNode',
+      'label',
+      'iteration',
+      'recorder'
+    ]);
+    this.props = Object.freeze({...snapshot, views: Object.freeze({...snapshot.views})});
+    const {id, arena, views} = this.props;
+    validateRequirement(
+      id,
+      Object.keys(views).length === arena.slots.length &&
+        arena.slots.every(slot => Object.hasOwn(views, slot.name)),
+      'views keys must equal the arena slot names'
+    );
+    for (const slot of arena.slots) {
+      const view = views[slot.name];
+      if ('buffer' in view) {
+        validateRequirement(
+          id,
+          view.byteStride === view.rowByteLength,
+          `views.${slot.name} byteStride must equal rowByteLength (packed rows)`
+        );
+      }
+      const byteLength = 'buffer' in view ? view.length * view.rowByteLength : view.byteLength;
+      const byteOffset = 'buffer' in view ? view.byteOffset : 0;
+      validateRequirement(
+        id,
+        slot.byteLength <= byteLength,
+        `views.${slot.name} byteLength must be at least slot byteLength ${slot.byteLength}`
+      );
+      validateRequirement(
+        id,
+        Number.isSafeInteger(byteOffset) && byteOffset >= 0 && byteOffset % 4 === 0,
+        `views.${slot.name} byteOffset must be a non-negative multiple of 4`
+      );
+    }
+    this.sources = arena.slots.map(slot => {
+      const view = views[slot.name];
+      return Object.freeze({
+        name: slot.name,
+        buffer: 'buffer' in view ? view.buffer : view,
+        byteOffset: 'buffer' in view ? view.byteOffset : 0
+      });
+    });
+  }
 
   getCommandNodes<Parameters>(
     _graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, arena, views, afterNode, label, iteration, recorder} = this.props;
-    const entries = Object.entries(views);
+    const {id, arena, afterNode, label, iteration, recorder} = this.props;
     const node = createGPUCopyCommandNode<Parameters>({
       id,
       ...(afterNode !== undefined && {dependsOn: [afterNode]}),
-      resources: entries.map(([, view]) => ({buffer: view, usage: 'copy-source' as const})),
+      resources: this.sources.map(source => ({
+        buffer: source.buffer,
+        usage: 'copy-source' as const
+      })),
       compile: () => ({
         encode: ({commandEncoder, getBuffer}) => {
           const sources = Object.fromEntries(
-            entries.map(([name, view]) => [
-              name,
-              {buffer: getBuffer(view), byteOffset: 'buffer' in view ? view.byteOffset : 0}
+            this.sources.map(source => [
+              source.name,
+              {buffer: getBuffer(source.buffer), byteOffset: source.byteOffset}
             ])
           );
           const frameLabel: GPUSnapshotLabel = {

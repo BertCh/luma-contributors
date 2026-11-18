@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  validatePackedView,
+  type GPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
   GPURasterBufferBand,
   GPURasterMetadata,
@@ -74,7 +79,10 @@ export type GPURasterBandOptions = {
  * on `grid`, so it can feed the next contributor (for example `GPUTerrainFlow` directions into
  * `GPUTerrainHeightAboveDrainage`) without a hand-written band literal.
  *
- * @throws If the view does not hold exactly one value per grid pixel.
+ * Borrows the grid-sized prefix when values or validity have spare capacity. No data is copied;
+ * byte offsets and band metadata are preserved. Exact-sized views retain their identity.
+ *
+ * @throws If either packed view has fewer than one value per grid pixel, or belongs to another graph.
  */
 export function makeGPURasterBand<Format extends GPURasterScalarFormat>(
   values: GraphDataView<Format>,
@@ -82,17 +90,38 @@ export function makeGPURasterBand<Format extends GPURasterScalarFormat>(
   options: GPURasterBandOptions = {}
 ): GPURasterBufferBand<Format> {
   const pixelCount = grid.width * grid.height;
-  if (
-    values.length !== pixelCount ||
-    (options.validity && options.validity.length !== pixelCount)
-  ) {
-    throw new Error(`${options.id ?? 'band'} must hold one value per grid pixel`);
-  }
+  const id = options.id ?? 'band';
+  const graph = values.buffer.graph as GPUCommandGraph;
+  const borrowPrefix = <ViewFormat extends GPURasterScalarFormat>(
+    view: GraphDataView<ViewFormat>,
+    name: string
+  ) => {
+    validatePackedView(view, [view.format], `${id} ${name}`);
+    validateRequirement(
+      id,
+      view.length >= pixelCount,
+      `${name} must hold at least one value per grid pixel`
+    );
+    validateRequirement(
+      id,
+      view.buffer.graph === graph,
+      `${name} must belong to the same graph as values`
+    );
+    return view.length === pixelCount
+      ? view
+      : graph.createDataView(view.buffer, {
+          format: view.format,
+          byteOffset: view.byteOffset,
+          length: pixelCount
+        });
+  };
+  const boundedValues = borrowPrefix(values, 'values');
+  const validity = options.validity ? borrowPrefix(options.validity, 'validity') : undefined;
   return {
     id: options.id ?? 'band',
     format: values.format,
-    storage: {kind: 'buffer', values},
-    ...(options.validity ? {validity: options.validity} : {}),
+    storage: {kind: 'buffer', values: boundedValues},
+    ...(validity ? {validity} : {}),
     ...(options.noDataValue !== undefined ? {noDataValue: options.noDataValue} : {}),
     ...(options.scale !== undefined ? {scale: options.scale} : {}),
     ...(options.offset !== undefined ? {offset: options.offset} : {}),

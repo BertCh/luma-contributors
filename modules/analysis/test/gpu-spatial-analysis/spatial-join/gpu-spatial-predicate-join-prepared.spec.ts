@@ -68,8 +68,8 @@ async function runPreparedSelfJoin(
     return importGraphBuffer(graph, name, buffer, 'uint32', length);
   };
   const pairOutput = (name: string) => ({
-    leftIds: output(`${name}-left`, candidateCapacity),
-    rightIds: output(`${name}-right`, candidateCapacity),
+    leftRows: output(`${name}-left`, candidateCapacity),
+    rightRows: output(`${name}-right`, candidateCapacity),
     status: {
       count: output(`${name}-count`, 1),
       requiredCount: output(`${name}-required`, 1),

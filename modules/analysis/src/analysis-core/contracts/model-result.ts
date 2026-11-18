@@ -129,7 +129,9 @@ export type GPURegressionModelResult = {
   schwarzCriterion: number | null;
   /**
    * Corrected AIC, `AIC + 2 k (k + 1) / (n - k - 1)` for global models; for GWR the Hurvich form
-   * with `k = tr(S)` that bandwidth selection minimizes. Null where no likelihood is defined.
+   * with `k = tr(S)` that bandwidth selection minimizes. The derived global correction is null
+   * when no likelihood is defined or `n <= k + 1`, where `k` is the information-criterion
+   * parameter count. Estimator-specific overrides are preserved.
    */
   correctedAkaikeInformationCriterion: number | null;
   conditioning: GPURegressionConditioning | null;
@@ -178,6 +180,7 @@ export function createGPURegressionModelResult(
   const residualSumOfSquares = input.residualSumOfSquares;
   const logLikelihood = input.logLikelihood ?? null;
   const criterionParameterCount = input.informationCriterionParameterCount ?? parameterCount;
+  const correctionDenominator = rowCount - criterionParameterCount - 1;
   const conditioning = input.conditioning
     ? {
         ...input.conditioning,
@@ -208,12 +211,11 @@ export function createGPURegressionModelResult(
     correctedAkaikeInformationCriterion:
       input.correctedAkaikeInformationCriterion !== undefined
         ? input.correctedAkaikeInformationCriterion
-        : logLikelihood === null
+        : logLikelihood === null || correctionDenominator <= 0
           ? null
           : 2 * criterionParameterCount -
             2 * logLikelihood +
-            (2 * criterionParameterCount * (criterionParameterCount + 1)) /
-              (rowCount - criterionParameterCount - 1),
+            (2 * criterionParameterCount * (criterionParameterCount + 1)) / correctionDenominator,
     conditioning,
     tests: input.tests ?? {},
     status: {

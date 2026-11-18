@@ -1,6 +1,9 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
+
+import {addPreparedRecipe} from './prepared-recipe';
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
@@ -88,7 +91,19 @@ export type GPUStraightLineCatchmentsRecipeProps = GPURecipeOverrides<
 };
 
 /** Named outputs of {@link addStraightLineCatchmentsRecipe}. */
-export type GPUStraightLineCatchmentsRecipeResult = GPURecipeResult & {
+export type GPUStraightLineCatchmentsRecipeOutputs = Pick<
+  GPUStraightLineCatchmentsRecipeViews,
+  'allocation' | 'distances' | 'statistics'
+>;
+
+/** Straight-line catchment outputs and top-level convenience fields; no intermediate ports. */
+export type GPUStraightLineCatchmentsRecipeResult = GPURecipeResult<
+  GPUStraightLineCatchmentsRecipeOutputs,
+  Record<never, never>
+> &
+  GPUStraightLineCatchmentsRecipeViews;
+
+type GPUStraightLineCatchmentsRecipeViews = {
   /** Resolved coordinate context of the grid and facilities; always planar. */
   spatialContext: GPUSpatialContext;
   /** Nearest facility id per cell (the Voronoi zone). */
@@ -126,12 +141,23 @@ export function addStraightLineCatchmentsRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUStraightLineCatchmentsRecipeProps
 ): GPUStraightLineCatchmentsRecipeResult {
+  return addPreparedRecipe(graph, props, declareStraightLineCatchmentsRecipe);
+}
+
+function declareStraightLineCatchmentsRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUStraightLineCatchmentsRecipeProps
+): GPUStraightLineCatchmentsRecipeResult {
   const id = props.id ?? 'straight-line-catchments';
   const spatialContext = resolveGPUSpatialContext(
     id,
     props.spatialContext,
     SPATIAL_CONTEXT_SUPPORT
   );
+  props = {
+    ...props,
+    facilities: snapshotSinglePartGeometryPort(id, 'facilities', props.facilities)
+  };
   const builder = new RecipeBuilder(graph);
   const {grid} = props;
   const cellCount = grid.width * grid.height;

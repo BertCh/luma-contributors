@@ -13,6 +13,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
+import {requireTestDevice} from '../../src/testing/require-test-device';
 import {GPUSpatialEmpiricalBayesRates} from '../../src/gpu-spatial-analysis/rate-smoothing/gpu-spatial-empirical-bayes-rates';
 import {
   getGPUGeographicallyWeightedRegressionParameterLength,
@@ -249,12 +250,11 @@ const KERNELS: [string, (device: Device) => Promise<number[]>][] = [
 ];
 
 for (const [name, run] of KERNELS) {
-  it(`${name} runs on a core device and matches the max device bitwise`, async () => {
+  it(`${name} runs on a core device and matches the max device bitwise`, async context => {
     const coreDevice = await getWebGPUTestDevice('core');
     const maxDevice = await getWebGPUTestDevice('max');
-    if (!coreDevice || !maxDevice) {
-      return;
-    }
+    requireTestDevice(coreDevice);
+    if (!maxDevice) return context.skip('max WebGPU test device profile is unavailable');
     const coreResult = await run(coreDevice);
     const maxResult = await run(maxDevice);
     expect(coreResult.some(value => Number.isFinite(value))).toBe(true);

@@ -40,8 +40,10 @@ it('continuous designs expose intensity provenance and audit all generated line/
     };
     const sample = new GPUContinuousSpatialSample(props);
     expect(sample.samplingIntensity).toBe(type === 'line' ? 2 : 4);
-    for (const [identifier, source] of getParsedKernelSources(sample.getCommandNodes(graph)))
-      expect(auditWGSLModule(source), identifier).toEqual([]);
+    for (const {id: identifier, source, constants} of getParsedKernelSources(
+      sample.getCommandNodes(graph)
+    ).configurations)
+      expect(auditWGSLModule(source, constants), identifier).toEqual([]);
     expect(() => new GPUContinuousSpatialSample({...props, spacing: 0})).toThrow();
     expect(
       () => new GPUContinuousSpatialSample({...props, output: {...output, positions}})

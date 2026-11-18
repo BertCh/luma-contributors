@@ -3,11 +3,16 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
+import {runInNewContext} from 'node:vm';
 import {
   GPU_CELL_DEFAULT_SUM_SCALE,
   getGPUCellSumScale,
   validateSumScale
-} from '../../src/analysis-core/cell-key-wgsl';
+} from '../../src/analysis-core/kernels/cell-key-wgsl';
+import {
+  aggregateCellsOnCPU,
+  getQuadbinPointKeys
+} from '../gpu-spatial-analysis/cell-aggregation/cell-aggregation-oracle';
 
 // getGPUCellSumScale picks the fixed-point scale of cell-table, group and join sums from the data
 // (math review finding core-numerics-03). Expected scales are worked out by hand from the rule:
@@ -15,6 +20,57 @@ import {
 
 it('the default scale is 16 fractional bits', () => {
   expect(GPU_CELL_DEFAULT_SUM_SCALE).toBe(65536);
+});
+
+it('getGPUCellSumScale terminates for the smallest positive magnitude', () => {
+  // Execute the actual helper with its headroom constant in a bounded VM: a synchronous infinite
+  // loop would block Vitest's own test timeout. No GPU or child process is needed.
+  const scale = runInNewContext(
+    `(${getGPUCellSumScale.toString()})(Number.MIN_VALUE, 1)`,
+    {CELL_SUM_SCALE_HEADROOM: 2 ** 61},
+    {timeout: 1000}
+  );
+  expect(scale).toBe(2 ** 127);
+});
+
+it('getGPUCellSumScale selects the largest normal float32 power at its upper boundary', () => {
+  const boundary = 2 ** -66;
+  expect(getGPUCellSumScale(boundary * (1 - Number.EPSILON / 2), 1)).toBe(2 ** 127);
+  expect(getGPUCellSumScale(boundary, 1)).toBe(2 ** 127);
+  expect(getGPUCellSumScale(boundary * (1 + Number.EPSILON), 1)).toBe(2 ** 126);
+});
+
+it('checks exact headroom when a quotient rounds onto a power of two including the cap', () => {
+  const significand = 9110917n;
+  const rowCount = 1977232205;
+  expect(significand * BigInt(rowCount)).toBe((1n << 54n) + 1n);
+  for (const magnitudeExponent of [-120, -20]) {
+    const magnitude = Number(significand) * 2 ** magnitudeExponent;
+    expect(Math.fround(magnitude)).toBe(magnitude);
+    const scale = getGPUCellSumScale(magnitude, rowCount);
+    expect(scale).toBe(2 ** (6 - magnitudeExponent));
+    const exactTotal =
+      (significand * BigInt(rowCount)) << BigInt(magnitudeExponent + Math.log2(scale));
+    expect(exactTotal <= 1n << 61n).toBe(true);
+    expect(exactTotal * 2n > 1n << 61n).toBe(true);
+  }
+});
+
+it('documents quantization when the upper scale cap constrains a normal float32 value', () => {
+  const magnitude = 1.25 * 2 ** -126;
+  const scale = getGPUCellSumScale(magnitude);
+  expect(scale).toBe(2 ** 127);
+  expect(magnitude * scale).toBe(2.5);
+  const table = aggregateCellsOnCPU({
+    family: 'quadbin',
+    resolution: 0,
+    keys: getQuadbinPointKeys(new Float32Array([0, 0]), 0),
+    values: new Float32Array([magnitude]),
+    sumScale: scale
+  });
+  expect(table[0].sum).toBe(2n);
+  expect(Number(table[0].sum) / scale).toBe(2 ** -126);
+  expect(Number(table[0].sum) / scale).not.toBe(magnitude);
 });
 
 it('getGPUCellSumScale returns the largest power of two that leaves the 64-bit sum its headroom', () => {

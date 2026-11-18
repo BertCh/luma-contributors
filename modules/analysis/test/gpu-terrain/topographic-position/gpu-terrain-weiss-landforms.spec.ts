@@ -14,6 +14,7 @@ import {
 import {
   GPUTerrainWeissLandforms,
   getGPUTerrainWeissLandformsParameterValues,
+  type GPUTerrainWeissLandformsProps,
   type GPUTerrainWeissStandardization
 } from '../../../src/gpu-terrain/topographic-position/index';
 import {
@@ -31,6 +32,115 @@ const WIDTH = 48;
 const HEIGHT = 40;
 const PIXEL_COUNT = WIDTH * HEIGHT;
 const SCALES = [{radius: 2}, {radius: 8, innerRadius: 3}] as const;
+
+it.each([
+  'scale mutation',
+  'inherited fields'
+] as const)('final2 G2/F4 Weiss renders the captured local footprint with %s', async variant => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 9;
+  const height = 9;
+  const count = width * height;
+  const elevation = new Float32Array(count);
+  elevation[4 * width + 7] = 100;
+  const run = async (mutate: boolean): Promise<WeissRun> => {
+    const graph = new GPUCommandGraph(device);
+    const grid = makeGPURasterMetadata({width, height, cellSize: 1});
+    const input = createInputBuffer(device, elevation);
+    const buffers = {
+      landforms: createOutputBuffer(device, count),
+      standardized: createOutputBuffer(device, 2 * count),
+      validity: createOutputBuffer(device, count)
+    };
+    const settings = new GPUParameterBuffer(device, {
+      id: 'captured-settings',
+      format: 'float32',
+      length: 8,
+      values: getGPUTerrainWeissLandformsParameterValues({standardThreshold: 0.05}, grid)
+    });
+    const largeScale = {radius: 2, innerRadius: 0};
+    const props: GPUTerrainWeissLandformsProps = {
+      grid,
+      smallScale: {radius: 1},
+      largeScale,
+      standardization: 'local',
+      elevation: {
+        id: 'elevation',
+        format: 'float32',
+        storage: {
+          kind: 'buffer',
+          values: importGraphBuffer(graph, 'elevation', input, 'float32', count)
+        }
+      },
+      parameters: settings.importToGraph(graph),
+      output: {
+        landforms: importGraphBuffer(graph, 'landforms', buffers.landforms, 'uint32', count),
+        standardizedPosition: importGraphBuffer(
+          graph,
+          'standardized',
+          buffers.standardized,
+          'float32',
+          2 * count
+        ),
+        outputValidity: importGraphBuffer(graph, 'validity', buffers.validity, 'uint32', count)
+      }
+    };
+    let standardization: GPUTerrainWeissStandardization = 'local';
+    const inheritedProps =
+      mutate && variant === 'inherited fields'
+        ? Object.create({
+            ...props,
+            grid: Object.create(grid),
+            smallScale: Object.create(props.smallScale!),
+            largeScale: Object.create(largeScale),
+            output: Object.create(props.output),
+            get standardization() {
+              return standardization;
+            }
+          })
+        : props;
+    const contributor = new GPUTerrainWeissLandforms(inheritedProps);
+    if (mutate) {
+      largeScale.radius = 4;
+      largeScale.innerRadius = 1;
+      standardization = 'global';
+    }
+    expect(contributor.getHaloStage()).toEqual({requiredHalo: 2});
+    graph.add(contributor);
+    const compiled = graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      return {
+        landforms: await readUint32(buffers.landforms, count),
+        standardized: await readFloat32(buffers.standardized, 2 * count),
+        validity: await readUint32(buffers.validity, count)
+      };
+    } finally {
+      compiled.destroy();
+      settings.destroy();
+      input.destroy();
+      for (const buffer of Object.values(buffers)) buffer.destroy();
+    }
+  };
+  const control = await run(false);
+  const actual = await run(true);
+  const observer = 4 * width + 4;
+  // Radius two excludes the blocker three columns away: both DEV planes are zero, class 5.
+  // A live radius-four mutation instead gives large-scale DEV -1/sqrt(80) and class 4.
+  expect(control.landforms[observer]).toBe(5);
+  expect(actual.landforms[observer]).toBe(5);
+  expect(actual.validity[observer]).toBe(1);
+  expect(actual.landforms).toEqual(control.landforms);
+  expect(actual.validity).toEqual(control.validity);
+  for (const [index, expected] of control.standardized.entries()) {
+    expect(Number.isFinite(expected)).toBe(true);
+    expect(Number.isFinite(actual.standardized[index])).toBe(true);
+    expect(actual.standardized[index]).toBeCloseTo(expected, 6);
+  }
+  expect(actual.standardized[observer]).toBeCloseTo(0, 6);
+  expect(actual.standardized[count + observer]).toBeCloseTo(0, 6);
+});
 
 /** Grid of the test raster with square cells of `cellSize` meters. */
 function makeGrid(cellSize: number) {

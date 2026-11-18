@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotRegressionOperationProps} from './regression-construction-snapshot';
+
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
@@ -26,7 +28,11 @@ import {
   factorCPURegressionCorrelation,
   fitCPURegressionWithQR
 } from './cpu-regression-linear-algebra';
-import {validateCPURegressionWeights, type CPURegressionWeights} from './cpu-regression-weights';
+import {
+  validateCPURegressionWeights,
+  validateCompleteRegressionWeights,
+  type CPURegressionWeights
+} from './cpu-regression-weights';
 import {
   getCPUErrorMean,
   getCPUErrorDot,
@@ -493,6 +499,8 @@ export function computeSpatialTwoStageLeastSquaresOnCPU(
 /** CPU IV twin, without shader matrix/row caps; same classical and optional robust outputs. */
 export class CPUSpatialTwoStageLeastSquaresOperation extends GPUCPUOperation {
   constructor(props: SpatialTwoStageLeastSquaresOperationProps) {
+    props = snapshotRegressionOperationProps(props);
+    validateCompleteRegressionWeights(props.id ?? 'spatial-two-stage-least-squares', props.weights);
     const id = props.id ?? 'spatial-two-stage-least-squares';
     validateOptions(id, props);
     validateCapacity(id, 'rowCount', props.rowCount);

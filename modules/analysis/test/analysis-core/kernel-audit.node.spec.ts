@@ -88,6 +88,10 @@ describe('kernel audit checks', () => {
 
   it('rejects calls to undeclared functions', () => {
     expect(checks('fn main() { let value = getSpatialAnalysisQuotient(1.0, 2.0); }')).toEqual([
+      'undeclared call',
+      'unresolved memory layout'
+    ]);
+    expect(checks('fn main() { let value: f32 = getSpatialAnalysisQuotient(1.0, 2.0); }')).toEqual([
       'undeclared call'
     ]);
     expect(
@@ -294,7 +298,45 @@ describe('kernel audit sources', () => {
 });
 
 describe('kernel audit coverage', () => {
+  it('discovers inherited contributors while excluding named core helpers', () => {
+    class BaseContributor {
+      getCommandNodes() {
+        return [];
+      }
+    }
+    class InheritedContributor extends BaseContributor {}
+    class Helper {}
+    expect([...getContributorNames({fixture: {InheritedContributor, Helper}})]).toEqual([
+      ['InheritedContributor', 'fixture']
+    ]);
+    const coreHelpers: Record<string, string> = {
+      GPUParameterBuffer: 'owns parameter storage; does not produce command nodes',
+      GPUContributorOperation: 'operation lowering adapter; not a command-node contributor'
+    };
+    const unclassified = Object.entries(ANALYSIS_BARRELS['analysis-core'])
+      .filter(([name, value]) => /^GPU[A-Z]/.test(name) && typeof value === 'function')
+      .map(([name]) => name)
+      .filter(name => !contributors.has(name) && !(name in coreHelpers));
+    expect(
+      unclassified,
+      'core classes need a kernel case or an explicit helper classification'
+    ).toEqual([]);
+    expect(
+      [...contributors]
+        .filter(([, entry]) => entry === 'analysis-core')
+        .map(([name]) => name)
+        .sort()
+    ).toEqual([
+      'GPUAdamStep',
+      'GPUFittingCoordinateEncoder',
+      'GPUFittingGradientSums',
+      'GPUFittingMinibatchOrder'
+    ]);
+  });
+
   it('builds every public contributor or records why not', () => {
+    expect(contributors.size, 'discovered public contributors').toBeGreaterThan(0);
+    expect(cases.length, 'kernel-audit cases').toBeGreaterThan(0);
     const covered = new Set(cases.map(auditCase => auditCase.exportName));
     const missing = [...contributors.keys()].filter(
       name => !covered.has(name) && !(name in SKIPPED_CONTRIBUTORS)

@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
+import type {GPUCPUVector} from '@luma.gl/graph/gpu-core';
 import {
   computeNetworkFlowOnCPU,
   CPUNetworkFlowOperation,
@@ -25,6 +26,55 @@ const PROPS: NetworkFlowOperationProps = {
   parameters: 'parameters',
   output: {flow: 'flow', cut: 'cut', summary: 'summary', exactCost: 'exact'}
 };
+
+it('rejects inconsistent declared CSR inputs instead of solving only the edge list', async () => {
+  const props: NetworkFlowOperationProps = {
+    ...PROPS,
+    nodeCount: 3,
+    edgeCount: 2,
+    costs: undefined,
+    topology: {offsets: 'offsets', neighbors: 'neighbors'},
+    output: {
+      flow: 'flow',
+      cut: 'cut',
+      summary: 'summary',
+      exactCost: 'exact',
+      status: {invalidCount: 'invalid', converged: 'converged', iterationLimitReached: 'limited'}
+    }
+  };
+  const vector = (values: Uint32Array, format: 'uint32' | 'uint32x2' = 'uint32'): GPUCPUVector => ({
+    format,
+    length: values.length / (format === 'uint32x2' ? 2 : 1),
+    chunks: [{values, length: values.length / (format === 'uint32x2' ? 2 : 1)}],
+    pack: () => values
+  });
+  const operation = new CPUNetworkFlowOperation(props);
+  for (const [offsets, neighbors, valid] of [
+    [[0, 2, 1, 2], [1, 2], false],
+    [[0, 1, 1, 1], [1, 2], false],
+    [[0, 1, 2, 2], [2, 2], false],
+    [[0, 1, 2, 2], [1, 2], true]
+  ] as const) {
+    const rows = await operation.execute({
+      inputs: {
+        edges: vector(Uint32Array.of(0, 1, 1, 2), 'uint32x2'),
+        capacities: vector(Uint32Array.of(1, 1)),
+        parameters: vector(Uint32Array.of(0, 2, 0xffffffff)),
+        topologyOffsets: vector(Uint32Array.from(offsets)),
+        topologyNeighbors: vector(Uint32Array.from(neighbors))
+      }
+    });
+    expect(rows['flow']).toEqual(new Uint32Array(2).fill(Number(valid)));
+    expect(rows['invalid']).toEqual(Uint32Array.of(Number(!valid)));
+    expect(rows['converged']).toEqual(Uint32Array.of(Number(valid)));
+    expect(rows['limited']).toEqual(Uint32Array.of(0));
+    if (!valid) {
+      expect(rows['summary']).toEqual(new Uint32Array(8));
+      expect(rows['cut']).toEqual(new Uint32Array(3));
+      expect(rows['exact']).toEqual(new Uint32Array(2));
+    }
+  }
+});
 
 function enumerateFeasibleFlows(
   input: CPUNetworkFlowInput,

@@ -38,6 +38,7 @@ import {
   validateRasterBuffersDistinct,
   validateRasterGrid,
   validateRasterGridAxisAligned,
+  validateRasterGridOrthogonal,
   validateRasterParameters,
   validateRasterOutputTexture
 } from '../../raster-analysis/raster-band-utils';
@@ -49,7 +50,7 @@ import {
   RASTER_DEGREES_TO_RADIANS_WGSL,
   validateRasterCellSizeMode,
   writeRasterGridParameterValues
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 import {
   getTerrainOneSidedPaddedBandNodes,
   getTerrainPaddedIndexWGSL,
@@ -88,6 +89,7 @@ export function getGPUTerrainDerivativesParameterValues(
   grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH)
 ): Float32Array {
+  validateRasterGridOrthogonal('getGPUTerrainDerivativesParameterValues', grid);
   validateParameterTarget(
     'getGPUTerrainDerivativesParameterValues',
     target,
@@ -162,7 +164,8 @@ export type GPUTerrainDerivativesProps = {
  * Composes two Sobel `GPURasterGradient` passes and one fused shade kernel. Cell size, z factor,
  * sun position, and latitude band are read from `parameters` every encoding. Columns increase east
  * and rows go where the grid affine says (`rowDirection`). Aspect and the hillshade azimuth are
- * degrees clockwise from north, which on a rotated `'uniform'` grid is the grid's up axis. Border
+ * degrees clockwise from north, which on a rotated `'uniform'` grid is the grid's up axis.
+ * The pixel axes must be orthogonal; resample sheared grids before computing derivatives. Border
  * pixels use one-sided differences by default (`borderMode`). Invalid pixels (an invalid center or
  * 3x3 neighbor, or invalid settings) receive NaN and validity 0. For seamless tiles, pass a tile
  * with `requiredHalo` source pixels per side: two for one-sided extrapolation, one otherwise.
@@ -217,6 +220,7 @@ export class GPUTerrainDerivatives implements GPUCommandNodeProducer, GPURasterH
     );
     validateRasterCellSizeMode(id, props.cellSizeMode);
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    validateRasterGridOrthogonal(id, props.grid);
     if (!['degrees', 'percent'].includes(props.slopeUnits ?? 'degrees')) {
       throw new Error(`${id} slopeUnits must be degrees or percent`);
     }

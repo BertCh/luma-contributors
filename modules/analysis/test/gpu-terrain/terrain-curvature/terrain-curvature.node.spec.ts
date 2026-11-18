@@ -4,7 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
-import {getRasterGridGeoreference} from '../../../src/analysis-core/raster-grid';
+import {getRasterGridGeoreference} from '../../../src/analysis-core/contracts/raster-grid';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {
   GPU_TERRAIN_CURVATURE_PARAMETER_LENGTH,
@@ -170,10 +170,12 @@ it('GPUTerrainCurvature validates its properties', () => {
   const shared = createBand(graph, 'shared-elevation', 30);
   expect(() =>
     create({elevation: shared, output: {curvatures: {mean: shared.storage.values}}})
-  ).toThrow(/share buffers/);
+  ).toThrow(
+    /^terrain-curvature output\[0\] chunk 0 logical byte ranges must not overlap \(writable storage\)$/
+  );
   const duplicate = view();
   expect(() => create({output: {curvatures: {mean: duplicate, plan: duplicate}}})).toThrow(
-    /share buffers/
+    /^terrain-curvature output\[1\] chunk 0 logical byte ranges must not overlap \(writable storage\)$/
   );
 
   const otherGraph = new GPUCommandGraph(device);

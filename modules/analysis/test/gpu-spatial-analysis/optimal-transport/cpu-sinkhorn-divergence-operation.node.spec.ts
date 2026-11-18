@@ -45,6 +45,132 @@ const PROPS: SinkhornDivergenceOperationProps = {
   }
 };
 
+for (const scalingFactor of [1, 0.5]) {
+  it(`requires a residual pass at the exact final epsilon (scalingFactor=${scalingFactor})`, () => {
+    const result = computeSinkhornDivergenceOnCPU(
+      Float32Array.of(1),
+      Float32Array.of(1),
+      getGPUSinkhornDivergenceParameterValues({
+        cellWidth: 1,
+        cellHeight: 1,
+        epsilon: 1,
+        epsilonStart: 1 + 2 ** -23,
+        scalingFactor
+      }),
+      {grid: {...GRID, width: 1, height: 1}, maximumIterations: 2}
+    );
+    expect(result.iterationCount[0]).toBe(2);
+    expect(result.converged[0]).toBe(scalingFactor === 1 ? 0 : 1);
+    expect(result.iterationLimitReached[0]).toBe(scalingFactor === 1 ? 1 : 0);
+  });
+}
+
+it('retains a tiny mass times a large marginal exponential across epsilon scaling', () => {
+  for (const maximumIterations of [2, 3]) {
+    const result = computeSinkhornDivergenceOnCPU(
+      Float32Array.of(1, 1e-37),
+      Float32Array.of(1, 0),
+      getGPUSinkhornDivergenceParameterValues({
+        cellWidth: 16,
+        cellHeight: 1,
+        epsilon: 1,
+        epsilonStart: 2,
+        scalingFactor: 0.5,
+        tolerance: 0.01
+      }),
+      {grid: {...GRID, width: 2, height: 1}, maximumIterations}
+    );
+    expect(result.converged[0]).toBe(maximumIterations === 2 ? 0 : 1);
+    expect(result.iterationLimitReached[0]).toBe(maximumIterations === 2 ? 1 : 0);
+    expect(result.iterationCount[0]).toBe(maximumIterations);
+  }
+});
+
+for (const reverse of [false, true]) {
+  it(`waits for both self costs after the two-cell cross plan settles (reverse=${reverse})`, () => {
+    const source = new Float32Array(reverse ? [1, 0] : [99, 1]);
+    const target = new Float32Array(reverse ? [99, 1] : [1, 0]);
+    const grid = {...GRID, width: 2, height: 1};
+    const settings = {cellWidth: 1, cellHeight: 1, epsilon: 1, tolerance: 1e-10};
+    const parameters = getGPUSinkhornDivergenceParameterValues(settings);
+    const reference = computeSinkhornDivergenceReference(
+      {...grid, ...settings, source: Array.from(source), target: Array.from(target)},
+      1e-13
+    );
+    const limited = computeSinkhornDivergenceOnCPU(source, target, parameters, {
+      grid,
+      maximumIterations: 2
+    });
+    // A settled cross marginal alone must not certify the two unfinished self solves.
+    expect(limited.marginalError[0]).toBeLessThan(1e-10);
+    expect(limited.converged[0]).toBe(0);
+    expect(limited.iterationLimitReached[0]).toBe(1);
+    expect(limited.iterationCount[0]).toBe(2);
+    for (const tolerance of [1e-4, 1e-10]) {
+      const result = computeSinkhornDivergenceOnCPU(
+        source,
+        target,
+        getGPUSinkhornDivergenceParameterValues({...settings, tolerance}),
+        {grid, maximumIterations: 1000}
+      );
+      expect(result.converged[0]).toBe(1);
+      expect(result.iterationLimitReached[0]).toBe(0);
+      expect(result.iterationCount[0]).toBeGreaterThan(2);
+      expect(Number.isFinite(result.divergence[0])).toBe(true);
+      expect(result.divergence[0]).toBeCloseTo(reference.divergence, 7);
+      [reference.crossCost, reference.sourceCost, reference.targetCost].forEach(
+        (expected, index) => {
+          expect(Number.isFinite(result.components[index])).toBe(true);
+          expect(result.components[index]).toBeCloseTo(expected, 6);
+        }
+      );
+    }
+  });
+}
+
+it('preserves finite distributions whose totals exceed float32 range', () => {
+  const parameters = getGPUSinkhornDivergenceParameterValues({
+    cellWidth: 1,
+    cellHeight: 1,
+    epsilon: 1,
+    tolerance: 1e-10
+  });
+  const options = {grid: {...GRID, width: 2, height: 1}, maximumIterations: 1000};
+  const reference = computeSinkhornDivergenceReference({
+    width: 2,
+    height: 1,
+    cellWidth: 1,
+    cellHeight: 1,
+    epsilon: 1,
+    source: [3, 2],
+    target: [2, 3]
+  });
+  for (const [sourceScale, targetScale] of [
+    [1, 1],
+    [2 ** 126, 1],
+    [1, 2 ** 126],
+    [2 ** 126, 2 ** 126]
+  ]) {
+    const result = computeSinkhornDivergenceOnCPU(
+      Float32Array.of(3 * sourceScale, 2 * sourceScale),
+      Float32Array.of(2 * targetScale, 3 * targetScale),
+      parameters,
+      options
+    );
+    expect(result.converged[0]).toBe(1);
+    expect(result.iterationLimitReached[0]).toBe(0);
+    expect(result.invalidCount[0]).toBe(0);
+    expect(Number.isFinite(result.marginalError[0])).toBe(true);
+    expect(result.marginalError[0]).toBeLessThan(1e-9);
+    expect(Number.isFinite(result.divergence[0])).toBe(true);
+    expect(result.divergence[0]).toBeCloseTo(reference.divergence, 7);
+    [reference.crossCost, reference.sourceCost, reference.targetCost].forEach((expected, index) => {
+      expect(Number.isFinite(result.components[index])).toBe(true);
+      expect(result.components[index]).toBeCloseTo(expected, 7);
+    });
+  }
+});
+
 it('matches a dense coupling/primal oracle on a sparse, anisotropic grid', () => {
   const settings = {cellWidth: 1.5, cellHeight: 0.75, epsilon: 2, tolerance: 1e-10};
   const parameters = getGPUSinkhornDivergenceParameterValues(settings);

@@ -373,7 +373,7 @@ it('reports concurrent grid and route-budget overflow and clears flags and count
     );
     expect(dropped.counts).toEqual(new Array(trackCount).fill(3));
     expect([dropped.overflow, dropped.routeOverflow, dropped.traversedOverflow]).toEqual([
-      1,
+      0,
       trackCount,
       1
     ]);

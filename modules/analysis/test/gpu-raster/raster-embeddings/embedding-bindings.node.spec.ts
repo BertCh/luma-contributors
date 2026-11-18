@@ -173,20 +173,28 @@ const cases: BindingCase[] = [
         }
       })
   },
-  ...([false, true] as const).map(quantized => ({
-    name: `pyramid-${quantized ? 'quantized' : 'float'}`,
+  ...(['float', 'quantized', 'aggregation'] as const).map(source => ({
+    name: `pyramid-${source}`,
     create: (field: FieldFactory) =>
       new GPURasterEmbeddingPyramidLevel({
         sourceWidth: 2,
         sourceHeight: 1,
         dimensions: 2,
         scale: 1,
-        ...(quantized
+        ...(source === 'quantized'
           ? {quantized: field('quantized', 'uint32', 1)}
-          : {vectors: field('vectors', 'float32', 4)}),
+          : source === 'aggregation'
+            ? {
+                aggregation: {
+                  vectorSums: field('aggregation.vectorSums', 'float32', 4),
+                  validCount: field('aggregation.validCount', 'uint32', 2)
+                }
+              }
+            : {vectors: field('vectors', 'float32', 4)}),
         mask: field('mask', 'uint32', 2),
         output: {
           vectors: field('output.vectors', 'float32', 4),
+          vectorSums: field('output.vectorSums', 'float32', 4),
           validity: field('output.validity', 'uint32', 2),
           validCount: field('output.validCount', 'uint32', 2),
           meanLength: field('output.meanLength', 'float32', 2)
@@ -317,7 +325,9 @@ for (const bindingCase of cases) {
               ? 'quantized'
               : bindingCase.name === 'change'
                 ? 'before'
-                : 'vectors';
+                : bindingCase.name === 'pyramid-aggregation'
+                  ? 'aggregation.vectorSums'
+                  : 'vectors';
         if (name === inputName) {
           return context.graph.createDataView(shared, {format, length});
         }
@@ -342,7 +352,7 @@ for (const bindingCase of cases) {
 
   it(`${bindingCase.name} accepts disjoint writable ranges imported once`, () => {
     const context = createKernelAuditContext(`embedding-packed-${bindingCase.name}`);
-    const physical = context.device.createBuffer({byteLength: 1024, usage: Buffer.STORAGE});
+    const physical = context.device.createBuffer({byteLength: 2048, usage: Buffer.STORAGE});
     try {
       const shared = context.graph.importBuffer(
         {id: 'packed-outputs', byteLength: physical.byteLength, usage: physical.usage},

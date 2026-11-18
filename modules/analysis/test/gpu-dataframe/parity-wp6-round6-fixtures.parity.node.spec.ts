@@ -5,6 +5,7 @@
 import {createHash} from 'node:crypto';
 import {readFileSync, statSync} from 'node:fs';
 import {resolve} from 'node:path';
+import typescript from 'typescript';
 import {expect, it, vi} from 'vitest';
 import {WgslReflect} from 'wgsl_reflect';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -23,6 +24,81 @@ import {decodeOracleFixture} from '../oracles/oracle-fixture';
 
 const root = resolve(import.meta.dirname, '../../../..');
 const fixtureDirectory = resolve(root, 'modules/analysis/test/oracles/fixtures');
+
+it('WP6 harness keeps OSM batch payloads out of typed JSON imports', () => {
+  // The old implementation imports all eleven JSON objects into every consumer's type program.
+  // Raw-text Vite imports leave the payloads as runtime data in both Vitest projects.
+  const harnessSource = readFileSync(
+    resolve(root, 'modules/analysis/test/oracles/parity-wp6-dataframe-harness.ts'),
+    'utf8'
+  );
+  const typedBatchImports = typescript
+    .preProcessFile(harnessSource)
+    .importedFiles.map(importedFile => importedFile.fileName)
+    .filter(fileName => /parity-wp6-dataframe-osm-batch-\d+\.json$/.test(fileName));
+  expect(typedBatchImports).toEqual([]);
+});
+
+it('WP6 runtime batches preserve manifest order and every payload', () => {
+  const scene = dataframeFixture.cases[0];
+  const expectedBatches = scene.batchFiles!.map(fileName => {
+    const fixture = JSON.parse(readFileSync(resolve(fixtureDirectory, fileName), 'utf8'));
+    return fixture.batch;
+  });
+  // In particular, numeric batch 10 must follow batch 9, and empty batch 2 must stay present.
+  expect(expectedBatches).toHaveLength(11);
+  expect(getDataFrameBatches(scene)).toEqual(expectedBatches);
+  const inlineScene = dataframeFixture.cases[1];
+  expect(getDataFrameBatches(inlineScene)).toBe(inlineScene.batches);
+});
+
+it('WP6 file-backed scenes resolve their own ordered batches and reuse parsed files', () => {
+  const scene = dataframeFixture.cases[0];
+  const batches = getDataFrameBatches(scene);
+  const emptyBatchScene = {...scene, batchFiles: [scene.batchFiles![2]]};
+  const emptyBatches = getDataFrameBatches(emptyBatchScene);
+  expect(emptyBatches).toHaveLength(1);
+  expect(emptyBatches[0].length).toBe(0);
+  expect(emptyBatches[0]).toBe(batches[2]);
+
+  const reorderedScene = {
+    ...scene,
+    batchFiles: [
+      scene.batchFiles![10],
+      scene.batchFiles![1],
+      scene.batchFiles![2],
+      scene.batchFiles![10]
+    ]
+  };
+  const reorderedBatches = getDataFrameBatches(reorderedScene);
+  expect(reorderedBatches).toHaveLength(4);
+  for (const [index, batchIndex] of [10, 1, 2, 10].entries()) {
+    expect(reorderedBatches[index]).toBe(batches[batchIndex]);
+  }
+  expect(getDataFrameBatches({...scene, batchFiles: []})).toEqual([]);
+});
+
+it('WP6 harness loads when an inline scene precedes file-backed scenes', async () => {
+  const fixture = JSON.parse(
+    readFileSync(resolve(fixtureDirectory, 'parity-wp6-dataframe-queries.json'), 'utf8')
+  );
+  fixture.cases.reverse();
+  vi.doMock('../oracles/fixtures/parity-wp6-dataframe-queries.json', () => ({default: fixture}));
+  vi.resetModules();
+  try {
+    const harness = await import('../oracles/parity-wp6-dataframe-harness');
+    const [inlineScene, fileScene] = harness.dataframeFixture.cases;
+    expect(inlineScene.name).toBe('nulls-nonfinite-boundaries');
+    expect(harness.getDataFrameBatches(inlineScene)).toBe(inlineScene.batches);
+    expect(harness.getDataFrameBatches(fileScene)).toHaveLength(11);
+    expect(
+      harness.getDataFrameBatches({...fileScene, batchFiles: [fileScene.batchFiles![2]]})[0].length
+    ).toBe(0);
+  } finally {
+    vi.doUnmock('../oracles/fixtures/parity-wp6-dataframe-queries.json');
+    vi.resetModules();
+  }
+});
 
 it('WP6 round 6 fixtures preserve full OSM input, hashes, versions and all output arrays', () => {
   const names = [

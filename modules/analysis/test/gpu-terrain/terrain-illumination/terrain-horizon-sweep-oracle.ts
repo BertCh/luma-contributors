@@ -13,7 +13,7 @@ import {
 import {
   getRasterGroundCellSize,
   type GPURasterCellSizeMode
-} from '../../../src/analysis-core/raster-grid';
+} from '../../../src/analysis-core/contracts/raster-grid';
 
 /** Inputs of the float64 sweep oracles. */
 export type SweepOracleOptions = {
@@ -38,6 +38,18 @@ export type SweepOracleOptions = {
   southEdge?: number;
   cellSizeMode?: GPURasterCellSizeMode;
   rowDirection?: 'south' | 'north';
+  /** Source origin in overview pixels; must match the GPU sweep origin. */
+  origin?: readonly [number, number];
+  /** Shared reference ground cell in metres for geometry and curvature decisions. */
+  referenceCellSize?: readonly [number, number];
+  /** Shared packed source georeference and the window's source row offset. */
+  sourceGeoreference?: {
+    cellSize: readonly [number, number];
+    northEdge: number;
+    southEdge: number;
+    height: number;
+    rowOffset: number;
+  };
   /** Also compute the nadir pass (zFactor negated) into `nadirHorizon` and `negativeOpenness`. */
   nadir?: boolean;
 };
@@ -75,17 +87,19 @@ function getGeometries(options: SweepOracleOptions): TerrainSweepLineGeometry[] 
   const {width, height} = options;
   if (options.directions) {
     return options.directions.map(direction =>
-      getTerrainSweepLineGeometry(direction, width, height)
+      getTerrainSweepLineGeometry(direction, width, height, options.origin)
     );
   }
   // Same reference row as the kernel: row 0 in uniform mode, else row floor(height / 2).
   const mode = options.cellSizeMode ?? 'uniform';
-  const referenceCell = getRasterGroundCellSize(
-    mode,
-    {cellSize: options.cellSize, northEdge: options.northEdge, southEdge: options.southEdge},
-    (mode === 'uniform' ? 0 : Math.floor(height / 2)) + 0.5,
-    height
-  );
+  const referenceCell =
+    options.referenceCellSize ??
+    getRasterGroundCellSize(
+      mode,
+      {cellSize: options.cellSize, northEdge: options.northEdge, southEdge: options.southEdge},
+      (mode === 'uniform' ? 0 : Math.floor(height / 2)) + 0.5,
+      height
+    );
   return Array.from({length: options.directionCount}, (_, sector) =>
     getTerrainSweepGroundLineGeometry(
       getGPUTerrainHorizonDirection(
@@ -95,7 +109,8 @@ function getGeometries(options: SweepOracleOptions): TerrainSweepLineGeometry[] 
       ),
       referenceCell,
       width,
-      height
+      height,
+      options.origin
     )
   );
 }
@@ -108,9 +123,13 @@ function getStepLength(
 ): number {
   const ground = getRasterGroundCellSize(
     options.cellSizeMode ?? 'uniform',
-    {cellSize: options.cellSize, northEdge: options.northEdge, southEdge: options.southEdge},
-    row + 0.5,
-    options.height
+    options.sourceGeoreference ?? {
+      cellSize: options.cellSize,
+      northEdge: options.northEdge,
+      southEdge: options.southEdge
+    },
+    row + (options.sourceGeoreference?.rowOffset ?? 0) + 0.5,
+    options.sourceGeoreference?.height ?? options.height
   );
   const slope = geometry.slopeFixed / TERRAIN_SWEEP_SLOPE_SCALE;
   return geometry.xMajor
@@ -130,7 +149,13 @@ function getLinePixel(
   if (major < 0 || major >= majorExtent) {
     return -1;
   }
-  const minor = line + getTerrainSweepMinorOffset(geometry.slopeFixed, major);
+  const minor =
+    line +
+    getTerrainSweepMinorOffset(
+      geometry.slopeFixed,
+      major,
+      options.origin?.[geometry.xMajor ? 0 : 1]
+    );
   if (minor < 0 || minor >= minorExtent) {
     return -1;
   }
@@ -153,11 +178,13 @@ function createContext(
   zSign: 1 | -1
 ): SweepContext {
   const uniform = (options.cellSizeMode ?? 'uniform') === 'uniform';
-  const referenceStep = getStepLength(
-    options,
-    geometry,
-    uniform ? 0 : Math.floor(options.height / 2)
-  );
+  const slope = geometry.slopeFixed / TERRAIN_SWEEP_SLOPE_SCALE;
+  const referenceCellSize = options.referenceCellSize?.map(Math.fround);
+  const referenceStep = referenceCellSize
+    ? geometry.xMajor
+      ? Math.hypot(referenceCellSize[0], slope * referenceCellSize[1])
+      : Math.hypot(slope * referenceCellSize[0], referenceCellSize[1])
+    : getStepLength(options, geometry, uniform ? 0 : Math.floor(options.height / 2));
   const curvature = options.curvatureCoefficient ?? 0;
   return {
     options,
@@ -274,7 +301,13 @@ export function computeTerrainHorizonSweepBruteForce(
         }
         const major = geometry.xMajor ? column : row;
         const minor = geometry.xMajor ? row : column;
-        const line = minor - getTerrainSweepMinorOffset(geometry.slopeFixed, major);
+        const line =
+          minor -
+          getTerrainSweepMinorOffset(
+            geometry.slopeFixed,
+            major,
+            options.origin?.[geometry.xMajor ? 0 : 1]
+          );
         let best = -1;
         let bestK = 0;
         for (let k = 1; ; k++) {

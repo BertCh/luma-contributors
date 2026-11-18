@@ -27,6 +27,181 @@ const PROPS: ClassBreaksOperationProps = {
   maximumClassCount: 6,
   output: {breaks: 'breaks', classCount: 'classCount', classCounts: 'classCounts'}
 };
+
+function createInputRows(values: Float32Array | Uint32Array | Int32Array) {
+  return {
+    format:
+      values instanceof Float32Array
+        ? ('float32' as const)
+        : values instanceof Uint32Array
+          ? ('uint32' as const)
+          : ('sint32' as const),
+    length: values.length,
+    chunks: [{values, length: values.length}],
+    pack: () => values
+  };
+}
+
+for (const inherited of [false, true]) {
+  it.each(['cpu', 'gpu'])(`%s class breaks retains getter mask, inherited=${inherited}`, form => {
+    const descriptor = {get: () => 'mask', enumerable: false};
+    const props: ClassBreaksOperationProps = Object.assign(
+      inherited
+        ? Object.create(Object.defineProperty({}, 'mask', descriptor))
+        : Object.defineProperty({}, 'mask', descriptor),
+      {...PROPS, rowCount: 2, maximumClassCount: 2, methods: ['equal-interval'] as const}
+    );
+    if (form === 'cpu') {
+      const result = new CPUClassBreaksOperation(props).execute({
+        inputs: {
+          values: createInputRows(Float32Array.of(1, 100)),
+          mask: createInputRows(Uint32Array.of(1, 0)),
+          parameters: createInputRows(
+            getGPUClassBreaksParameterValues({method: 'equal-interval', classCount: 2}, 2)
+          )
+        }
+      }) as Record<string, Float32Array | Uint32Array>;
+      expect(Array.from(result['breaks'])).toEqual([1, 1, NaN]);
+    } else {
+      const operation = new GPUClassBreaksOperation(props);
+      expect(operation.inputs).toHaveProperty('mask', 'mask');
+      const device = createNullWebGPUDevice();
+      try {
+        const getView = createOperationTestViewGetter(new GPUCommandGraph(device), {
+          values: {format: 'float32', length: 2},
+          mask: {format: 'uint32', length: 2},
+          parameters: {format: 'float32', length: 11},
+          breaks: {format: 'float32', length: 3},
+          classCount: {format: 'uint32', length: 1},
+          classCounts: {format: 'uint32', length: 2}
+        });
+        expect(operation.createContributor(getView)).toHaveProperty('props.mask', getView('mask'));
+      } finally {
+        device.destroy();
+      }
+    }
+  });
+
+  it.each([
+    {form: 'cpu', Operation: CPUClassBreaksOperation},
+    {form: 'gpu', Operation: GPUClassBreaksOperation}
+  ])(`$form class-break outputs retain getter fields, inherited=${inherited}`, ({Operation}) => {
+    const fields = Object.fromEntries(
+      Object.entries(PROPS.output).map(([name, value]) => [
+        name,
+        {get: () => value, enumerable: false}
+      ])
+    );
+    const output = inherited
+      ? Object.create(Object.defineProperties({}, fields))
+      : Object.defineProperties({}, fields);
+    const operation = new Operation({...PROPS, output});
+    if (operation instanceof CPUClassBreaksOperation) {
+      expect(Object.keys(operation.outputs).sort()).toEqual([
+        'breaks',
+        'classCount',
+        'classCounts'
+      ]);
+    } else {
+      expect(operation.outputs).toHaveProperty('breaks.value', 'breaks');
+      expect(operation.outputs).toHaveProperty('classCount.value', 'classCount');
+      expect(operation.outputs).toHaveProperty('classCounts.value', 'classCounts');
+    }
+  });
+}
+
+it.each([
+  {form: 'cpu', Operation: CPUClassBreaksOperation},
+  {form: 'gpu', Operation: GPUClassBreaksOperation}
+])('$form class-break operation rejects exact storage without exact mode', ({Operation}) => {
+  expect(
+    () =>
+      new Operation({...PROPS, methods: ['equal-interval'], naturalBreaksExactStorage: 'recompute'})
+  ).toThrow(/naturalBreaksExactStorage requires exact mode/);
+  expect(
+    () =>
+      new Operation({
+        ...PROPS,
+        methods: ['equal-interval'],
+        naturalBreaksMode: 'exact',
+        naturalBreaksExactStorage: 'recompute'
+      })
+  ).not.toThrow();
+});
+
+it.each([
+  'uint32',
+  'sint32'
+] as const)('infers omitted valuesFormat for %s on both forms', format => {
+  const values = format === 'uint32' ? new Uint32Array([0, 2]) : new Int32Array([-2, 0]);
+  const props = {
+    ...PROPS,
+    rowCount: undefined,
+    maximumClassCount: 2,
+    methods: ['equal-interval'] as const
+  };
+  const operation = new CPUClassBreaksOperation(props);
+  const result = operation.execute({
+    inputs: {
+      values: createInputRows(values),
+      parameters: createInputRows(
+        getGPUClassBreaksParameterValues({method: 'equal-interval', classCount: 2}, 2)
+      )
+    }
+  }) as Record<string, Float32Array | Uint32Array>;
+  expect(Array.from(result['breaks'])).toEqual(format === 'uint32' ? [0, 1, 2] : [-2, -1, 0]);
+  expect(Array.from(result['classCounts'])).toEqual([1, 1]);
+  const device = createNullWebGPUDevice();
+  try {
+    const getView = createOperationTestViewGetter(new GPUCommandGraph(device), {
+      values: {format, length: 2},
+      parameters: {format: 'float32', length: 11},
+      breaks: {format: 'float32', length: 3},
+      classCount: {format: 'uint32', length: 1},
+      classCounts: {format: 'uint32', length: 2}
+    });
+    expect(() => new GPUClassBreaksOperation(props).createContributor(getView)).not.toThrow();
+  } finally {
+    device.destroy();
+  }
+});
+
+it.each([
+  {rowCount: 3},
+  {valuesFormat: 'float32' as const}
+])('both forms reject inconsistent assertions %o', assertion => {
+  const props = {
+    ...PROPS,
+    rowCount: 2,
+    maximumClassCount: 2,
+    methods: ['equal-interval'] as const,
+    ...assertion
+  };
+  const expected = assertion.rowCount !== undefined ? /rowCount/ : /valuesFormat/;
+  expect(() =>
+    new CPUClassBreaksOperation(props).execute({
+      inputs: {
+        values: createInputRows(new Uint32Array([0, 2])),
+        parameters: createInputRows(
+          getGPUClassBreaksParameterValues({method: 'equal-interval', classCount: 2}, 2)
+        )
+      }
+    })
+  ).toThrow(expected);
+  const device = createNullWebGPUDevice();
+  try {
+    const getView = createOperationTestViewGetter(new GPUCommandGraph(device), {
+      values: {format: 'uint32', length: 2},
+      parameters: {format: 'float32', length: 11},
+      breaks: {format: 'float32', length: 3},
+      classCount: {format: 'uint32', length: 1},
+      classCounts: {format: 'uint32', length: 2}
+    });
+    expect(() => new GPUClassBreaksOperation(props).createContributor(getView)).toThrow(expected);
+  } finally {
+    device.destroy();
+  }
+});
 function computeBreaks(values: number[], settings: GPUClassBreaksSettings) {
   return computeClassBreaksOnCPU(
     Float32Array.from(values),
@@ -34,6 +209,103 @@ function computeBreaks(values: number[], settings: GPUClassBreaksSettings) {
     {maximumClassCount: 6}
   );
 }
+
+it.each([0, 1])('both class-break forms require at least one inferred row: %s', rowCount => {
+  const props: ClassBreaksOperationProps = {
+    ...PROPS,
+    rowCount: undefined,
+    maximumClassCount: 2,
+    methods: ['equal-interval']
+  };
+  const device = createNullWebGPUDevice();
+  try {
+    const getView = createOperationTestViewGetter(new GPUCommandGraph(device), {
+      values: {format: 'uint32', length: rowCount},
+      parameters: {format: 'float32', length: 11},
+      breaks: {format: 'float32', length: 3},
+      classCount: {format: 'uint32', length: 1},
+      classCounts: {format: 'uint32', length: 2}
+    });
+    const runCPU = () =>
+      new CPUClassBreaksOperation(props).execute({
+        inputs: {
+          values: createInputRows(new Uint32Array(rowCount).fill(7)),
+          parameters: createInputRows(
+            getGPUClassBreaksParameterValues({method: 'equal-interval', classCount: 2}, 2)
+          )
+        }
+      });
+    const runGPU = () => new GPUClassBreaksOperation(props).createContributor(getView);
+    if (rowCount === 0) {
+      expect.soft(runCPU).toThrow(/values.*1/);
+      expect.soft(runGPU).toThrow(/values.*1/);
+    } else {
+      const result = runCPU() as Record<string, Float32Array | Uint32Array>;
+      expect(Array.from(result['breaks']).slice(0, 2)).toEqual([7, 7]);
+      expect(Array.from(result['classCount'])).toEqual([1]);
+      expect(runGPU).not.toThrow();
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
+it.each([
+  'cpu',
+  'gpu'
+])('existing %s class-break operation retains its contract after caller mutation', form => {
+  const methods: NonNullable<ClassBreaksOperationProps['methods']>[number][] = ['equal-interval'];
+  const props: ClassBreaksOperationProps = {
+    ...PROPS,
+    rowCount: 2,
+    maximumClassCount: 2,
+    methods,
+    output: {...PROPS.output}
+  };
+  const cpu = new CPUClassBreaksOperation(props);
+  const gpu = new GPUClassBreaksOperation(props);
+  const inputs = {
+    values: createInputRows(new Uint32Array([0, 2])),
+    parameters: createInputRows(
+      getGPUClassBreaksParameterValues({method: 'equal-interval', classCount: 2}, 2)
+    )
+  };
+  const device = createNullWebGPUDevice();
+  try {
+    const getView = createOperationTestViewGetter(new GPUCommandGraph(device), {
+      values: {format: 'uint32', length: 2},
+      parameters: {format: 'float32', length: 11},
+      breaks: {format: 'float32', length: 3},
+      classCount: {format: 'uint32', length: 1},
+      classCounts: {format: 'uint32', length: 2}
+    });
+    for (const run of [0, 1]) {
+      if (run === 1) {
+        props.rowCount = 3;
+        props.valuesFormat = 'float32';
+        props.maximumClassCount = 6;
+        props.values = 'other-values';
+        props.mask = 'other-mask';
+        props.output.breaks = 'other-breaks';
+        props.output.classCounts = undefined;
+        methods.splice(0, methods.length, 'quantile');
+      }
+      if (form === 'cpu') {
+        const result = cpu.execute({inputs}) as Record<string, Float32Array | Uint32Array>;
+        expect(Object.keys(result).sort()).toEqual(['breaks', 'classCount', 'classCounts']);
+        expect(Array.from(result['breaks'])).toEqual([0, 1, 2]);
+        expect(Array.from(result['classCounts'])).toEqual([1, 1]);
+      } else {
+        const contributor = gpu.createContributor(getView);
+        expect(contributor).toHaveProperty('methods', ['equal-interval']);
+        expect(contributor).toHaveProperty('props.values.length', 2);
+        expect(contributor).toHaveProperty('props.output.classCounts.length', 2);
+      }
+    }
+  } finally {
+    device.destroy();
+  }
+});
 
 // Enumerate every partition into k nonempty classes at distinct-value boundaries. Score it by
 // direct deviations about each class's independently recomputed mean, not the twin's recurrence.

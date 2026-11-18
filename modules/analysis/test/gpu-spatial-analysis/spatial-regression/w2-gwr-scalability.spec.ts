@@ -8,6 +8,7 @@ import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
   GPUParameterBuffer,
+  type GPUParameterValues,
   importGraphBuffer
 } from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -118,7 +119,7 @@ async function runScene(device: Device, scene: NonstationarityScene, options: Op
   const parameter = <Format extends 'float32' | 'uint32'>(
     name: string,
     format: Format,
-    values: Format extends 'float32' ? Float32Array : Uint32Array
+    values: GPUParameterValues<Format>
   ) => {
     const buffer = new GPUParameterBuffer(device, {id: name, format, length: values.length});
     buffer.write(values);

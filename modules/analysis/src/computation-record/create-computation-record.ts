@@ -4,6 +4,7 @@
 
 import {GPU_COMPUTATION_RECORD_SCHEMA} from './computation-record-types';
 import {hashGPUComputationText} from './hash-computation-text';
+import {getGPUComputationIdentityIssues} from './computation-identity-validation';
 import type {
   GPUComputationGraph,
   GPUComputationSourceRef,
@@ -13,8 +14,12 @@ import type {
   GPUDecisionRecord,
   GPUAnalysisChoice,
   GPUWorkflowRecord,
-  GPUComputationRecord
+  GPUComputationRecord,
+  GPUComputationAttributes
 } from './computation-record-types';
+
+// Bump when analysis correctness changes invalidate comparisons with earlier captures.
+const DEFAULT_IMPLEMENTATION_REVISION = 'analysis-2026-11-18-review-1';
 
 /** A graph, optionally accompanied by the sources returned by its description. */
 export type GPUComputationGraphInput =
@@ -37,6 +42,12 @@ export type CreateGPUComputationRecordProps = {
   choices?: readonly GPUAnalysisChoice[];
   workflow?: GPUWorkflowRecord;
   runId?: string;
+  /** Unique execution identity; defaults to a random UUID. Supply explicitly for fixtures. */
+  executionId?: string;
+  /** Per-frame parameter values included in deterministic run identity. */
+  parameters?: GPUComputationAttributes;
+  /** Implementation revision; defaults to `analysis-2026-11-18-review-1`. Change after correctness fixes. */
+  implementationRevision?: string;
   createdAt?: string;
   datasetVersion?: string;
   seed?: string | number;
@@ -46,7 +57,17 @@ export type CreateGPUComputationRecordProps = {
 export function createGPUComputationRecord(
   props: CreateGPUComputationRecordProps
 ): GPUComputationRecord {
-  const graphs = props.graphs.map(input => ('graph' in input ? input.graph : input));
+  validateIdentity(props);
+  const adapter = {...props.adapter};
+  const choices =
+    props.choices?.map(choice => ({
+      ...choice,
+      ...(choice.alternatives && {alternatives: [...choice.alternatives]})
+    })) ?? [];
+  const graphs = props.graphs.map(input => {
+    const graph = 'graph' in input ? input.graph : input;
+    return {...graph, nodes: graph.nodes.map(node => ({...node}))};
+  });
   const sources = new Map<string, GPUComputationSourceRef>();
   const addSource = (source: GPUComputationSourceRef): void => {
     const previous = sources.get(source.id);
@@ -68,9 +89,12 @@ export function createGPUComputationRecord(
   return {
     schema: GPU_COMPUTATION_RECORD_SCHEMA,
     id: props.id,
-    runId: props.runId ?? getGPUComputationRunId({...props, graphs}),
+    runId: props.runId ?? getGPUComputationRunId({...props, graphs, adapter, choices}),
+    executionId: props.executionId ?? globalThis.crypto.randomUUID(),
+    implementationRevision: props.implementationRevision ?? DEFAULT_IMPLEMENTATION_REVISION,
+    ...(props.parameters !== undefined && {parameters: {...props.parameters}}),
     createdAt: props.createdAt ?? new Date().toISOString(),
-    adapter: props.adapter,
+    adapter,
     domains: props.domains,
     graphs,
     axes: {
@@ -80,27 +104,46 @@ export function createGPUComputationRecord(
     },
     refs: {formulas: props.formulas ?? [], sources: [...sources.values()]},
     decisions: props.decisions ?? [],
-    choices: props.choices ?? [],
+    choices,
     ...(props.workflow !== undefined && {workflow: props.workflow})
   };
 }
 
-/** Hashes ordered graph/node ids, backend/variant, dataset version and seed into `run-<8 hex>`. */
+/** Hashes ordered graph/node ids, adapter, parameters, choices, revision, dataset and seed. */
 export function getGPUComputationRunId(props: {
   graphs: readonly GPUComputationGraph[];
   adapter: GPUComputationAdapter;
   datasetVersion?: string;
   seed?: string | number;
+  parameters?: GPUComputationAttributes;
+  implementationRevision?: string;
+  choices?: readonly GPUAnalysisChoice[];
 }): string {
+  validateIdentity(props);
   return `run-${hashGPUComputationText(
     JSON.stringify([
       props.graphs.map(graph => [graph.id, graph.nodes.map(node => node.id)]),
-      props.adapter.backend,
-      props.adapter.variant ?? null,
+      [
+        props.adapter.backend,
+        props.adapter.variant ?? null,
+        props.adapter.vendor ?? null,
+        props.adapter.architecture ?? null,
+        props.adapter.description ?? null
+      ],
       props.datasetVersion ?? null,
-      props.seed ?? null
+      props.seed ?? null,
+      props.implementationRevision ?? DEFAULT_IMPLEMENTATION_REVISION,
+      Object.entries(props.parameters ?? {}).sort(([first], [second]) =>
+        first < second ? -1 : first > second ? 1 : 0
+      ),
+      (props.choices ?? []).map(choice => [choice.stage, choice.name, choice.value])
     ])
   )}`;
+}
+
+function validateIdentity(props: Parameters<typeof getGPUComputationIdentityIssues>[0]): void {
+  const issue = getGPUComputationIdentityIssues(props)[0];
+  if (issue) throw new Error(`computation-record ${issue.path}: ${issue.message}`);
 }
 
 /** Reads the DeviceInfo vendor, architecture (falling back to GPU family), and renderer. */

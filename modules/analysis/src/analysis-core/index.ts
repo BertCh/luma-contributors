@@ -23,7 +23,11 @@ export {getGraphViewChunks} from './kernels/gpu-contributor-utils';
 // validators and kernel helpers a contributor needs. This is the only entry point that exports
 // them; domain entry points export contributors.
 export * from './contracts/index';
-export type {GPUParameterBufferProps, GPUParameterFormat} from './kernels/gpu-contributor-utils';
+export type {
+  GPUParameterBufferProps,
+  GPUParameterFormat,
+  GPUParameterValues
+} from './kernels/gpu-contributor-utils';
 export {
   GPUParameterBuffer,
   GPU_MAXIMUM_COMMAND_NODE_COUNT,
@@ -39,6 +43,7 @@ export {
   validateMaximumCount,
   validatePowerOfTwo,
   validateRequirement,
+  validateSinglePackedView,
   validateViewLength
 } from './kernels/gpu-contributor-utils';
 export {
@@ -65,13 +70,13 @@ export {
   GPU_FITTING_MAXIMUM_WORK
 } from './kernels/fitting-utils';
 
-export {resolveGPURasterContext} from './raster-grid';
+export {resolveGPURasterContext} from './contracts/raster-grid';
 export type {
   GPURasterContextOptions,
   GPUResolvedRasterContext,
   GPURasterCellSizeMode
-} from './raster-grid';
-export * from './device-limits';
+} from './contracts/raster-grid';
+export * from './graph-support/device-limits';
 export {createGraphChunkGather} from './kernels/graph-chunk-gather';
 export * from './kernels/graph-chunk-dispatch';
 export * from './kernels/graph-chunk-groups';

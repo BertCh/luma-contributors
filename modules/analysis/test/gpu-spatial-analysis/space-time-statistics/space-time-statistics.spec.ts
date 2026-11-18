@@ -19,7 +19,11 @@ import {
   GPUSpatialWeightsAlgebra,
   type GPUSpaceTimeWeightsLayout
 } from '../../../src/gpu-spatial-analysis/spatial-weights/index';
-import {readFloat32, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {readFloat32, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
+import {
+  GPULocalMoran,
+  getGPUSpatialAutocorrelationParameterValues
+} from '../../../src/gpu-spatial-analysis/spatial-autocorrelation/index';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {
   computeLocalPermutationOracle,
@@ -37,6 +41,100 @@ const CELLS = REFERENCE.n;
 const PERIODS = REFERENCE.periods;
 const PERMUTATIONS = REFERENCE.permutations;
 const SEED = 20240607;
+
+it('analytic and permutation Moran suppress the same incomplete CSR and recover on reuse', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new WeightsRig(device);
+  const overflow = new GPUParameterBuffer(device, {id: 'moran-loss', format: 'uint32', length: 1});
+  const candidateOverflow = new GPUParameterBuffer(device, {
+    id: 'moran-candidate-loss',
+    format: 'uint32',
+    length: 1
+  });
+  let compiled: ReturnType<typeof rig.graph.compile> | undefined;
+  try {
+    const weights = {
+      ...rig.uploadWeights({
+        offsets: [0, 1, 3, 5, 6],
+        neighbors: [1, 0, 2, 1, 3, 2],
+        weights: [1, 1, 1, 1, 1, 1],
+        distances: []
+      }),
+      status: {
+        overflow: overflow.importToGraph(rig.graph),
+        candidateOverflow: candidateOverflow.importToGraph(rig.graph)
+      }
+    };
+    const analytic = rig.output('float32', 4),
+      observed = rig.output('float32', 4),
+      pseudo = rig.output('float32', 4);
+    const completeness = rig.output('uint32', 1);
+    rig.graph.add(
+      new GPULocalMoran({
+        weights,
+        values: rig.input(Float32Array.of(1, 2, 4, 8), 'float32', 4),
+        parameters: rig.input(
+          getGPUSpatialAutocorrelationParameterValues({}),
+          'float32',
+          getGPUSpatialAutocorrelationParameterValues({}).length
+        ),
+        output: {zScores: rig.output('float32', 4).view, localI: analytic.view}
+      })
+    );
+    rig.graph.add(
+      new GPUSpaceTimeLocalMoran({
+        weights,
+        cube: rig.input(Float32Array.of(0, 0, 0, 0, 1, 2, 4, 8), 'float32', 8),
+        layout: 'period-major',
+        periodCount: 2,
+        period: 1,
+        variant: 'differential',
+        maximumPermutations: 7,
+        maximumNeighbors: 4,
+        parameters: rig.input(
+          getGPUPermutationParameterValues({seed: 23, permutationCount: 7}),
+          'uint32',
+          GPU_PERMUTATION_PARAMETER_LENGTH
+        ),
+        output: {
+          exceedances: rig.output('uint32', 4).view,
+          observed: observed.view,
+          pseudoPValues: pseudo.view,
+          status: {overflow: completeness.view}
+        }
+      })
+    );
+    compiled = rig.graph.compile();
+    for (const [finalLoss, candidateLoss] of [
+      [0, 1],
+      [0, 0],
+      [1, 0],
+      [0, 0]
+    ]) {
+      overflow.write(Uint32Array.of(finalLoss));
+      candidateOverflow.write(Uint32Array.of(candidateLoss));
+      submitGraph(device, compiled, undefined);
+      expect(await readUint32(completeness.buffer, 1)).toEqual([
+        finalLoss || candidateLoss ? 1 : 0
+      ]);
+      const results = await Promise.all([
+        readFloat32(analytic.buffer, 4),
+        readFloat32(observed.buffer, 4),
+        readFloat32(pseudo.buffer, 4)
+      ]);
+      for (const result of results)
+        expect(result.every(finalLoss || candidateLoss ? Number.isNaN : Number.isFinite)).toBe(
+          true
+        );
+    }
+  } finally {
+    compiled?.destroy();
+    rig.destroy();
+    overflow.destroy();
+    candidateOverflow.destroy();
+  }
+});
 const LEVEL = 0.05;
 /** Five-sigma difference of two independent p-value estimates, plus esda's two-sided definition gap. */
 const P_VALUE_BOUND = 5 * Math.sqrt((2 * 0.25) / PERMUTATIONS) + 0.015;

@@ -28,6 +28,7 @@ import {
   type CoarseningOracleResult
 } from './network-coarsening-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {validateNetworkCoarseningCapture} from '../../../../lenses/src/computation-lenses/scenarios/gpu-network/network-coarsening.example';
 
 type FixtureOptions = {
   nodeCount: number;
@@ -54,6 +55,7 @@ type Result = {
   count: number;
   total: number;
   overflow: number;
+  candidateOverflow: number;
   edgeIds: number[];
   edgeTargets: number[];
   edgeCounts: number[];
@@ -120,6 +122,7 @@ class Fixture {
           status: {
             count: output('edge-count', 'uint32', 1, 1) as never,
             overflow: output('edge-overflow', 'uint32', 1, 1) as never,
+            candidateOverflow: output('edge-candidate-overflow', 'uint32', 1, 1) as never,
             requiredCount: output('edge-total', 'uint32', 1, 1) as never
           }
         },
@@ -148,6 +151,7 @@ class Fixture {
       count: (await u('edge-count', 1))[0],
       total: (await u('edge-total', 1))[0],
       overflow: (await u('edge-overflow', 1))[0],
+      candidateOverflow: (await u('edge-candidate-overflow', 1))[0],
       edgeIds: await u('edge-ids', edges),
       edgeTargets: await u('edge-targets', edges),
       edgeCounts: await u('edge-counts', edges),
@@ -204,6 +208,7 @@ function expectMatches(actual: Result, fixture: Fixture): CoarseningOracleResult
   expect(actual.total).toBe(expected.edges.length);
   expect(actual.count).toBe(Math.min(expected.edges.length, edgeCapacity));
   expect(actual.overflow).toBe(expected.overflow ? 1 : 0);
+  expect(actual.candidateOverflow).toBe(expected.candidateOverflow ? 1 : 0);
   const kept = expected.edges.slice(0, edgeCapacity);
   expect(actual.edgeIds.slice(0, actual.count)).toEqual(kept.map(edge => edge.source));
   expect(actual.edgeTargets.slice(0, actual.count)).toEqual(kept.map(edge => edge.target));
@@ -344,8 +349,50 @@ it('GPUNetworkCoarsening reports label overflow and excludes those vertices', as
   const expected = expectMatches(result, fixture);
   expect(expected.summary[1]).toBeGreaterThan(0);
   expect(expected.summary[3]).toBeGreaterThan(0);
-  expect(result.overflow).toBe(1);
+  expect(result.candidateOverflow).toBe(1);
+  expect(expected.edges.length).toBeLessThanOrEqual(fixture.options.edgeCapacity);
+  expect(result.overflow).toBe(0);
+  expect(() =>
+    validateNetworkCoarseningCapture({
+      overflow: result.overflow,
+      candidateOverflow: result.candidateOverflow,
+      groupNodeCount: result.groupVertexCount
+    })
+  ).toThrow(/excluded labels or edges/);
   fixture.destroy();
+});
+
+it('refuses a coarsening capture with five live labels and four nonempty retained groups', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new Fixture(device, {
+    nodeCount: 5,
+    csr: buildCoarseningCSR(5, [
+      [0, 1, 1],
+      [1, 2, 1],
+      [2, 3, 1],
+      [3, 4, 1]
+    ]),
+    labels: Uint32Array.of(0, 1, 2, 3, 4),
+    groupCapacity: 4,
+    edgeCapacity: 16,
+    directed: true
+  });
+  try {
+    const result = await fixture.run();
+    expect(result.groupVertexCount).toEqual([1, 1, 1, 1]);
+    expect(result.overflow).toBe(0);
+    expect(result.candidateOverflow).toBe(1);
+    expect(() =>
+      validateNetworkCoarseningCapture({
+        overflow: result.overflow,
+        candidateOverflow: result.candidateOverflow,
+        groupNodeCount: result.groupVertexCount
+      })
+    ).toThrow(/excluded labels or edges/);
+  } finally {
+    fixture.destroy();
+  }
 });
 
 it('GPUNetworkCoarsening clamps the superedge list and keeps the smallest keys', async () => {

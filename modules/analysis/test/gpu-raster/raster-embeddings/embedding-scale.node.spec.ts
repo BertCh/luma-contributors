@@ -32,11 +32,55 @@ import {
   getGPUCommandNodePipelineKeys,
   getParsedKernelSources
 } from '../../utils/gpu-contributor-test-utils';
+import {planRasterEmbeddingChunks} from '../../../src/raster-analysis/raster-embeddings/raster-embedding-chunks';
+import {validateRasterEmbeddingShape} from '../../../src/raster-analysis/raster-embeddings/raster-embedding-common';
 
 const devices: KernelAuditContext['device'][] = [];
 afterEach(() => {
   vi.restoreAllMocks();
   devices.splice(0).forEach(device => device.destroy());
+});
+
+it('enforces the total codec pixel limit independently of per-chunk component addressing', () => {
+  expect(() =>
+    validateRasterEmbeddingShape('codec-total', 0xffffffff, 1, 1024, false)
+  ).not.toThrow();
+  expect(() => validateRasterEmbeddingShape('codec-total', 0x100000000, 1, 1024, false)).toThrow(
+    /pixelCount.*4294967295/
+  );
+});
+
+it.each([
+  {name: 'encode', dispatches: 2, accepted: 16383},
+  {name: 'decode', dispatches: 1, accepted: 32767}
+])('accepts the last $name chunk count and rejects the next one', ({
+  name,
+  dispatches,
+  accepted
+}) => {
+  const context = createKernelAuditContext(`codec-${name}-budget`);
+  devices.push(context.device);
+  const packed = context.graph.createDataView(context.buffer(16), {format: 'float32', length: 4});
+  const plan = (count: number) =>
+    planRasterEmbeddingChunks(
+      `codec-${name}`,
+      count,
+      {
+        vectors: {
+          view: createVectorView(
+            'pixels',
+            'float32',
+            Array.from({length: count}, () => packed)
+          ),
+          format: 'float32',
+          components: 4
+        }
+      },
+      'vectors',
+      dispatches
+    );
+  expect(plan(accepted)).toHaveLength(accepted);
+  expect(() => plan(accepted + 1)).toThrow(/estimated command node count.*32768/);
 });
 
 function getFixture(lengths: number[], dimensions = 192, padded = true) {
@@ -275,7 +319,7 @@ it('rejects same-dispatch aligned overlap and repeated output chunks, allowing c
           ])
         }
       })
-  ).toThrow(/logical writable byte ranges must not overlap/);
+  ).toThrow(/logical byte ranges must not overlap/);
 });
 
 it('checks all aligned binding prefixes and derived top-k scratch before graph mutation', () => {

@@ -6,8 +6,8 @@ import type {Device} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
-import {GPUPointCloudSMRF} from '../../src/pointcloud-analysis/gpu-pointcloud-smrf';
-import {GPUPointCloudNeighborhoods} from '../../src/pointcloud-analysis/gpu-pointcloud-neighborhoods';
+import {GPUPointCloudSMRF} from '../../src/pointcloud-analysis/operations/gpu-pointcloud-smrf';
+import {GPUPointCloudNeighborhoods} from '../../src/pointcloud-analysis/operations/gpu-pointcloud-neighborhoods';
 import {makeSpatialFixture, readFloats, readIntegers} from '../spatial-test-utils';
 import {getBenchmarkDistribution, getBenchmarkSettings} from '../utils/benchmark-settings';
 import {requireTestDevice} from '../utils/require-test-device';
@@ -123,10 +123,12 @@ async function measureNeighborhoods(
           : {origin: [0, 0, 0], dimensions: [side + 1, side + 1, side + 1], cellSize: 1},
       radius: distribution === 'coincident' ? 0.1 : 1.01,
       capacity,
-      indices: indices.view,
-      squaredDistances: squaredDistances.view,
-      counts: counts.view,
-      status: status.view
+      output: {
+        indices: indices.view,
+        squaredDistances: squaredDistances.view,
+        counts: counts.view,
+        status: status.view
+      }
     })
   );
   const expectedIndices: number[] = [];
@@ -220,10 +222,12 @@ async function measureGroundClassification(
       classifications: classifications.view,
       grid: {origin: [0, 0], cellSize: 1, width: side, height: side},
       window: 4,
-      groundSurface: groundSurface.view,
-      groundMask: groundMask.view,
-      outputClassifications: outputClassifications.view,
-      status: status.view
+      output: {
+        groundSurface: groundSurface.view,
+        groundMask: groundMask.view,
+        outputClassifications: outputClassifications.view,
+        status: status.view
+      }
     })
   );
   const validate = async () => {

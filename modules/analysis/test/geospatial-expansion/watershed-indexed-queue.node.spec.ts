@@ -65,7 +65,7 @@ for (const storageLimit of [16384, 32768])
           expect(usage.storageBuffers).toBeLessThanOrEqual(8);
           expect(usage.privateBytes).toBeLessThanOrEqual(8192);
           expect(usage.functionBytes).toBeLessThanOrEqual(8192);
-          expect(usage.workgroupBytes).toBeLessThanOrEqual(storageLimit);
+          expect(usage.workgroupStorageBytes).toBeLessThanOrEqual(storageLimit);
           if (kernel.operation === 'GPURasterWatershedSegmentation') {
             const fitsWorkgroup = count * 16 <= storageLimit;
             expect(usage.workgroupBytes > 0).toBe(fitsWorkgroup);

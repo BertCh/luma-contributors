@@ -149,8 +149,13 @@ export type GPUPolygonOverlayBoundaryPort = {
  * Boolean combination of operand unions, so one output polygon can lie over several input features
  * of each operand: it has no single source row, and `geometry` has no `sourceIds` (contributor
  * contract rule 8). Provenance is per boundary edge (`boundary.operandIds`,
- * `boundary.sourceFeatureIds`); to find the input features under an output polygon, join a point
- * inside it (for example from `GPULabelPoint`) to each operand with `GPUPointInPolygonJoin`.
+ * `boundary.sourceFeatureIds`). A label point joined to each operand identifies only features
+ * containing that point; it cannot enumerate an output polygon's sources (a dissolved shell can
+ * cover adjacent input parcels). For source membership, join output polygons to each operand
+ * with an explicitly chosen polygon relation, such as positive-area interior intersection,
+ * keeping boundary-only contacts separate. Attribute-preserving membership needs a relation
+ * carrying output feature row, operand and source row; `featureSources` is only a representative
+ * retained boundary owner, not that relation.
  *
  * **Breaking (2026-11-10):** `geometry.sourceIds` (it held the output row index) is removed, and
  * `status.requiredCount`, which held the unclamped ring count, is removed: the unclamped feature
@@ -160,8 +165,10 @@ export type GPUPolygonOverlayBoundaryPort = {
 export type GPUPolygonOverlayOutput = {
   /** Optional per-output-feature representative boundary source row. Mixed provenance is explicit;
    * this does not enumerate interior features or every owner of coincident boundary edges.
-   * Valid only when output.status.overflow is zero, like the generated polygon itself. */
+   * Valid only when both output.status.overflow and output.status.candidateOverflow are zero,
+   * like the generated polygon itself. */
   featureSources?: GPUPolygonOverlayFeatureSources;
+  /** Geometry is complete only when both status.overflow and status.candidateOverflow are zero. */
   geometry: Omit<GPUPackedGeometryPort<GPUPolygonGeometryPort>, 'sourceIds'>;
   status: Omit<GPUBoundedResultStatusPort, 'requiredCount'> &
     GPURingCountStatusPort & {
@@ -174,7 +181,8 @@ export type GPUPolygonOverlayOutput = {
       candidateOverflow: GraphDataView<'uint32'>;
       /**
        * Optional one-row count of segment pairs the intersection predicates could not certify.
-       * They set `overflow` whether or not this view is given.
+       * They set `candidateOverflow` whether or not this view is given; `overflow` alone does
+       * not indicate noding uncertainty. Reject geometry and provenance while either flag is set.
        */
       uncertainCount?: GraphDataView<'uint32'>;
       /** Optional unclamped noded-piece requirement; exact when candidateOverflow is zero. */
@@ -289,9 +297,10 @@ function validateStatus(id: string, name: string, status: GPUPolygonOverlayOutpu
  * rule on the snap-rounded linework still defines the result; GEOS polygon overlay on invalid
  * operands need not agree.
  *
- * Output and arrangement capacities are explicit. `candidateOverflow` means noding was incomplete;
- * `overflow` additionally covers boundary, ring or vertex capacity, non-finite vertices and pairs
- * the exact predicates could not certify. Boundary provenance is one row per group of coincident
+ * Output and arrangement capacities are explicit. `candidateOverflow` means noding was incomplete,
+ * including non-finite input and pairs the exact predicates could not certify; `overflow` covers
+ * capacity loss in the emitted noded segments, boundary, rings or vertices. Both flags must be zero
+ * before accepting geometry or provenance. Boundary provenance is one row per group of coincident
  * pieces, from the first piece of the group in lattice order, and remains aligned with the compact
  * selected edge list. Results are exact on the lattice: no node drift, no f32 crossing points.
  * For valid pointwise lattice-rounded operands, the result equals GEOS OverlayNG with `grid_size`

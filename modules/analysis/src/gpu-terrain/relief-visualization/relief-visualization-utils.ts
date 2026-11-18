@@ -9,7 +9,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {getRasterGroundScaleWGSL} from '../../analysis-core/raster-grid';
+import {getRasterGroundScaleWGSL} from '../../analysis-core/contracts/raster-grid';
 import {GET_QUIET_NAN_SEEDED_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import type {GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
 import {

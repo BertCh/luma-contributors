@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotRegressionOperationProps} from './regression-construction-snapshot';
+
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {validateCompleteRegressionWeights} from './cpu-regression-weights';
 import {GPUSpatialErrorGM, type GPUSpatialErrorGMProps} from './gpu-spatial-error-gm';
 import {
   GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH,
@@ -29,7 +32,9 @@ export type SpatialErrorGMOperationProps = Pick<
  */
 export class GPUSpatialErrorGMOperation extends GPUContributorOperation {
   constructor(props: SpatialErrorGMOperationProps) {
+    props = snapshotRegressionOperationProps(props);
     const id = props.id ?? 'spatial-error-gm';
+    validateCompleteRegressionWeights(id, props.weights);
     super({
       id,
       inputs: {

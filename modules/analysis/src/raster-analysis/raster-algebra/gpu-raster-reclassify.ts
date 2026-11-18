@@ -26,6 +26,7 @@ import {GPU_RASTER_RECLASSIFY_PARAMETER_LENGTH} from './reclassify-parameters';
 import {
   getRasterAlgebraInputNodes,
   getRasterAlgebraInputViews,
+  getNamedRasterAlgebraInputViews,
   isRasterAlgebraBand,
   validateRasterAlgebraInput,
   validateRasterAlgebraInputBindings
@@ -145,14 +146,18 @@ export class GPURasterReclassify implements GPUCommandNodeProducer {
     );
     validateRasterAlgebraAliasing(
       id,
-      [output.classes, output.reclassified, output.classCounts],
-      [
-        ...getRasterAlgebraInputViews(props.values),
-        props.mask,
-        props.breaks,
-        props.classValues,
-        props.parameters
-      ]
+      {
+        'output.classes': output.classes,
+        'output.reclassified': output.reclassified,
+        'output.classCounts': output.classCounts
+      },
+      {
+        ...getNamedRasterAlgebraInputViews(props.values, 'values'),
+        mask: props.mask,
+        breaks: props.breaks,
+        classValues: props.classValues,
+        parameters: props.parameters
+      }
     );
   }
 

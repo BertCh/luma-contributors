@@ -54,6 +54,7 @@ for (const scene of zonalCases) {
         new GPURasterZonalStatistics({
           grid,
           cellSizeMode: 'geographic',
+          parameterLayoutVersion: 2,
           parameters: fixture.input(
             'parameters',
             'float32',

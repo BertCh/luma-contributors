@@ -151,3 +151,30 @@ test('Arrow Decimal128 aggregation preserves sliced chunk values and nullable bi
     summarizeDecimal128Reference(values.slice(1, 5), 2)
   );
 });
+
+test('Arrow Decimal128 aggregation accepts non-null chunks without validity allocations', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const type = new arrow.Decimal(2, 38, 128);
+  const values = [11n, -22n, (1n << 96n) + 7n];
+  const makeChunk = (chunkValues: bigint[]) =>
+    arrow.makeData({
+      type,
+      length: chunkValues.length,
+      data: Uint32Array.from(chunkValues.flatMap(splitDecimal128ToWords)),
+      nullCount: 0
+    });
+  const column = new arrow.Vector([
+    makeChunk(values.slice(0, 1)),
+    makeChunk([]),
+    makeChunk(values.slice(1))
+  ]);
+  expect(await aggregateDecimal128Column(device, column)).toEqual({
+    count: 3,
+    nullCount: 0,
+    minimum: -22n,
+    maximum: (1n << 96n) + 7n,
+    sum: (1n << 96n) - 4n,
+    scale: 2
+  });
+});

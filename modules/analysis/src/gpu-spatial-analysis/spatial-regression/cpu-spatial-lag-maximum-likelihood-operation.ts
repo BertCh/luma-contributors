@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotRegressionOperationProps} from './regression-construction-snapshot';
+
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
@@ -17,7 +19,11 @@ import {
   fitCPURegressionWithQR,
   solveCPURegressionFactor
 } from './cpu-regression-linear-algebra';
-import {validateCPURegressionWeights, type CPURegressionWeights} from './cpu-regression-weights';
+import {
+  validateCPURegressionWeights,
+  validateCompleteRegressionWeights,
+  type CPURegressionWeights
+} from './cpu-regression-weights';
 import {
   getCPUErrorConditioning,
   getCPUErrorDot,
@@ -561,6 +567,8 @@ export function computeSpatialLagMaximumLikelihoodOnCPU(
 /** CPU whole-CSR twin, with GPU-only size/search caps dropped and identical graph values. */
 export class CPUSpatialLagMaximumLikelihoodOperation extends GPUCPUOperation {
   constructor(props: SpatialLagMaximumLikelihoodOperationProps) {
+    props = snapshotRegressionOperationProps(props);
+    validateCompleteRegressionWeights(props.id ?? 'spatial-lag-maximum-likelihood', props.weights);
     const id = props.id ?? 'spatial-lag-maximum-likelihood';
     validateOptions(id, props);
     validateCapacity(id, 'rowCount', props.rowCount);

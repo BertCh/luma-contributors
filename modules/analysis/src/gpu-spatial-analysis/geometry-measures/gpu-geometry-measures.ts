@@ -27,6 +27,7 @@ import type {
   GPUPolygonGeometryFields,
   GPUStatusScalar
 } from '../../analysis-core/contracts/index';
+import {validateGPUMultipartGeometryPort} from '../../analysis-core/contracts/index';
 import {
   getGPUAreaUnit,
   getGPUEdgeModel,
@@ -313,6 +314,20 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
       throw new Error(`${id} needs at least one position`);
     }
     const layout = getMeasuredLayout(props);
+    if (props.geometryType === 'points' && props.featureOffsets) {
+      validateGPUMultipartGeometryPort(id, {
+        kind: 'points',
+        positions: props.positions,
+        featureOffsets: props.featureOffsets
+      });
+    } else if (props.geometryType === 'lines' && props.featureOffsets) {
+      validateGPUMultipartGeometryPort(id, {
+        kind: 'lines',
+        positions: props.positions,
+        lineOffsets: props.lineOffsets,
+        featureOffsets: props.featureOffsets
+      });
+    }
     for (const name of ['ringOffsets', 'featureOffsets', 'polygonOffsets'] as const) {
       const view = layout[name];
       if (view) {

@@ -4,6 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
+import {readFileSync} from 'node:fs';
 import {GPUNetworkCostTable} from '../../../src/gpu-network/network-cost-table/index';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
@@ -64,4 +65,34 @@ it('GPUNetworkCostTable rejects configurations above the command node budget', (
   expect(() =>
     createContributor(graph, {nodeCount: 400, laneCount: 1, hasConverged: false})
   ).not.toThrow();
+});
+
+it('the documented large-network configuration fits both command and frontier limits', () => {
+  const documentation = readFileSync('docs/api/gpu-network/operators.md', 'utf8');
+  const configuration = documentation.match(
+    /For example, ([\d,]+) nodes with (\d+) lanes and (\d+) rounds/
+  );
+  expect(configuration, 'a concrete constructible cost-table configuration').not.toBeNull();
+  const nodeCount = Number(configuration![1].replaceAll(',', ''));
+  const laneCount = Number(configuration![2]);
+  const maximumIterations = Number(configuration![3]);
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  try {
+    const contributor = createContributor(graph, {
+      nodeCount,
+      laneCount,
+      maximumIterations,
+      hasConverged: true
+    });
+    expect(contributor.estimatedCommandNodeCount).toBeLessThanOrEqual(32768);
+    expect(8 * laneCount * nodeCount).toBeLessThanOrEqual(128 * 1024 * 1024);
+    // At the previous advertised 100,000 nodes, even the largest binding-safe lane count
+    // exceeds the command budget. All smaller lane counts need at least as many batches.
+    const maximumLanes = Math.floor((128 * 1024 * 1024) / (8 * 100_000));
+    expect(() =>
+      createContributor(graph, {nodeCount: 100_000, laneCount: maximumLanes, hasConverged: true})
+    ).toThrow(/estimated command node count/);
+  } finally {
+    graph.device.destroy();
+  }
 });

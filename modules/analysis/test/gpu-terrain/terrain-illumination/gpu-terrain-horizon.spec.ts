@@ -42,7 +42,7 @@ import {computeTerrainHorizonSweepBruteForce} from './terrain-horizon-sweep-orac
 import {
   getRasterGridGeoreference,
   getRasterGroundCellSize
-} from '../../../src/analysis-core/raster-grid';
+} from '../../../src/analysis-core/contracts/raster-grid';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {getOracleWebMercatorY} from '../terrain-oracle-utils';
@@ -59,6 +59,421 @@ type HorizonFixture = {
   destroy(): void;
 };
 
+it('RT-03 march and anchored sweep tiles agree with the whole blocker', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fullElevation = new Float32Array(81);
+  fullElevation[5 * 9 + 4] = 10;
+  const windowElevation = new Float32Array(49);
+  windowElevation[4 * 7 + 3] = 10;
+  for (const [algorithm, anchored] of [
+    ['march', false],
+    ['sweep', false],
+    ['sweep', true]
+  ] as const) {
+    const options = {
+      algorithm,
+      directionCount: 16,
+      maximumRadius: 2,
+      rowDirection: 'north' as const
+    };
+    const fullFixture = createHorizonFixture(device, fullElevation, {
+      ...options,
+      sweepOrigin: anchored ? [0, 0] : undefined,
+      width: 9,
+      height: 9
+    });
+    const windowFixture = createHorizonFixture(device, windowElevation, {
+      ...options,
+      sweepOrigin: anchored ? [1, 1] : undefined,
+      width: 7,
+      height: 7
+    });
+    try {
+      const full = await fullFixture.run(
+        {},
+        makeGPURasterMetadata({width: 9, height: 9, cellSize: 1, rowDirection: 'north'})
+      );
+      const window = await windowFixture.run(
+        {},
+        makeGPURasterMetadata({width: 7, height: 7, cellSize: 1, rowDirection: 'north'})
+      );
+      const fullPixel = 4 * 9 + 4;
+      const windowPixel = 3 * 7 + 3;
+      expect(full.validity[fullPixel]).toBe(1);
+      expect(window.validity[windowPixel]).toBe(1);
+      if (algorithm === 'sweep' && !anchored) {
+        expect(full.horizon[fullPixel * 16 + 1]).toBeCloseTo(83.822396, 3);
+        expect(window.horizon[windowPixel * 16 + 1]).toBe(0);
+      } else {
+        for (let sector = 0; sector < 16; sector++) {
+          const fullAngle = full.horizon[fullPixel * 16 + sector];
+          const windowAngle = window.horizon[windowPixel * 16 + sector];
+          expect(Number.isFinite(fullAngle)).toBe(true);
+          expect(Number.isFinite(windowAngle)).toBe(true);
+          expect(windowAngle).toBeCloseTo(fullAngle, 3);
+        }
+        expect(full.horizon[fullPixel * 16]).toBeCloseTo(84.289407, 3);
+        if (algorithm === 'sweep') {
+          expect(window.horizon[windowPixel * 16 + 1]).toBeCloseTo(83.822396, 3);
+        }
+      }
+    } finally {
+      fullFixture.destroy();
+      windowFixture.destroy();
+    }
+  }
+});
+
+it('RT-03 geographic sweep shares phase and reference cell across windows and parameter updates', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 13;
+  const height = 11;
+  const elevation = Float32Array.from(
+    {length: width * height},
+    (_, pixel) => ((pixel * 17) % 23) * 10
+  );
+  const window = Float32Array.from(
+    {length: 49},
+    (_, pixel) => elevation[(Math.floor(pixel / 7) + 1) * width + (pixel % 7) + 2]
+  );
+  const sharedSourceGrid = makeGPURasterMetadata({width, height, cellSize: 0.01, origin: [0, 60]});
+  const options = {
+    algorithm: 'sweep' as const,
+    directionCount: 16,
+    maximumRadius: 2,
+    cellSizeMode: 'geographic' as const,
+    sweepReferenceCellSize: [500, 1100] as const,
+    sweepSourceGrid: sharedSourceGrid,
+    withNegativeOpenness: true
+  };
+  const fullFixture = createHorizonFixture(device, elevation, {
+    ...options,
+    width,
+    height,
+    sweepOrigin: [0, 0]
+  });
+  const unplacedFullFixture = createHorizonFixture(device, elevation, {...options, width, height});
+  const windowFixture = createHorizonFixture(device, window, {
+    ...options,
+    width: 7,
+    height: 7,
+    sweepOrigin: [2, 1]
+  });
+  const fullGrid = makeGPURasterMetadata({width, height, cellSize: 0.01, origin: [0, 60]});
+  const windowGrid = makeGPURasterMetadata({
+    width: 7,
+    height: 7,
+    cellSize: 0.01,
+    origin: [0.02, 59.99]
+  });
+  try {
+    for (const referenceCellSize of [
+      [500, 1100],
+      [700, 900]
+    ] as const) {
+      const settings = {sweepReferenceCellSize: referenceCellSize, curvatureCoefficient: 1e-5};
+      const full = await fullFixture.run(settings, fullGrid);
+      const unplaced = await unplacedFullFixture.run(settings, fullGrid);
+      const cropped = await windowFixture.run(settings, windowGrid);
+      for (const [actual, grid, values, origin] of [
+        [full, fullGrid, elevation, [0, 0]],
+        [unplaced, fullGrid, elevation, [0, 0]],
+        [cropped, windowGrid, window, [2, 1]]
+      ] as const) {
+        const georeference = getRasterGridGeoreference(grid);
+        const expected = computeTerrainHorizonSweepBruteForce({
+          width: grid.width,
+          height: grid.height,
+          elevation: values,
+          origin,
+          directionCount: 16,
+          maximumRadius: 2,
+          cellSizeMode: 'geographic',
+          ...georeference,
+          referenceCellSize,
+          curvatureCoefficient: 1e-5,
+          nadir: true
+        });
+        expectOracle(actual, expected);
+      }
+      const fullPixel = 4 * width + 5;
+      const windowPixel = 3 * 7 + 3;
+      for (let sector = 0; sector < 16; sector++) {
+        const expected = full.horizon[fullPixel * 16 + sector];
+        const actual = cropped.horizon[windowPixel * 16 + sector];
+        expect(Number.isFinite(expected)).toBe(true);
+        expect(Number.isFinite(actual)).toBe(true);
+        expect(Math.abs(actual - expected)).toBeLessThan(2e-3);
+      }
+      for (const key of ['skyViewFactor', 'positiveOpenness', 'negativeOpenness'] as const) {
+        const expected = full[key]?.[fullPixel];
+        const actual = cropped[key]?.[windowPixel];
+        expect(Number.isFinite(expected)).toBe(true);
+        expect(Number.isFinite(actual)).toBe(true);
+        expect(Math.abs(actual! - expected!)).toBeLessThan(key === 'skyViewFactor' ? 1e-5 : 2e-3);
+      }
+      expect(cropped.validity[windowPixel]).toBe(full.validity[fullPixel]);
+    }
+  } finally {
+    fullFixture.destroy();
+    unplacedFullFixture.destroy();
+    windowFixture.destroy();
+  }
+});
+
+it('RT-13 grid-bounded schedules retain a valid far-axis sample without adding geometric samples', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const elevation = new Float32Array(30);
+  elevation[5] = 100;
+  for (const stepGrowth of [1, 2]) {
+    const fixture = createHorizonFixture(device, elevation, {
+      width: 6,
+      height: 5,
+      maximumRadius: 100,
+      stepGrowth,
+      directionCount: 4
+    });
+    try {
+      const actual = await fixture.run({});
+      const expected = computeTerrainHorizon({
+        width: 6,
+        height: 5,
+        elevation,
+        directionCount: 4,
+        cellSize: [10, 10],
+        stepDistances: stepGrowth === 1 ? [1, 2, 3, 4, 5, 6, 7] : [1, 2, 4]
+      });
+      expectOracle(actual, expected);
+      // A min-axis cutoff loses the distance-five blocker; adding an off-schedule five sees it.
+      expect(actual.horizon[1]).toBeCloseTo(stepGrowth === 1 ? 63.434949 : 0, 3);
+    } finally {
+      fixture.destroy();
+    }
+  }
+});
+
+it('R1 padded standard settings preserve geographic sweep geometry', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const elevation = new Float32Array(81);
+  elevation[2 * 9 + 4] = 10;
+  const grid = makeGPURasterMetadata({
+    width: 9,
+    height: 9,
+    rowDirection: 'north',
+    cellSize: [2 / 111319.49079327357, 1 / 110574.27582159436]
+  });
+  for (const parameterCapacity of [8, 32]) {
+    const fixture = createHorizonFixture(device, elevation, {
+      width: 9,
+      height: 9,
+      algorithm: 'sweep',
+      cellSizeMode: 'geographic',
+      directionCount: 16,
+      maximumRadius: 2,
+      rowDirection: 'north',
+      parameterCapacity
+    });
+    try {
+      const actual = await fixture.run({}, grid);
+      expect(actual.validity[1 * 9 + 4]).toBe(1);
+      expect(actual.horizon[(1 * 9 + 4) * 16 + 1]).toBeCloseTo(83.822396, 3);
+    } finally {
+      fixture.destroy();
+    }
+  }
+});
+
+it('R2 shared source rows retain the geographic distance-cutoff blocker in both windows', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const elevation = new Float32Array(99);
+  elevation[3 * 9 + 5] = 10;
+  const window = new Float32Array(25);
+  window[1 * 5 + 3] = 10;
+  const fullGrid = makeGPURasterMetadata({
+    width: 9,
+    height: 11,
+    origin: [0, 89],
+    cellSize: [0.0001, 0.00001]
+  });
+  const windowGrid = makeGPURasterMetadata({
+    width: 5,
+    height: 5,
+    origin: [0.0002, 88.99998],
+    cellSize: [0.0001, 0.00001]
+  });
+  for (const algorithm of ['sweep', 'march'] as const) {
+    const options = {
+      algorithm,
+      directionCount: 4,
+      maximumRadius: 1,
+      cellSizeMode: 'geographic' as const,
+      sweepReferenceCellSize: [1, 1] as const,
+      sweepSourceGrid: fullGrid
+    };
+    const fullFixture = createHorizonFixture(device, elevation, {
+      ...options,
+      width: 9,
+      height: 11,
+      sweepOrigin: [0, 0]
+    });
+    const windowFixture = createHorizonFixture(device, window, {
+      ...options,
+      width: 5,
+      height: 5,
+      sweepOrigin: [2, 2]
+    });
+    try {
+      const settings = {maximumDistance: 0.19493955373764038};
+      const full = await fullFixture.run(settings, fullGrid);
+      const cropped = await windowFixture.run(settings, windowGrid);
+      expect(full.validity[3 * 9 + 4]).toBe(1);
+      expect(cropped.validity[1 * 5 + 2]).toBe(1);
+      expect(full.horizon[(3 * 9 + 4) * 4 + 1]).toBeCloseTo(88.88322, 3);
+      expect(cropped.horizon[(1 * 5 + 2) * 4 + 1]).toBeCloseTo(88.88322, 3);
+    } finally {
+      fullFixture.destroy();
+      windowFixture.destroy();
+    }
+  }
+});
+
+it('R3 split march displacements select the same validity corners in whole and cropped grids', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const elevation = new Float32Array(41 * 9);
+  elevation[4 * 41 + 35] = 10;
+  elevation[4 * 41 + 36] = NaN;
+  const window = new Float32Array(81);
+  window[4 * 9 + 7] = 10;
+  window[4 * 9 + 8] = NaN;
+  const options = {directionCount: 4, maximumRadius: 3, stepGrowth: 3 - 2 ** -20};
+  const fullFixture = createHorizonFixture(device, elevation, {...options, width: 41, height: 9});
+  const windowFixture = createHorizonFixture(device, window, {...options, width: 9, height: 9});
+  try {
+    const full = await fullFixture.run(
+      {},
+      makeGPURasterMetadata({width: 41, height: 9, cellSize: 1})
+    );
+    const cropped = await windowFixture.run(
+      {},
+      makeGPURasterMetadata({width: 9, height: 9, cellSize: 1, origin: [28, 0]})
+    );
+    expect(full.horizon[(4 * 41 + 32) * 4 + 1]).toBeCloseTo(73.30075, 3);
+    expect(cropped.horizon[(4 * 9 + 4) * 4 + 1]).toBeCloseTo(73.30075, 3);
+    expect(full.validity[4 * 41 + 32]).toBe(1);
+    expect(cropped.validity[4 * 9 + 4]).toBe(1);
+  } finally {
+    fullFixture.destroy();
+    windowFixture.destroy();
+  }
+  // Transpose and use north-advancing rows. Odd unorm16 forces the per-sector march path;
+  // height 100 on 10 m cells preserves the same rise/distance ratio as the unit-cell fixture.
+  const transposed = new Float32Array(9 * 41);
+  transposed[35 * 9 + 4] = 100;
+  transposed[36 * 9 + 4] = NaN;
+  const transposedWindow = new Float32Array(81);
+  transposedWindow[7 * 9 + 4] = 100;
+  transposedWindow[8 * 9 + 4] = NaN;
+  for (const [values, height, row] of [
+    [transposed, 41, 32],
+    [transposedWindow, 9, 4]
+  ] as const) {
+    const actual = await runExtendedHorizon(
+      device,
+      values,
+      {
+        width: 9,
+        height,
+        directionCount: 5,
+        maximumRadius: 3,
+        stepGrowth: 3 - 2 ** -20,
+        rowDirection: 'north',
+        horizonFormat: 'unorm16'
+      },
+      {}
+    );
+    expect(actual.validity[row * 9 + 4]).toBe(1);
+    expect(Math.abs(actual.horizon[(row * 9 + 4) * 5] - 73.30075)).toBeLessThan(0.003);
+  }
+});
+
+it('R4 packed-identical reference cells retain the same curvature tie on the GPU', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const elevation = new Float32Array(15);
+  elevation[1 * 5 + 3] = 8;
+  const grid = makeGPURasterMetadata({width: 5, height: 3, cellSize: 0.00002, origin: [0, 60]});
+  const fixture = createHorizonFixture(device, elevation, {
+    width: 5,
+    height: 3,
+    algorithm: 'sweep',
+    directionCount: 4,
+    maximumRadius: 2,
+    cellSizeMode: 'geographic',
+    sweepSourceGrid: grid,
+    sweepReferenceCellSize: [2, 2]
+  });
+  try {
+    for (const referenceCellSize of [
+      [2, 2],
+      [2 - 2 ** -26, 2]
+    ] as const) {
+      const actual = await fixture.run(
+        {sweepReferenceCellSize: referenceCellSize, curvatureCoefficient: 1},
+        grid
+      );
+      expect(actual.horizon[(1 * 5 + 1) * 4 + 1]).toBeCloseTo(-48.13786, 3);
+    }
+  } finally {
+    fixture.destroy();
+  }
+});
+
+it('R5 one compiled sweep updates its source placement from parameters', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const elevation = new Float32Array(81);
+  elevation[4 * 9 + 3] = 10;
+  const sourceGrid = makeGPURasterMetadata({
+    width: 10,
+    height: 10,
+    cellSize: 1,
+    rowDirection: 'north'
+  });
+  const fixture = createHorizonFixture(device, elevation, {
+    width: 9,
+    height: 9,
+    algorithm: 'sweep',
+    directionCount: 16,
+    maximumRadius: 2,
+    rowDirection: 'north',
+    sweepOrigin: [0, 0],
+    sweepSourceGrid: sourceGrid
+  });
+  try {
+    for (const [origin, expected] of [
+      [[0, 0], 0],
+      [[1, 1], 83.822396],
+      [[0, 0], 0]
+    ] as const) {
+      const actual = await fixture.run(
+        {sweepOrigin: origin},
+        makeGPURasterMetadata({width: 9, height: 9, cellSize: 1, rowDirection: 'north', origin})
+      );
+      expect(actual.validity[3 * 9 + 3]).toBe(1);
+      expect(actual.horizon[(3 * 9 + 3) * 16 + 1]).toBeCloseTo(expected, 3);
+    }
+    expect(fixture.compileCount).toBe(1);
+  } finally {
+    fixture.destroy();
+  }
+});
+
 type FixtureOptions = Omit<
   GPUTerrainHorizonProps,
   'elevation' | 'parameters' | 'grid' | 'output'
@@ -66,6 +481,11 @@ type FixtureOptions = Omit<
   width: number;
   height: number;
   withHorizon?: boolean;
+  withNegativeOpenness?: boolean;
+  sweepReferenceCellSize?: readonly [number, number];
+  sweepOrigin?: readonly [number, number];
+  sweepSourceGrid?: GPURasterMetadata;
+  parameterCapacity?: number;
 };
 
 function createHorizonFixture(
@@ -83,6 +503,9 @@ function createHorizonFixture(
     horizon: withHorizon ? createOutputBuffer(device, pixelCount * directionCount) : undefined,
     skyViewFactor: createOutputBuffer(device, pixelCount),
     positiveOpenness: createOutputBuffer(device, pixelCount),
+    negativeOpenness: options.withNegativeOpenness
+      ? createOutputBuffer(device, pixelCount)
+      : undefined,
     validity: createOutputBuffer(device, pixelCount)
   };
   // The contributor takes north from the grid, so the grid states the fixture's row order.
@@ -92,16 +515,63 @@ function createHorizonFixture(
     cellSize: 10,
     rowDirection: options.rowDirection
   });
+  const wantsSweep =
+    options.parameterLayout === 'sweep' ||
+    options.sweepReferenceCellSize !== undefined ||
+    options.sweepOrigin !== undefined;
+  const getSettings = (values: GPUTerrainHorizonSettings, frameGrid: GPURasterMetadata) => {
+    if (!wantsSweep) return values;
+    const origin = values.sweepOrigin ?? options.sweepOrigin ?? [0, 0];
+    const [
+      horizontalScale,
+      horizontalShear,
+      horizontalOrigin,
+      verticalShear,
+      verticalScale,
+      verticalOrigin
+    ] = frameGrid.affine;
+    const sourceGrid = values.sweepSourceGrid ??
+      options.sweepSourceGrid ?? {
+        ...frameGrid,
+        width: width + origin[0],
+        height: height + origin[1],
+        affine: [
+          horizontalScale,
+          horizontalShear,
+          horizontalOrigin - horizontalScale * origin[0] - horizontalShear * origin[1],
+          verticalShear,
+          verticalScale,
+          verticalOrigin - verticalShear * origin[0] - verticalScale * origin[1]
+        ] as const
+      };
+    return {
+      sweepReferenceCellSize: options.sweepReferenceCellSize ?? ([1, 1] as const),
+      ...values,
+      sweepOrigin: origin,
+      sweepSourceGrid: sourceGrid
+    };
+  };
   const settings = new GPUParameterBuffer(device, {
     id: 'horizon-parameters',
     format: 'float32',
-    length: 8,
-    values: getGPUTerrainHorizonParameterValues({}, defaultGrid)
+    length: options.parameterCapacity ?? (wantsSweep ? 24 : 8),
+    values: getGPUTerrainHorizonParameterValues(getSettings({}, defaultGrid), defaultGrid)
   });
-  const {withHorizon: _, width: __, height: ___, ...contributorOptions} = options;
+  const {
+    withHorizon: _,
+    width: __,
+    height: ___,
+    sweepReferenceCellSize: ____,
+    withNegativeOpenness: _____,
+    sweepOrigin: ______,
+    sweepSourceGrid: _______,
+    parameterCapacity: ________,
+    ...contributorOptions
+  } = options;
   graph.add(
     new GPUTerrainHorizon({
       ...contributorOptions,
+      parameterLayout: wantsSweep ? 'sweep' : 'standard',
       grid: defaultGrid,
       elevation: {
         id: 'elevation',
@@ -136,6 +606,9 @@ function createHorizonFixture(
           'float32',
           pixelCount
         ),
+        negativeOpenness: buffers.negativeOpenness
+          ? importGraphBuffer(graph, 'negative', buffers.negativeOpenness, 'float32', pixelCount)
+          : undefined,
         outputValidity: importGraphBuffer(graph, 'validity', buffers.validity, 'uint32', pixelCount)
       }
     })
@@ -144,7 +617,9 @@ function createHorizonFixture(
   const fixture: HorizonFixture = {
     compileCount: 1,
     async run(values, frameGrid = defaultGrid) {
-      settings.write(getGPUTerrainHorizonParameterValues(values, frameGrid));
+      settings.write(
+        getGPUTerrainHorizonParameterValues(getSettings(values, frameGrid), frameGrid)
+      );
       submitGraph(device, compiled, undefined);
       return {
         horizon: buffers.horizon
@@ -152,6 +627,9 @@ function createHorizonFixture(
           : [],
         skyViewFactor: await readFloat32(buffers.skyViewFactor, pixelCount),
         positiveOpenness: await readFloat32(buffers.positiveOpenness, pixelCount),
+        negativeOpenness: buffers.negativeOpenness
+          ? await readFloat32(buffers.negativeOpenness, pixelCount)
+          : undefined,
         validity: await readUint32(buffers.validity, pixelCount)
       };
     },
@@ -171,6 +649,10 @@ function expectOracle(actual: HorizonOracleResult, expected: HorizonOracleResult
   }
   expectClose(actual.skyViewFactor, expected.skyViewFactor, 1e-5);
   expectClose(actual.positiveOpenness, expected.positiveOpenness, 2e-3);
+  if (expected.negativeOpenness) {
+    expect(actual.negativeOpenness).toBeDefined();
+    expectClose(actual.negativeOpenness!, expected.negativeOpenness, 2e-3);
+  }
   expect(actual.validity).toEqual(expected.validity);
 }
 
@@ -596,6 +1078,8 @@ async function runExtendedHorizon(
     maximumRadius: number;
     horizonFormat: GPUTerrainHorizonFormat;
     algorithm?: 'march' | 'sweep';
+    stepGrowth?: number;
+    rowDirection?: 'south' | 'north';
   },
   settings: GPUTerrainHorizonSettings
 ): Promise<ExtendedOutputs> {
@@ -620,17 +1104,24 @@ async function runExtendedHorizon(
     length: 12,
     values: getGPUTerrainHorizonParameterValues(
       settings,
-      makeGPURasterMetadata({width, height, cellSize: 10}),
+      makeGPURasterMetadata({width, height, cellSize: 10, rowDirection: options.rowDirection}),
       new Float32Array(12)
     )
   });
   graph.add(
     new GPUTerrainHorizon({
-      grid: makeGPURasterMetadata({width, height, cellSize: 10}),
+      grid: makeGPURasterMetadata({
+        width,
+        height,
+        cellSize: 10,
+        rowDirection: options.rowDirection
+      }),
       directionCount,
       maximumRadius: options.maximumRadius,
       horizonFormat,
       algorithm: options.algorithm,
+      stepGrowth: options.stepGrowth,
+      rowDirection: options.rowDirection,
       elevation: {
         id: 'elevation',
         format: 'float32',

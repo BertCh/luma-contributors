@@ -14,6 +14,35 @@ import {decodeFixedPointSum, getScaledValue, joinOnCPU, packKeys} from './key-jo
 
 let serial = 0;
 
+it('final1b F1 rejects candidate publication into an input join key', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const base = createProps(graph);
+    const key = createTransientView(graph, 'alias-left-keys', 'uint32', 8);
+    const scalar = (name: string) => createTransientView(graph, name, 'uint32', 1);
+    expect(() =>
+      new GPUKeyJoin({
+        ...base,
+        leftKeys: key,
+        kind: 'inner',
+        output: {
+          rows: {
+            ids: createTransientView(graph, 'retained', 'uint32', 8),
+            status: {
+              count: scalar('count'),
+              overflow: scalar('overflow'),
+              candidateOverflow: graph.createDataView(key.buffer, {format: 'uint32', length: 1})
+            }
+          }
+        }
+      }).getCommandNodes(graph)
+    ).toThrow(/share buffers|overlap/);
+  } finally {
+    device.destroy();
+  }
+});
+
 function createProps(
   graph: GPUCommandGraph,
   overrides: Partial<GPUKeyJoinProps> = {},

@@ -166,7 +166,7 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
       'Feature-level queen or rook neighbor counts, islands, extrema and median, composed from the existing contiguity, weights summary and column quantiles contributors. Refuses an exact profile on capacity overflow.',
     evidence: 'partial',
     tests: `${TEST_ROOT}/spatial-weights/gpu-analysis-contiguity-statistics.spec.ts`,
-    documentation: 'modules/analysis/docs/gpu-analysis-contiguity-statistics.md',
+    documentation: 'docs/api/gpu-spatial-analysis/gpu-analysis-contiguity-statistics.md',
     contract: 'GPUAnalysisContiguityStatisticsProps'
   },
   GPUAnalysisSpacing: {
@@ -190,9 +190,9 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
   },
   GPUGaussianRandomField: {
     primaryCapability: PREDICTION_FAMILY,
-    inputs: ['points', 'attributes', 'parameters'],
-    outputs: ['attributes', 'summary'],
-    coordinateModels: ['planar'],
+    inputs: ['points', 'surface', 'attributes', 'parameters'],
+    outputs: ['surface', 'attributes', 'summary'],
+    coordinateModels: ['planar', 'grid'],
     dimensionality: '2d',
     topology: 'fixed',
     cardinality: 'source-sized',

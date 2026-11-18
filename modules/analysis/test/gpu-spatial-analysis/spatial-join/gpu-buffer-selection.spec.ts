@@ -22,9 +22,134 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {createRandom} from './spatial-join-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {getNearTransitSnippetProps} from '../../utils/join-example-constructors';
+import {createGeometryFixture} from '../outline-geometry/geometry-fixture';
 
 type Point = [number, number];
 type Segment = [Point, Point];
+
+for (const features of ['stations', 'bus', 'lines'] as const) {
+  it(`final2 G12/G11 rendered ${features} snippet rejects a feature 1000m away at radius 400m`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const fixture = createGeometryFixture(device, {
+      inputs: {
+        observations: {format: 'float32x2', values: Float32Array.of(0, 0)},
+        stations: {
+          format: 'float32x2',
+          values: Float32Array.of(features === 'stations' ? 1000 : 0, 0)
+        },
+        buses: {format: 'float32x2', values: Float32Array.of(features === 'bus' ? 1000 : 0, 0)},
+        starts: {format: 'float32x2', values: Float32Array.of(1000, -1)},
+        ends: {format: 'float32x2', values: Float32Array.of(1000, 1)},
+        radius: {format: 'float32', values: Float32Array.of(400)}
+      },
+      outputs: {
+        mask: {format: 'uint32', length: 1},
+        ids: {format: 'uint32', length: 1},
+        count: {format: 'uint32', length: 1},
+        required: {format: 'uint32', length: 1},
+        matchOverflow: {format: 'uint32', length: 1},
+        matchCandidate: {format: 'uint32', length: 1},
+        distances: {format: 'float32', length: 1},
+        rows: {format: 'uint32', length: 1},
+        joinOverflow: {format: 'uint32', length: 1},
+        joinCandidate: {format: 'uint32', length: 1},
+        draw: {format: 'uint32', length: 1}
+      },
+      create: ({inputs, outputs}) =>
+        new GPUBufferSelection(
+          getNearTransitSnippetProps(features, 400, {
+            projection: {spatialContext: {coordinateSpace: 'planar', metric: 'native'}},
+            positions: inputs['observations'],
+            observationPositions: inputs['observations'],
+            stationPositions: inputs['stations'],
+            busPositions: inputs['buses'],
+            starts: inputs['starts'],
+            ends: inputs['ends'],
+            transitStarts: inputs['starts'],
+            transitEnds: inputs['ends'],
+            points: {length: 7},
+            distance: {importToGraph: () => inputs['radius']},
+            graph: {importGPUData: () => outputs['draw']},
+            drawCommands: {getInstanceCountData: () => null},
+            outputMask: outputs['mask'],
+            ids: outputs['ids'],
+            count: outputs['count'],
+            requiredCount: outputs['required'],
+            matchOverflow: outputs['matchOverflow'],
+            matchCandidateOverflow: outputs['matchCandidate'],
+            distances: outputs['distances'],
+            nearestFeatureRows: outputs['rows'],
+            joinOverflow: outputs['joinOverflow'],
+            joinCandidateOverflow: outputs['joinCandidate']
+          })
+        )
+    });
+    try {
+      const distant = await fixture.run();
+      expect(distant['mask']).toEqual([0]);
+      expect(distant['count']).toEqual([0]);
+      expect(distant['rows']).toEqual([0xffffffff]);
+      fixture.writeInput('stations', Float32Array.of(0, 0));
+      fixture.writeInput('buses', Float32Array.of(0, 0));
+      fixture.writeInput('starts', Float32Array.of(0, -1));
+      fixture.writeInput('ends', Float32Array.of(0, 1));
+      const coincident = await fixture.run();
+      expect(coincident['mask']).toEqual([1]);
+      expect(coincident['count']).toEqual([1]);
+      expect(coincident['rows']).toEqual([0]);
+    } finally {
+      fixture.destroy();
+    }
+  });
+}
+
+it('final1 buffer selection preserves a getter-backed caller ID 42 at query row zero', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = createFixture(device, 1);
+  const ids = fixture.importInput('query-ids', Uint32Array.of(42), 'uint32', 1);
+  const points = Object.assign(
+    Object.create({
+      get sourceIds() {
+        return ids;
+      }
+    }),
+    {
+      kind: 'points' as const,
+      positions: fixture.importInput('query', Float32Array.of(0, 0), 'float32x2', 1)
+    }
+  );
+  const matches = fixture.importOutput('matches', 1);
+  const count = fixture.importOutput('count', 1);
+  fixture.graph.add(
+    new GPUBufferSelection({
+      points,
+      features: {
+        kind: 'points',
+        positions: fixture.importInput('feature', Float32Array.of(0, 0), 'float32x2', 1)
+      },
+      distance: fixture.distance.importToGraph(fixture.graph),
+      candidateCapacity: 1,
+      output: {
+        matches: {
+          ids: matches.view,
+          status: {count: count.view, overflow: fixture.importOutput('overflow', 1).view}
+        }
+      }
+    })
+  );
+  const compiled = fixture.graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    expect(await readUint32(count.buffer, 1)).toEqual([1]);
+    expect(await readUint32(matches.buffer, 1)).toEqual([42]);
+  } finally {
+    compiled.destroy();
+    fixture.destroy();
+  }
+});
 
 /** Boundary guard: randomized points never lie this close to the buffer boundary (f32 rounding). */
 const BOUNDARY_GUARD = 1e-3;
@@ -204,7 +329,7 @@ it('GPUBufferSelection selects points near polylines and follows a per-frame dis
           }
         },
         distances: distances.view,
-        nearestFeatureIds: nearest.view,
+        nearestFeatureRows: nearest.view,
         status: {overflow: joinOverflow.view}
       }
     })
@@ -543,6 +668,9 @@ it('GPUBufferSelection reports join overflow when candidateCapacity is too small
   const outputCount = fixture.importOutput('count', 1);
   const outputOverflow = fixture.importOutput('overflow', 1);
   const joinOverflow = fixture.importOutput('join-overflow', 1);
+  const candidateOverflow = fixture.importOutput('candidate-overflow', 1);
+  const requiredCount = fixture.importOutput('required-count', 1);
+  const drawCount = fixture.importOutput('draw-count', 1);
   fixture.graph.add(
     new GPUBufferSelection({
       points: {
@@ -560,17 +688,26 @@ it('GPUBufferSelection reports join overflow when candidateCapacity is too small
       output: {
         matches: {
           ids: outputIds.view,
-          status: {count: outputCount.view, overflow: outputOverflow.view}
+          status: {
+            count: outputCount.view,
+            overflow: outputOverflow.view,
+            candidateOverflow: candidateOverflow.view,
+            requiredCount: requiredCount.view
+          }
         },
-        status: {overflow: joinOverflow.view}
+        status: {overflow: joinOverflow.view},
+        drawInstanceCount: drawCount.view
       }
     })
   );
   const compiled = fixture.graph.compile();
   submitGraph(device, compiled, undefined);
   expect(await readUint32(joinOverflow.buffer, 1)).toEqual([1]);
-  expect(await readUint32(outputOverflow.buffer, 1)).toEqual([1]);
+  expect(await readUint32(outputOverflow.buffer, 1)).toEqual([0]);
+  expect(await readUint32(candidateOverflow.buffer, 1)).toEqual([1]);
   const [count] = await readUint32(outputCount.buffer, 1);
+  expect(await readUint32(drawCount.buffer, 1)).toEqual([count]);
+  expect(await readUint32(requiredCount.buffer, 1)).toEqual([count]);
   expect(count).toBeLessThanOrEqual(points.length);
   compiled.destroy();
   fixture.destroy();

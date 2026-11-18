@@ -7,7 +7,7 @@ import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   getRasterGroundCellSize,
   type GPURasterCellSizeMode
-} from '../../../src/analysis-core/raster-grid';
+} from '../../../src/analysis-core/contracts/raster-grid';
 import {
   getGPUTerrainFlowFieldParameterValues,
   type GPUTerrainFlowFieldSettings

@@ -65,9 +65,9 @@ it('splits a dominant basin into bounded tiles and audits every generated kernel
     expect(sourceFor('sum-tiles')).toContain('local < 256u');
     expect(sourceFor('statistics')).not.toContain('for (var entry');
     expect(sourceFor('hypsometry')).not.toContain('for (var entry');
-    for (const [name, source] of sources) {
+    for (const {id: name, source, constants} of sources.configurations) {
       expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
-      expect(auditWGSLModule(source), name).toEqual([]);
+      expect(auditWGSLModule(source, constants), name).toEqual([]);
     }
   }
 });
@@ -164,11 +164,11 @@ it('validates named scalar status shape, aliasing and graph ownership for both c
       output: {status: {converged: foreign}}
     }).getCommandNodes(graph)
   ).toThrow();
-  for (const [name, source] of getParsedKernelSources(
+  for (const {id: name, source, constants} of getParsedKernelSources(
     new GPUTerrainTiledFlow(tiledProps).getCommandNodes(graph)
-  )) {
+  ).configurations) {
     expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
-    expect(auditWGSLModule(source), name).toEqual([]);
+    expect(auditWGSLModule(source, constants), name).toEqual([]);
   }
 });
 

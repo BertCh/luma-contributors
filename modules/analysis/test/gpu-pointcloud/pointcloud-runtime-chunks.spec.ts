@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getPointCloudDiamondMorphologyNodes} from '../../src/pointcloud-analysis/pointcloud-diamond-morphology';
-import {getPointCloudKernelNodes} from '../../src/pointcloud-analysis/pointcloud-kernel-nodes';
+import {getPointCloudDiamondMorphologyNodes} from '../../src/pointcloud-analysis/operations/pointcloud-diamond-morphology';
+import {getPointCloudKernelNodes} from '../../src/pointcloud-analysis/operations/pointcloud-kernel-nodes';
 import {expect, it} from 'vitest';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {
@@ -105,8 +105,7 @@ it('samples extreme grid scales with one imported buffer for disjoint writable r
               : {}),
             terrain: fixture.view('float32', new Float32Array([2])).view,
             coverage: fixture.view('uint32', new Uint32Array([1])).view,
-            heights,
-            status
+            output: {heights, status}
           })
         );
         await fixture.run();
@@ -155,21 +154,23 @@ it('updates runtime height radius, power, minimum support and exact coverage wor
           'float32x3',
           chunks.map(chunk => chunk.view)
         ),
-        heights: createVectorView(
-          'heights',
-          'float32',
-          heights.map(chunk => chunk.view)
-        ),
-        status: createVectorView(
-          'status',
-          'uint32',
-          status.map(chunk => chunk.view)
-        ),
         terrain: fixture.view('float32', new Float32Array([0, 10, 20]), 4).view,
         coverage: fixture.view('uint32', new Uint32Array(3).fill(0x80000000)).view,
         parameters: parameters.view,
         interpolation: {method: 'idw', radius: 0.1},
-        coverageBit: 1
+        coverageBit: 1,
+        output: {
+          heights: createVectorView(
+            'heights',
+            'float32',
+            heights.map(chunk => chunk.view)
+          ),
+          status: createVectorView(
+            'status',
+            'uint32',
+            status.map(chunk => chunk.view)
+          )
+        }
       })
     );
     // At x=1 the three centers have distances 0.5, 0.5, 1.5 and elevations 0, 10, 20.
@@ -237,10 +238,12 @@ for (const strategy of ['serial', 'cooperative'] as const) {
             ...(indexed
               ? {grid: {origin: [-3, -3, -3] as const, dimensions: [6, 6, 6] as const, cellSize: 1}}
               : {}),
-            indices: indices.view,
-            squaredDistances: squaredDistances.view,
-            counts: counts.view,
-            status: status.view
+            output: {
+              indices: indices.view,
+              squaredDistances: squaredDistances.view,
+              counts: counts.view,
+              status: status.view
+            }
           })
         );
         for (const {radius, supported} of [
@@ -325,14 +328,16 @@ it('changes the surface ground class at uint32 precision and preserves the refer
           positions: positions.view,
           classifications: classifications.view,
           parameters: runtimeParameters,
-          ...(Object.fromEntries(
-            Object.entries(outputs).map(([name, field]) => [name, field.view])
-          ) as {
-            terrain: typeof runtime.terrain.view;
-            surface: typeof runtime.surface.view;
-            canopy: typeof runtime.canopy.view;
-            coverage: typeof runtime.coverage.view;
-          })
+          output: {
+            ...(Object.fromEntries(
+              Object.entries(outputs).map(([name, field]) => [name, field.view])
+            ) as {
+              terrain: typeof runtime.terrain.view;
+              surface: typeof runtime.surface.view;
+              canopy: typeof runtime.canopy.view;
+              coverage: typeof runtime.coverage.view;
+            })
+          }
         })
       );
     for (const groundClass of [2, 0xffffffff, 2]) {
@@ -386,19 +391,21 @@ it('samples more rows than a core 128 MiB packed positions binding can hold', as
           'float32x3',
           positions.map(chunk => chunk.view)
         ),
-        heights: createVectorView(
-          'large-heights',
-          'float32',
-          heights.map(chunk => chunk.view)
-        ),
-        status: createVectorView(
-          'large-status',
-          'uint32',
-          status.map(chunk => chunk.view)
-        ),
         grid: {...GRID, width: 1},
         terrain: fixture.view('float32', new Float32Array([2])).view,
-        coverage: fixture.view('uint32', new Uint32Array([1])).view
+        coverage: fixture.view('uint32', new Uint32Array([1])).view,
+        output: {
+          heights: createVectorView(
+            'large-heights',
+            'float32',
+            heights.map(chunk => chunk.view)
+          ),
+          status: createVectorView(
+            'large-status',
+            'uint32',
+            status.map(chunk => chunk.view)
+          )
+        }
       })
     );
     await fixture.run();
@@ -440,10 +447,12 @@ it('merges voxel counts and centroids sharing one alignment window across separa
           representatives: fixture.view('uint32', new Uint32Array([0])).view,
           sourceRowOffset: 0
         })),
-        counts,
-        centroids,
-        representatives: fixture.view('uint32', new Uint32Array(1)).view,
-        status: status.view
+        output: {
+          counts,
+          centroids,
+          representatives: fixture.view('uint32', new Uint32Array(1)).view,
+          status: status.view
+        }
       })
     );
     await fixture.run();
@@ -512,20 +521,6 @@ it('checks every packed and chunked height at workgroup boundaries in both row d
                     chunks.map(chunk => chunk.positions.view)
                   )
                 : chunks[0].positions.view,
-              heights: chunked
-                ? createVectorView(
-                    'boundary-heights',
-                    'float32',
-                    chunks.map(chunk => chunk.heights.view)
-                  )
-                : chunks[0].heights.view,
-              status: chunked
-                ? createVectorView(
-                    'boundary-status',
-                    'uint32',
-                    chunks.map(chunk => chunk.status.view)
-                  )
-                : chunks[0].status.view,
               grid,
               terrain: fixture.view('float32', terrain).view,
               coverage: fixture.view('uint32', new Uint32Array(25).fill(1)).view,
@@ -536,7 +531,23 @@ it('checks every packed and chunked height at workgroup boundaries in both row d
                       method === 'bilinear'
                         ? {method}
                         : {method, radius: 0.8, power: 2, minimumSupport: 4}
-                  })
+                  }),
+              output: {
+                heights: chunked
+                  ? createVectorView(
+                      'boundary-heights',
+                      'float32',
+                      chunks.map(chunk => chunk.heights.view)
+                    )
+                  : chunks[0].heights.view,
+                status: chunked
+                  ? createVectorView(
+                      'boundary-status',
+                      'uint32',
+                      chunks.map(chunk => chunk.status.view)
+                    )
+                  : chunks[0].status.view
+              }
             })
           );
           await fixture.run();
@@ -601,10 +612,12 @@ for (const metric of ['point-to-point', 'point-to-plane'] as const) {
           iterations: 1,
           translationTolerance: 1,
           rotationTolerance: 1,
-          transform: transform.view,
-          history: history.view,
-          status: status.view,
-          inlierMask: inlierMask.view
+          output: {
+            transform: transform.view,
+            history: history.view,
+            status: status.view,
+            inlierMask: inlierMask.view
+          }
         })
       );
       await fixture.run();
@@ -661,31 +674,33 @@ it('computes chunked neighborhood covariance, eigenvalues, normals and shapes ag
           'uint32',
           rows.map(row => row.indices.view)
         ),
-        normals: createVectorView(
-          'feature-normals',
-          'float32x3',
-          rows.map(row => row.normals.view)
-        ),
-        eigenvalues: createVectorView(
-          'feature-values',
-          'float32x3',
-          rows.map(row => row.eigenvalues.view)
-        ),
-        covariance: createVectorView(
-          'feature-covariance',
-          'float32',
-          rows.map(row => row.covariance.view)
-        ),
-        shapes: createVectorView(
-          'feature-shapes',
-          'float32x3',
-          rows.map(row => row.shapes.view)
-        ),
-        status: createVectorView(
-          'feature-status',
-          'uint32',
-          rows.map(row => row.status.view)
-        )
+        output: {
+          normals: createVectorView(
+            'feature-normals',
+            'float32x3',
+            rows.map(row => row.normals.view)
+          ),
+          eigenvalues: createVectorView(
+            'feature-values',
+            'float32x3',
+            rows.map(row => row.eigenvalues.view)
+          ),
+          covariance: createVectorView(
+            'feature-covariance',
+            'float32',
+            rows.map(row => row.covariance.view)
+          ),
+          shapes: createVectorView(
+            'feature-shapes',
+            'float32x3',
+            rows.map(row => row.shapes.view)
+          ),
+          status: createVectorView(
+            'feature-status',
+            'uint32',
+            rows.map(row => row.status.view)
+          )
+        }
       })
     );
     await fixture.run();
@@ -748,28 +763,30 @@ it('classifies chunked ground rows with inclusive thresholds and independent cla
           'uint32',
           rows.map(row => row.classifications.view)
         ),
-        groundMask: createVectorView(
-          'ground-mask',
-          'uint32',
-          rows.map(row => row.groundMask.view)
-        ),
-        outputClassifications: createVectorView(
-          'ground-output-classes',
-          'uint32',
-          rows.map(row => row.outputClassifications.view)
-        ),
-        status: createVectorView(
-          'ground-status',
-          'uint32',
-          rows.map(row => row.status.view)
-        ),
         grid: {...GRID, width: 9, height: 9},
         radii: [1, 2],
         initialThreshold: 0.5,
         slope: 0,
         maximumThreshold: 0.5,
         minimumSurface: fixture.view('float32', new Float32Array(81)).view,
-        coverage: fixture.view('uint32', new Uint32Array(81).fill(1)).view
+        coverage: fixture.view('uint32', new Uint32Array(81).fill(1)).view,
+        output: {
+          groundMask: createVectorView(
+            'ground-mask',
+            'uint32',
+            rows.map(row => row.groundMask.view)
+          ),
+          outputClassifications: createVectorView(
+            'ground-output-classes',
+            'uint32',
+            rows.map(row => row.outputClassifications.view)
+          ),
+          status: createVectorView(
+            'ground-status',
+            'uint32',
+            rows.map(row => row.status.view)
+          )
+        }
       })
     );
     await fixture.run();
@@ -811,10 +828,12 @@ it('updates surface and height grid origin/cellSize without rebuilding the graph
         positions: positions.view,
         classifications: fixture.view('uint32', new Uint32Array([2, 2])).view,
         parameters: fixture.view('uint32', getGPUPointCloudSurfacesParameterValues()).view,
-        terrain: terrain.view,
-        surface: surface.view,
-        canopy: canopy.view,
-        coverage: coverage.view
+        output: {
+          terrain: terrain.view,
+          surface: surface.view,
+          canopy: canopy.view,
+          coverage: coverage.view
+        }
       })
     );
     fixture.graph.add(
@@ -824,8 +843,7 @@ it('updates surface and height grid origin/cellSize without rebuilding the graph
         positions: positions.view,
         terrain: fixture.view('float32', new Float32Array([10, 20, 30])).view,
         coverage: fixture.view('uint32', new Uint32Array([1, 1, 1])).view,
-        heights: heights.view,
-        status: status.view
+        output: {heights: heights.view, status: status.view}
       })
     );
     for (const entry of [
@@ -904,10 +922,12 @@ for (const strategy of ['serial', 'cooperative'] as const) {
           ).view,
           strategy,
           capacity: 2,
-          counts: counts.view,
-          indices: indices.view,
-          status: status.view,
-          squaredDistances: fixture.view('float32', new Float32Array(6)).view
+          output: {
+            counts: counts.view,
+            indices: indices.view,
+            status: status.view,
+            squaredDistances: fixture.view('float32', new Float32Array(6)).view
+          }
         })
       );
       const missing = 0xffffffff;
@@ -997,26 +1017,28 @@ it('merges padded voxel chunks against count-weighted centroid and representativ
           ),
           sourceRowOffset: index === 0 ? 10 : 20
         })),
-        counts: createVectorView(
-          'voxel-counts',
-          'uint32',
-          chunks.map(chunk => chunk.counts.view)
-        ),
-        centroids: createVectorView(
-          'voxel-centroids',
-          'float32x3',
-          chunks.map(chunk => chunk.centroids.view)
-        ),
-        representatives: createVectorView(
-          'voxel-representatives',
-          'uint32',
-          chunks.map(chunk => chunk.representatives.view)
-        ),
-        status: createVectorView(
-          'voxel-status',
-          'uint32',
-          chunks.map(chunk => chunk.status.view)
-        )
+        output: {
+          counts: createVectorView(
+            'voxel-counts',
+            'uint32',
+            chunks.map(chunk => chunk.counts.view)
+          ),
+          centroids: createVectorView(
+            'voxel-centroids',
+            'float32x3',
+            chunks.map(chunk => chunk.centroids.view)
+          ),
+          representatives: createVectorView(
+            'voxel-representatives',
+            'uint32',
+            chunks.map(chunk => chunk.representatives.view)
+          ),
+          status: createVectorView(
+            'voxel-status',
+            'uint32',
+            chunks.map(chunk => chunk.status.view)
+          )
+        }
       })
     );
     await fixture.run();
@@ -1114,8 +1136,7 @@ it('uses runtime grid cell size when choosing bounded IDW support', async () => 
         terrain: fixture.view('float32', new Float32Array([0, 10, 20])).view,
         coverage: fixture.view('uint32', new Uint32Array([1, 1, 1])).view,
         interpolation: {method: 'idw', radius: 1.6, power: 2},
-        heights: heights.view,
-        status: status.view
+        output: {heights: heights.view, status: status.view}
       })
     );
     for (const grid of [
@@ -1168,10 +1189,12 @@ it('updates the normal-scale search-grid affine on one graph', async () => {
         grid: {origin: [-2, -2, -2], dimensions: [4, 4, 4], cellSize: 1},
         gridParameters: gridParameters.view,
         parameters: fixture.view('float32', getGPUPointCloudNormalScaleParameterValues()).view,
-        normals: normals.view,
-        normalScales: normalScales.view,
-        normalVariances: normalVariances.view,
-        status: status.view
+        output: {
+          normals: normals.view,
+          normalScales: normalScales.view,
+          normalVariances: normalVariances.view,
+          status: status.view
+        }
       })
     );
     for (const supported of [true, false, true]) {

@@ -18,7 +18,10 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
-import {createConcaveHullValidationProps} from './concave-hull-validation-cases';
+import {
+  createConcaveHullTestOutput,
+  createConcaveHullValidationProps
+} from './concave-hull-validation-cases';
 
 async function setup() {
   const testDevice = await getWebGPUTestDevice();
@@ -49,13 +52,15 @@ async function setup() {
     length: number,
     format: Format
   ) {
-    const components = format.endsWith('x2') ? 2 : format.endsWith('x3') ? 3 : 1;
-    const buffer = createOutputBuffer(device, length * components);
-    buffers.push(buffer);
-    return {
-      buffer,
-      view: importGraphBuffer(graph, `output-${identifier++}`, buffer, format, length)
-    };
+    const result = createConcaveHullTestOutput(
+      graph,
+      device,
+      `output-${identifier++}`,
+      format,
+      length
+    );
+    buffers.push(result.buffer);
+    return result;
   }
   return {
     graph,
@@ -133,6 +138,199 @@ async function runHull(pointCount: number, positionsValues: number[], radius: nu
   destroy();
   return result;
 }
+
+for (const exponent of [45, -52, 100, -100]) {
+  it(`alpha hull retains triangles across the analytic circumradius at scale 2^${exponent}`, async () => {
+    const scale = 2 ** exponent;
+    for (const [factor, expected] of [
+      [0.6, 0],
+      [0.8, 1]
+    ]) {
+      const result = await runHull(3, [0, 0, scale, 0, 0, scale], factor * scale);
+      expect(result.converged).toBe(1);
+      expect(result.triangleValidity).toEqual([expected]);
+      expect(result.edgeValidity).toEqual([expected, expected, expected]);
+    }
+  });
+}
+
+it('packed grouped alpha hull compacts groups and snapshots caller maps before execution', async () => {
+  for (const maximumCircumradius of [1, 4]) {
+    const {graph, input, output, run} = await setup();
+    const groupCount = 4;
+    const capacity = getDelaunayMaximumTriangleCount(7);
+    const triangles = output(capacity, 'uint32x3');
+    const triangleValidity = output(capacity, 'uint32');
+    const edges = output(3 * capacity, 'uint32x2');
+    const edgeValidity = output(3 * capacity, 'uint32');
+    const converged = output(groupCount, 'uint32');
+    const count = output(1, 'uint32');
+    const requiredCount = output(1, 'uint32');
+    const overflow = output(1, 'uint32');
+    const triangleOffsets = output(groupCount, 'uint32');
+    const triangleCounts = output(groupCount, 'uint32');
+    const edgeOffsets = output(groupCount, 'uint32');
+    const edgeCounts = output(groupCount, 'uint32');
+    const props = {
+      positions: input([0, 0, 1, 0, 0, 1, 10, 0, 14, 0, 10, 4, 30, 30], 'float32x2'),
+      groupIds: input([0, 0, 0, 2, 2, 2, 3], 'uint32'),
+      groupCount,
+      maximumCircumradius,
+      layout: 'packed' as const,
+      output: {
+        triangles: triangles.view,
+        triangleValidity: triangleValidity.view,
+        boundaryEdges: edges.view,
+        edgeValidity: edgeValidity.view,
+        status: {
+          converged: converged.view,
+          count: count.view,
+          requiredCount: requiredCount.view,
+          overflow: overflow.view
+        },
+        groups: {
+          triangleOffsets: triangleOffsets.view,
+          triangleCounts: triangleCounts.view,
+          edgeOffsets: edgeOffsets.view,
+          edgeCounts: edgeCounts.view
+        }
+      }
+    };
+    const contributor = new GPUGroupConcaveHull(props);
+    // R6: none of these caller-side edits may change the validated packed publication or targets.
+    Reflect.set(props, 'layout', 'fixed');
+    props.output.groups.edgeCounts = triangleCounts.view;
+    props.output.status.count = overflow.view;
+    props.output.triangles = output(capacity, 'uint32x3').view;
+    graph.add(contributor);
+    const destroy = run();
+    try {
+      const retainedSecondGroup = maximumCircumradius === 4 ? 1 : 0;
+      const retainedCount = 1 + retainedSecondGroup;
+      expect(await readUint32(converged.buffer, groupCount)).toEqual([1, 1, 1, 1]);
+      expect(await readUint32(triangleOffsets.buffer, groupCount)).toEqual([
+        0,
+        1,
+        1,
+        retainedCount
+      ]);
+      expect(await readUint32(triangleCounts.buffer, groupCount)).toEqual([
+        1,
+        0,
+        retainedSecondGroup,
+        0
+      ]);
+      expect(await readUint32(edgeOffsets.buffer, groupCount)).toEqual([
+        0,
+        3,
+        3,
+        3 * retainedCount
+      ]);
+      expect(await readUint32(edgeCounts.buffer, groupCount)).toEqual([
+        3,
+        0,
+        3 * retainedSecondGroup,
+        0
+      ]);
+      expect(await readUint32(count.buffer, 1)).toEqual([3 * retainedCount]);
+      expect(await readUint32(requiredCount.buffer, 1)).toEqual([3 * retainedCount]);
+      expect(await readUint32(overflow.buffer, 1)).toEqual([0]);
+      const triangleRows = await readUint32(triangles.buffer, 3 * capacity);
+      expect(triangleRows.slice(0, 3).sort()).toEqual([0, 1, 2]);
+      if (retainedSecondGroup) expect(triangleRows.slice(3, 6).sort()).toEqual([3, 4, 5]);
+      expect(triangleRows.slice(3 * retainedCount)).toEqual(
+        new Array(3 * (capacity - retainedCount)).fill(0)
+      );
+      expect(await readUint32(triangleValidity.buffer, capacity)).toEqual([
+        ...new Array(retainedCount).fill(1),
+        ...new Array(capacity - retainedCount).fill(0)
+      ]);
+      expect(await readUint32(edgeValidity.buffer, 3 * capacity)).toEqual([
+        ...new Array(3 * retainedCount).fill(1),
+        ...new Array(3 * (capacity - retainedCount)).fill(0)
+      ]);
+      const edgeRows = await readUint32(edges.buffer, 6 * capacity);
+      const actualEdges = Array.from({length: 3 * retainedCount}, (_, row) =>
+        edgeRows.slice(2 * row, 2 * row + 2).join(',')
+      ).sort();
+      expect(actualEdges).toEqual(
+        ['0,1', '1,2', '2,0', ...(retainedSecondGroup ? ['3,4', '4,5', '5,3'] : [])].sort()
+      );
+    } finally {
+      destroy();
+    }
+  }
+});
+
+it('packed grouped alpha hull publishes zero counts with no reserved geometry rows', async () => {
+  const {graph, input, output, run} = await setup();
+  const groupCount = 3;
+  const triangles = output(0, 'uint32x3');
+  const triangleValidity = output(0, 'uint32');
+  const edges = output(0, 'uint32x2');
+  const edgeValidity = output(0, 'uint32');
+  const converged = output(groupCount, 'uint32');
+  const count = output(1, 'uint32');
+  const requiredCount = output(1, 'uint32');
+  const overflow = output(1, 'uint32');
+  const triangleOffsets = output(groupCount, 'uint32');
+  const triangleCounts = output(groupCount, 'uint32');
+  const edgeOffsets = output(groupCount, 'uint32');
+  const edgeCounts = output(groupCount, 'uint32');
+  // Zero is the analytic result for two isolated sites. Seeding caller outputs distinguishes
+  // publication from an implementation that skips the packed branch when triangle capacity is 0.
+  for (const field of [
+    count,
+    requiredCount,
+    overflow,
+    converged,
+    triangleOffsets,
+    triangleCounts,
+    edgeOffsets,
+    edgeCounts
+  ]) {
+    field.buffer.write(new Uint32Array(field.view.length).fill(99));
+  }
+  graph.add(
+    new GPUGroupConcaveHull({
+      positions: input([0, 0, 2, 2], 'float32x2'),
+      groupIds: input([0, 2], 'uint32'),
+      groupCount,
+      maximumCircumradius: 1,
+      layout: 'packed',
+      output: {
+        triangles: triangles.view,
+        triangleValidity: triangleValidity.view,
+        boundaryEdges: edges.view,
+        edgeValidity: edgeValidity.view,
+        status: {
+          converged: converged.view,
+          count: count.view,
+          requiredCount: requiredCount.view,
+          overflow: overflow.view
+        },
+        groups: {
+          triangleOffsets: triangleOffsets.view,
+          triangleCounts: triangleCounts.view,
+          edgeOffsets: edgeOffsets.view,
+          edgeCounts: edgeCounts.view
+        }
+      }
+    })
+  );
+  const destroy = run();
+  try {
+    expect(await readUint32(converged.buffer, groupCount)).toEqual([1, 1, 1]);
+    for (const field of [count, requiredCount, overflow]) {
+      expect(await readUint32(field.buffer, 1)).toEqual([0]);
+    }
+    for (const field of [triangleOffsets, triangleCounts, edgeOffsets, edgeCounts]) {
+      expect(await readUint32(field.buffer, groupCount)).toEqual([0, 0, 0]);
+    }
+  } finally {
+    destroy();
+  }
+});
 
 function expectBoundaryMatchesReference(result: Awaited<ReturnType<typeof runHull>>) {
   const reference = getReferenceBoundary(

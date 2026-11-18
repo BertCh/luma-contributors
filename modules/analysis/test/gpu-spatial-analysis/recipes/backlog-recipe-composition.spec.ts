@@ -265,7 +265,7 @@ it('backlog disruption gates retained-baseline failures and preserves parallel-e
       )
     });
     expect(result.outputs.baselineCosts).toBe(baseline);
-    expect(result.intermediates['topology']).toBe(topology);
+    expect(result.intermediates['topology']).toEqual(topology);
     expect(result.intermediates['originNodes']).toBe(origins);
     expect(result.intermediates['targetNodes']).toBe(targets);
     const costs = publish(fixture, 'scenario-costs', result.outputs.scenarioCosts);

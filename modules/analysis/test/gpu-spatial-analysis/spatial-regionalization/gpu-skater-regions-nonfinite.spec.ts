@@ -8,6 +8,7 @@ import {
   getGPUSkaterRegionsParameterValues,
   GPU_SKATER_NO_CUT,
   GPU_SKATER_REGIONS_PARAMETER_LENGTH,
+  GPU_MINIMUM_SPANNING_TREE_STATUS,
   GPUSkaterRegions,
   GPUSpatialWeightsMinimumSpanningTree
 } from '../../../src/gpu-spatial-analysis/spatial-regionalization/index';
@@ -46,7 +47,7 @@ async function runPipeline(values: number[], connectStatus: boolean) {
   const flags = rig.output('uint32', lattice.neighbors.length);
   const components = rig.output('uint32', 9);
   const standardized = rig.output('float32', 9);
-  const status = rig.output('uint32', 1);
+  const status = rig.output('uint32', GPU_MINIMUM_SPANNING_TREE_STATUS.length);
   rig.graph.add(
     new GPUSpatialWeightsMinimumSpanningTree({
       weights,

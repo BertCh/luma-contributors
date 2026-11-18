@@ -152,8 +152,8 @@ async function runPredicateJoin(
   if (prepared) {
     graph.add(prepared);
   }
-  const leftIds = fixture.output('left-ids', 16);
-  const rightIds = fixture.output('right-ids', 16);
+  const leftRows = fixture.output('left-ids', 16);
+  const rightRows = fixture.output('right-ids', 16);
   const count = fixture.output('count', 1);
   const pairOverflow = fixture.output('pair-overflow', 1);
   const unmatchedIds = fixture.output('unmatched-ids', leftCount);
@@ -176,8 +176,8 @@ async function runPredicateJoin(
         ...(how === 'inner'
           ? {
               pairs: {
-                leftIds: leftIds.view,
-                rightIds: rightIds.view,
+                leftRows: leftRows.view,
+                rightRows: rightRows.view,
                 status: {count: count.view, overflow: pairOverflow.view}
               }
             }
@@ -200,8 +200,8 @@ async function runPredicateJoin(
   submitGraph(device, compiled, undefined);
   const [pairCount] = await readUint32(count.buffer, 1);
   const [unmatchedTotal] = await readUint32(unmatchedCount.buffer, 1);
-  const lefted = await readUint32(leftIds.buffer, 16);
-  const righted = await readUint32(rightIds.buffer, 16);
+  const lefted = await readUint32(leftRows.buffer, 16);
+  const righted = await readUint32(rightRows.buffer, 16);
   const result = {
     pairs:
       how === 'inner'

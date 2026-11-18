@@ -16,6 +16,35 @@ import {
 } from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 
+it('computes maximum distance from original vertices beyond the unused dense-count limit', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const result = await runOperationGraph(device, {
+    inputs: {
+      positionsA: {format: 'float32x2', values: new Float32Array(1048577 * 2)},
+      offsetsA: {format: 'uint32', values: Uint32Array.of(0, 1048577)},
+      positionsB: {format: 'float32x2', values: Float32Array.of(1, 0)},
+      offsetsB: {format: 'uint32', values: Uint32Array.of(0, 1)},
+      pairA: {format: 'uint32', values: Uint32Array.of(0)},
+      pairB: {format: 'uint32', values: Uint32Array.of(0)}
+    },
+    operations: [
+      new GPUTrackSimilarityOperation({
+        linesA: {positions: 'positionsA', lineOffsets: 'offsetsA'},
+        linesB: {positions: 'positionsB', lineOffsets: 'offsetsB'},
+        pairA: 'pairA',
+        pairB: 'pairB',
+        pairCount: 1,
+        densify: 1 / 4096,
+        output: {maximumDistance: 'maximum', pairStatus: 'status'}
+      })
+    ],
+    outputs: ['maximum', 'status']
+  });
+  expect(Array.from(result['status'])).toEqual([0]);
+  expect(Array.from(result['maximum'])).toEqual([1]);
+});
+
 const OUTPUT = {
   hausdorff: 'hausdorff',
   frechet: 'frechet',
@@ -129,6 +158,65 @@ it('compares empty tracks, out-of-range pairs and inactive capacity rows', async
     }
   );
   expect(Array.from(rows['status'])).toEqual([0, 1, 4, 4]);
+});
+
+it('both track similarity forms honor an explicit one-vertex dynamic-program cap', async () => {
+  const rows = await runComparison(
+    {
+      positions: {format: 'float32x2', values: Float32Array.of(0, 0, 1, 0)},
+      offsets: {format: 'uint32', values: Uint32Array.of(0, 2)},
+      pairA: {format: 'uint32', values: Uint32Array.of(0)},
+      pairB: {format: 'uint32', values: Uint32Array.of(0)},
+      epsilon: {format: 'float32', values: Float32Array.of(1)}
+    },
+    {
+      linesA: {positions: 'positions', lineOffsets: 'offsets'},
+      pairA: 'pairA',
+      pairB: 'pairB',
+      pairCount: 1,
+      maximumFrechetVertexCount: 1,
+      frechetEpsilon: 'epsilon',
+      output: OUTPUT
+    }
+  );
+  expect(Array.from(rows['status'])).toEqual([2]);
+  expect(rows['frechet'][0]).toBeNaN();
+  expect(rows['hausdorff'][0]).toBe(0);
+  expect(rows['maximum'][0]).toBe(1);
+});
+
+it('bounds antimeridian segment measures by endpoints and retains the interior minimum', async () => {
+  const rows = await runComparison(
+    {
+      positionsA: {format: 'float32x2', values: Float32Array.of(0, 0, -60, 0, 180, 0)},
+      offsetsA: {format: 'uint32', values: Uint32Array.of(0, 1, 2, 3)},
+      positionsB: {format: 'float32x2', values: Float32Array.of(100, 0, -100, 0, -100, 0, 100, 0)},
+      offsetsB: {format: 'uint32', values: Uint32Array.of(0, 2, 4)},
+      pairA: {format: 'uint32', values: Uint32Array.of(0, 0, 1, 2)},
+      pairB: {format: 'uint32', values: Uint32Array.of(0, 1, 0, 0)},
+      epsilon: {format: 'float32', values: Float32Array.of(101)}
+    },
+    {
+      linesA: {positions: 'positionsA', lineOffsets: 'offsetsA'},
+      linesB: {positions: 'positionsB', lineOffsets: 'offsetsB'},
+      pairA: 'pairA',
+      pairB: 'pairB',
+      pairCount: 4,
+      frechetEpsilon: 'epsilon',
+      spatialContext: {
+        coordinateSpace: 'longitude-latitude',
+        metric: 'great-circle',
+        sphereRadius: 180 / Math.PI
+      },
+      output: OUTPUT
+    }
+  );
+  // Point-to-segment minima are 100, 100, 40, 0 degrees. Reverse endpoint means are
+  // 100, 100, (160 + 40) / 2, 80. Hausdorff takes the larger directed distance.
+  expect(Array.from(rows['status'])).toEqual([0, 0, 0, 0]);
+  expect(Array.from(rows['hausdorff'])).toEqual([100, 100, 160, 80]);
+  expect(Array.from(rows['segmentPath'])).toEqual([100, 100, 70, 40]);
+  expect(Array.from(rows['maximum'])).toEqual([100, 100, 160, 80]);
 });
 
 it('compares a multi-strip dynamic program and geographic seam/degenerate segment cases', async () => {

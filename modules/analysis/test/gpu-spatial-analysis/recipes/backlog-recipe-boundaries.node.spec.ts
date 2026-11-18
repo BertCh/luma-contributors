@@ -42,7 +42,7 @@ it('backlog retained routing evidence keeps caller identities and exact converge
   try {
     const result = addNetworkDisruptionRecipe(graph, props);
     expect(result.outputs.baselineCosts).toBe(props.baseline.costs);
-    expect(result.intermediates['topology']).toBe(props.search.topology);
+    expect(result.intermediates['topology']).toEqual(props.search.topology);
     expect(result.intermediates['originNodes']).toBe(props.search.startNodes);
     expect(result.intermediates['targetNodes']).toBe(props.search.targetNodes);
     expect(

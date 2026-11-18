@@ -3,6 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateRegressionOutputDispatches} from './regression-output-dispatches';
+import {snapshotRegressionConstructionProps} from './regression-construction-snapshot';
+import {getRegressionWeightsSuppressionNodes} from './regression-weights-completeness';
+import {getRegressionLossViews} from './regression-weights-completeness';
 
 import {getInstrumentalVariablesCovarianceAllocationLengths} from './instrumental-variables-covariance-parameters';
 
@@ -27,6 +30,7 @@ import {
 import {
   validateCapacity,
   validateCommandNodeBudget,
+  validateMaximumCount,
   validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -81,6 +85,8 @@ const OPERATION = 'GPUSpatialTwoStageLeastSquares';
 const SPATIAL_TWO_STAGE_LEAST_SQUARES_BASE_NODE_ALLOWANCE = 512;
 const TILE_WORKGROUP_SIZE = 64;
 const MAXIMUM_DEFAULT_TILE_COUNT = 4096;
+// Bounds the serial norm merge to the regression family's 4096-partial merge budget.
+const MAXIMUM_TILE_COUNT = 4096;
 const MINIMUM_DEFAULT_TILE_ROWS = 64;
 /** Residual sums per tile: `u'u`, `sum u`, `sum (y - ybar) u`, `sum (y - ybar)^2`. */
 const RESIDUAL_SUM_COUNT = 4;
@@ -278,6 +284,22 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
   readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUSpatialTwoStageLeastSquaresProps) {
+    props = snapshotRegressionConstructionProps(
+      props,
+      [
+        'id',
+        'weights',
+        'predictors',
+        'response',
+        'predictorCount',
+        'tileRowCount',
+        'instrumentOrder',
+        'robust',
+        'output'
+      ],
+      ['table', 'summary', 'residuals', 'status'],
+      'spatial-two-stage-least-squares'
+    );
     const id = props.id ?? 'spatial-two-stage-least-squares';
     this.id = id;
     this.props = props;
@@ -372,6 +394,7 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
       props.tileRowCount ??
       Math.max(MINIMUM_DEFAULT_TILE_ROWS, Math.ceil(rows / MAXIMUM_DEFAULT_TILE_COUNT));
     this.tileCount = Math.ceil(rows / this.tileRowCount);
+    validateMaximumCount(id, 'tileCount', this.tileCount, MAXIMUM_TILE_COUNT);
     validateRegressionOutputDispatches(
       this.id,
       {
@@ -407,6 +430,7 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
         props.weights.offsets,
         props.weights.neighbors,
         props.weights.weights,
+        ...getRegressionLossViews(props.weights),
         props.robust?.kernel?.offsets,
         props.robust?.kernel?.neighbors,
         props.robust?.kernel?.weights,
@@ -435,6 +459,9 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
       offsets: weights.offsets,
       neighbors: weights.neighbors,
       weights: weights.weights,
+      ...Object.fromEntries(
+        getRegressionLossViews(weights).map((view, index) => [`weights loss ${index}`, view])
+      ),
       table: output.table,
       summary: output.summary,
       code: output.status.code,
@@ -1072,7 +1099,16 @@ table[tableOffset + index * 4u + 3u] = erfcValue(abs(statistic) * 0.70710678);`
         )
       );
     }
-    return nodes;
+    return [
+      ...nodes,
+      ...getRegressionWeightsSuppressionNodes<Parameters>(
+        graph,
+        id,
+        props.weights,
+        props.output,
+        props.robust?.output
+      )
+    ];
   }
 }
 

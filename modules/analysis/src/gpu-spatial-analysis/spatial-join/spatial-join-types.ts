@@ -5,6 +5,7 @@
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {
   GPULineGeometryPort,
+  GPUMultipartGeometryPort,
   GPUPackedGeometryPort,
   GPUPointGeometryPort,
   GPUPolygonGeometryPort
@@ -42,6 +43,8 @@ export type GPUNearestFeatureSource =
  * geometry port with one packed `positions` view.
  *
  * - Points: one feature per `positions` row. Coordinates must be finite.
+ *   With `featureOffsets`, point/line parts belong to logical feature rows. Multipart predicates
+ *   currently support intersects, within and coveredBy through the fast engine.
  * - Lines: one linestring per feature. A linestring needs at least two vertices; shorter features
  *   are empty and never match. A linestring whose first and last vertex coincide is closed and has
  *   no boundary.
@@ -52,7 +55,7 @@ export type GPUNearestFeatureSource =
  *   evaluated with even/odd fill over all rings of a feature, which is correct for valid input.
  */
 export type GPUSpatialJoinGeometry = GPUPackedGeometryPort<
-  GPUPointGeometryPort | GPULineGeometryPort | GPUPolygonGeometryPort
+  GPUPointGeometryPort | GPULineGeometryPort | GPUMultipartGeometryPort | GPUPolygonGeometryPort
 >;
 
 /**

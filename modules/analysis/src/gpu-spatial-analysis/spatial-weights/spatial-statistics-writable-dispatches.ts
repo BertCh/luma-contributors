@@ -4,7 +4,7 @@
 
 import {doGraphDataViewsOverlap, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
-import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /**

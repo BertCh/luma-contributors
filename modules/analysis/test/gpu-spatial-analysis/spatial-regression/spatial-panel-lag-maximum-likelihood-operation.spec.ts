@@ -68,7 +68,7 @@ for (const scene of [
                     values: new Float32Array(fixture.weights.neighbors.length)
                   },
                   requiredCount: {format: 'uint32' as const, values: Uint32Array.of(999)},
-                  candidateOverflow: {format: 'uint32' as const, values: Uint32Array.of(1)},
+                  candidateOverflow: {format: 'uint32' as const, values: Uint32Array.of(0)},
                   approximation: {format: 'uint32' as const, values: Uint32Array.of(1)}
                 }
               : {})

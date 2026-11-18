@@ -139,7 +139,7 @@ it.each(
     const nodes = fixture.create(source).getCommandNodes(fixture.graph);
     const kernels = getParsedKernelSources(nodes);
     expect([...kernels.keys()].some(name => name.includes('elevation'))).toBe(true);
-    for (const source of kernels.values())
+    for (const {source} of kernels.configurations)
       expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
     for (const node of nodes) fixture.graph.add(node);
   } finally {

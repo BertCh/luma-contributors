@@ -191,12 +191,14 @@ it('every monotone kernel parses, binds at most 8 storage buffers and stays with
   for (const kernel of sources) {
     expect(() => new WgslReflect(kernel.source), kernel.id).not.toThrow();
     expect(getStorageBindingCount(kernel.source), `${kernel.id} bindings`).toBeLessThanOrEqual(8);
-    expect(getPrivateMemoryBytes(kernel.source), `${kernel.id} private`).toBeLessThanOrEqual(
-      CORE_PRIVATE_MEMORY_LIMIT_BYTES
-    );
-    expect(getWorkgroupMemoryBytes(kernel.source), `${kernel.id} workgroup`).toBeLessThanOrEqual(
-      CORE_WORKGROUP_STORAGE_LIMIT_BYTES
-    );
+    expect(
+      getPrivateMemoryBytes(kernel.source, kernel.constants),
+      `${kernel.id} private`
+    ).toBeLessThanOrEqual(CORE_PRIVATE_MEMORY_LIMIT_BYTES);
+    expect(
+      getWorkgroupMemoryBytes(kernel.source, kernel.constants),
+      `${kernel.id} workgroup`
+    ).toBeLessThanOrEqual(CORE_WORKGROUP_STORAGE_LIMIT_BYTES);
     if (
       kernel.id.includes('-monotone-') ||
       /-(classify-rings|polygon-capacities|publish-layout)$/.test(kernel.id)

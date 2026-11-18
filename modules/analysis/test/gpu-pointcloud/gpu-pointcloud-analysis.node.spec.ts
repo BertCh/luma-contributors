@@ -39,41 +39,37 @@ it('point-cloud analysis generated shaders pass reserved-word and baseline resou
   const contributors = [
     new GPUPointCloudNeighborhoods({
       positions,
-      indices,
-      squaredDistances,
-      counts,
       capacity: 64,
-      radius: 10
+      radius: 10,
+      output: {indices, squaredDistances, counts}
     }),
     new GPUPointCloudNeighborhoods({
       id: 'indexed-neighborhood-audit',
       positions,
-      indices,
-      squaredDistances,
-      counts,
       capacity: 64,
       radius: 10,
       grid: {origin: [0, 0, 0], cellSize: 2, dimensions: [3, 3, 3]},
-      status: view('uint32', 9)
+      output: {indices, squaredDistances, counts, status: view('uint32', 9)}
     }),
     new GPUPointCloudFeatures({
       positions,
       indices,
       counts,
       capacity: 64,
-      normals,
-      eigenvalues: view('float32x3', 9),
-      covariance: view('float32', 54),
-      shapes: view('float32x3', 9),
-      status: view('uint32', 9),
-      viewpoint: [0, 0, 20]
+      viewpoint: [0, 0, 20],
+      output: {
+        normals,
+        eigenvalues: view('float32x3', 9),
+        covariance: view('float32', 54),
+        shapes: view('float32x3', 9),
+        status: view('uint32', 9)
+      }
     }),
     new GPUPointCloudStatisticalFilter({
       squaredDistances,
       counts,
       capacity: 64,
-      meanDistances: view('float32', 9),
-      validity: view('uint32', 9)
+      output: {meanDistances: view('float32', 9), validity: view('uint32', 9)}
     }),
     new GPUPointCloudVoxelDownsample({
       positions,
@@ -95,42 +91,42 @@ it('point-cloud analysis generated shaders pass reserved-word and baseline resou
           attribute: {means: view('float32x3', 9), counts: view('uint32', 9)}
         }
       ],
-      counts: view('uint32', 9),
-      centroids: view('float32x3', 9),
-      representatives: view('uint32', 9),
-      status: view('uint32', 9),
-      attribute: {means: view('float32x3', 9), counts: view('uint32', 9)}
+      output: {
+        counts: view('uint32', 9),
+        centroids: view('float32x3', 9),
+        representatives: view('uint32', 9),
+        status: view('uint32', 9),
+        attribute: {means: view('float32x3', 9), counts: view('uint32', 9)}
+      }
     }),
     new GPUPointCloudSurfaces({
       positions,
       classifications,
       grid,
-      terrain,
-      coverage,
-      surface: view('float32', 9),
-      canopy: view('float32', 9)
+      output: {terrain, coverage, surface: view('float32', 9), canopy: view('float32', 9)}
     }),
     new GPUPointCloudHeight({
       positions,
       grid,
       terrain,
       coverage,
-      heights: view('float32', 9),
-      status: view('uint32', 9)
+      output: {heights: view('float32', 9), status: view('uint32', 9)}
     }),
     new GPUPointCloudGround({
       positions,
       classifications,
       grid,
-      minimumSurface: terrain,
-      coverage,
       radii: [1, 2],
       initialThreshold: 0.1,
       slope: 0.1,
       maximumThreshold: 1,
-      groundMask: view('uint32', 9),
-      outputClassifications: view('uint32', 9),
-      status: view('uint32', 9)
+      minimumSurface: terrain,
+      coverage,
+      output: {
+        groundMask: view('uint32', 9),
+        outputClassifications: view('uint32', 9),
+        status: view('uint32', 9)
+      }
     }),
     new GPUPointCloudSMRF({
       positions,
@@ -139,10 +135,12 @@ it('point-cloud analysis generated shaders pass reserved-word and baseline resou
       grid,
       window: 2,
       cut: 1,
-      groundSurface: view('float32', 9),
-      groundMask: view('uint32', 9),
-      outputClassifications: view('uint32', 9),
-      status: view('uint32', 9)
+      output: {
+        groundSurface: view('float32', 9),
+        groundMask: view('uint32', 9),
+        outputClassifications: view('uint32', 9),
+        status: view('uint32', 9)
+      }
     }),
     new GPUPointCloudICP({
       source: positions,
@@ -153,10 +151,12 @@ it('point-cloud analysis generated shaders pass reserved-word and baseline resou
       robust: {method: 'tukey', scale: 1},
       maximumDistance: 10,
       iterations: 2,
-      transform: view('float32', 16),
-      history: view('float32x3', 2),
-      inlierMask: view('uint32', 9),
-      status: view('uint32', 1)
+      output: {
+        transform: view('float32', 16),
+        history: view('float32x3', 2),
+        inlierMask: view('uint32', 9),
+        status: view('uint32', 1)
+      }
     }),
     new GPUPointCloudChange({
       reference: positions,
@@ -169,16 +169,19 @@ it('point-cloud analysis generated shaders pass reserved-word and baseline resou
       samplingCovariance: {referenceVariance: 1, comparisonVariance: 1, correlationLength: 1},
       radius: 1,
       halfDepth: 1,
-      changes: view('float32x3', 9),
-      roughness: view('float32x3', 9),
-      counts: view('uint32', 18),
-      status: view('uint32', 9)
+      output: {
+        changes: view('float32x3', 9),
+        roughness: view('float32x3', 9),
+        counts: view('uint32', 18),
+        status: view('uint32', 9)
+      }
     })
   ];
   for (const contributor of contributors) {
     const nodes = contributor.getCommandNodes(graph);
-    for (const [identifier, source] of getParsedKernelSources(nodes)) {
-      expect(auditWGSLModule(source), identifier).toEqual([]);
+    for (const {id: identifier, source, constants} of getParsedKernelSources(nodes)
+      .configurations) {
+      expect(auditWGSLModule(source, constants), identifier).toEqual([]);
     }
   }
 });
@@ -198,10 +201,12 @@ it('rejects indefinite registration covariance independently of coordinate scale
     alignment: 'already-aligned' as const,
     radius: 1,
     halfDepth: 1,
-    changes: view('float32x3', 1),
-    roughness: view('float32x3', 1),
-    counts: view('uint32', 2),
-    status: view('uint32', 1)
+    output: {
+      changes: view('float32x3', 1),
+      roughness: view('float32x3', 1),
+      counts: view('uint32', 2),
+      status: view('uint32', 1)
+    }
   };
   for (const scale of [1e-20, 1e-6, 1, 1e20]) {
     expect(
@@ -219,7 +224,13 @@ it('rejects indefinite registration covariance independently of coordinate scale
         })
     ).not.toThrow();
   }
-  expect(() => new GPUPointCloudChange({...props, registrationError: 1e30})).toThrow();
+  expect(
+    () =>
+      new GPUPointCloudChange({
+        ...props,
+        registrationError: 1e30
+      })
+  ).toThrow();
   expect(
     () =>
       new GPUPointCloudChange({
@@ -245,13 +256,21 @@ it('rejects robust ICP scales whose generated squared float32 scale underflows o
     target: view('float32x3', 3),
     maximumDistance: 1,
     iterations: 1,
-    transform: view('float32', 16),
-    history: view('float32x3', 1),
-    inlierMask: view('uint32', 3),
-    status: view('uint32', 1)
+    output: {
+      transform: view('float32', 16),
+      history: view('float32x3', 1),
+      inlierMask: view('uint32', 3),
+      status: view('uint32', 1)
+    }
   };
   for (const scale of [1e-30, 1e30]) {
-    expect(() => new GPUPointCloudICP({...props, robust: {method: 'tukey', scale}})).toThrow();
+    expect(
+      () =>
+        new GPUPointCloudICP({
+          ...props,
+          robust: {method: 'tukey', scale}
+        })
+    ).toThrow();
   }
 });
 
@@ -276,11 +295,13 @@ it('voxel merge rejects cross-pass output aliases before they overwrite final re
             attribute: {means: view('float32', 1), counts: view('uint32', 1)}
           }
         ],
-        counts: view('uint32', 1),
-        centroids: view('float32x3', 1),
-        representatives: view('uint32', 1),
-        status: shared,
-        attribute: {means: view('float32', 1), counts: shared}
+        output: {
+          counts: view('uint32', 1),
+          centroids: view('float32x3', 1),
+          representatives: view('uint32', 1),
+          status: shared,
+          attribute: {means: view('float32', 1), counts: shared}
+        }
       })
   ).toThrow();
 });
@@ -296,9 +317,8 @@ it('height interpolation rejects radius and support constants that cannot be rep
     positions: view('float32x3', 1),
     terrain: view('float32', 1),
     coverage: view('uint32', 1),
-    heights: view('float32', 1),
-    status: view('uint32', 1),
-    grid: {origin: [0, 0] as const, cellSize: 1, width: 1, height: 1}
+    grid: {origin: [0, 0] as const, cellSize: 1, width: 1, height: 1},
+    output: {heights: view('float32', 1), status: view('uint32', 1)}
   };
   for (const radius of [1e-30, 1e30]) {
     expect(

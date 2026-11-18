@@ -29,7 +29,7 @@ import {requireTestDevice} from '../../utils/require-test-device';
 
 /**
  * Relate-engine scaling benchmark on realistic (zip-code-like) polygons. Imported by the gated
- * `spatial-join-benchmark.spec.ts`, so it only runs with `LUMA_TEST_BROWSER_BENCHMARKS=true`.
+ * `spatial-join-benchmark.spec.ts`. Run with `yarn test-benchmarks modules/analysis/test/gpu-spatial-analysis/spatial-join/spatial-join-benchmark.spec.ts`.
  */
 
 type Scenario = {
@@ -297,8 +297,8 @@ async function timePredicate(
     buffers.push(buffer);
     return {buffer, view: importGraphBuffer(graph, name, buffer, 'uint32', length)};
   };
-  const leftIds = output('left-ids', capacity);
-  const rightIds = output('right-ids', capacity);
+  const leftRows = output('left-ids', capacity);
+  const rightRows = output('right-ids', capacity);
   const count = output('count', 1);
   const overflow = output('overflow', 1);
   const relate = output('relate', capacity);
@@ -312,8 +312,8 @@ async function timePredicate(
       candidateCapacity: capacity,
       output: {
         pairs: {
-          leftIds: leftIds.view,
-          rightIds: rightIds.view,
+          leftRows: leftRows.view,
+          rightRows: rightRows.view,
           status: {
             count: count.view,
             overflow: overflow.view
@@ -343,8 +343,8 @@ async function timePredicate(
     timings.sort((a, b) => a - b);
     milliseconds = timings[2];
   }
-  const ids = (await readUint32(leftIds.buffer, capacity)).slice(0, matches);
-  const rightValues = (await readUint32(rightIds.buffer, capacity)).slice(0, matches);
+  const ids = (await readUint32(leftRows.buffer, capacity)).slice(0, matches);
+  const rightValues = (await readUint32(rightRows.buffer, capacity)).slice(0, matches);
   const matrices = wantsRelate ? (await readUint32(relate.buffer, capacity)).slice(0, matches) : [];
   rows.push({
     scenario: scenario.name,

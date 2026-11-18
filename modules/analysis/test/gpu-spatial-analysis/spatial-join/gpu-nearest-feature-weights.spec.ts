@@ -6,14 +6,188 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {GPUNearestFeatureJoin} from '../../../src/gpu-spatial-analysis/spatial-join/gpu-nearest-feature-join';
 import {GPUNearestFeatureWeights} from '../../../src/gpu-spatial-analysis/spatial-join/gpu-nearest-feature-weights';
-import {readUint32} from '../../utils/gpu-contributor-test-utils';
+import {readFloat32, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
+import {
+  GPULocalMoran,
+  getGPUSpatialAutocorrelationParameterValues
+} from '../../../src/gpu-spatial-analysis/spatial-autocorrelation/index';
 import {WeightsRig} from '../spatial-weights/spatial-weights-harness';
 import {assertValidCSR} from '../spatial-weights/spatial-weights-oracle';
 import {assertValidCrossWeights} from './nearest-feature-weights-oracle';
 import {createRandom} from './spatial-join-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 
 type Point = [number, number];
+
+it('final2 nearest weights publish adjacent status words after caller-map mutation and clear them on reuse', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new WeightsRig(device);
+  const flags = rig.output('uint32', 2);
+  const overflow = rig.graph.createDataView(flags.view.buffer, {format: 'uint32', length: 1});
+  const candidate = rig.graph.createDataView(flags.view.buffer, {
+    format: 'uint32',
+    byteOffset: 4,
+    length: 1
+  });
+  const upstream = rig.input(Uint32Array.of(1), 'uint32', 1);
+  const csr = rig.weightsOutput(1, 1);
+  const status = {overflow, candidateOverflow: candidate};
+  const neighborStatus = {overflow: upstream};
+  const producer = new GPUNearestFeatureWeights({
+    neighborRows: rig.input(Uint32Array.of(2), 'uint32', 1),
+    neighborCounts: rig.input(Uint32Array.of(1), 'uint32', 1),
+    neighborStatus,
+    slotCapacity: 1,
+    output: {...csr.spatialWeights, status}
+  });
+  Reflect.deleteProperty(status, 'candidateOverflow');
+  neighborStatus.overflow = overflow;
+  rig.graph.add(producer);
+  const compiled = rig.graph.compile();
+  try {
+    for (const loss of [1, 0]) {
+      flags.buffer.write(Uint32Array.of(29, 37));
+      rig.bufferOf(upstream).write(Uint32Array.of(loss));
+      submitGraph(device, compiled, undefined);
+      expect(await readUint32(flags.buffer, 2)).toEqual([0, loss]);
+      const result = await csr.read();
+      expect(result.offsets).toEqual([0, 1]);
+      expect(result.neighbors).toEqual([2]);
+      expect(result.weights).toEqual([1]);
+    }
+  } finally {
+    compiled.destroy();
+    rig.destroy();
+  }
+});
+
+it('final1 bounded nearest join propagates candidate loss through CSR to Moran and recovers', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const statusRig = new WeightsRig(device);
+  const sharedStatus = Array.from({length: 6}, () => statusRig.output('uint32', 1));
+  try {
+    // Leaf capacity is topology: rebuild with enough slots, retaining the status buffers so
+    // the complete submission must overwrite the preceding incomplete submission's flags.
+    for (const leafCapacity of [1, 2]) {
+      const rig = new WeightsRig(device);
+      const importStatus = (index: number) => ({
+        buffer: sharedStatus[index].buffer,
+        view: importGraphBuffer(
+          rig.graph,
+          `shared-status-${index}`,
+          sharedStatus[index].buffer,
+          'uint32',
+          1
+        )
+      });
+      const neighborRows = rig.output('uint32', 4);
+      const neighborIds = rig.output('uint32', 4);
+      const neighborCounts = rig.output('uint32', 4);
+      const joinOverflow = importStatus(0);
+      const joinCandidateOverflow = importStatus(1);
+      const overflow = importStatus(2);
+      const candidateOverflow = importStatus(3);
+      const statisticOverflow = importStatus(4);
+      const statisticCandidateOverflow = importStatus(5);
+      const csr = rig.weightsOutput(4, 8);
+      const lineOffsets = rig.input(Uint32Array.of(0, 2, 4), 'uint32', 3);
+      const joinStatus = {
+        overflow: joinOverflow.view,
+        candidateOverflow: joinCandidateOverflow.view
+      };
+      rig.graph.add(
+        new GPUNearestFeatureJoin({
+          queries: {
+            kind: 'points',
+            positions: rig.input(Float32Array.of(0, 0, 1, 0, 2, 0, 3, 0), 'float32x2', 4)
+          },
+          features: {
+            kind: 'lines',
+            positions: rig.input(Float32Array.of(0, -1, 0, 1, 2, -1, 2, 1), 'float32x2', 4),
+            lineOffsets
+          },
+          leafCapacity,
+          spatialSort: false,
+          querySort: false,
+          k: 1,
+          output: {
+            neighborRows: neighborRows.view,
+            neighborIds: neighborIds.view,
+            neighborCounts: neighborCounts.view,
+            status: joinStatus
+          }
+        })
+      );
+      const adapter = new GPUNearestFeatureWeights({
+        neighborRows: neighborRows.view,
+        neighborCounts: neighborCounts.view,
+        neighborStatus: joinStatus,
+        slotCapacity: 1,
+        output: {
+          ...csr.spatialWeights,
+          status: {overflow: overflow.view, candidateOverflow: candidateOverflow.view}
+        }
+      });
+      rig.graph.add(adapter);
+      const zScores = rig.output('float32', 4);
+      const localI = rig.output('float32', 4);
+      const spatialLag = rig.output('float32', 4);
+      const parameters = getGPUSpatialAutocorrelationParameterValues({});
+      rig.graph.add(
+        new GPULocalMoran({
+          weights: adapter.outputWeights,
+          values: rig.input(Float32Array.of(1, 2, 3, 4), 'float32', 4),
+          parameters: rig.input(parameters, 'float32', parameters.length),
+          islands: 'keep',
+          output: {
+            zScores: zScores.view,
+            localI: localI.view,
+            spatialLag: spatialLag.view,
+            status: {
+              overflow: statisticOverflow.view,
+              candidateOverflow: statisticCandidateOverflow.view
+            }
+          }
+        })
+      );
+      const compiled = rig.graph.compile();
+      try {
+        submitGraph(device, compiled, undefined);
+        if (leafCapacity === 1) {
+          expect(await readUint32(joinCandidateOverflow.buffer, 1)).toEqual([1]);
+          expect(await readUint32(candidateOverflow.buffer, 1)).toEqual([1]);
+          expect(await readUint32(overflow.buffer, 1)).toEqual([0]);
+          expect(await readUint32(statisticOverflow.buffer, 1)).toEqual([0]);
+          expect(await readUint32(statisticCandidateOverflow.buffer, 1)).toEqual([1]);
+          expect((await readFloat32(zScores.buffer, 4)).every(Number.isNaN)).toBe(true);
+          expect((await readFloat32(localI.buffer, 4)).every(Number.isNaN)).toBe(true);
+          continue;
+        }
+        expect(await readUint32(joinOverflow.buffer, 1)).toEqual([0]);
+        expect(await readUint32(candidateOverflow.buffer, 1)).toEqual([0]);
+        expect(await readUint32(overflow.buffer, 1)).toEqual([0]);
+        expect(await readUint32(statisticCandidateOverflow.buffer, 1)).toEqual([0]);
+        const completeWeights = await csr.read();
+        expect(completeWeights.offsets).toEqual([0, 1, 2, 3, 4]);
+        expect(completeWeights.neighbors).toEqual([0, 0, 1, 1]);
+        expect(Number.isFinite((await readFloat32(zScores.buffer, 4))[1])).toBe(true);
+        const recovered = await readFloat32(localI.buffer, 4);
+        expect(Number.isFinite(recovered[1])).toBe(true);
+        // Mean 2.5, centered row 1 = -0.5, lag = -1.5, M2 = 5: (n - 1) * 0.75 / 5.
+        expect(recovered[1]).toBeCloseTo(0.45, 5);
+        expect((await readFloat32(spatialLag.buffer, 4))[1]).toBeCloseTo(-1.5, 5);
+      } finally {
+        compiled.destroy();
+        rig.destroy();
+      }
+    }
+  } finally {
+    statusRig.destroy();
+  }
+});
 
 /** CPU libpysal-style KNN: k nearest by (distance, row), self excluded, rows sorted by ID. */
 function computeKnnOracle(
@@ -55,6 +229,7 @@ async function runAdapter(
   const joinK = options.selfJoin ? options.k + 1 : options.k;
   const slots = queries.length * joinK;
   const ids = rig.output('uint32', slots);
+  const neighborRows = rig.output('uint32', slots);
   const distances = rig.output('float32', slots);
   const counts = rig.output('uint32', queries.length);
   const joinOverflow = rig.output('uint32', 1);
@@ -74,13 +249,14 @@ async function runAdapter(
       radius: maxDistance,
       output: {
         neighborIds: ids.view,
+        neighborRows: neighborRows.view,
         neighborCounts: counts.view,
         neighborDistances: distances.view,
         status: {overflow: joinOverflow.view}
       }
     }),
     new GPUNearestFeatureWeights({
-      neighborIds: ids.view,
+      neighborRows: neighborRows.view,
       neighborCounts: counts.view,
       neighborDistances: distances.view,
       slotCapacity: joinK,
@@ -292,7 +468,7 @@ it('GPUNearestFeatureWeights validates its props', () => {
   expect(
     () =>
       new GPUNearestFeatureWeights({
-        neighborIds: view,
+        neighborRows: view,
         neighborCounts: view,
         slotCapacity: 0,
         output: {} as never
@@ -338,7 +514,7 @@ it('weights batches exclude self and padding, keep k below slotCapacity, and sor
         excludeSelf: true,
         scratchChunkRowCount: 1,
         weightType: 'inverse-distance',
-        neighborIds: rig.input(ids, 'uint32', ids.length),
+        neighborRows: rig.input(ids, 'uint32', ids.length),
         neighborCounts: rig.input(Uint32Array.of(80, 5, 6), 'uint32', 3),
         neighborDistances: rig.input(distances, 'float32', distances.length),
         output: {...output.spatialWeights, status: {overflow: overflow.view}}

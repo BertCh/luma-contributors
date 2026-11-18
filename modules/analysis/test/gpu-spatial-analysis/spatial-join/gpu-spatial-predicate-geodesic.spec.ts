@@ -100,8 +100,8 @@ async function runGreatCircleJoin(
     buffers.push(buffer);
     return {buffer, view: importGraphBuffer(graph, name, buffer, 'uint32', length)};
   };
-  const leftIds = output('left-ids', pairCapacity);
-  const rightIds = output('right-ids', pairCapacity);
+  const leftRows = output('left-ids', pairCapacity);
+  const rightRows = output('right-ids', pairCapacity);
   const count = output('count', 1);
   const overflow = output('overflow', 1);
   const pairOverflow = output('pair-overflow', 1);
@@ -119,8 +119,8 @@ async function runGreatCircleJoin(
       candidateCapacity: Math.max(leftCount * 8, 64),
       output: {
         pairs: {
-          leftIds: leftIds.view,
-          rightIds: rightIds.view,
+          leftRows: leftRows.view,
+          rightRows: rightRows.view,
           status: {
             count: count.view,
             overflow: pairOverflow.view
@@ -136,8 +136,8 @@ async function runGreatCircleJoin(
     distanceBuffer.write(Float32Array.from([distance]));
     submitGraph(device, compiled, undefined);
     const [countValue] = await readUint32(count.buffer, 1);
-    const lefted = await readUint32(leftIds.buffer, pairCapacity);
-    const righted = await readUint32(rightIds.buffer, pairCapacity);
+    const lefted = await readUint32(leftRows.buffer, pairCapacity);
+    const righted = await readUint32(rightRows.buffer, pairCapacity);
     results.push({
       pairs: lefted.slice(0, countValue).map((row, slot) => [row, righted[slot]]),
       overflow: (await readUint32(overflow.buffer, 1))[0]

@@ -217,7 +217,8 @@ describe('private copies of official WGSL', () => {
     // flush to zero for a large finite scale. The local function now delegates that quotient
     // to the shared exponent-scaled helper, so equality with the official text is incorrect.
     // Numeric oracles for large/small scales live in gpu-pointcloud/pointcloud-runtime-chunks.spec.ts.
-    const localFile = 'modules/analysis/src/pointcloud-analysis/pointcloud-kernel-nodes.ts';
+    const localFile =
+      'modules/analysis/src/pointcloud-analysis/operations/pointcloud-kernel-nodes.ts';
     const local = getFunctionText(localFile, 'safeNormal');
     expect(local).toBe(
       `fn safeNormal(value: vec3f) -> vec3f {

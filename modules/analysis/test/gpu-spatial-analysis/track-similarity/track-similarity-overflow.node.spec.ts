@@ -75,3 +75,54 @@ it('preflights the sixteen-byte decision record before declaring any pair scratc
     device.destroy();
   }
 });
+
+it('does not require unused expanded counts for original-vertex-only measures', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const positions = createTransientView(graph, 'positions', 'float32x2', 1048577);
+    const lineOffsets = createTransientView(graph, 'offsets', 'uint32', 2);
+    const singletonPositions = createTransientView(graph, 'singleton', 'float32x2', 2);
+    const singletonOffsets = createTransientView(graph, 'singleton-offsets', 'uint32', 2);
+    const pairA = createTransientView(graph, 'pair-a', 'uint32', 1);
+    const pairB = createTransientView(graph, 'pair-b', 'uint32', 1);
+    const memory = createCPUGraphMemory();
+    memory.write(singletonOffsets, Uint32Array.of(0, 1));
+    for (const measure of [
+      'maximumDistance',
+      'symmetricSegmentPathDistance',
+      'hausdorff',
+      'frechet'
+    ] as const) {
+      const pairStatus = createTransientView(graph, `${measure}-status`, 'uint32', 1);
+      const nodes = new GPUTrackSimilarity({
+        id: measure,
+        densify: 1 / 4096,
+        linesA: {kind: 'lines', positions, lineOffsets},
+        linesB: {kind: 'lines', positions: singletonPositions, lineOffsets: singletonOffsets},
+        pairA,
+        pairB,
+        output: {[measure]: createTransientView(graph, measure, 'float32', 1), pairStatus}
+      }).getCommandNodes(graph);
+      for (const count of [1048576, 1048577]) {
+        memory.write(lineOffsets, Uint32Array.of(0, count));
+        executeCommandNodesOnCPU([nodes.find(node => node.id === `${measure}-status`)!], memory);
+        expect(memory.readUint32(pairStatus)[0], `${measure} count ${count}`).toBe(
+          (measure === 'hausdorff' || measure === 'frechet') && count === 1048577
+            ? GPU_TRACK_SIMILARITY_STATUS.invalidPair
+            : 0
+        );
+      }
+      // A shorter track beyond the DP cap must not mark a measure that has no DP table.
+      memory.write(lineOffsets, Uint32Array.of(0, 2));
+      memory.write(singletonOffsets, Uint32Array.of(0, 2));
+      executeCommandNodesOnCPU([nodes.find(node => node.id === `${measure}-status`)!], memory);
+      expect(memory.readUint32(pairStatus)[0]).toBe(
+        measure === 'frechet' ? GPU_TRACK_SIMILARITY_STATUS.frechetCapExceeded : 0
+      );
+      memory.write(singletonOffsets, Uint32Array.of(0, 1));
+    }
+  } finally {
+    device.destroy();
+  }
+});

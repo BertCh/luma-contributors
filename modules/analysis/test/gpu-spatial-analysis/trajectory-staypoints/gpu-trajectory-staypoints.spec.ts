@@ -302,6 +302,10 @@ describe('GPUTrajectoryStaypoints', () => {
       {maximumSearchRows: 256}
     );
     expect(result.candidateOverflow).toBe(1);
+    expect(result.overflow).toBe(0);
+    expect(result.count).toBe(4);
+    expect(result.requiredCount).toBe(4);
+    expect(result.staypoints.map(staypoint => staypoint.startRow)).toEqual([0, 257, 514, 771]);
   });
 
   it('honours the shared gap rule and capacity overflow', async () => {

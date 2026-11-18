@@ -178,10 +178,10 @@ it('audits generated kernels, graph primitives and node budgets at small and mil
     expect(nodes.some(node => node.id.includes('grid'))).toBe(true);
     const sources = getParsedKernelSources(nodes);
     expect(sources.size).toBeGreaterThan(25);
-    for (const [name, source] of sources) {
+    for (const {id: name, source: source, constants} of sources.configurations) {
       expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
-      expect(getWorkgroupMemoryBytes(source), name).toBeLessThanOrEqual(16384);
-      expect(getPrivateMemoryBytes(source), name).toBeLessThanOrEqual(8192);
+      expect(getWorkgroupMemoryBytes(source, constants), name).toBeLessThanOrEqual(16384);
+      expect(getPrivateMemoryBytes(source, constants), name).toBeLessThanOrEqual(8192);
     }
     const rowReducer = [...sources.values()].find(source =>
       source.includes('CSR rows are ID ordered')

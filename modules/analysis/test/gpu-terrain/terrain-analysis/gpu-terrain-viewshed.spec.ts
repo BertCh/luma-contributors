@@ -11,7 +11,7 @@ import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis
 import {
   getRasterGridGeoreference,
   type GPURasterCellSizeMode
-} from '../../../src/analysis-core/raster-grid';
+} from '../../../src/analysis-core/contracts/raster-grid';
 import {
   GPUParameterBuffer,
   importGraphBuffer

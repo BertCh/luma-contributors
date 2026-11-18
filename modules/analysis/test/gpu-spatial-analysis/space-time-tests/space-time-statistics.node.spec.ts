@@ -255,6 +255,8 @@ describe('GPUNearRepeatKnox validation', () => {
     ).toEqual({
       alternative: 'greater',
       permutationCount: 99,
+      requestedPermutationCount: 99,
+      stoppingRule: {method: 'fixed-count'},
       seed: 3,
       multipleTesting: 'none',
       testedRowsDefinition:
@@ -343,12 +345,12 @@ describe('space-time statistics kernels', () => {
       const sources = getGPUCommandNodeKernelSources(build(views));
       views.device.destroy();
       expect(sources.length).toBeGreaterThan(2);
-      for (const {id, source} of sources) {
+      for (const {id, source, constants} of sources) {
         expect(getStorageBindingCount(source), `${id} bindings`).toBeLessThanOrEqual(8);
-        expect(getPrivateMemoryBytes(source), id).toBeLessThanOrEqual(
+        expect(getPrivateMemoryBytes(source, constants), id).toBeLessThanOrEqual(
           CORE_PRIVATE_MEMORY_LIMIT_BYTES
         );
-        expect(getWorkgroupMemoryBytes(source), id).toBeLessThanOrEqual(
+        expect(getWorkgroupMemoryBytes(source, constants), id).toBeLessThanOrEqual(
           CORE_WORKGROUP_STORAGE_LIMIT_BYTES
         );
       }

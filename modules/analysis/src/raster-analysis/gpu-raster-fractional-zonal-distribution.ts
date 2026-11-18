@@ -28,8 +28,14 @@ import {
   validateRasterGridAxisAligned,
   validateRasterParameters
 } from './raster-band-utils';
-import {validateRasterCellSizeMode, type GPURasterCellSizeMode} from '../analysis-core/raster-grid';
-import {getRasterRowAreaScaleWGSL} from './raster-grid/raster-cell-area-scale';
+import {
+  validateRasterCellSizeMode,
+  type GPURasterCellSizeMode
+} from '../analysis-core/contracts/raster-grid';
+import {
+  getRasterRowAreaScaleWGSL,
+  getRasterEffectiveAxisAlignmentWGSL
+} from './raster-grid/raster-cell-area-scale';
 import {validateRasterExpansionGraph} from './raster-expansion-utils';
 import {
   GPURaster,
@@ -44,7 +50,8 @@ import {
 
 /**
  * Slot of the affine determinant in the georeference view of `GPURasterFractionalCoverage`
- * (`[originX, originY, a, b, d, e, determinant, 0]`), the only word this class reads from it.
+ * (`[originX, originY, a, b, d, e, determinant, 0]`). Ground modes additionally read row placement
+ * and both cross-axis terms to reject unsupported per-frame ground-area calculations.
  */
 const GEOREFERENCE_DETERMINANT_SLOT = 6;
 
@@ -55,6 +62,7 @@ export const GPU_RASTER_FRACTIONAL_ZONAL_DISTRIBUTION_MAXIMUM_QUANTILES = 32;
 
 /** Per-zone status bits; singleton zones can have valid population results and bit 8 set. */
 export const GPU_RASTER_FRACTIONAL_ZONAL_DISTRIBUTION_STATUS = {
+  /** Missing coverage evidence or an unsupported effective ground-area frame. */
   INCOMPLETE_COVERAGE: 1,
   INVALID_TUPLE: 2,
   NO_VALID_SUPPORT: 4,
@@ -187,6 +195,7 @@ export class GPURasterFractionalZonalDistribution implements GPUCommandNodeProdu
       }
     }
     for (const [name, view] of Object.entries(props.coverage.status)) {
+      if (!view) continue;
       validateSinglePackedView(view, ['uint32'], `${this.id} coverage.status.${name}`);
     }
     validateSinglePackedView(props.probabilities, ['float32'], `${this.id} probabilities`);
@@ -234,10 +243,11 @@ export class GPURasterFractionalZonalDistribution implements GPUCommandNodeProdu
       'coverage.zoneValidity must hold zoneCount entries'
     );
     for (const [name, view] of Object.entries(props.coverage.status)) {
+      if (!view) continue;
       validateRequirement(
         this.id,
-        view.length === 1,
-        `coverage.status.${name} must hold one entry`
+        view.length >= 1,
+        `coverage.status.${name} must hold at least one entry`
       );
     }
     for (const [name, view] of Object.entries(props.output)) {
@@ -378,11 +388,31 @@ export class GPURasterFractionalZonalDistribution implements GPUCommandNodeProdu
           {name: 'count', view: coverage.status.count, type: 'u32', access: 'read'},
           {name: 'required', view: coverage.status.requiredCount, type: 'u32', access: 'read'},
           {name: 'overflow', view: coverage.status.overflow, type: 'u32', access: 'read'},
+          ...(coverage.status.candidateOverflow
+            ? [
+                {
+                  name: 'candidateOverflow',
+                  view: coverage.status.candidateOverflow,
+                  type: 'u32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : []),
+          ...(cellSizeMode !== 'uniform' && props.parameters
+            ? [
+                {
+                  name: 'georeference',
+                  view: props.parameters,
+                  type: 'f32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : []),
           {name: 'control', view: control, type: 'u32', access: 'read_write'}
         ],
         body: `let countValue = count[countOffset];
   control[controlOffset] = min(countValue, ${capacity}u);
-  control[controlOffset + 1u] = u32(countValue <= ${capacity}u && required[requiredOffset] == countValue && overflow[overflowOffset] == 0u);
+  control[controlOffset + 1u] = u32(countValue <= ${capacity}u && required[requiredOffset] == countValue && overflow[overflowOffset] == 0u ${coverage.status.candidateOverflow ? '&&candidateOverflow[candidateOverflowOffset]==0u' : ''} && (${getRasterEffectiveAxisAlignmentWGSL(props.grid, cellSizeMode, props.parameters ? 'georeference' : undefined)}));
   control[controlOffset + 2u] = 0u;`
       }),
       createWGSLKernelNode(graph, {

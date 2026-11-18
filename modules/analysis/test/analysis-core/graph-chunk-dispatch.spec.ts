@@ -8,23 +8,16 @@ import {
   GPUCommandGraph,
   createTransientView,
   createTransientVectorView,
-  type GraphDataView,
-  type GPUCommandNodeProducer,
-  type GraphVectorView
+  type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {expect, it, vi} from 'vitest';
 import {
   planGraphChunkDispatch,
   createGraphChunkDispatchParameters,
   validateGraphChunkBindingRanges,
-  validateDisjointWritableViews,
-  type GraphChunkDispatchPlan
+  validateDisjointWritableViews
 } from '../../src/analysis-core/kernels/graph-chunk-dispatch';
-import {
-  importGraphBuffer,
-  validateCommandNodeBudget,
-  validateGraphOutputsDisjointFromInputs
-} from '../../src/analysis-core/kernels/gpu-contributor-utils';
+import {importGraphBuffer} from '../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   createOutputBuffer,
   createVectorView,
@@ -32,30 +25,7 @@ import {
   submitGraph
 } from '../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../utils/require-test-device';
-import {createExampleChunkNodes} from './graph-chunk-dispatch.test-utils';
-
-/** Tiny test contributor: output[row] = input[row] * 3 + globalRow + totalRows. */
-class ExampleChunkContributor implements GPUCommandNodeProducer {
-  readonly plan: GraphChunkDispatchPlan;
-  readonly estimatedCommandNodeCount: number;
-
-  constructor(
-    input: GraphVectorView<'uint32'>,
-    output: GraphVectorView<'uint32'>,
-    readonly options: {id?: string; maximumWorkgroupsPerDimension?: number} = {}
-  ) {
-    this.plan = planGraphChunkDispatch('example', {input, output});
-    validateDisjointWritableViews('example', {output});
-    validateGraphOutputsDisjointFromInputs('example', [output], [input]);
-    this.estimatedCommandNodeCount =
-      this.plan.nonemptyChunkCount + (this.plan.chunks.length ? 1 : 0);
-    validateCommandNodeBudget('example', this.estimatedCommandNodeCount);
-  }
-
-  getCommandNodes<Parameters>(graph: GPUCommandGraph<Parameters>) {
-    return createExampleChunkNodes(graph, this.plan, this.options);
-  }
-}
+import {ExampleChunkContributor} from './graph-chunk-dispatch.test-utils';
 
 it('dispatches 1, 3 and 100 unequal chunks with one pipeline and CPU-expected global rows', async () => {
   const device = await getWebGPUTestDevice();

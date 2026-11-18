@@ -104,10 +104,11 @@ it('builds GPU Yen above 256 vertices without graph-sized private arrays', () =>
     const {graph, contributor} = setupKShortestPaths(options);
     const nodes = contributor.getCommandNodes(graph);
     expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
-    for (const [name, source] of getParsedKernelSources(nodes)) {
+    const sources = getParsedKernelSources(nodes);
+    for (const {id: name, source: source, constants} of sources.configurations) {
       expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
-      expect(getPrivateMemoryBytes(source), name).toBeLessThanOrEqual(8192);
-      expect(auditWGSLModule(source), name).toEqual([]);
+      expect(getPrivateMemoryBytes(source, constants), name).toBeLessThanOrEqual(8192);
+      expect(auditWGSLModule(source, constants), name).toEqual([]);
     }
   }
 });

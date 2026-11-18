@@ -11,7 +11,7 @@ import {
   importGraphBuffer
 } from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
-  GPU_PROFILE_PEAKS_OVERFLOW_UNCONVERGED,
+  GPU_PROFILE_PEAKS_CANDIDATE_UNCONVERGED,
   GPU_PROFILE_PEAKS_UNRESOLVED_MASK,
   GPU_PROFILE_PEAKS_UNRESOLVED_VALUE,
   GPUProfilePeaks,
@@ -34,6 +34,7 @@ import {
 } from './profile-peaks-oracle';
 import {createMulberryRandom} from '../terrain-oracle-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {computeProfilePeaksOnCPU} from '../../../src/gpu-terrain/terrain-features/cpu-profile-peaks-operation';
 
 type PeakOptions = {
   window: number;
@@ -53,6 +54,7 @@ type PeakRun = {
   converged: number;
   iterationLimitReached: number;
   overflow: number;
+  candidateOverflow: number;
 };
 
 /** Compiles one graph and returns a function that encodes it again with a new minimumProminence. */
@@ -81,6 +83,7 @@ async function createPeakRunner(
   const idsBuffer = createOutputBuffer(device, sampleCount);
   const countBuffer = createOutputBuffer(device, 1);
   const overflowBuffer = createOutputBuffer(device, 1);
+  const candidateOverflowBuffer = createOutputBuffer(device, 1);
   const convergedBuffer = createOutputBuffer(device, 1);
   const limitBuffer = createOutputBuffer(device, 1);
   graph.add(
@@ -123,7 +126,14 @@ async function createPeakRunner(
           ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', sampleCount),
           status: {
             count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
-            overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+            overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
+            candidateOverflow: importGraphBuffer(
+              graph,
+              'candidate-overflow',
+              candidateOverflowBuffer,
+              'uint32',
+              1
+            )
           }
         },
         status: {
@@ -139,10 +149,10 @@ async function createPeakRunner(
       parameterBuffer.write(getGPUProfilePeaksParameterValues({minimumProminence}));
       submitGraph(device, compiled, undefined);
       const [overflow] = await readUint32(overflowBuffer, 1);
-      // Capacity never overflows in these fixtures; bit 2 reports undecided candidates (C-09).
-      expect(overflow & ~GPU_PROFILE_PEAKS_OVERFLOW_UNCONVERGED).toBe(0);
+      expect(overflow).toBe(0); // Every retained peak fits these fixtures.
       return {
         overflow,
+        candidateOverflow: (await readUint32(candidateOverflowBuffer, 1))[0],
         prominence: await readFloat32(prominenceBuffer, sampleCount),
         refinedIndex: await readFloat32(refinedIndexBuffer, sampleCount),
         refinedValue: await readFloat32(refinedValueBuffer, sampleCount),
@@ -166,6 +176,7 @@ async function createPeakRunner(
         idsBuffer,
         countBuffer,
         overflowBuffer,
+        candidateOverflowBuffer,
         convergedBuffer,
         limitBuffer
       ]) {
@@ -456,7 +467,21 @@ it('GPUProfilePeaks reports converged 0 and nothing undecided when maximumSuppre
   });
   expect(none.converged).toBe(0);
   expect(none.iterationLimitReached).toBe(1);
-  expect(none.overflow).toBe(GPU_PROFILE_PEAKS_OVERFLOW_UNCONVERGED);
+  expect(none.overflow).toBe(0);
+  expect(none.candidateOverflow).toBe(GPU_PROFILE_PEAKS_CANDIDATE_UNCONVERGED);
+  const cpu = computeProfilePeaksOnCPU(
+    values,
+    offsets,
+    getGPUProfilePeaksParameterValues({minimumProminence: 1}),
+    {...options, capacity: values.length, maximumSuppressionIterations: 0}
+  );
+  expect([
+    cpu.count[0],
+    cpu.overflow[0],
+    cpu.candidateOverflow[0],
+    cpu.iterationLimitReached[0],
+    cpu.converged[0]
+  ]).toEqual([0, 0, 1, 1, 0]);
   expect(none.compactIds).toEqual([]);
   // Review C-09: undecided candidates carry the unresolved markers, never "not a peak".
   expect(none.mask.every(word => word === 0 || word === GPU_PROFILE_PEAKS_UNRESOLVED_MASK)).toBe(
@@ -485,8 +510,10 @@ it('GPUProfilePeaks reports converged 0 and nothing undecided when maximumSuppre
   if (one.converged === 1) {
     expect(one.compactIds).toEqual(exact);
     expect(one.overflow).toBe(0);
+    expect(one.candidateOverflow).toBe(0);
   } else {
-    expect(one.overflow).toBe(GPU_PROFILE_PEAKS_OVERFLOW_UNCONVERGED);
+    expect(one.overflow).toBe(0);
+    expect(one.candidateOverflow).toBe(GPU_PROFILE_PEAKS_CANDIDATE_UNCONVERGED);
   }
   const full = await runOnce(device, values, undefined, offsets, options);
   expect(full.converged).toBe(1);

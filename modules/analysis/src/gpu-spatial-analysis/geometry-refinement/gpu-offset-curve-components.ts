@@ -72,6 +72,13 @@ export class GPUOffsetCurveComponents implements GPUCommandNodeProducer {
     );
     validateCapacity(
       this.id,
+      'cut parameter and coordinate words',
+      props.segmentCapacity * (props.original.positions.length * 6 + 2) * 3,
+      1,
+      MAXIMUM_FRAGMENT_WORD_COUNT
+    );
+    validateCapacity(
+      this.id,
       'output component words',
       props.output.components.length * 4,
       0,
@@ -141,8 +148,8 @@ export class GPUOffsetCurveComponents implements GPUCommandNodeProducer {
     );
     const requiredCutCapacity = props.original.positions.length * 6 + 2;
     validateRefinementScratchByteLengths(graph, id, {
-      cuts: capacity * requiredCutCapacity * 4,
       fragmentsAndMetadata: capacity * (requiredCutCapacity - 1) * 16,
+      cuts: capacity * requiredCutCapacity * 12,
       nodedEndpoints: capacity * 16
     });
     const transient = <Format extends 'uint32' | 'float32' | 'float32x4'>(
@@ -167,7 +174,8 @@ export class GPUOffsetCurveComponents implements GPUCommandNodeProducer {
     };
     const cutCapacity = props.original.positions.length * 6 + 2;
     const fragmentCapacity = capacity * (cutCapacity - 1);
-    const cuts = transient('cuts', 'float32', capacity * cutCapacity);
+    // [parameter, x, y] per cut; one binding keeps the clip kernel within eight storage buffers.
+    const cuts = transient('cuts', 'float32', capacity * cutCapacity * 3);
     const fragments = transient('fragments', 'float32x4', fragmentCapacity);
     const metadata = createTransientView(
       graph,
@@ -200,18 +208,24 @@ export class GPUOffsetCurveComponents implements GPUCommandNodeProducer {
 const DISTANCE:f32=${getWGSLFloatLiteral(Math.abs(props.distance))};
 const TOLERANCE:f32=${getWGSLFloatLiteral(props.tolerance)};
 ${getReadPointWGSL('point', 'positions')}
-fn insertCut(base:u32,count:u32,value:f32)->u32 {
+fn insertCut(base:u32,count:u32,value:f32,position:vec2f)->u32 {
  if(!(value>0.0 && value<1.0) || count>=CUTS) {return count;}
  var destination=count;
- loop {if(destination==0u || cuts[cutsOffset+base+destination-1u]<=value) {break;} cuts[cutsOffset+base+destination]=cuts[cutsOffset+base+destination-1u];destination--;}
- cuts[cutsOffset+base+destination]=value;return count+1u;
+ loop {if(destination==0u || cuts[cutsOffset+(base+destination-1u)*3u]<=value) {break;}destination--;}
+ if(destination>0u && cuts[cutsOffset+(base+destination-1u)*3u]==value) {return count;}
+ for(var slot=count;slot>destination;slot--) {for(var component=0u;component<3u;component++) {cuts[cutsOffset+(base+slot)*3u+component]=cuts[cutsOffset+(base+slot-1u)*3u+component];}}
+ cuts[cutsOffset+(base+destination)*3u]=value;cuts[cutsOffset+(base+destination)*3u+1u]=position.x;cuts[cutsOffset+(base+destination)*3u+2u]=position.y;return count+1u;
 }
 fn separation(query:vec2f,line:u32,owner:u32,outerJoin:bool)->f32 {
  var minimum=3.0e38;
  for(var vertex=offsets[offsetsOffset+line];vertex+1u<offsets[offsetsOffset+line+1u];vertex++) {
   if(outerJoin && (vertex==owner || vertex+1u==owner)) {continue;}
   let start=point(vertex);let direction=point(vertex+1u)-start;let denominator=dot(direction,direction);if(denominator==0.0) {continue;}
-  let closest=start+clamp(dot(query-start,direction)/denominator,0.0,1.0)*direction;minimum=min(minimum,distance(query,closest));
+  let delta=query-start;let projection=dot(delta,direction)/denominator;
+  var separation=abs(delta.x*direction.y-delta.y*direction.x)/sqrt(denominator);
+  if(projection<=0.0) {separation=length(delta);}
+  if(projection>=1.0) {separation=distance(query,point(vertex+1u));}
+  minimum=min(minimum,separation);
  }
  return minimum;
 }`,
@@ -224,26 +238,53 @@ if(rawEdge%${props.rowsPerVertex ?? 1}u+1u<${props.rowsPerVertex ?? 1}u && owner
  let incoming=point(owner)-point(owner-1u);let outgoing=point(owner+1u)-point(owner);
  outerJoin=(incoming.x*outgoing.y-incoming.y*outgoing.x)*${getWGSLFloatLiteral(props.distance)}<0.0;
 }
-cuts[cutsOffset+base]=0.0;cuts[cutsOffset+base+1u]=1.0;var count=2u;
+cuts[cutsOffset+base*3u]=0.0;cuts[cutsOffset+base*3u+1u]=first.x;cuts[cutsOffset+base*3u+2u]=first.y;
+cuts[cutsOffset+(base+1u)*3u]=1.0;cuts[cutsOffset+(base+1u)*3u+1u]=last.x;cuts[cutsOffset+(base+1u)*3u+2u]=last.y;var count=2u;
 for(var vertex=offsets[offsetsOffset+line];vertex+1u<offsets[offsetsOffset+line+1u];vertex++) {
+ if(outerJoin && (vertex==owner || vertex+1u==owner)) {continue;}
  let start=point(vertex);let finish=point(vertex+1u);let edge=finish-start;let lengthSquared=dot(edge,edge);if(lengthSquared==0.0) {continue;}
  let normal=vec2f(-edge.y,edge.x)/sqrt(lengthSquared);let denominator=dot(direction,normal);
  if(abs(denominator)>1e-20) {for(var side=0u;side<2u;side++) {
-  let fraction=(select(-DISTANCE,DISTANCE,side==1u)-dot(first-start,normal))/denominator;let projection=dot(first+fraction*direction-start,edge)/lengthSquared;
-  if(projection>=0.0 && projection<=1.0) {count=insertCut(base,count,fraction);}
+  let bandDistance=select(-DISTANCE,DISTANCE,side==1u);
+  let fraction=(bandDistance-dot(first-start,normal))/denominator;var position=first+fraction*direction;
+  if(normal.x==0.0) {position.y=start.y+bandDistance*normal.y;}
+  if(normal.y==0.0) {position.x=start.x+bandDistance*normal.x;}
+  let projection=dot(position-start,edge)/lengthSquared;
+  if(projection>=0.0 && projection<=1.0) {count=insertCut(base,count,fraction,position);}
  }}
  for(var endpoint=0u;endpoint<2u;endpoint++) {
-  let delta=first-select(start,finish,endpoint==1u);let linear=dot(delta,direction);let constant=dot(delta,delta)-DISTANCE*DISTANCE;let discriminant=linear*linear-squaredLength*constant;
-  if(discriminant>=0.0) {let root=sqrt(discriminant);count=insertCut(base,count,(-linear-root)/squaredLength);count=insertCut(base,count,(-linear+root)/squaredLength);}
+  let center=select(start,finish,endpoint==1u);let delta=first-center;var segmentLength=sqrt(squaredLength);var unit=direction/segmentLength;
+  if(direction.y==0.0) {segmentLength=abs(direction.x);unit=vec2f(sign(direction.x),0.0);}
+  else if(direction.x==0.0) {segmentLength=abs(direction.y);unit=vec2f(0.0,sign(direction.y));}
+  let along=dot(delta,unit);let across=delta.x*unit.y-delta.y*unit.x;
+  let discriminant=(DISTANCE-abs(across))*(DISTANCE+abs(across));
+  if(discriminant>=0.0) {
+   let root=sqrt(discriminant);
+   // Construct the geometric circle intersection directly. Reconstructing a tangent via a
+   // rounded fraction can turn x=3 into 3.000000238 and prevent a reversed spur cancelling.
+   let foot=center+across*vec2f(unit.y,-unit.x);
+   count=insertCut(base,count,(-along-root)/segmentLength,foot-root*unit);
+   count=insertCut(base,count,(-along+root)/segmentLength,foot+root*unit);
+  }
  }
 }
-let outward=vec2f(-direction.y,direction.x)/sqrt(squaredLength);let epsilon=max(1e-5,max(TOLERANCE*2.0,DISTANCE*1e-5));
+// Cut coordinates are stored once at insertion, and moved with their parameters while sorting.
+let outward=vec2f(-direction.y,direction.x)/sqrt(squaredLength);
 for(var slot=0u;slot+1u<count;slot++) {
- let startParameter=cuts[cutsOffset+base+slot];let endParameter=cuts[cutsOffset+base+slot+1u];if(endParameter-startParameter<=1e-7) {continue;}
+ let startParameter=cuts[cutsOffset+(base+slot)*3u];let endParameter=cuts[cutsOffset+(base+slot+1u)*3u];if(endParameter<=startParameter) {continue;}
+ let start=vec2f(cuts[cutsOffset+(base+slot)*3u+1u],cuts[cutsOffset+(base+slot)*3u+2u]);
+ let finish=vec2f(cuts[cutsOffset+(base+slot+1u)*3u+1u],cuts[cutsOffset+(base+slot+1u)*3u+2u]);
+ if(all(start==finish)) {continue;}
  let middle=first+0.5*(startParameter+endParameter)*direction;
+ // Probe far enough to move in float32 along the normal (four relative ULPs), independently
+ // of endpoint identity. A 1e-5-unit probe cannot move x at projected-coordinate magnitudes.
+ let roundingStep=4.76837158203125e-7*max(abs(middle.x*outward.x),abs(middle.y*outward.y));
+ let epsilon=max(roundingStep,max(1e-5,max(TOLERANCE*2.0,DISTANCE*1e-5)));
  if(separation(middle,line,owner,outerJoin)+TOLERANCE<DISTANCE) {continue;}
- if(max(separation(middle+epsilon*outward,line,owner,outerJoin),separation(middle-epsilon*outward,line,owner,outerJoin))<=DISTANCE+epsilon*0.05) {continue;}
- let start=first+startParameter*direction;let finish=first+endParameter*direction;let fragment=fragmentBase+slot;
+ // A probe longer than this interval cannot decide its local two-sided coverage. Retain the
+ // already distance-band-selected interval rather than removing a tiny connector.
+ if(distance(start,finish)>epsilon && max(separation(middle+epsilon*outward,line,owner,outerJoin),separation(middle-epsilon*outward,line,owner,outerJoin))<=DISTANCE+epsilon*0.05) {continue;}
+ let fragment=fragmentBase+slot;
  fragments[fragmentsOffset+fragment*4u]=start.x;fragments[fragmentsOffset+fragment*4u+1u]=start.y;fragments[fragmentsOffset+fragment*4u+2u]=finish.x;fragments[fragmentsOffset+fragment*4u+3u]=finish.y;
  metadata[metadataOffset+fragment*4u]=line;metadata[metadataOffset+fragment*4u+1u]=owner;metadata[metadataOffset+fragment*4u+2u]=1u;
 }`
@@ -263,7 +304,8 @@ for(var slot=0u;slot+1u<count;slot++) {
         declarations: `const CAPACITY:u32=${fragmentCapacity}u;
 fn startPoint(fragment:u32)->vec2f {return vec2f(fragments[fragmentsOffset+fragment*4u],fragments[fragmentsOffset+fragment*4u+1u]);}
 fn endPoint(fragment:u32)->vec2f {return vec2f(fragments[fragmentsOffset+fragment*4u+2u],fragments[fragmentsOffset+fragment*4u+3u]);}
-fn matches(left:vec2f,right:vec2f)->bool {return distance(left,right)<=${getWGSLFloatLiteral(Math.max(1e-5, Math.abs(props.distance) * 1e-5))};}
+// Shared noded/clipped endpoints establish topology; proximity must never bridge a clipped gap.
+fn matches(left:vec2f,right:vec2f)->bool {return all(left==right);}
 fn writeVertex(index:u32,value:vec2f,source:u32) {if(index<${props.output.positions.length}u) {positions[positionsOffset+index*2u]=value.x;positions[positionsOffset+index*2u+1u]=value.y;sources[sourcesOffset+index]=source;}}`,
         body: `var componentCount=0u;var vertexCount=0u;var writtenComponents=0u;var writtenVertices=0u;
 for(var slot=0u;slot<${props.output.components.length * 4}u;slot++) {components[componentsOffset+slot]=0u;}

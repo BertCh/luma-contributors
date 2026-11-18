@@ -5,6 +5,7 @@
 import {clamp} from '@math.gl/core';
 import {
   createTransientView,
+  GPUReduction,
   GPUScan,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -17,6 +18,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateRequirement,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -33,6 +35,8 @@ import type {GPUCardinalityPort, GPUOverflowStatusPort} from '../../analysis-cor
 import {
   getCellTableViews,
   validateCellTable,
+  snapshotCellTable,
+  snapshotCellTableStatus,
   type GPUCellTable
 } from '../cell-aggregation/cell-table';
 import {
@@ -40,7 +44,8 @@ import {
   GPU_CELL_DEFAULT_SUM_SCALE,
   ORDERED_KEY_WGSL,
   validateSumScale
-} from '../../analysis-core/cell-key-wgsl';
+} from '../../analysis-core/kernels/cell-key-wgsl';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 const OPERATION = 'GPUCellTableCompare';
 /** Two-word row addressing and the sum of both input cardinalities must fit uint32. */
@@ -81,8 +86,8 @@ export type GPUCellTableCompareOutput = {
   /** Measure in the `after` table, 0 when absent. */
   after?: GraphDataView<'float32'>;
   /**
-   * `after - before`, computed exactly in integers (64-bit fixed point for sums) and then rounded
-   * to f32.
+   * `after - before`, computed with an exact sign and unsigned 64-bit magnitude from the signed
+   * input measures, then rounded to f32 and divided by `sumScale` for sums.
    */
   delta?: GraphDataView<'float32'>;
   /** `after / before`, NaN when `before` is 0. */
@@ -93,10 +98,11 @@ export type GPUCellTableCompareOutput = {
   zScore?: GraphDataView<'float32'>;
   /**
    * One-row status scalars: `count` receives `min(requiredCount, cells.length)`, `overflow`
-   * receives 1 when union cells were dropped or either input table overflowed, and the optional
-   * `requiredCount` receives the unclamped number of union cells.
+   * reports only destination truncation. `candidateOverflow` reports either input's final or
+   * inherited loss. `requiredCount` is the retained-input union requirement, a lower bound on
+   * the full union when `candidateOverflow` is nonzero.
    */
-  status: GPUCardinalityPort & GPUOverflowStatusPort;
+  status: GPUCardinalityPort & GPUOverflowStatusPort & {candidateOverflow: GraphDataView<'uint32'>};
 };
 
 /**
@@ -136,12 +142,14 @@ export type GPUCellTableCompareProps = {
  * `matchesBelow(k)` counts `before` rows below `k` that also occur in `after`. Equal keys are
  * emitted once, by the `before` side, which also reads the matching `after` row. Output rows are
  * written by exactly one invocation each, so results do not depend on thread order. `delta` is an
- * exact integer difference (64-bit fixed point for sums) before it is rounded to f32. The
- * standardized z-score mean and standard deviation come from one workgroup in a fixed order (strided partial
- * sums then a binary tree), so a second encoding is bitwise identical.
+ * exact integer difference, including differences outside the signed 64-bit range, before it is
+ * rounded once to nearest (ties to even) and divided by `sumScale` for sums. Standardized scores
+ * use a published extent reduction to choose one common power-of-two normalization before the
+ * fixed-order mean and deviation reductions (strided partials then binary trees), preventing
+ * square overflow for finite deltas. A second encoding is bitwise identical.
  *
- * The union keeps the smallest keys when it exceeds the output capacity, and the overflow flag
- * includes the input tables' own overflow flags. Rows past `count` hold the empty key, presence 0,
+ * The union keeps the smallest keys when it exceeds the output capacity. Input loss propagates
+ * through `candidateOverflow`, separately from final `overflow`. Rows past `count` hold the empty key, presence 0,
  * `before`/`after` 0 and NaN for derived columns. Keys that are the reserved all-ones key inside
  * `[0, count)` are not supported. Inputs must be single packed views.
  *
@@ -161,6 +169,34 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
   private readonly stageMeasures: boolean;
 
   constructor(props: GPUCellTableCompareProps) {
+    const fields = snapshotConstructionFields(props, [
+      'id',
+      'before',
+      'after',
+      'measure',
+      'sumScale',
+      'zScore',
+      'output'
+    ]);
+    const outputFields = snapshotConstructionFields(fields.output, [
+      'cells',
+      'presence',
+      'mask',
+      'before',
+      'after',
+      'delta',
+      'ratio',
+      'percentChange',
+      'zScore',
+      'status'
+    ]);
+    const before = snapshotCellTable(fields.before);
+    props = Object.freeze({
+      ...fields,
+      before,
+      after: fields.after === fields.before ? before : snapshotCellTable(fields.after),
+      output: Object.freeze({...outputFields, status: snapshotCellTableStatus(outputFields.status)})
+    });
     this.id = props.id ?? 'cell-table-compare';
     this.props = props;
     const id = this.id;
@@ -194,6 +230,11 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
       throw new Error(`${id} measure 'sum' needs sums on both before and after`);
     }
     const {output} = props;
+    validateRequirement(
+      id,
+      Boolean(output.status.candidateOverflow),
+      'output.status.candidateOverflow is required to report source loss'
+    );
     validateSinglePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
     const capacity = output.cells.length;
     validateCapacity(id, 'output.cells.length', capacity, 1, MAXIMUM_CELL_TABLE_ROW_COUNT);
@@ -224,7 +265,7 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
         throw new Error(`${id} output.${name} needs output.cells.length rows`);
       }
     }
-    for (const name of ['count', 'overflow', 'requiredCount'] as const) {
+    for (const name of ['count', 'overflow', 'candidateOverflow', 'requiredCount'] as const) {
       const view = output.status[name];
       if (!view) {
         continue;
@@ -257,7 +298,8 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
         percentChange: output.percentChange,
         zScore: output.zScore
       },
-      {...status}
+      {count: status.count, overflow: status.overflow, requiredCount: status.requiredCount},
+      {candidateOverflow: status.candidateOverflow}
     ]);
     validateGraphOutputsDisjointFromInputs(id, getOutputViews(output), [
       ...getCellTableViews(props.before),
@@ -284,6 +326,7 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
       views[`${name}.measure`] = measure === 'sum' ? table.sums : table.counts;
       views[`${name}.status.count`] = table.status.count;
       views[`${name}.status.overflow`] = table.status.overflow;
+      views[`${name}.status.candidateOverflow`] = table.status.candidateOverflow;
     }
     for (const [name, view] of Object.entries(getOutputViews(output)))
       views[`output ${name}`] = view;
@@ -545,19 +588,41 @@ ${SCALED_QUOTIENT_WGSL}`,
   if (afterRow != NO_ROW) {
     afterValue = ${measureAt('after', 'afterRow')};
   }
-  let difference = cellAddI64(afterValue, cellNegateI64(beforeValue));
+  // Compare signed inputs before subtraction: the magnitude can use all 64 unsigned bits.
+  let beforeOrderedHigh = beforeValue.x ^ 0x80000000u;
+  let afterOrderedHigh = afterValue.x ^ 0x80000000u;
+  let isNegative = afterOrderedHigh < beforeOrderedHigh ||
+    (afterOrderedHigh == beforeOrderedHigh && afterValue.y < beforeValue.y);
+  let larger = select(afterValue, beforeValue, isNegative);
+  let smaller = select(beforeValue, afterValue, isNegative);
+  let magnitude = cellAddI64(larger, cellNegateI64(smaller));
+  let magnitudeFloat = cellU64ToF32(magnitude);
+  let difference = select(magnitudeFloat, -magnitudeFloat, isNegative);
   beforeOut[beforeOutOffset + index] = ${toFloat('beforeValue')};
   afterOut[afterOutOffset + index] = ${toFloat('afterValue')};
-  deltaOut[deltaOutOffset + index] = ${toFloat('difference')};`
+  deltaOut[deltaOutOffset + index] = ${isSum ? 'getScaledQuotient(difference, SUM_SCALE, 1.0, 0)' : 'difference'};`
       })
     );
 
-    // 4. Standardized z-score statistics in three fixed-order stages: per-workgroup partial sums,
+    // 4. A published extent reduction supplies a common power-of-two normalization before the
+    // three fixed-order statistics stages: per-workgroup partial sums,
     // per-workgroup partial squares around a mean every workgroup derives identically from the
     // combined partial sums, then one workgroup combining both into mean and population deviation.
     const wantsStandardized = Boolean(output.zScore) && this.zScoreKind === 'standardized';
-    const statistics = wantsStandardized ? transient('statistics', 'float32', 2) : undefined;
+    const statistics = wantsStandardized ? transient('statistics', 'float32', 3) : undefined;
     if (statistics) {
+      const extent = transient('statistics-extent', 'float32', 2);
+      // The published reduction ignores the NaN tail. All stages use the same exact power of two,
+      // so squaring finite deltas cannot overflow and the final scores remain scale invariant.
+      nodes.push(
+        ...new GPUReduction({
+          id: `${id}-statistics-extent`,
+          input: deltaValues,
+          output: extent,
+          operation: 'extent'
+        }).getCommandNodes(graph)
+      );
+      const normalization = `let normalizationExponent = frexp(max(abs(extent[extentOffset]), abs(extent[extentOffset + 1u]))).exp;`;
       const groups = clamp(
         Math.ceil(capacity / STATISTICS_WORKGROUP_SIZE),
         1,
@@ -597,6 +662,7 @@ var<workgroup> partials: array<f32, ${STATISTICS_WORKGROUP_SIZE}>;`;
           bindings: [
             read('deltas', deltaValues, 'f32'),
             read('total', total),
+            read('extent', extent, 'f32'),
             write('groupPartials', partialsView, 'f32')
           ],
           workgroupSize: STATISTICS_WORKGROUP_SIZE,
@@ -604,9 +670,10 @@ var<workgroup> partials: array<f32, ${STATISTICS_WORKGROUP_SIZE}>;`;
           guardIndex: false,
           declarations,
           body: `let rowCount = min(total[totalOffset], CAPACITY);
+  ${normalization}
   var partialSum = 0.0;
   for (var row = index; row < rowCount; row += STRIDE) {
-    partialSum += deltas[deltasOffset + row];
+    partialSum += ldexp(deltas[deltasOffset + row], -normalizationExponent);
   }
   ${tree('partialSum')}
   if (localInvocationIndex == 0u) {
@@ -620,6 +687,7 @@ var<workgroup> partials: array<f32, ${STATISTICS_WORKGROUP_SIZE}>;`;
           bindings: [
             read('deltas', deltaValues, 'f32'),
             read('total', total),
+            read('extent', extent, 'f32'),
             write('groupPartials', partialsView, 'f32')
           ],
           workgroupSize: STATISTICS_WORKGROUP_SIZE,
@@ -628,12 +696,13 @@ var<workgroup> partials: array<f32, ${STATISTICS_WORKGROUP_SIZE}>;`;
           // Words [0, GROUPS) are only read and [GROUPS, 2 * GROUPS) only written.
           declarations,
           body: `let rowCount = min(total[totalOffset], CAPACITY);
+  ${normalization}
   ${combine('0u')}
   let mean = select(0.0, partials[0] / f32(rowCount), rowCount > 0u);
   workgroupBarrier();
   var partialSquares = 0.0;
   for (var row = index; row < rowCount; row += STRIDE) {
-    let centered = deltas[deltasOffset + row] - mean;
+    let centered = ldexp(deltas[deltasOffset + row], -normalizationExponent) - mean;
     partialSquares += centered * centered;
   }
   ${tree('partialSquares')}
@@ -648,6 +717,7 @@ var<workgroup> partials: array<f32, ${STATISTICS_WORKGROUP_SIZE}>;`;
           bindings: [
             read('groupPartials', partialsView, 'f32'),
             read('total', total),
+            read('extent', extent, 'f32'),
             write('statistics', statistics, 'f32')
           ],
           workgroupSize: STATISTICS_WORKGROUP_SIZE,
@@ -655,6 +725,7 @@ var<workgroup> partials: array<f32, ${STATISTICS_WORKGROUP_SIZE}>;`;
           guardIndex: false,
           declarations,
           body: `let rowCount = min(total[totalOffset], CAPACITY);
+  ${normalization}
   ${combine('0u')}
   let mean = select(0.0, partials[0] / f32(rowCount), rowCount > 0u);
   workgroupBarrier();
@@ -662,6 +733,7 @@ var<workgroup> partials: array<f32, ${STATISTICS_WORKGROUP_SIZE}>;`;
   if (localInvocationIndex == 0u) {
     statistics[statisticsOffset] = mean;
     statistics[statisticsOffset + 1u] = select(0.0, sqrt(partials[0] / f32(rowCount)), rowCount > 0u);
+    statistics[statisticsOffset + 2u] = f32(normalizationExponent);
   }`
         })
       );
@@ -721,7 +793,8 @@ fn getComparePercent(value: f32, divisor: f32) -> f32 {
   zScoreOut[zScoreOutOffset + index] = select(nan, score, isOccupied);`
         : `let mean = statistics[statisticsOffset];
   let deviation = statistics[statisticsOffset + 1u];
-  zScoreOut[zScoreOutOffset + index] = select(nan, select(0.0, getCompareQuotient(delta - mean, deviation), deviation != 0.0), isOccupied);`
+  let normalizedDelta = ldexp(delta, -i32(statistics[statisticsOffset + 2u]));
+  zScoreOut[zScoreOutOffset + index] = select(nan, select(0.0, getCompareQuotient(normalizedDelta - mean, deviation), deviation != 0.0), isOccupied);`
       : ''
   }`
         })
@@ -785,7 +858,37 @@ const NO_ROW: u32 = 0xffffffffu;`,
       })
     );
 
-    // 7. Clamped count and overflow, including the input tables' own overflow.
+    // 7. Source loss is independent of the destination capacity.
+    const candidateSources = [
+      before.status.overflow,
+      before.status.candidateOverflow,
+      after.status.overflow,
+      after.status.candidateOverflow
+    ].filter((view): view is GraphDataView<'uint32'> => Boolean(view));
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-candidate-status`,
+        operation: OPERATION,
+        variant: 'candidate-status',
+        invocationCount: 1,
+        bindings: [
+          ...candidateSources.map((view, index) => ({
+            name: `candidateIn${index}`,
+            view,
+            type: 'u32' as const,
+            access: 'read' as const
+          })),
+          {
+            name: 'candidateOverflowOut',
+            view: output.status.candidateOverflow,
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        body: `candidateOverflowOut[candidateOverflowOutOffset] = select(0u, 1u, ${candidateSources.map((_, index) => `candidateIn${index}[candidateIn${index}Offset] != 0u`).join(' || ')});`
+      })
+    );
+    // 8. Only the final union capacity sets overflow.
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-publish`,
@@ -793,8 +896,6 @@ const NO_ROW: u32 = 0xffffffffu;`,
         variant: 'publish',
         bindings: [
           {name: 'totalIn', view: total, type: 'u32', access: 'read'},
-          {name: 'beforeOverflow', view: before.status.overflow, type: 'u32', access: 'read'},
-          {name: 'afterOverflow', view: after.status.overflow, type: 'u32', access: 'read'},
           {name: 'countOut', view: output.status.count, type: 'u32', access: 'read_write'},
           {name: 'overflowOut', view: output.status.overflow, type: 'u32', access: 'read_write'},
           ...(output.status.requiredCount
@@ -812,7 +913,7 @@ const NO_ROW: u32 = 0xffffffffu;`,
         declarations: `const CAPACITY: u32 = ${output.cells.length}u;`,
         body: `let required = totalIn[totalInOffset];
   countOut[countOutOffset] = min(required, CAPACITY);
-  overflowOut[overflowOutOffset] = select(0u, 1u, required > CAPACITY || beforeOverflow[beforeOverflowOffset] != 0u || afterOverflow[afterOverflowOffset] != 0u);
+  overflowOut[overflowOutOffset] = select(0u, 1u, required > CAPACITY);
   ${output.status.requiredCount ? 'totalOut[totalOutOffset] = required;' : ''}`
       })
     );
@@ -833,6 +934,7 @@ function getOutputViews(output: GPUCellTableCompareOutput): (GraphDataView | und
     output.zScore,
     output.status.count,
     output.status.overflow,
+    output.status.candidateOverflow,
     output.status.requiredCount
   ];
 }

@@ -2,10 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {
-  validateDisjointWritableViews,
-  validateGraphChunkBindingRanges
-} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 
 import {
   getStorageTopKAccessors,
@@ -36,6 +33,7 @@ import {
   validateSinglePackedView,
   validateCapacity,
   validateCommandNodeBudget,
+  validateRequirement,
   validateFiniteNumber
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -48,6 +46,16 @@ import {GPU_INVERSE_DISTANCE_DEFAULT_DISTANCE_FLOOR} from '../neighbor-search/ne
 import {GPU_SPATIAL_JOIN_NO_FEATURE} from './spatial-join-types';
 import {validateStatusScalars} from './spatial-join-geometry';
 import {validateDisjointOutputs} from './spatial-join-passes';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+import type {
+  GPUCandidateStatusPort,
+  GPUOverflowStatusPort
+} from '../../analysis-core/contracts/status';
+import {validateSpatialJoinReadWriteBindings} from './spatial-join-binding-preflight';
+import {snapshotJoinWeights} from './spatial-join-construction-snapshot';
 import {
   NEAREST_PRIVATE_NEIGHBOR_CAPACITY,
   NEAREST_MAXIMUM_NEIGHBOR_CAPACITY
@@ -86,10 +94,12 @@ export type GPUNearestFeatureWeightsProps = {
   id?: string;
   /** Resolved context of the producing join; distanceFloor uses its length unit. Defaults to planar. */
   spatialContext?: GPUSpatialContext;
-  /** `neighborIds` of the join: `queryCount * slotCapacity` feature IDs, padded with `GPU_SPATIAL_JOIN_NO_FEATURE`. */
-  neighborIds: GraphDataView<'uint32'>;
+  /** `neighborRows` of the join: `queryCount * slotCapacity` feature row indices, padded with `GPU_SPATIAL_JOIN_NO_FEATURE`. Never supply remapped application IDs. */
+  neighborRows: GraphDataView<'uint32'>;
   /** `neighborCounts` of the join: filled slots per query. Its length is the row count. */
   neighborCounts: GraphDataView<'uint32'>;
+  /** Producing join completeness. Any upstream loss becomes output.status.candidateOverflow; supplying this port requires that output scalar. */
+  neighborStatus?: GPUOverflowStatusPort & GPUCandidateStatusPort;
   /**
    * `neighborDistances` of the join. Required for `'inverse-distance'` weights and for
    * `weights.distances`.
@@ -106,10 +116,9 @@ export type GPUNearestFeatureWeightsProps = {
    */
   k?: number;
   /**
-   * Self-join: drop the slot whose feature ID equals the query row (libpysal `KNN` never lists a
-   * row as its own neighbor). Run the join with `k + 1` neighbors so `k` remain. Valid when the
-   * join's feature IDs are feature rows (no `featureIds`), or IDs that equal the query row index.
-   * Defaults to false (cross weights: query rows to feature IDs).
+   * Self-join: drop the slot whose feature row equals the query row (libpysal `KNN` never lists a
+   * row as its own neighbor). Run the join with `k + 1` neighbors so `k` remain.
+   * Defaults to false (cross weights: query rows to feature rows).
    */
   excludeSelf?: boolean;
   /**
@@ -127,10 +136,11 @@ export type GPUNearestFeatureWeightsProps = {
    */
   distanceFloor?: number;
   /**
-   * Caller-owned output CSR with `neighborCounts.length + 1` offsets. Neighbor IDs ascend within
+   * Caller-owned output CSR with `neighborCounts.length + 1` offsets. Neighbor rows ascend within
    * each row. `distances` is filled when present. The capacity (`neighbors.length`) must be at least
    * `1`; `rows * (k)` always suffices. `status.overflow` is 1 when the kept neighbors did not fit;
-   * `status.requiredCount` and `status.candidateOverflow` are not written (they must be omitted).
+   * `status.candidateOverflow` receives upstream join loss (including truncated tie slots), or zero
+   * without neighborStatus. It is required when neighborStatus is supplied. Omit status.requiredCount.
    */
   output: GPUSpatialWeightsOutput;
 };
@@ -171,16 +181,55 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
   readonly outputWeights: GPUSpatialWeights;
 
   constructor(props: GPUNearestFeatureWeightsProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'neighborRows',
+      'neighborIds',
+      'neighborCounts',
+      'neighborDistances',
+      'neighborStatus',
+      'slotCapacity',
+      'scratchChunkRowCount',
+      'k',
+      'excludeSelf',
+      'weightType',
+      'power',
+      'distanceFloor',
+      'output'
+    ] as readonly (keyof GPUNearestFeatureWeightsProps)[]);
     const id = props.id ?? 'nearest-feature-weights';
+    const {slotCapacity} = props;
+    validateCapacity(id, 'slotCapacity', slotCapacity, 1, MAXIMUM_SLOTS);
+    const output = snapshotJoinWeights(props.output);
+    props = Object.freeze({
+      ...props,
+      slotCapacity,
+      ...(props.spatialContext
+        ? {spatialContext: snapshotConstructionSpatialContext(props.spatialContext)}
+        : {}),
+      ...(props.neighborStatus
+        ? {
+            neighborStatus: snapshotConstructionFields(props.neighborStatus, [
+              'overflow',
+              'candidateOverflow'
+            ])
+          }
+        : {}),
+      output
+    });
     this.id = id;
+    validateRequirement(
+      id,
+      Boolean(props.neighborRows) && !('neighborIds' in props),
+      'neighborRows is required and neighborIds is unsupported; supply feature rows, not application IDs'
+    );
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext,
       NEAREST_FEATURE_WEIGHTS_SPATIAL_CONTEXT_SUPPORT
     );
-    const {slotCapacity} = props;
-    validateCapacity(id, 'slotCapacity', slotCapacity, 1, MAXIMUM_SLOTS);
     if (props.scratchChunkRowCount !== undefined) {
       validateCapacity(
         id,
@@ -192,20 +241,20 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
     }
     this.k = props.k ?? (props.excludeSelf ? Math.max(slotCapacity - 1, 1) : slotCapacity);
     validateCapacity(id, 'k', this.k, 1, slotCapacity);
-    validateSinglePackedView(props.neighborIds, ['uint32'], `${id} neighborIds`);
+    validateSinglePackedView(props.neighborRows, ['uint32'], `${id} neighborRows`);
     validateSinglePackedView(props.neighborCounts, ['uint32'], `${id} neighborCounts`);
     this.rows = props.neighborCounts.length;
     validateMaximumCount(id, 'rows * slotCapacity', this.rows * slotCapacity, MAXIMUM_TOTAL_SLOTS);
     if (this.rows < 1) {
       throw new Error(`${id} neighborCounts needs at least one row`);
     }
-    if (props.neighborIds.length !== this.rows * slotCapacity) {
-      throw new Error(`${id} neighborIds needs rows * slotCapacity rows`);
+    if (props.neighborRows.length !== this.rows * slotCapacity) {
+      throw new Error(`${id} neighborRows needs rows * slotCapacity rows`);
     }
     const scratchRows = Math.max(
       1,
       Math.floor(
-        ((props.neighborIds.buffer.graph as GPUCommandGraph).device.limits
+        ((props.neighborRows.buffer.graph as GPUCommandGraph).device.limits
           .maxStorageBufferBindingSize /
           4 -
           1) /
@@ -214,6 +263,7 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
     );
     this.estimatedCommandNodeCount =
       SCAN_COMMAND_NODE_ALLOWANCE +
+      Number(Boolean(props.output.status.candidateOverflow)) +
       (slotCapacity > NEAREST_PRIVATE_NEIGHBOR_CAPACITY
         ? 2 *
           Math.ceil(this.rows / Math.min(scratchRows, props.scratchChunkRowCount ?? scratchRows))
@@ -225,7 +275,7 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
     }
     if (props.neighborDistances) {
       validateSinglePackedView(props.neighborDistances, ['float32'], `${id} neighborDistances`);
-      if (props.neighborDistances.length !== props.neighborIds.length) {
+      if (props.neighborDistances.length !== props.neighborRows.length) {
         throw new Error(`${id} neighborDistances needs one row per slot`);
       }
     }
@@ -254,26 +304,59 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
       }
     });
     const {status} = props.output;
-    if (status.requiredCount || status.candidateOverflow) {
-      throw new Error(`${id} writes only output.status.overflow`);
+    if (status.requiredCount) {
+      throw new Error(`${id} does not write output.status.requiredCount`);
     }
-    validateStatusScalars(id, {overflow: status.overflow});
-    validateDisjointWritableViews(id, {
-      offsets: props.output.offsets,
-      neighbors: props.output.neighbors,
-      weights: props.output.weights,
-      distances: props.output.distances,
-      overflow: status.overflow
+    validateRequirement(
+      id,
+      !props.neighborStatus || Boolean(props.neighborStatus.overflow),
+      'neighborStatus.overflow is required when neighborStatus is supplied'
+    );
+    validateRequirement(
+      id,
+      !props.neighborStatus || Boolean(status.candidateOverflow),
+      'output.status.candidateOverflow is required with neighborStatus'
+    );
+    validateStatusScalars(id, {
+      overflow: status.overflow,
+      candidateOverflow: status.candidateOverflow
     });
+    if (props.neighborStatus) validateStatusScalars(`${id} neighborStatus`, props.neighborStatus);
+    validateSpatialJoinReadWriteBindings(
+      id,
+      [props.neighborStatus?.overflow, props.neighborStatus?.candidateOverflow],
+      [status.candidateOverflow]
+    );
+    validateSpatialJoinReadWriteBindings(
+      id,
+      [props.output.offsets],
+      [props.output.neighbors, props.output.weights, props.output.distances]
+    );
     validateDisjointOutputs(
       id,
-      [props.neighborIds, props.neighborCounts, props.neighborDistances],
+      [
+        props.neighborRows,
+        props.neighborCounts,
+        props.neighborDistances,
+        props.neighborStatus?.overflow,
+        props.neighborStatus?.candidateOverflow
+      ],
       [
         props.output.offsets,
         props.output.neighbors,
         props.output.weights,
         props.output.distances,
-        status.overflow
+        status.overflow,
+        status.candidateOverflow
+      ],
+      [
+        {offsets: props.output.offsets, overflow: status.overflow},
+        {
+          neighbors: props.output.neighbors,
+          weights: props.output.weights,
+          distances: props.output.distances
+        },
+        {candidateOverflow: status.candidateOverflow}
       ]
     );
   }
@@ -285,25 +368,31 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
     const {id, props, rows, k} = this;
     const {output: weights, slotCapacity} = props;
     validateGraphViewsBelongToGraph(id, graph, [
-      props.neighborIds,
+      props.neighborRows,
       props.neighborCounts,
       props.neighborDistances,
       weights.offsets,
       weights.neighbors,
       weights.weights,
       weights.distances,
-      weights.status.overflow
+      weights.status.overflow,
+      weights.status.candidateOverflow,
+      props.neighborStatus?.overflow,
+      props.neighborStatus?.candidateOverflow
     ]);
     const storageBacked = slotCapacity > NEAREST_PRIVATE_NEIGHBOR_CAPACITY;
     validateGraphChunkBindingRanges(graph, id, {
-      neighborIds: props.neighborIds,
+      neighborRows: props.neighborRows,
       neighborCounts: props.neighborCounts,
       neighborDistances: props.neighborDistances,
       offsets: weights.offsets,
       neighbors: weights.neighbors,
       weights: weights.weights,
       distances: weights.distances,
-      overflow: weights.status.overflow
+      overflow: weights.status.overflow,
+      candidateOverflow: weights.status.candidateOverflow,
+      neighborOverflow: props.neighborStatus?.overflow,
+      neighborCandidateOverflow: props.neighborStatus?.candidateOverflow
     });
     validateGPUStorageBindingByteLength(
       graph.device,
@@ -350,7 +439,7 @@ const NO_FEATURE: u32 = ${GPU_SPATIAL_JOIN_NO_FEATURE}u;
 const POWER: f32 = ${getWGSLFloatLiteral(props.power ?? 1)};
 const FLOOR: f32 = ${getWGSLFloatLiteral(props.distanceFloor ?? GPU_INVERSE_DISTANCE_DEFAULT_DISTANCE_FLOOR)};`;
     const inputBindings = [
-      {name: 'ids', view: props.neighborIds, type: 'u32' as const, access: 'read' as const},
+      {name: 'ids', view: props.neighborRows, type: 'u32' as const, access: 'read' as const},
       {
         name: 'filled',
         view: props.neighborCounts,
@@ -421,6 +510,45 @@ const CAPACITY: u32 = ${capacity}u;`,
   }`
       })
     ];
+    if (weights.status.candidateOverflow) {
+      nodes.push(
+        createStorageTopKNode<Parameters>(graph, {
+          id: `${id}-candidate-status`,
+          operation: OPERATION,
+          variant: 'candidate-status',
+          bindings: [
+            ...(props.neighborStatus
+              ? [
+                  {
+                    name: 'upstreamOverflow',
+                    view: props.neighborStatus.overflow,
+                    type: 'u32' as const,
+                    access: 'read' as const
+                  }
+                ]
+              : []),
+            ...(props.neighborStatus?.candidateOverflow
+              ? [
+                  {
+                    name: 'upstreamCandidateOverflow',
+                    view: props.neighborStatus.candidateOverflow,
+                    type: 'u32' as const,
+                    access: 'read' as const
+                  }
+                ]
+              : []),
+            {
+              name: 'candidateOverflow',
+              view: weights.status.candidateOverflow,
+              type: 'u32',
+              access: 'read_write'
+            }
+          ],
+          invocationCount: 1,
+          body: `candidateOverflow[candidateOverflowOffset] = select(0u, 1u, ${props.neighborStatus ? 'upstreamOverflow[upstreamOverflowOffset] != 0u' : 'false'} || ${props.neighborStatus?.candidateOverflow ? 'upstreamCandidateOverflow[upstreamCandidateOverflowOffset] != 0u' : 'false'});`
+        })
+      );
+    }
     if (keptScratch) {
       nodes.push(
         createStorageTopKNode(graph, {

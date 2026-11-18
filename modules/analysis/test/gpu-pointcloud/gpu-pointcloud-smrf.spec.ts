@@ -55,10 +55,12 @@ for (const scenario of oracle.fixtures) {
             threshold: scenario.threshold,
             window: scenario.window,
             cut: scenario.cut,
-            groundSurface: groundSurface.view,
-            groundMask: groundMask.view,
-            outputClassifications: outputClassifications.view,
-            status: status.view
+            output: {
+              groundSurface: groundSurface.view,
+              groundMask: groundMask.view,
+              outputClassifications: outputClassifications.view,
+              status: status.view
+            }
           })
         );
         await fixture.run();
@@ -114,10 +116,12 @@ it('SMRF preserves original classifications with onlyGround and reports missing 
         window: 1,
         groundClass: 9,
         onlyGround: true,
-        groundSurface: groundSurface.view,
-        groundMask: groundMask.view,
-        outputClassifications: outputClassifications.view,
-        status: status.view
+        output: {
+          groundSurface: groundSurface.view,
+          groundMask: groundMask.view,
+          outputClassifications: outputClassifications.view,
+          status: status.view
+        }
       })
     );
     await fixture.run();

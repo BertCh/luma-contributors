@@ -102,7 +102,7 @@ it('GPUMaxPRegions grows contiguous threshold-feasible regions', async () => {
   const status = await readUint32(outputs.status, GPU_MAX_P_STATUS.length);
   expect(status.slice(0, 4)).toEqual([2, 1, 0, 0]);
   expect(status[GPU_MAX_P_STATUS.selectedStart]).toBeLessThan(GPU_MAX_P_DEFAULT_START_COUNT);
-  expect(status[GPU_MAX_P_STATUS.improvementMoveCount]).toBe(0);
+  expect(status[GPU_MAX_P_STATUS.improvementIterationCount]).toBe(0);
   compiled.destroy();
   Object.values(inputs).forEach(buffer => buffer.destroy());
   Object.values(outputs).forEach(buffer => buffer.destroy());

@@ -20,6 +20,36 @@ import {
   createMaxPProps
 } from './regionalization-operation-test-utils';
 
+it('names packed word five for successful improvement iterations', () => {
+  expect(GPU_MAX_P_STATUS.improvementIterationCount).toBe(5);
+  const input = createMaxPRefinementInput(2);
+  const original = computeMaxPRegionsOnCPU(input, {standardize: false, startCount: 1});
+  const refined = computeMaxPRegionsOnCPU(input, {
+    standardize: false,
+    startCount: 1,
+    maximumIterations: 1
+  });
+  expect(refined.status[GPU_MAX_P_STATUS.improvementIterationCount]).toBe(1);
+  expect(refined.labels).not.toEqual(original.labels);
+});
+
+it('stops seed-four refinement at the explicit one-round or two-round budget', () => {
+  const input = createMaxPRefinementInput(4);
+  const results = [1, 2].map(maximumIterations =>
+    computeMaxPRegionsOnCPU(input, {
+      standardize: false,
+      startCount: 1,
+      maximumIterations
+    })
+  );
+  expect(results.map(result => result.status[GPU_MAX_P_STATUS.improvementIterationCount])).toEqual([
+    1, 2
+  ]);
+  expect(Array.from(results[0].labels)).toEqual([1, 0, 0, 1, 1, 2, 1, 2, 2]);
+  // The first round transfers row 4 to region 1; only the second transfers row 0 to region 0.
+  expect(Array.from(results[1].labels)).toEqual([0, 0, 0, 1, 1, 2, 1, 2, 2]);
+});
+
 it('matches the unique feasible partition and hand-computed two-column objective', () => {
   const input = createMaxPInput();
   const before = input.values.slice();
@@ -146,7 +176,7 @@ it('uses the seed for start selection and bijective equal-distance growth ties',
   expect(nonzeroSelectionCount).toBeGreaterThan(0);
 });
 
-it('finishes long growth despite a one-round GPU budget and assigns enclaves', () => {
+it('keeps long growth incomplete at one step and completes it with a sufficient budget', () => {
   const rowCount = 40;
   const adjacency = Array.from({length: rowCount}, (_, row) =>
     [row - 1, row + 1].filter(neighbor => neighbor >= 0 && neighbor < rowCount)
@@ -165,11 +195,18 @@ it('finishes long growth despite a one-round GPU budget and assigns enclaves', (
     startCount: 4,
     maximumGrowthSteps: 1
   });
-  expect(result.status[GPU_MAX_P_STATUS.feasible]).toBe(1);
-  expect(result.status[GPU_MAX_P_STATUS.regionCount]).toBe(1);
-  expect([...new Set(result.labels)]).toEqual([0]);
+  expect(result.status[GPU_MAX_P_STATUS.feasible]).toBe(0);
+  expect(result.status[GPU_MAX_P_STATUS.infeasibleRegionCount]).toBeGreaterThan(0);
+  const completed = computeMaxPRegionsOnCPU(input, {
+    standardize: false,
+    startCount: 4,
+    maximumGrowthSteps: 128
+  });
+  expect(completed.status[GPU_MAX_P_STATUS.feasible]).toBe(1);
+  expect(completed.status[GPU_MAX_P_STATUS.regionCount]).toBe(1);
+  expect([...new Set(completed.labels)]).toEqual([0]);
   // Closed form SSD of 0..n-1: n(n²-1)/12, independent of growth or enclave order.
-  expect(result.objective[0]).toBe((rowCount * (rowCount ** 2 - 1)) / 12);
+  expect(completed.objective[0]).toBe((rowCount * (rowCount ** 2 - 1)) / 12);
 });
 
 it('reports infeasible components, zero threshold singletons and invalid input exactly', () => {
@@ -256,7 +293,7 @@ it('refines a construction with real constrained moves and reports successful ro
             (input.values[first] - input.values[second]) ** 2 / (2 * rows.length);
     }
     expect(refined.objective[0]).toBe(Math.fround(pairwiseObjective));
-    if (refined.status[GPU_MAX_P_STATUS.improvementMoveCount] > 0) {
+    if (refined.status[GPU_MAX_P_STATUS.improvementIterationCount] > 0) {
       improvedCount++;
       expect(refined.objective[0]).toBeLessThan(original.objective[0]);
     }

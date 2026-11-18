@@ -15,6 +15,7 @@ import {
 import {GPU_PROFILE_PEAKS_PARAMETER_LENGTH} from './gpu-profile-peaks';
 import {
   GPUProfilePeaksOperation,
+  snapshotProfilePeaksOperationProps,
   type ProfilePeaksOperationProps
 } from './gpu-profile-peaks-operation';
 
@@ -23,6 +24,7 @@ export type CPUProfilePeaksOptions = {
   minimumSide?: number;
   suppressionRadius?: number;
   wrap?: boolean;
+  maximumSuppressionIterations?: number;
   capacity: number;
 };
 
@@ -36,6 +38,7 @@ export type CPUProfilePeaksResult = {
   count: Uint32Array;
   requiredCount: Uint32Array;
   overflow: Uint32Array;
+  candidateOverflow: Uint32Array;
   converged: Uint32Array;
   iterationLimitReached: Uint32Array;
 };
@@ -47,9 +50,9 @@ export type CPUProfilePeaksResult = {
  * What differs from the GPU contributor:
  * - All intermediate arithmetic and ranking use float64; outputs round once to float32. Near
  *   prominence ties or the inclusive suppression boundary, float32 GPU decisions can differ.
- * - Suppression completes without a round budget: converged is 1, iterationLimitReached is 0,
- *   no candidate is marked undecided, and overflow bit 2 is never set.
- * - The GPU radius and iteration limits are dropped; window and radius may exceed 4096.
+ * - Suppression honors the round budget (default 16). Within a round, decisions are visited in
+ *   source-row order; GPU invocation scheduling can decide a different subset at a small budget.
+ * - GPU radius limits are dropped; window and radius may exceed 4096.
  * - Unused compact ID rows are zero-filled; only the first count rows are defined by the GPU.
  */
 export function computeProfilePeaksOnCPU(
@@ -84,6 +87,7 @@ export function computeProfilePeaksOnCPU(
     count: new Uint32Array(1),
     requiredCount: new Uint32Array(1),
     overflow: new Uint32Array(1),
+    candidateOverflow: new Uint32Array(1),
     converged: new Uint32Array([1]),
     iterationLimitReached: new Uint32Array(1)
   };
@@ -143,20 +147,45 @@ export function computeProfilePeaksOnCPU(
       }
       candidates.push({local, prominence, position: local + displacement, value});
     }
-    candidates.sort(
-      (first, second) => second.prominence - first.prominence || first.local - second.local
-    );
-    const kept: typeof candidates = [];
-    for (const candidate of candidates) {
-      if (
-        kept.some(other => {
+    const states = new Uint8Array(candidates.length).fill(1);
+    for (let round = 0; round < (options.maximumSuppressionIterations ?? 16); round++) {
+      let changed = false;
+      for (const [index, candidate] of candidates.entries()) {
+        if (states[index] !== 1) continue;
+        let pending = false;
+        let suppressed = false;
+        for (const [otherIndex, other] of candidates.entries()) {
+          if (
+            !(
+              other.prominence > candidate.prominence ||
+              (other.prominence === candidate.prominence && other.local < candidate.local)
+            )
+          )
+            continue;
           const distance = Math.abs(other.position - candidate.position);
-          return (options.wrap ? Math.min(distance, length - distance) : distance) <= radius;
-        })
-      )
-        continue;
-      kept.push(candidate);
+          if ((options.wrap ? Math.min(distance, length - distance) : distance) > radius) continue;
+          if (states[otherIndex] === 2) {
+            suppressed = true;
+            break;
+          }
+          pending ||= states[otherIndex] === 1;
+        }
+        if (suppressed || !pending) {
+          states[index] = suppressed ? 3 : 2;
+          changed = true;
+        }
+      }
+      if (!changed) break;
+    }
+    for (const [index, candidate] of candidates.entries()) {
       const row = start + candidate.local;
+      if (states[index] === 1) {
+        result.peakMask[row] = 0xffffffff;
+        result.prominence[row] = result.refinedIndex[row] = result.refinedValue[row] = Infinity;
+        result.converged[0] = 0;
+        result.iterationLimitReached[0] = result.candidateOverflow[0] = 1;
+      }
+      if (states[index] !== 2) continue;
       result.peakMask[row] = 1;
       result.prominence[row] = candidate.prominence;
       let refinedIndex = candidate.position;
@@ -184,11 +213,19 @@ function validateProfileOptions(id: string, options: CPUProfilePeaksOptions): vo
   validateFiniteNumber(id, 'suppressionRadius', radius);
   validateRequirement(id, radius >= 0, 'suppressionRadius must be at least 0');
   validateCapacity(id, 'capacity', options.capacity, 1);
+  validateCapacity(
+    id,
+    'maximumSuppressionIterations',
+    options.maximumSuppressionIterations ?? 16,
+    0,
+    Number.MAX_SAFE_INTEGER
+  );
 }
 
-/** CPU twin. GPU-only radius and suppression-round caps do not apply. */
+/** CPU twin with the same suppression budget and separate capacity/candidate status. */
 export class CPUProfilePeaksOperation extends GPUCPUOperation {
   constructor(props: ProfilePeaksOperationProps) {
+    props = snapshotProfilePeaksOperationProps(props);
     const operation = new GPUProfilePeaksOperation(props);
     const {id} = operation;
     const options = {...props, capacity: props.output.peaks?.capacity ?? props.sampleCount};

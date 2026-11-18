@@ -22,11 +22,17 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateRequirement,
   validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {GPUFlowAggregation, type GPUFlowAggregationOutput} from './gpu-flow-aggregation';
+import {
+  GPUFlowAggregation,
+  validateFlowAggregationBindings,
+  type GPUFlowAggregationOutput
+} from './gpu-flow-aggregation';
 import {GPU_FLOW_AGGREGATION_MAXIMUM_PACKED_ZONE_COUNT} from './flow-aggregation-pairs';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 const OPERATION = 'GPUMapMatchedEdgeVolumes';
 
@@ -36,7 +42,18 @@ export type GPUMapMatchedEdgeVolumesTraversedEdges = {
   edges: GraphDataView<'uint32'>;
   /** Entries each track needs; entries past the capacity were not stored. */
   counts: GraphDataView<'uint32'>;
-};
+} & (
+  | {
+      /** Forward the matching producer's candidate loss word; counts also detect list truncation. */
+      status: {candidateOverflow: GraphDataView<'uint32'>; overflow?: GraphDataView<'uint32'>};
+      completeness?: never;
+    }
+  | {
+      /** Caller assertion for fixed external sequences, never for an unchecked matching output. */
+      completeness: 'known-complete';
+      status?: never;
+    }
+);
 
 /**
  * Properties for {@link GPUMapMatchedEdgeVolumes}.
@@ -70,6 +87,8 @@ export type GPUMapMatchedEdgeVolumesProps = {
      * `edgeCount` rows: how many times matched tracks traversed each edge. A track that passes
      * the same edge twice (a loop) counts twice; a fix on the same edge as the previous fix adds
      * nothing because the traversed route lists it once. Overwritten each encoding.
+     * With scoring/grid loss these counts describe the retained match; a different road can win.
+     * Lower bounds apply only to omitted entries from an otherwise fixed traversal.
      */
     edgeVolumes: GraphDataView<'uint32'>;
     /**
@@ -80,8 +99,8 @@ export type GPUMapMatchedEdgeVolumesProps = {
      * entered `e` from another edge. Requires `edgeCount <= 65535` (the flow aggregation pair key).
      */
     transitions?: GPUFlowAggregationOutput;
-    /** Optional one-row flag: 1 when a track needed more than `traversedEdgeCapacity` entries. */
-    truncated?: GraphDataView<'uint32'>;
+    /** Required incompleteness diagnostic. With scoring/grid loss, counts are conditional on the retained match. */
+    status: {candidateOverflow: GraphDataView<'uint32'>};
   };
 };
 
@@ -107,9 +126,85 @@ export class GPUMapMatchedEdgeVolumes implements GPUCommandNodeProducer {
   readonly rowCount: number;
 
   constructor(props: GPUMapMatchedEdgeVolumesProps) {
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'traversedEdges',
+      'trackCount',
+      'traversedEdgeCapacity',
+      'edgeCount',
+      'transitionPairCapacity',
+      'maximumProbeCount',
+      'output'
+    ]);
+    const traversedEdges = snapshotConstructionFields(snapshot.traversedEdges, [
+      'edges',
+      'counts',
+      'status',
+      'completeness'
+    ]);
+    const output = snapshotConstructionFields(snapshot.output, [
+      'edgeVolumes',
+      'transitions',
+      'status'
+    ]);
+    const transitions =
+      output.transitions &&
+      snapshotConstructionFields(output.transitions, [
+        'ids',
+        'status',
+        'flowOriginZoneIds',
+        'flowDestinationZoneIds',
+        'flowCounts',
+        'flowWeights',
+        'zoneOutCounts',
+        'zoneInCounts',
+        'zoneOutWeights',
+        'zoneInWeights',
+        'drawInstanceCount',
+        'zoneOutCountExtent',
+        'zoneInCountExtent'
+      ]);
+    props = Object.freeze({
+      ...snapshot,
+      traversedEdges: Object.freeze({
+        ...traversedEdges,
+        ...(traversedEdges.status
+          ? {
+              status: snapshotConstructionFields(traversedEdges.status, [
+                'overflow',
+                'candidateOverflow'
+              ])
+            }
+          : {})
+      }),
+      output: Object.freeze({
+        ...output,
+        status: output.status && snapshotConstructionFields(output.status, ['candidateOverflow']),
+        ...(transitions
+          ? {
+              transitions: Object.freeze({
+                ...transitions,
+                status: snapshotConstructionFields(transitions.status, [
+                  'count',
+                  'overflow',
+                  'requiredCount',
+                  'candidateOverflow',
+                  'pairOverflow'
+                ])
+              })
+            }
+          : {})
+      })
+    }) as GPUMapMatchedEdgeVolumesProps;
     this.id = props.id ?? 'map-matched-edge-volumes';
     this.props = props;
     const {id} = this;
+    validateRequirement(
+      id,
+      props.traversedEdges.completeness === 'known-complete' ||
+        Boolean(props.traversedEdges.status?.candidateOverflow),
+      'traversedEdges requires a completeness word (status.candidateOverflow) or completeness: known-complete for external sequences'
+    );
     validateCapacity(id, 'trackCount', props.trackCount);
     validateCapacity(id, 'traversedEdgeCapacity', props.traversedEdgeCapacity);
     validateCapacity(id, 'edgeCount', props.edgeCount);
@@ -126,10 +221,27 @@ export class GPUMapMatchedEdgeVolumes implements GPUCommandNodeProducer {
     validateViewLength(id, 'traversedEdges.counts', props.traversedEdges.counts, props.trackCount);
     validateSinglePackedView(props.output.edgeVolumes, ['uint32'], `${id} output.edgeVolumes`);
     validateViewLength(id, 'output.edgeVolumes', props.output.edgeVolumes, props.edgeCount);
-    if (props.output.truncated) {
-      validateSinglePackedView(props.output.truncated, ['uint32'], `${id} output.truncated`);
-      validateViewLength(id, 'output.truncated', props.output.truncated, 1);
-    }
+    validateRequirement(
+      id,
+      Boolean(props.output.status?.candidateOverflow),
+      'output.status.candidateOverflow is required to expose incomplete traversals'
+    );
+    validateSinglePackedView(
+      props.output.status.candidateOverflow,
+      ['uint32'],
+      `${id} output.status.candidateOverflow`
+    );
+    validateViewLength(
+      id,
+      'output.status.candidateOverflow',
+      props.output.status.candidateOverflow,
+      1
+    );
+    for (const [name, view] of Object.entries(props.traversedEdges.status ?? {}))
+      if (view) {
+        validateSinglePackedView(view, ['uint32'], `${id} traversedEdges.status.${name}`);
+        validateViewLength(id, `traversedEdges.status.${name}`, view, 1);
+      }
     if (props.output.transitions) {
       validateCapacity(
         id,
@@ -143,7 +255,11 @@ export class GPUMapMatchedEdgeVolumes implements GPUCommandNodeProducer {
       }
     }
     validateNetworkWritableViews(id, props.output, [
-      {outputs: {edgeVolumes: props.output.edgeVolumes, truncated: props.output.truncated}},
+      {
+        outputs: {transitionLoss: props.output.transitions?.status.candidateOverflow},
+        inputs: {traversalLoss: props.output.status.candidateOverflow}
+      },
+      {outputs: {edgeVolumes: props.output.edgeVolumes, status: props.output.status}},
       {
         outputs: {
           flowCounts: props.output.transitions?.flowCounts,
@@ -169,7 +285,9 @@ export class GPUMapMatchedEdgeVolumes implements GPUCommandNodeProducer {
     ]);
     validateNetworkOutputsDisjointFromInputs(id, getNetworkViews(props.output), [
       props.traversedEdges.edges,
-      props.traversedEdges.counts
+      props.traversedEdges.counts,
+      props.traversedEdges.status?.overflow,
+      props.traversedEdges.status?.candidateOverflow
     ]);
   }
 
@@ -178,29 +296,41 @@ export class GPUMapMatchedEdgeVolumes implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rowCount} = this;
     const {edges, counts} = props.traversedEdges;
-    validateNetworkViewBindings(id, graph, [edges, counts, ...getNetworkViews(props.output)], {
-      truncated: 4,
-      transitionRows: props.output.transitions ? rowCount * 4 : 4
-    });
+    validateNetworkViewBindings(
+      id,
+      graph,
+      [
+        edges,
+        counts,
+        ...getNetworkViews(props.traversedEdges.status),
+        ...getNetworkViews(props.output)
+      ],
+      {
+        truncated: 4,
+        transitionRows: props.output.transitions ? rowCount * 4 : 4
+      }
+    );
     // Reuse the transition contributor's preflight before declaring the route-to-pair scratch.
     // The traversed list is a metadata-only stand-in for both equal-length zone ID columns.
     if (props.output.transitions) {
-      new GPUFlowAggregation({
-        id: `${id}-transitions`,
-        zones: {kind: 'ids', zoneCount: props.edgeCount},
-        originZoneIds: edges,
-        destinationZoneIds: edges,
-        pairCapacity: props.transitionPairCapacity!,
-        maximumProbeCount:
-          props.maximumProbeCount ??
-          Math.min(props.transitionPairCapacity!, Math.floor(0xffffffff / rowCount)),
-        output: props.output.transitions
-      }).validateBindings(graph);
+      validateFlowAggregationBindings(
+        graph,
+        new GPUFlowAggregation({
+          id: `${id}-transitions`,
+          zones: {kind: 'ids', zoneCount: props.edgeCount},
+          originZoneIds: edges,
+          destinationZoneIds: edges,
+          pairCapacity: props.transitionPairCapacity!,
+          maximumProbeCount:
+            props.maximumProbeCount ??
+            Math.min(props.transitionPairCapacity!, Math.floor(0xffffffff / rowCount)),
+          output: props.output.transitions
+        })
+      );
     }
     const capacity = props.traversedEdgeCapacity;
     const hasTransitions = Boolean(props.output.transitions);
-    const truncated =
-      props.output.truncated ?? createTransientView(graph, `${id}-truncated`, 'uint32', 1);
+    const truncated = props.output.status.candidateOverflow;
     const originZones = hasTransitions
       ? createTransientView(graph, `${id}-origin-edges`, 'uint32', rowCount)
       : undefined;
@@ -232,6 +362,26 @@ export class GPUMapMatchedEdgeVolumes implements GPUCommandNodeProducer {
           {name: 'counts', view: counts, type: 'u32', access: 'read'},
           getWGSLKernelBinding('volumes', props.output.edgeVolumes, 'atomic'),
           getWGSLKernelBinding('truncated', truncated, 'atomic'),
+          ...(props.traversedEdges.status?.overflow
+            ? [
+                {
+                  name: 'inputOverflow',
+                  view: props.traversedEdges.status.overflow,
+                  type: 'u32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : []),
+          ...(props.traversedEdges.status?.candidateOverflow
+            ? [
+                {
+                  name: 'inputCandidateOverflow',
+                  view: props.traversedEdges.status.candidateOverflow,
+                  type: 'u32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : []),
           ...(originZones && destinationZones
             ? [
                 {
@@ -252,6 +402,8 @@ export class GPUMapMatchedEdgeVolumes implements GPUCommandNodeProducer {
         // A row is a stored entry of a track that is an edge; its movement goes to the next entry
         // when that is an edge too (not a separator and not past the stored count).
         body: `let track = index / ${capacity}u; let slot = index - track * ${capacity}u;
+${props.traversedEdges.status?.overflow ? 'if (index == 0u && inputOverflow[inputOverflowOffset] != 0u) { atomicStore(&truncated[truncatedOffset], 1u); }' : ''}
+${props.traversedEdges.status?.candidateOverflow ? 'if (index == 0u && inputCandidateOverflow[inputCandidateOverflowOffset] != 0u) { atomicStore(&truncated[truncatedOffset], 1u); }' : ''}
 let stored = min(counts[countsOffset + track], ${capacity}u);
 if (slot == 0u && counts[countsOffset + track] > ${capacity}u) { atomicMax(&truncated[truncatedOffset], 1u); }
 let edge = edges[edgesOffset + index];
@@ -281,6 +433,20 @@ destinations[destinationsOffset + index] = next;`
           output: props.output.transitions!
         }).getCommandNodes(graph)
       );
+      const transitionLoss = props.output.transitions?.status.candidateOverflow;
+      if (transitionLoss)
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-publish-transition-loss`,
+            operation: OPERATION,
+            invocationCount: 1,
+            bindings: [
+              {name: 'traversalLoss', view: truncated, type: 'u32', access: 'read'},
+              getWGSLKernelBinding('transitionLoss', transitionLoss, 'atomic')
+            ],
+            body: 'if (traversalLoss[traversalLossOffset] != 0u) { atomicStore(&transitionLoss[transitionLossOffset], 1u); }'
+          })
+        );
     }
     return nodes;
   }

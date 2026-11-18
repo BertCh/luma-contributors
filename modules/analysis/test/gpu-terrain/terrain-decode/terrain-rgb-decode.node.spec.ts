@@ -134,11 +134,11 @@ it('GPUTerrainRGBDecode validates props and schedules one node', () => {
   expect(() => create({validRange: [Number.NaN, 1]})).toThrow(/validRange/);
   const words = createTransientView(graph, 'aliased-words', 'uint32', 12);
   expect(() => create({input: {buffer: words}}, [4, 3], {outputValidity: words})).toThrow(
-    /share buffers/
+    /^terrain-rgb-decode output\[1\] chunk 0 logical byte ranges must not overlap \(writable storage\)$/
   );
   const sharedOutput = createTransientView(graph, 'shared-output', 'uint32', 12);
   expect(() => create({validity: sharedOutput}, [4, 3], {outputValidity: sharedOutput})).toThrow(
-    /share buffers/
+    /^terrain-rgb-decode output\[1\] chunk 0 logical byte ranges must not overlap \(writable storage\)$/
   );
   const otherGraph = new GPUCommandGraph(device);
   expect(() =>

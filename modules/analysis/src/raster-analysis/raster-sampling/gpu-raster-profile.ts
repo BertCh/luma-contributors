@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
+import {validateRasterWritableBuffers} from '../raster-algebra/raster-algebra-utils';
 import {clamp} from '@math.gl/core';
 import type {Device} from '@luma.gl/core';
 import {
@@ -21,6 +22,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   getStorageBindingElementLimit,
   validateGraphViewsBelongToGraph,
+  validateGraphOutputsDisjointFromInputs,
   validateMaximumCount,
   getGraphOutputViews as getRasterPreflightOutputViews
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -39,6 +41,7 @@ import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {GPU_RASTER_PROFILE_PARAMETER_LENGTH} from './raster-sampling-parameters';
 import {
   getRasterSamplingWGSL,
+  getNamedRasterSamplingInputViews,
   validateRasterDescription,
   validateRasterSamplingView
 } from './raster-sampling-utils';
@@ -271,26 +274,27 @@ export class GPURasterProfile implements GPUCommandNodeProducer {
       }
     }
     const {status, ...outputColumns} = output;
-    const outputs = [...Object.values(outputColumns), ...Object.values(status)].filter(
-      view => view !== undefined
+    validateRasterWritableBuffers(
+      id,
+      Object.fromEntries([
+        ...Object.entries(outputColumns).map(([name, view]) => [`output.${name}`, view]),
+        ...Object.entries(status).map(([name, view]) => [`output.status.${name}`, view])
+      ])
     );
-    if (new Set(outputs.map(view => view.buffer)).size !== outputs.length) {
-      throw new Error(`${id} outputs must not share buffers`);
-    }
-    const inputBuffers = new Set(
-      [
-        ...getRasterAlgebraInputViews(props.values),
-        props.mask,
-        props.positions,
-        props.lineOffsets,
-        props.parameters
-      ]
-        .filter(view => view !== undefined)
-        .map(view => view.buffer)
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      Object.fromEntries([
+        ...Object.entries(outputColumns).map(([name, view]) => [`output.${name}`, view]),
+        ...Object.entries(status).map(([name, view]) => [`output.status.${name}`, view])
+      ]),
+      {
+        ...getNamedRasterSamplingInputViews(props.values),
+        mask: props.mask,
+        positions: props.positions,
+        lineOffsets: props.lineOffsets,
+        parameters: props.parameters
+      }
     );
-    if (outputs.some(view => inputBuffers.has(view.buffer))) {
-      throw new Error(`${id} outputs must not share buffers with inputs`);
-    }
   }
 
   /** Returns the vertex-distance scan, count, locate, sample, cumulative scan and finish nodes. */

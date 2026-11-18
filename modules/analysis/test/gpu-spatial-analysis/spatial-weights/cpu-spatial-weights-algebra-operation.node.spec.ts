@@ -27,6 +27,30 @@ const SOURCE: CPUSpatialWeightsAlgebraRows = {
   weights: Float32Array.of(2, 4, 3, 5, 6, 7),
   distances: Float32Array.of(10, 20, 30, 40, 50, 60)
 };
+
+it('final1 higher-order CPU algebra honors an explicit intermediate budget separately from final slots', () => {
+  const weights = {
+    offsets: Uint32Array.of(0, 1, 3, 4),
+    neighbors: Uint32Array.of(1, 0, 2, 1),
+    weights: Float32Array.of(1, 1, 1, 1)
+  };
+  for (const cumulative of [false, true]) {
+    const options = {
+      operation: 'higherOrder' as const,
+      order: 2,
+      cumulative,
+      capacity: 8,
+      workCapacity: 1
+    };
+    const result = computeSpatialWeightsAlgebraOnCPU({weights}, options);
+    expect(Array.from(result.overflow)).toEqual([0]);
+    expect(Array.from(result.candidateOverflow)).toEqual([1]);
+    expect(Array.from(result.offsets)).toEqual(cumulative ? [0, 2, 2, 2] : [0, 1, 1, 1]);
+    expect(Array.from(result.neighbors).slice(0, result.requiredCount[0])).toEqual(
+      cumulative ? [1, 2] : [2]
+    );
+  }
+});
 const OUTPUT = {
   offsets: 'offsets',
   neighbors: 'neighbors',
@@ -75,7 +99,12 @@ const REVIEW_PROPS = {
 
 it('rejects incompatible declared contexts at CPU construction and GPU host lowering', () => {
   // Identical two-row inputs have a union containing precisely the same two entries.
-  const expected = {...REVIEW_ROWS, overflow: Uint32Array.of(0), requiredCount: Uint32Array.of(2)};
+  const expected = {
+    ...REVIEW_ROWS,
+    overflow: Uint32Array.of(0),
+    requiredCount: Uint32Array.of(2),
+    candidateOverflow: Uint32Array.of(0)
+  };
   expect(
     computeSpatialWeightsAlgebraOnCPU(
       {left: REVIEW_ROWS, right: REVIEW_ROWS},
@@ -245,7 +274,7 @@ it('truncates an exact-order generation prefix before sorting and computes the u
     weights: GRAPH_SOURCE,
     order: 2,
     workCapacity: 1,
-    output: OUTPUT
+    output: {...OUTPUT, status: {...OUTPUT.status, candidateOverflow: 'candidateOverflow'}}
   };
   const operation = new CPUSpatialWeightsAlgebraOperation(props);
   const vector = (format: 'uint32' | 'float32', values: Uint32Array | Float32Array) => ({
@@ -261,12 +290,17 @@ it('truncates an exact-order generation prefix before sorting and computes the u
       sourceWeights: vector('float32', weights.weights)
     }
   });
+  const bounded = computeSpatialWeightsAlgebraOnCPU(
+    {weights},
+    {operation: 'higherOrder', order: 2, capacity: 1, workCapacity: 1}
+  );
   expect(outputs).toEqual({
-    offsets: result.offsets,
-    neighbors: result.neighbors,
-    weights: result.weights,
-    overflow: result.overflow,
-    requiredCount: result.requiredCount
+    offsets: bounded.offsets,
+    neighbors: bounded.neighbors,
+    weights: bounded.weights,
+    overflow: bounded.overflow,
+    requiredCount: bounded.requiredCount,
+    candidateOverflow: bounded.candidateOverflow
   });
 });
 
@@ -442,7 +476,7 @@ it('validates malformed arrays and both operation constructions, deferring GPU c
     operation: 'higherOrder',
     weights: GRAPH_SOURCE,
     order: 2,
-    output: OUTPUT
+    output: {...OUTPUT, status: {...OUTPUT.status, candidateOverflow: 'candidateOverflow'}}
   };
   expect(new CPUSpatialWeightsAlgebraOperation(props).contract.outputs).toEqual(
     new GPUSpatialWeightsAlgebraOperation(props).contract.outputs
@@ -466,7 +500,7 @@ it('validates malformed arrays and both operation constructions, deferring GPU c
         port.endsWith('Weights') || port === 'weights' ? 'float32' : 'uint32',
         port.endsWith('Offsets') || port === 'offsets'
           ? 5
-          : port === 'overflow' || port === 'requiredCount'
+          : port === 'overflow' || port === 'requiredCount' || port === 'candidateOverflow'
             ? 1
             : 8
       ) as GraphDataView<Format>;

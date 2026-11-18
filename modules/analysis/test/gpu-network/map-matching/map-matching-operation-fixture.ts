@@ -11,6 +11,18 @@ import {getGPUMapMatchingParameterValues} from '../../../src/gpu-network/map-mat
 import type {MapMatchingOperationProps} from '../../../src/gpu-network/map-matching/gpu-map-matching-operation';
 import type {OperationGraphInput} from '../../utils/mixed-execution-test-utils';
 import {getHaversineDistance, wrapLongitudeDelta} from '../network-metric-oracle';
+import type {AccessibilityCSR} from '../network-accessibility/network-accessibility-oracle';
+
+/** The junction represented by an exact edge endpoint, or undefined for an interior/missing snap. */
+export function getMatchedEndpointNode(
+  edge: number,
+  fraction: number,
+  topology: Pick<AccessibilityCSR, 'sources' | 'neighbors'>
+): number | undefined {
+  if (fraction === 0) return topology.sources[edge];
+  if (fraction === 1) return topology.neighbors[edge];
+  return undefined;
+}
 
 /** Finite emissions below the contributor's score-validity cutoff. */
 export function createCutoffMatchingFixture(): ReturnType<typeof createMatchingFixture> {
@@ -145,11 +157,15 @@ export function createMatchingFixture(): {
         trackLogLikelihoods: 'trackLogLikelihoods',
         matchedCount: 'matchedCount',
         breakCount: 'breakCount',
-        status: {overflow: 'overflow', routeOverflow: 'routeOverflow'},
+        status: {
+          overflow: 'overflow',
+          candidateOverflow: 'candidateOverflow',
+          routeOverflow: 'routeOverflow'
+        },
         traversedEdges: {
           edges: 'traversedEdges',
           counts: 'traversedCounts',
-          status: {overflow: 'traversedOverflow'}
+          status: {overflow: 'traversedOverflow', candidateOverflow: 'traversedCandidateOverflow'}
         }
       }
     }
@@ -176,7 +192,7 @@ export function getMatchingGraphInputs(
     result['tableTargets'] = {format: 'uint32', values: table.targets};
     result['tableCosts'] = {format: 'float32', values: table.costs};
     result['tableCostLimit'] = {format: 'float32', values: table.costLimit};
-    if (table.overflow) result['tableOverflow'] = {format: 'uint32', values: table.overflow};
+    if (table.complete) result['tableComplete'] = {format: 'uint32', values: table.complete};
   }
   return result;
 }

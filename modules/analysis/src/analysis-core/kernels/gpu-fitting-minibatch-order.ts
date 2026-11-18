@@ -19,6 +19,7 @@ import {
 } from './fitting-utils';
 import {PHILOX_PURPOSES, PHILOX_WGSL} from './philox-random';
 import {createWGSLKernelNode} from './wgsl-kernel-nodes';
+import {snapshotConstructionFields} from './construction-snapshot';
 
 /** Upper bound for the published 32-bit radix sort's passes plus key generation. */
 export const GPU_FITTING_MINIBATCH_ORDER_SORT_NODE_ALLOWANCE = 128;
@@ -64,6 +65,10 @@ export class GPUFittingMinibatchOrder implements GPUCommandNodeProducer {
   readonly estimatedCommandNodeCount = GPU_FITTING_MINIBATCH_ORDER_SORT_NODE_ALLOWANCE;
 
   constructor(props: GPUFittingMinibatchOrderProps) {
+    props = Object.freeze({
+      ...snapshotConstructionFields(props, ['id', 'rowCount', 'parameters', 'output']),
+      output: snapshotConstructionFields(props.output, ['order'])
+    });
     this.id = props.id ?? 'fitting-minibatch-order';
     this.props = props;
     validateCapacity(this.id, 'rowCount', props.rowCount, 0, GPU_FITTING_MAXIMUM_ROW_COUNT);

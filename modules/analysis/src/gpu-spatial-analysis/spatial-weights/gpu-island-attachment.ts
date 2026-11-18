@@ -48,7 +48,7 @@ import {
 } from './spatial-weights';
 
 import {validateSpatialStatisticsBindings} from './spatial-statistics-bindings';
-import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 
 /**
  * Largest row count for which {@link GPUIslandAttachmentProps.nearestSearch} `'auto'` scans every

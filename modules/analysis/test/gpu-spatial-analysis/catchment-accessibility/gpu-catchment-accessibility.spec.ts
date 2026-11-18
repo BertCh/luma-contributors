@@ -4,6 +4,7 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
+import {expectNumericArrayClose} from '../../../src/testing/expect-numeric-array-close';
 import {
   getGPUHuffTradeAreasParameterValues,
   GPUCatchmentAccessibility,
@@ -12,14 +13,83 @@ import {
 import {computeCatchmentOracle, computeHuffOracle} from './catchment-oracle';
 import {AnalysisRig, buildKernelWeights, createSeededRandom, transposeWeights} from './rig';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {GraphRig} from '../areal-interpolation/areal-interpolation-harness';
+
+for (const method of ['2sfca', '3sfca'] as const) {
+  for (const role of ['demand', 'facility'] as const) {
+    it.each([
+      'overflow',
+      'candidateOverflow'
+    ] as const)(`${method} suppresses ${role} weights %s and restores complete scores`, async flagName => {
+      const device = await getWebGPUTestDevice();
+      requireTestDevice(device);
+      const rig = new GraphRig(device, 'catchment-loss');
+      try {
+        const loss = rig.output('uint32', 1);
+        const forwardOffsets = rig.output('uint32', 2);
+        const reverseOffsets = rig.output('uint32', 3);
+        loss.buffer.write(Uint32Array.of(1));
+        forwardOffsets.buffer.write(Uint32Array.from(role === 'demand' ? [0, 1] : [0, 2]));
+        reverseOffsets.buffer.write(Uint32Array.from(role === 'facility' ? [0, 1, 1] : [0, 1, 2]));
+        const status = {
+          overflow: flagName === 'overflow' ? loss.view : undefined,
+          candidateOverflow: flagName === 'candidateOverflow' ? loss.view : undefined
+        };
+        const accessibility = rig.output('float32', 1);
+        const ratios = rig.output('float32', 2);
+        const reachable = rig.output('uint32', 1);
+        const validity = rig.output('uint32', 1);
+        rig.run(
+          new GPUCatchmentAccessibility({
+            method,
+            supply: rig.input(Float32Array.of(1, 1), 'float32'),
+            demand: rig.input(Float32Array.of(1), 'float32'),
+            demandWeights: {
+              offsets: forwardOffsets.view,
+              neighbors: rig.input(Uint32Array.of(0, 1), 'uint32'),
+              weights: rig.input(Float32Array.of(1, 1), 'float32'),
+              status: role === 'demand' ? status : undefined
+            },
+            facilityWeights: {
+              offsets: reverseOffsets.view,
+              neighbors: rig.input(Uint32Array.of(0, 0), 'uint32'),
+              weights: rig.input(Float32Array.of(1, 1), 'float32'),
+              status: role === 'facility' ? status : undefined
+            },
+            output: {
+              accessibility: accessibility.view,
+              ratios: ratios.view,
+              reachableFacilities: reachable.view,
+              validity: validity.view
+            }
+          })
+        );
+        expect((await accessibility.readFloat32())[0]).toBeNaN();
+        if (role === 'facility' || method === '3sfca')
+          expect((await ratios.readFloat32()).every(Number.isNaN)).toBe(true);
+        else expect(await ratios.readFloat32()).toEqual([1, 1]);
+        expect(await reachable.readUint32()).toEqual([role === 'demand' ? 0xffffffff : 2]);
+        expect(await validity.readUint32()).toEqual([1]);
+        loss.buffer.write(Uint32Array.of(0));
+        forwardOffsets.buffer.write(Uint32Array.of(0, 2));
+        reverseOffsets.buffer.write(Uint32Array.of(0, 1, 2));
+        rig.resubmit();
+        expect((await accessibility.readFloat32())[0]).toBeCloseTo(2, 6);
+        expect(await ratios.readFloat32()).toEqual(method === '2sfca' ? [1, 1] : [2, 2]);
+        expect(await reachable.readUint32()).toEqual([2]);
+      } finally {
+        rig.destroy();
+      }
+    });
+  }
+}
 
 function expectClose(actual: number[], expected: number[], label: string, relative = 5e-5): void {
-  expect(actual.length, `${label} length`).toBe(expected.length);
-  for (let index = 0; index < expected.length; index++) {
-    if (Math.abs(actual[index] - expected[index]) > 1e-6 + relative * Math.abs(expected[index])) {
-      throw new Error(`${label}: [${index}] ${actual[index]} != ${expected[index]}`);
-    }
-  }
+  expectNumericArrayClose(actual, expected, {
+    absoluteTolerance: 1e-6,
+    relativeTolerance: relative,
+    label
+  });
 }
 
 function randomPoints(count: number, seed: number): number[] {
@@ -221,7 +291,12 @@ it('GPUHuffTradeAreas skips a non-finite demand and reports the row invalid', as
       output: {tradeArea, expectedDemand, validity}
     })
   );
-  expect(await rig.readFloat(expectedDemand)).toEqual([2.5, 7.5]);
+  const captured = await rig.readFloat(expectedDemand);
+  // Relative-log normalization uses float32 transcendental operations; allow their rounding
+  // error while still rejecting NaN, infinity, and any contribution from the missing rows.
+  expect(captured).toHaveLength(2);
+  expect(captured[0]).toBeCloseTo(2.5, 6);
+  expect(captured[1]).toBeCloseTo(7.5, 6);
   expect(await rig.readUint(validity)).toEqual([0, 1, 0]);
   // The trade area does not depend on the demand value.
   expect(await rig.readUint(tradeArea)).toEqual([1, 1, 1]);

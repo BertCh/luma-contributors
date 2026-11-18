@@ -36,7 +36,8 @@ it('the operation guide is reachable from the API index and table of contents', 
 it('the complete variogram walkthrough typechecks without undeclared example inputs', () => {
   // These fences are successive steps of one example. Unlike fragment checks, this program
   // supplies no implicit imports or `any` declarations: every API and bin must be declared.
-  const snippets = [...readDocPage(PAGE).matchAll(/^```ts\n([\s\S]*?)^```/gm)];
+  const variogramSection = readDocPage(PAGE).split('## Point density from device to readback')[0];
+  const snippets = [...variogramSection.matchAll(/^```ts\n([\s\S]*?)^```/gm)];
   expect(snippets.length).toBe(2);
   const path = join(DOCS_ROOT, '__doc_snippets__', 'operation-forms-and-cpu-twins.ts');
   const program = createVirtualProgram(

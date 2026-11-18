@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {addPreparedRecipe} from './prepared-recipe';
+
 import {getRecipeView as getOrCreateView} from './recipe-utils';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
@@ -26,6 +28,13 @@ export type GPUDrainageNetworkRecipeProps = {
 };
 /** One complete planar D8 domain; graph-owned outputs can feed rendering or explicit readback copies. */
 export function addDrainageNetworkRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUDrainageNetworkRecipeProps
+) {
+  return addPreparedRecipe(graph, props, declareDrainageNetworkRecipe);
+}
+
+function declareDrainageNetworkRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUDrainageNetworkRecipeProps
 ) {

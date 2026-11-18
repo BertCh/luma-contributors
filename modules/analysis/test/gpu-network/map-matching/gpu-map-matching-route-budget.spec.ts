@@ -24,6 +24,68 @@ import {
 import {buildCSR, createGridFixture} from '../network-accessibility/network-accessibility-oracle';
 import {matchOracle} from './map-matching-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {createOptimizationHarness} from '../network-optimization/optimization-test-harness';
+import {createFinalMatchingInput} from './map-matching-final-review-fixture';
+
+for (const searchLoss of [true, false])
+  it(`network:F7 distinguishes search loss from list capacity on reuse (${searchLoss})`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const fixture = createFinalMatchingInput();
+    const harness = createOptimizationHarness(device);
+    const positions = harness.input(
+      'float32x2',
+      searchLoss ? fixture.positions : Float32Array.of(0.5, 0, 1.5, 0)
+    );
+    const output = {
+      matchedEdges: harness.output('uint32', 2),
+      status: {
+        overflow: harness.output('uint32', 1),
+        candidateOverflow: harness.output('uint32', 1),
+        routeOverflow: harness.output('uint32', 1)
+      },
+      traversedEdges: {
+        edges: harness.output('uint32', searchLoss ? 16 : 1),
+        counts: harness.output('uint32', 1),
+        status: {
+          overflow: harness.output('uint32', 1),
+          candidateOverflow: harness.output('uint32', 1)
+        }
+      }
+    };
+    const matcher = new GPUMapMatching({
+      positions,
+      topology: {
+        offsets: harness.input('uint32', fixture.topology.offsets),
+        neighbors: harness.input('uint32', fixture.topology.neighbors),
+        nodePositions: harness.input('float32x2', fixture.topology.nodePositions)
+      },
+      trackOffsets: harness.input('uint32', fixture.trackOffsets),
+      parameters: harness.input('float32', fixture.parameters),
+      cellSize: 1,
+      bounds: {minimum: [-1, -1], maximum: [12, 1]},
+      candidateCount: 1,
+      routeNodeBudget: searchLoss ? 8 : 128,
+      traversedEdgeCapacity: searchLoss ? 16 : 1,
+      output
+    });
+    const read = await harness.run(matcher, first => {
+      expect(first(output.status.overflow)).toEqual([0]);
+      expect(first(output.status.candidateOverflow)).toEqual([Number(searchLoss)]);
+      expect(first(output.traversedEdges.status.overflow)).toEqual([Number(!searchLoss)]);
+      expect(first(output.traversedEdges.status.candidateOverflow)).toEqual([Number(searchLoss)]);
+      if (searchLoss) expect(first(output.status.routeOverflow)[0]).toBeGreaterThan(0);
+      harness.rewrite(positions, Float32Array.of(0.5, 0, 0.75, 0));
+    });
+    for (const view of [
+      output.status.overflow,
+      output.status.candidateOverflow,
+      output.status.routeOverflow,
+      output.traversedEdges.status.overflow,
+      output.traversedEdges.status.candidateOverflow
+    ])
+      expect(read(view)).toEqual([0]);
+  });
 
 // Review B-02 on the real kernel: a 41 x 41 Manhattan grid with 100 m blocks, one track whose
 // samples are 6 blocks east and 8 north apart (1 km straight, 1.4 km by road), one candidate per
@@ -46,7 +108,13 @@ const PARAMETERS: GPUMapMatchingSettings = {
   routeSlack: 50
 };
 
-type BudgetResult = {breaks: number[]; overflow: number; routeOverflow: number; edges: number[]};
+type BudgetResult = {
+  breaks: number[];
+  overflow: number;
+  candidateOverflow: number;
+  routeOverflow: number;
+  edges: number[];
+};
 
 async function runBudget(device: Device, routeNodeBudget: number): Promise<BudgetResult> {
   const graph = new GPUCommandGraph(device, {id: 'map-matching-budget'});
@@ -75,6 +143,7 @@ async function runBudget(device: Device, routeNodeBudget: number): Promise<Budge
   const edges = output('edges', 4);
   const breaks = output('breaks', 4);
   const overflow = output('overflow', 1);
+  const candidateOverflow = output('candidate-overflow', 1);
   const routeOverflow = output('route-overflow', 1);
   graph.add(
     new GPUMapMatching({
@@ -94,7 +163,11 @@ async function runBudget(device: Device, routeNodeBudget: number): Promise<Budge
       output: {
         matchedEdges: edges.view,
         breaks: breaks.view,
-        status: {overflow: overflow.view, routeOverflow: routeOverflow.view}
+        status: {
+          overflow: overflow.view,
+          candidateOverflow: candidateOverflow.view,
+          routeOverflow: routeOverflow.view
+        }
       }
     })
   );
@@ -104,6 +177,7 @@ async function runBudget(device: Device, routeNodeBudget: number): Promise<Budge
     edges: await readUint32(edges.buffer, 4),
     breaks: await readUint32(breaks.buffer, 4),
     overflow: (await readUint32(overflow.buffer, 1))[0],
+    candidateOverflow: (await readUint32(candidateOverflow.buffer, 1))[0],
     routeOverflow: (await readUint32(routeOverflow.buffer, 1))[0]
   };
   compiled.destroy();
@@ -132,7 +206,8 @@ it('GPUMapMatching flags budget breaks and counts dropped route nodes', async ()
   // Budget 64: the routes are missed, and the breaks say so instead of posing as HMM breaks.
   const tight = await runBudget(device, 64);
   expect(tight.breaks).toEqual([0, 2, 2, 2]);
-  expect(tight.overflow).toBe(1);
+  expect(tight.overflow).toBe(0);
+  expect(tight.candidateOverflow).toBe(1);
   expect(tight.routeOverflow).toBeGreaterThan(0);
 
   // Budget 128 covers the spacing: the oracle's answer, with nothing dropped.
@@ -140,6 +215,7 @@ it('GPUMapMatching flags budget breaks and counts dropped route nodes', async ()
   expect(ample.breaks).toEqual(expected.breaks);
   expect(ample.edges).toEqual(expected.edges);
   expect(ample.overflow).toBe(0);
+  expect(ample.candidateOverflow).toBe(0);
   expect(ample.routeOverflow).toBe(0);
 });
 

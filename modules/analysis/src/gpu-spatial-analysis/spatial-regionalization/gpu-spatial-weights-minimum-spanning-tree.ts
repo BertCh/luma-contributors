@@ -4,6 +4,14 @@
 
 import {validateSpatialOutputViews} from '../spatial-clustering/spatial-output-validation';
 import {
+  snapshotWeightsFields,
+  snapshotWeightsPort
+} from '../spatial-weights/weights-construction-snapshot';
+import {
+  createWeightsIncompleteNodes,
+  validateWeightsLossSources
+} from '../spatial-weights/spatial-weights-loss';
+import {
   createTransientView,
   GPUCompaction,
   GPUUint32Gather,
@@ -44,11 +52,13 @@ const SPANNING_TREE_ROUND_NODE_ALLOWANCE = 7;
 /** Largest supported attribute column count. */
 export const GPU_MINIMUM_SPANNING_TREE_MAXIMUM_COLUMNS = 32;
 
-/** Words of {@link GPUSpatialWeightsMinimumSpanningTreeOutput.status}, as for AZP, Ward and max-p. */
+/** Packed words of {@link GPUSpatialWeightsMinimumSpanningTreeOutput.status}. */
 export const GPU_MINIMUM_SPANNING_TREE_STATUS = {
   /** Number of non-finite entries of `values`; those entries are skipped (see the class). */
   invalidCount: 0,
-  length: 1
+  /** Either upstream adjacency loss cause, normalized to 0 or 1, independently of compact edges. */
+  candidateOverflow: 1,
+  length: 2
 } as const;
 
 /**
@@ -91,7 +101,7 @@ export type GPUSpatialWeightsMinimumSpanningTreeOutput = {
   treeEdgeFlags: GraphDataView<'uint32'>;
   /**
    * Forest component label per row (`rows` entries): the smallest row index of the
-   * row's tree. Isolated rows label themselves.
+   * row's tree. Isolated rows label themselves. Incomplete weights publish 0xffffffff for every row.
    */
   componentLabels: GraphDataView<'uint32'>;
   /**
@@ -105,9 +115,10 @@ export type GPUSpatialWeightsMinimumSpanningTreeOutput = {
    */
   edges?: GPUCompactOutput;
   /**
-   * Optional one word indexed by {@link GPU_MINIMUM_SPANNING_TREE_STATUS}: the number of
-   * non-finite entries of `values`, counted before standardisation, as `invalidCount` of
-   * `GPUAZPRegions`, `GPUWardRegions` and `GPUMaxPRegions`. Unlike those, the tree is still built.
+   * Optional packed words indexed by {@link GPU_MINIMUM_SPANNING_TREE_STATUS}: `invalidCount`
+   * counts non-finite attribute entries before standardisation; `candidateOverflow` reports either
+   * upstream adjacency loss cause, even without compact edges. Attribute invalidity alone still
+   * builds the tree. Adjacency loss suppresses the forest. Spare words are untouched.
    */
   status?: GraphDataView<'uint32'>;
   /** Optional `[row, neighbor]` pair per compact edge (`2 * edges.ids.length` entries). */
@@ -124,6 +135,11 @@ export type GPUSpatialWeightsMinimumSpanningTreeOutput = {
  * selections merge trees, and labels are flattened by pointer jumping, for
  * `ceil(log2(rows))` unrolled rounds. A disconnected graph yields a spanning forest with one
  * tree per connected component.
+ * Either input loss flag suppresses the forest: flags are zero, component labels are 0xffffffff,
+ * and compact count/requiredCount are zero. Compact candidateOverflow carries either upstream
+ * cause; compact overflow remains destination-capacity loss. The complete publication port is
+ * available as output; an omitted compact candidate flag is graph-owned. Clearing input loss
+ * rebuilds and publishes the forest on the next submission.
  *
  * **Exactness and ties.** Costs are totally ordered by `(cost, edge ID)` where the edge ID is
  * the lower-row CSR slot, so the minimum spanning forest is unique and equals Kruskal's under
@@ -148,8 +164,50 @@ export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProdu
   readonly estimatedCommandNodeCount: number;
   /** Validated properties. */
   readonly props: GPUSpatialWeightsMinimumSpanningTreeProps;
+  /** Complete publication port, including a producer-owned compact candidate flag when needed. */
+  readonly output: GPUSpatialWeightsMinimumSpanningTreeOutput;
 
   constructor(props: GPUSpatialWeightsMinimumSpanningTreeProps) {
+    const captured = snapshotWeightsFields(props, [
+      'id',
+      'weights',
+      'values',
+      'columnCount',
+      'standardize',
+      'output'
+    ]);
+    const outputSnapshot = snapshotWeightsFields(captured.output, [
+      'treeEdgeFlags',
+      'componentLabels',
+      'standardizedValues',
+      'edges',
+      'status',
+      'edgeEndpoints',
+      'edgeDissimilarities'
+    ]);
+    const edges = outputSnapshot.edges
+      ? snapshotWeightsFields(outputSnapshot.edges, ['ids', 'status'])
+      : undefined;
+    props = Object.freeze({
+      ...captured,
+      weights: snapshotWeightsPort(captured.weights),
+      output: Object.freeze({
+        ...outputSnapshot,
+        ...(edges
+          ? {
+              edges: Object.freeze({
+                ...edges,
+                status: snapshotWeightsFields(edges.status, [
+                  'count',
+                  'requiredCount',
+                  'overflow',
+                  'candidateOverflow'
+                ])
+              })
+            }
+          : {})
+      })
+    });
     const id = props.id ?? 'minimum-spanning-tree';
     this.id = id;
     this.props = props;
@@ -227,6 +285,7 @@ export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProdu
         count: output.edges?.status.count,
         overflow: output.edges?.status.overflow,
         requiredCount: output.edges?.status.requiredCount,
+        candidateOverflow: output.edges?.status.candidateOverflow,
         edgeEndpoints: output.edgeEndpoints,
         edgeDissimilarities: output.edgeDissimilarities
       },
@@ -235,7 +294,8 @@ export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProdu
           output.edges?.ids.length ? output.edges.ids : undefined,
           output.edges?.status.count,
           output.edges?.status.overflow,
-          output.edges?.status.requiredCount
+          output.edges?.status.requiredCount,
+          output.edges?.status.candidateOverflow
         ],
         ...(output.edgeEndpoints || output.edgeDissimilarities
           ? [
@@ -258,11 +318,39 @@ export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProdu
         output.edges?.status.count,
         output.edges?.status.overflow,
         output.edges?.status.requiredCount,
+        output.edges?.status.candidateOverflow,
         output.edgeEndpoints,
         output.edgeDissimilarities
       ],
-      [props.values, props.weights.offsets, props.weights.neighbors]
+      [
+        props.values,
+        props.weights.offsets,
+        props.weights.neighbors,
+        ...validateWeightsLossSources(id, [props.weights])
+      ]
     );
+    const candidateOverflow =
+      output.edges && (props.weights.status?.overflow || props.weights.status?.candidateOverflow)
+        ? (output.edges.status.candidateOverflow ??
+          createTransientView(
+            output.treeEdgeFlags.buffer.graph as GPUCommandGraph,
+            `${id}-${output.treeEdgeFlags.buffer.id}-${output.treeEdgeFlags.byteOffset}-candidate-loss`,
+            'uint32',
+            1
+          ))
+        : output.edges?.status.candidateOverflow;
+    this.output = Object.freeze({
+      ...output,
+      ...(output.edges
+        ? {
+            edges: Object.freeze({
+              ...output.edges,
+              status: Object.freeze({...output.edges.status, candidateOverflow})
+            })
+          }
+        : {})
+    });
+    this.props = Object.freeze({...props, output: this.output});
   }
 
   /** Returns the standardisation, Borůvka round, label and edge-list nodes. */
@@ -282,10 +370,12 @@ export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProdu
       output.edges?.status.count,
       output.edges?.status.overflow,
       output.edges?.status.requiredCount,
+      output.edges?.status.candidateOverflow,
       output.edgeEndpoints,
       output.edgeDissimilarities,
       weights.offsets,
-      weights.neighbors
+      weights.neighbors,
+      ...validateWeightsLossSources(id, [weights])
     ]);
     const rows = weights.offsets.length - 1;
     const capacity = weights.neighbors.length;
@@ -303,7 +393,10 @@ export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProdu
       overflow: output.edges?.status.overflow,
       requiredCount: output.edges?.status.requiredCount,
       edgeEndpoints: output.edgeEndpoints,
-      edgeDissimilarities: output.edgeDissimilarities
+      edgeDissimilarities: output.edgeDissimilarities,
+      inputOverflow: weights.status?.overflow,
+      inputCandidateOverflow: weights.status?.candidateOverflow,
+      candidateOverflow: output.edges?.status.candidateOverflow
     });
     for (const [name, byteLength] of [
       ['standardized table', rows * columnCount * 4],
@@ -327,7 +420,8 @@ const COLUMNS: u32 = ${columnCount}u;
 ${IS_FINITE_FLOAT_WGSL}
 ${REGIONALIZATION_NONE_WGSL}
 ${REGIONALIZATION_CSR_WGSL}`;
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const loss = createWeightsIncompleteNodes(graph, id, [weights]);
+    const nodes: GPUCommandNode<Parameters>[] = [...loss.nodes];
 
     // Attribute table the costs read.
     let table = props.values;
@@ -355,9 +449,15 @@ ${REGIONALIZATION_CSR_WGSL}`;
           id: `${id}-clear-invalid`,
           operation: OPERATION,
           variant: 'clear-invalid',
-          bindings: [{name: 'status', view: output.status, type: 'u32', access: 'read_write'}],
+          bindings: [
+            {name: 'status', view: output.status, type: 'u32', access: 'read_write'},
+            ...(loss.view
+              ? [{name: 'loss', view: loss.view, type: 'u32' as const, access: 'read' as const}]
+              : [])
+          ],
           invocationCount: 1,
-          body: 'status[statusOffset] = 0u;'
+          body: `status[statusOffset] = 0u;
+  status[statusOffset + ${GPU_MINIMUM_SPANNING_TREE_STATUS.candidateOverflow}u] = ${loss.view ? 'loss[lossOffset]' : '0u'};`
         }),
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-count-invalid`,
@@ -623,6 +723,25 @@ ${IS_FINITE_FLOAT_WGSL}`,
       }).getCommandNodes(graph)
     );
 
+    if (loss.view) {
+      for (const [name, view, value] of [
+        ['tree-flags', treeEdgeFlags, '0u'],
+        ['component-labels', componentLabels, '0xffffffffu']
+      ] as const)
+        nodes.push(
+          createWGSLKernelNode(graph, {
+            id: `${id}-incomplete-${name}`,
+            operation: OPERATION,
+            invocationCount: view.length,
+            bindings: [
+              {name: 'loss', view: loss.view, type: 'u32', access: 'read'},
+              {name: 'result', view, type: 'u32', access: 'read_write'}
+            ],
+            body: `if (loss[lossOffset] != 0u) { result[resultOffset + index] = ${value}; }`
+          })
+        );
+    }
+
     if (output.edges) {
       const {edges} = output;
       const slotIds = createTransientView(graph, `${id}-slot-ids`, 'uint32', capacity);
@@ -649,6 +768,7 @@ ${IS_FINITE_FLOAT_WGSL}`,
           operation: OPERATION,
           requiredCount,
           compactIds: compactSlots,
+          candidateOverflowSources: loss.view ? [loss.view] : [],
           output: edges
         })
       );

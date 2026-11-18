@@ -15,7 +15,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {validateGPUNetworkTopology} from '../../analysis-core/network-topology';
+import {validateGPUNetworkTopology} from '../../analysis-core/contracts/network-topology';
 import {
   createWGSLDispatchGate,
   createWGSLKernelNode,
@@ -32,24 +32,19 @@ import {
 } from './network-flow-push-relabel';
 import type {GPUNetworkFlowProps} from './gpu-network-flow';
 
-/** CSR and path arrays use storage instead of per-invocation vertex tables. The device's
- * storage binding size further limits each allocation before any command node is created. */
-const MAXIMUM_PARALLEL_NODE_COUNT = 30_000_000;
-/** Two residual arc IDs per original edge must fit u32 indexing and device storage bindings. */
-const MAXIMUM_PARALLEL_EDGE_COUNT = 30_000_000;
+import {
+  NETWORK_FLOW_PARALLEL_MAXIMUM_NODE_COUNT as MAXIMUM_PARALLEL_NODE_COUNT,
+  NETWORK_FLOW_PARALLEL_MAXIMUM_EDGE_COUNT as MAXIMUM_PARALLEL_EDGE_COUNT,
+  NETWORK_FLOW_MAXIMUM_DISTANCE as MAXIMUM_DISTANCE,
+  NETWORK_FLOW_MAXIMUM_TOTAL_CAPACITY as MAXIMUM_TOTAL_CAPACITY,
+  NETWORK_FLOW_MAXIMUM_UNIT_COST as MAXIMUM_UNIT_COST
+} from './network-flow-limits';
 /** Bounds unrolled search commands; the shared command-node budget also bounds their product. */
 const MAXIMUM_RELAXATION_ROUNDS = 8192;
 /** Keeps the default large-graph schedule below the command budget, including path doubling. */
 const DEFAULT_PARALLEL_AUGMENTATIONS = 8;
 /** Covers moderate graph diameters; longer paths require an explicit budget. */
 const DEFAULT_RELAXATION_ROUNDS = 1024;
-/** Signed distances reserve INT_MAX for unreachable; N times the unit cost must stay below it. */
-const MAXIMUM_DISTANCE = 0x7ffffffe;
-/** Flow, excess request and cut capacity use u32; wide integer objective accumulation permits
- * the full unsigned range without the reference route's float32 exact-integer restriction. */
-const MAXIMUM_TOTAL_CAPACITY = 0xffffffff;
-/** Retains the reference route's original-edge cost range. */
-const MAXIMUM_UNIT_COST = 32767;
 /** A label contains distance bits, hop count and incoming residual arc ID. */
 const LABEL_WORD_COUNT = 3;
 /** A path record contains doubling ancestor, bottleneck, predecessor arc and membership flag. */
@@ -127,16 +122,6 @@ export function validateParallelNetworkFlow(
     props.maximumRelabels ?? DEFAULT_NETWORK_FLOW_RELABELS,
     0,
     MAXIMUM_NETWORK_FLOW_RELABELS
-  );
-  validateRequirement(
-    id,
-    !props.costs || props.maximumRelabels === undefined,
-    'maximumRelabels requires uncosted parallel flow'
-  );
-  validateRequirement(
-    id,
-    props.maximumCostPhases === undefined || (Boolean(props.costs) && usesPrimalDualFlow(props)),
-    'maximumCostPhases requires costed primal-dual mode'
   );
   validateCapacity(
     id,
@@ -596,6 +581,7 @@ atomicAdd(&state[stateOffset + 13u], product.x + select(0u, 1u, previous > 0xfff
       undefined,
       UINT64_WGSL
     ),
+    // contract-allow: single-invocation -- clears exactly eight fixed summary words, not input rows.
     kernel(
       'publish',
       1,

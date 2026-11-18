@@ -68,10 +68,12 @@ for (const mode of ['smrf', 'icp', 'skew'] as const)
               classifications: classes.view,
               grid: {origin: [0, 0], cellSize: 1, width: side, height: side},
               window: 4,
-              groundSurface: surface.view,
-              groundMask: ground.view,
-              outputClassifications: canary.view,
-              status: status.view
+              output: {
+                groundSurface: surface.view,
+                groundMask: ground.view,
+                outputClassifications: canary.view,
+                status: status.view
+              }
             })
           );
           check = async () => {
@@ -102,10 +104,12 @@ for (const mode of ['smrf', 'icp', 'skew'] as const)
               maximumDistance: 0.2,
               iterations: 4,
               robust: {method: 'huber', scale: 0.1},
-              transform: transform.view,
-              history: history.view,
-              inlierMask: mask.view,
-              status: canary.view
+              output: {
+                transform: transform.view,
+                history: history.view,
+                inlierMask: mask.view,
+                status: canary.view
+              }
             })
           );
           check = async () => {
@@ -132,10 +136,12 @@ for (const mode of ['smrf', 'icp', 'skew'] as const)
               grid: {origin: [-1, -1, -1], dimensions: [2, 2, 2], cellSize: 1},
               radius: 0.1,
               capacity: 4,
-              indices: indices.view,
-              squaredDistances: distances.view,
-              counts: canary.view,
-              status: status.view
+              output: {
+                indices: indices.view,
+                squaredDistances: distances.view,
+                counts: canary.view,
+                status: status.view
+              }
             })
           );
           check = async () => {

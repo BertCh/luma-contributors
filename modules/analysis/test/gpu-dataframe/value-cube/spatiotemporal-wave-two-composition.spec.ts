@@ -283,7 +283,7 @@ async function runPipeline(
       'uint32'
     ),
     output: {
-      ids: filterIds,
+      rows: filterIds,
       outputMask: filterMask,
       status: {count: filterCount, overflow: filterOverflow}
     }

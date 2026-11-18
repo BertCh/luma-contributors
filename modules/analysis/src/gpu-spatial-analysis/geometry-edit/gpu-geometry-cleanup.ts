@@ -167,14 +167,17 @@ type GPUGeometryCleanupSharedProps = {
    * elements written with `getGPUGeometryCleanupParameterValues`.
    */
   parameters: GraphDataView<'float32'>;
-  /**
-   * Compiles only the sequential per-ring repeat pass even at `tolerance = 0`, for A/B timing
-   * against the vertex-parallel pass.
-   *
-   * @internal
-   */
-  forceSequentialRepeatRemoval?: boolean;
 };
+
+type GeometryCleanupInternalOptions = {forceSequentialRepeatRemoval?: boolean};
+
+/** Constructs the benchmark route without exposing its switch on public props. @internal */
+export function createGeometryCleanupForTesting(
+  props: GPUGeometryCleanupProps,
+  options: GeometryCleanupInternalOptions
+): GPUGeometryCleanup {
+  return Reflect.construct(GPUGeometryCleanup, [props, options]) as GPUGeometryCleanup;
+}
 
 /**
  * Properties for {@link GPUGeometryCleanup}, discriminated by `geometryType`.
@@ -238,7 +241,14 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
   /** Resolved spatial context (planar only). */
   readonly spatialContext: GPUSpatialContext;
 
-  constructor(props: GPUGeometryCleanupProps) {
+  private readonly internalOptions: GeometryCleanupInternalOptions;
+
+  constructor(props: GPUGeometryCleanupProps);
+  constructor(
+    props: GPUGeometryCleanupProps,
+    internalOptions: GeometryCleanupInternalOptions = {}
+  ) {
+    this.internalOptions = {...internalOptions};
     this.id = props.id ?? 'geometry-cleanup';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
@@ -397,7 +407,7 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
     );
     validateGeometryScratchByteLengths(graph, id, {
       vertexFlagsAndScan: props.positions.length * 4,
-      ringState: props.forceSequentialRepeatRemoval
+      ringState: this.internalOptions.forceSequentialRepeatRemoval
         ? 4
         : CLEANUP_RING_STATE_WORDS * (ringOffsets.length - 1) * 4,
       repeatDispatch: 24
@@ -409,7 +419,7 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
       collapsedRings ?? createTransientView(graph, `${id}-collapsed`, 'uint32', 1);
     const isPolygon = props.geometryType === 'polygons';
     const ringCount = ringOffsets.length - 1;
-    const parallel = !props.forceSequentialRepeatRemoval;
+    const parallel = !this.internalOptions.forceSequentialRepeatRemoval;
     const repeatGate = parallel
       ? createCleanupRepeatGate<Parameters>(graph, {
           id: `${id}-repeat-dispatch`,

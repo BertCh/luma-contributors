@@ -227,8 +227,8 @@ it('GPUSpatialPredicateJoin indirectly dispatches candidate and cooperative refi
     candidateCapacity: 4096,
     output: {
       pairs: {
-        leftIds: view(`${id}-left-ids`, 'uint32', 4096),
-        rightIds: view(`${id}-right-ids`, 'uint32', 4096),
+        leftRows: view(`${id}-left-ids`, 'uint32', 4096),
+        rightRows: view(`${id}-right-ids`, 'uint32', 4096),
         status: {
           count: view(`${id}-count`, 'uint32', 1),
           overflow: view(`${id}-pair-overflow`, 'uint32', 1)
@@ -586,8 +586,8 @@ it('planar spatial joins resolve a planar context and reject longitude-latitude'
       positions: createTransientView(candidateGraph, `cr-${serial++}`, 'float32x2', 3)
     },
     output: {
-      leftIds: createTransientView(candidateGraph, `ci-${serial++}`, 'uint32', 8),
-      rightIds: createTransientView(candidateGraph, `cj-${serial++}`, 'uint32', 8),
+      leftRows: createTransientView(candidateGraph, `ci-${serial++}`, 'uint32', 8),
+      rightRows: createTransientView(candidateGraph, `cj-${serial++}`, 'uint32', 8),
       status: {
         count: createTransientView(candidateGraph, `cc-${serial++}`, 'uint32', 1),
         overflow: createTransientView(candidateGraph, `co-${serial++}`, 'uint32', 1)
@@ -622,8 +622,8 @@ it('GPUSpatialPredicateJoin accepts great-circle dwithin and planar-in-degrees t
       candidateCapacity: 64,
       output: {
         pairs: {
-          leftIds: view('left-ids', 'uint32', 64),
-          rightIds: view('right-ids', 'uint32', 64),
+          leftRows: view('left-ids', 'uint32', 64),
+          rightRows: view('right-ids', 'uint32', 64),
           status: {
             count: view('count', 'uint32', 1),
             overflow: view('pair-overflow', 'uint32', 1)
@@ -922,8 +922,8 @@ it('GPUSpatialPredicateJoin bounds cooperative lanes per tile while paging large
   const right = createTransientView(graph, 'c-right', 'float32x2', 3);
   const output = {
     pairs: {
-      leftIds: createTransientView(graph, 'c-left-ids', 'uint32', 16),
-      rightIds: createTransientView(graph, 'c-right-ids', 'uint32', 16),
+      leftRows: createTransientView(graph, 'c-left-ids', 'uint32', 16),
+      rightRows: createTransientView(graph, 'c-right-ids', 'uint32', 16),
       status: {
         count: createTransientView(graph, 'c-count', 'uint32', 1),
         overflow: createTransientView(graph, 'c-pair-overflow', 'uint32', 1)

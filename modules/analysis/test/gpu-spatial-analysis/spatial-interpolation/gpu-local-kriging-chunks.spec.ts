@@ -6,7 +6,10 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
-import {GPULocalKriging} from '../../../src/gpu-spatial-analysis/spatial-interpolation/gpu-local-kriging';
+import {
+  GPULocalKriging,
+  createLocalKrigingForTesting
+} from '../../../src/gpu-spatial-analysis/spatial-interpolation/gpu-local-kriging';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   createInputBuffer,
@@ -130,7 +133,7 @@ async function runKriging(
     rowBase += length;
   }
   graph.add(
-    new GPULocalKriging({
+    createLocalKrigingForTesting({
       positions,
       observations,
       sampleDrift,

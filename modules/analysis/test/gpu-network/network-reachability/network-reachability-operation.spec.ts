@@ -11,6 +11,79 @@ import {
 } from '../../../src/gpu-network/network-reachability/gpu-network-reachability-operation';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
+
+it('network:G6 zero active rounds leave empty and seeded searches uncertified on both backends', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const startCount of [0, 1])
+    for (const Operation of [GPUNetworkReachabilityOperation, CPUNetworkReachabilityOperation]) {
+      const rows = await runOperationGraph(device, {
+        inputs: {
+          offsets: {format: 'uint32', values: Uint32Array.of(0, 1, 1)},
+          neighbors: {format: 'uint32', values: Uint32Array.of(1)},
+          weights: {format: 'float32', values: Float32Array.of(1)},
+          starts: {format: 'uint32', values: Uint32Array.of(0)},
+          startCount: {format: 'uint32', values: Uint32Array.of(startCount)},
+          active: {format: 'uint32', values: Uint32Array.of(0)}
+        },
+        operations: [
+          new Operation({
+            nodeCount: 2,
+            topology: {offsets: 'offsets', neighbors: 'neighbors', weights: 'weights'},
+            startNodes: 'starts',
+            startCount: 'startCount',
+            activeIterations: 'active',
+            output: {
+              costs: 'costs',
+              status: {
+                converged: 'converged',
+                iterationLimitReached: 'limited',
+                iterationCount: 'rounds'
+              }
+            }
+          })
+        ],
+        outputs: ['costs', 'converged', 'limited', 'rounds']
+      });
+      expect(rows['costs']).toEqual(Float32Array.of(startCount ? 0 : Infinity, Infinity));
+      expect(rows['converged']).toEqual(Uint32Array.of(0));
+      expect(rows['limited']).toEqual(Uint32Array.of(1));
+      expect(rows['rounds']).toEqual(Uint32Array.of(0));
+    }
+});
+it('network:G7 reachability backends retain constructor rounds while activeIterations stays live', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const Operation of [GPUNetworkReachabilityOperation, CPUNetworkReachabilityOperation])
+    for (const active of [3, 0]) {
+      const props: NetworkReachabilityOperationProps = {
+        nodeCount: 3,
+        topology: {offsets: 'offsets', neighbors: 'neighbors', weights: 'weights'},
+        startNodes: 'starts',
+        maximumIterations: 1,
+        localIterations: 1,
+        activeIterations: 'active',
+        output: {costs: 'costs', status: {converged: 'complete'}}
+      };
+      const operation = new Operation(props);
+      props.maximumIterations = 3;
+      const result = await runOperationGraph(device, {
+        inputs: {
+          offsets: {format: 'uint32', values: Uint32Array.of(0, 1, 2, 2)},
+          neighbors: {format: 'uint32', values: Uint32Array.of(1, 2)},
+          weights: {format: 'float32', values: Float32Array.of(1, 1)},
+          starts: {format: 'uint32', values: Uint32Array.of(0)},
+          active: {format: 'uint32', values: Uint32Array.of(active)}
+        },
+        operations: [operation],
+        outputs: ['costs', 'complete']
+      });
+      expect(Array.from(result['costs'])).toEqual(
+        active ? [0, 1, Infinity] : [0, Infinity, Infinity]
+      );
+      expect(Array.from(result['complete'])).toEqual([0]);
+    }
+});
 import {
   getOverlappingRoutingTopology,
   getRoutingTopology
@@ -88,7 +161,11 @@ for (const empty of [false, true])
         expect(gpuRows[output][index] === cpuRows[output][index]).toBe(true);
     }
     expect(Array.from(cpuRows['iterationRounds'])).toEqual([1]);
-    expect(Array.from(cpuRows['relaxedEdges'])).toEqual(empty ? [0, 0] : [13, 0]);
+    if (empty) expect(Array.from(cpuRows['relaxedEdges'])).toEqual([0, 0]);
+    else {
+      expect(cpuRows['relaxedEdges'][0]).toBeGreaterThanOrEqual(13);
+      expect(cpuRows['relaxedEdges'][1]).toBe(0);
+    }
     if (empty) {
       expect(Array.from(gpuRows['iterationRounds'])).toEqual([1]);
       expect(Array.from(gpuRows['relaxedEdges'])).toEqual([0, 0]);

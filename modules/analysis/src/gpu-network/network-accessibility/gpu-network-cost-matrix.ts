@@ -27,7 +27,7 @@ import {
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology,
   type GPUNetworkTopology
-} from '../../analysis-core/network-topology';
+} from '../../analysis-core/contracts/network-topology';
 import {ACCESSIBILITY_NONE} from './network-accessibility-passes';
 import {recommendLaneCount} from './network-accessibility-lanes';
 import {alignElementCount, getSubView} from '../network-view-utils';

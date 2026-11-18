@@ -11,6 +11,7 @@ import {GPUSpatialCrossValidation} from '../../../src/gpu-spatial-analysis/spati
 import type {GPUSpatialValidationDesign} from '../../../src/gpu-spatial-analysis/spatial-validation/spatial-validation-design';
 import {GPUNestedInterpolationValidation} from '../../../src/gpu-spatial-analysis/spatial-validation/gpu-nested-interpolation-validation';
 import {GPUSpatialCrossValidatedOLS} from '../../../src/gpu-spatial-analysis/spatial-validation/gpu-spatial-cross-validated-ols';
+import {GPUSpatialRegimeRegression} from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-spatial-regime-regression';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -76,6 +77,188 @@ async function createHarness() {
     }
   };
 }
+
+for (const origin of [0, 5000000, 2 ** 24]) {
+  it(`cross-validated OLS preserves centered predictions and metrics at origin ${origin}`, async () => {
+    const harness = await createHarness();
+    // Both folds train on [-2,-2,2,2]; the held-out center must predict 1.
+    const offsets = [-2, -2, 2, 2, 0, -2, -2, 2, 2, 0];
+    const predictions = harness.output(20, 'float32');
+    const metrics = harness.output(12, 'float32');
+    const fitStatus = harness.output(2, 'uint32');
+    harness.graph.add(
+      new GPUSpatialCrossValidatedOLS({
+        folds: {
+          positions: harness.input(
+            offsets.flatMap((_, row) => [row, 0]),
+            'float32x2',
+            2
+          ),
+          blocks: harness.input([0, 0, 0, 0, 0, 1, 1, 1, 1, 1], 'uint32'),
+          design: {mode: 'groups'},
+          foldCount: 2,
+          output: {
+            folds: harness.output(10, 'uint32').view,
+            training: harness.output(20, 'uint32').view,
+            testing: harness.output(20, 'uint32').view,
+            counts: harness.output(6, 'uint32').view,
+            status: harness.output(2, 'uint32').view
+          }
+        },
+        predictors: harness.input(
+          offsets.map(value => origin + value),
+          'float32'
+        ),
+        predictorCount: 1,
+        response: harness.input(
+          offsets.map(value => 1 + 8 * value),
+          'float32'
+        ),
+        output: {
+          coefficients: harness.output(4, 'float32').view,
+          predictions: predictions.view,
+          fitStatus: fitStatus.view,
+          metrics: metrics.view,
+          metricStatus: harness.output(2, 'uint32').view
+        }
+      })
+    );
+    const cleanup = await harness.run();
+    try {
+      expect(Array.from(await fitStatus.read())).toEqual([0, 0]);
+      const values = await predictions.read();
+      for (let fold = 0; fold < 2; fold++) {
+        offsets.forEach((offset, row) =>
+          expect(values[fold * 10 + row]).toBeCloseTo(1 + 8 * offset, 4)
+        );
+      }
+      const scores = await metrics.read();
+      for (let fold = 0; fold < 2; fold++) {
+        expect(scores[fold * 6]).toBe(5);
+        expect(scores[fold * 6 + 2]).toBeCloseTo(0, 6);
+        expect(scores[fold * 6 + 5]).toBeCloseTo(1, 6);
+      }
+    } finally {
+      cleanup();
+    }
+  });
+}
+
+it('regime shifted means preserve variance in 65536 nearly constant projected predictors', async () => {
+  const harness = await createHarness();
+  const rowCount = 65536;
+  const predictors = Array<number>(rowCount).fill(5000000.5);
+  const response = Array<number>(rowCount).fill(0);
+  predictors[0] = 5000001;
+  response[0] = 1;
+  const coefficients = harness.output(2, 'float32');
+  const fitted = harness.output(rowCount, 'float32');
+  const status = harness.output(1, 'uint32');
+  harness.graph.add(
+    new GPUSpatialRegimeRegression({
+      predictors: harness.input(predictors, 'float32'),
+      predictorCount: 1,
+      response: harness.input(response, 'float32'),
+      regimes: harness.input(Array<number>(rowCount).fill(0), 'uint32'),
+      regimeCount: 1,
+      output: {
+        coefficients: coefficients.view,
+        fitted: fitted.view,
+        status: status.view,
+        counts: harness.output(1, 'uint32').view
+      }
+    })
+  );
+  const cleanup = await harness.run();
+  try {
+    expect(Array.from(await status.read())).toEqual([0]);
+    expect((await coefficients.read())[1]).toBeCloseTo(2, 4);
+    const predictions = await fitted.read();
+    expect(predictions[0]).toBeCloseTo(1, 4);
+    expect(predictions[rowCount - 1]).toBeCloseTo(0, 4);
+  } finally {
+    cleanup();
+  }
+});
+
+for (const scene of ['representable-intercept', 'finite-variance'] as const) {
+  it(`regime regression preserves ${scene} with separate mean corrections`, async () => {
+    const harness = await createHarness();
+    const predictors =
+      scene === 'representable-intercept'
+        ? [5000000, 5000000.5, 5000000, 5000000.5]
+        : [2 ** 86, 2 ** 86 + 2 ** 63, 2 ** 86, 2 ** 86 + 2 ** 63];
+    const response =
+      scene === 'representable-intercept' ? predictors.map(value => value + 0.5) : [0, 1, 0, 1];
+    const coefficients = harness.output(2, 'float32');
+    const fitted = harness.output(4, 'float32');
+    const status = harness.output(1, 'uint32');
+    harness.graph.add(
+      new GPUSpatialRegimeRegression({
+        predictors: harness.input(predictors, 'float32'),
+        predictorCount: 1,
+        response: harness.input(response, 'float32'),
+        regimes: harness.input([0, 0, 0, 0], 'uint32'),
+        regimeCount: 1,
+        output: {
+          coefficients: coefficients.view,
+          fitted: fitted.view,
+          status: status.view,
+          counts: harness.output(1, 'uint32').view
+        }
+      })
+    );
+    const cleanup = await harness.run();
+    try {
+      expect(Array.from(await status.read())).toEqual([0]);
+      const values = await coefficients.read();
+      if (scene === 'representable-intercept') {
+        expect(values[0]).toBeCloseTo(0.5, 5);
+        expect(values[1]).toBeCloseTo(1, 5);
+      }
+      const predictions = await fitted.read();
+      response.forEach((expected, row) => expect(predictions[row]).toBeCloseTo(expected, 5));
+    } finally {
+      cleanup();
+    }
+  });
+}
+
+it('regime predictions retain centers and the correction for rounded predictor means', async () => {
+  const harness = await createHarness();
+  const origin = 2 ** 24;
+  // Mean x = origin + 0.5 is not representable in float32; slope = 1.5.
+  const fitted = harness.output(8, 'float32');
+  const status = harness.output(2, 'uint32');
+  harness.graph.add(
+    new GPUSpatialRegimeRegression({
+      predictors: harness.input(
+        [origin, origin, origin, origin + 2, 4999998, 4999998, 5000002, 5000002],
+        'float32'
+      ),
+      predictorCount: 1,
+      response: harness.input([1, 1, 1, 4, -15, -15, 17, 17], 'float32'),
+      regimes: harness.input([0, 0, 0, 0, 1, 1, 1, 1], 'uint32'),
+      regimeCount: 2,
+      output: {
+        coefficients: harness.output(4, 'float32').view,
+        fitted: fitted.view,
+        status: status.view,
+        counts: harness.output(2, 'uint32').view
+      }
+    })
+  );
+  const cleanup = await harness.run();
+  try {
+    expect(Array.from(await status.read())).toEqual([0, 0]);
+    const values = await fitted.read();
+    [1, 1, 1, 4, -15, -15, 17, 17].forEach((expected, row) =>
+      expect(values[row]).toBeCloseTo(expected, 5)
+    );
+  } finally {
+    cleanup();
+  }
+});
 
 it('cross-validated OLS reports held-out metric arithmetic overflow', async () => {
   const harness = await createHarness();

@@ -205,7 +205,8 @@ it('accepts genuine zero-byte pit/path views sharing one imported buffer', () =>
       }
     });
     const sources = getParsedKernelSources(contributor.getCommandNodes(graph));
-    for (const [name, source] of sources) expect(auditWGSLModule(source), name).toEqual([]);
+    for (const {id: name, source, constants} of sources.configurations)
+      expect(auditWGSLModule(source, constants), name).toEqual([]);
   } finally {
     empty.destroy();
     device.destroy();
@@ -285,9 +286,11 @@ for (const coefficient of [1e20, 1e40]) {
         expect(declarations).not.toHaveBeenCalled();
       } else {
         const contributor = new GPUTerrainBranchingFlow(props);
-        for (const [name, source] of getParsedKernelSources(contributor.getCommandNodes(graph))) {
+        for (const {id: name, source, constants} of getParsedKernelSources(
+          contributor.getCommandNodes(graph)
+        ).configurations) {
           expect(source).not.toContain('fn getGroundCellArea');
-          expect(auditWGSLModule(source), name).toEqual([]);
+          expect(auditWGSLModule(source, constants), name).toEqual([]);
         }
       }
       declarations.mockRestore();
@@ -409,7 +412,8 @@ it('centres Horn samples before weighting vector-ruggedness normals', async () =
         source.includes('windowValues[k] = sampleValue - centreElevation')
       )
     ).toBe(true);
-    for (const [name, source] of sources) expect(auditWGSLModule(source), name).toEqual([]);
+    for (const {id: name, source, constants} of sources.configurations)
+      expect(auditWGSLModule(source, constants), name).toEqual([]);
   } finally {
     device.destroy();
   }

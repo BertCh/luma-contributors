@@ -13,7 +13,8 @@ import {
 } from '../../../src/gpu-network/network-analysis/gpu-network-path-extraction';
 import {
   createNullWebGPUDevice,
-  getParsedKernelSources
+  getParsedKernelSources,
+  getStorageBindingCount
 } from '../../utils/gpu-contributor-test-utils';
 
 function createOutput(graph: GPUCommandGraph, prefix: string, capacity: number) {
@@ -49,6 +50,37 @@ function createEdges(graph: GPUCommandGraph): GPUNetworkPathExtractionEdges {
     output: createOutput(graph, 'edge-out', 16)
   };
 }
+
+it('network:G9 snapshots validated row views before caller port maps change', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const props = createProps(graph, {id: 'snapshot-rows'});
+  props.output.nodeRows = createTransientView(graph, 'original-rows', 'uint32', 16);
+  const contributor = new GPUNetworkPathExtraction(props);
+  props.output.ids = createTransientView(graph, 'changed-identities', 'uint32', 4);
+  props.output.nodeRows = undefined;
+  const source = getParsedKernelSources(contributor.getCommandNodes(graph)).get(
+    'snapshot-rows-write-nodes'
+  );
+  expect(source).toContain('const CAPACITY: u32 = 16u;');
+  expect(source).toContain('nodeRows');
+});
+
+it('network:F10 row and mapped identity outputs stay within eight storage bindings', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const edges = createEdges(graph);
+  edges.edgeIds = createTransientView(graph, 'mapped-edge-ids', 'uint32', 10);
+  edges.output.edgeRows = createTransientView(graph, 'edge-rows', 'uint32', 16);
+  const props = createProps(graph, {
+    edges,
+    nodeIds: createTransientView(graph, 'mapped-node-ids', 'uint32', 8)
+  });
+  props.output.nodeRows = createTransientView(graph, 'node-rows', 'uint32', 16);
+  const nodes = new GPUNetworkPathExtraction(props).getCommandNodes(graph);
+  expect(nodes.map(node => node.id)).toContain('network-path-extraction-map-edge-ids');
+  for (const {id: name, source} of getParsedKernelSources(nodes).configurations) {
+    expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
+  }
+});
 
 /** Props with extra output views merged into the default output bag. */
 function createPropsWithOutput(

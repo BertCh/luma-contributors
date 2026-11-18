@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotRegressionOperationProps} from './regression-construction-snapshot';
+
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {validateCompleteRegressionWeights} from './cpu-regression-weights';
 import {
   GPUSpatialErrorMaximumLikelihood,
   type GPUSpatialErrorMaximumLikelihoodProps
@@ -47,7 +50,9 @@ export type SpatialErrorMaximumLikelihoodOperationProps = Pick<
  */
 export class GPUSpatialErrorMaximumLikelihoodOperation extends GPUContributorOperation {
   constructor(props: SpatialErrorMaximumLikelihoodOperationProps) {
+    props = snapshotRegressionOperationProps(props);
     const id = props.id ?? 'spatial-error-maximum-likelihood';
+    validateCompleteRegressionWeights(id, props.weights);
     super({
       id,
       inputs: {

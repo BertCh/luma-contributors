@@ -28,6 +28,78 @@ import {
 } from '../segment-intersection/wgsl-graph-executor';
 
 useCPUExecutorTestHooks();
+
+it.each([
+  {candidateCapacity: 1, maximumVerticesPerLine: 8, counts: [0, 0, 0, 0], candidate: 1},
+  {candidateCapacity: 2, maximumVerticesPerLine: 2, counts: [2, 4, 1, 0], candidate: 0}
+])('production insertion separates candidate and vertex capacity: %o', options => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const props = {
+    ...createProps(graph, 1, options.candidateCapacity),
+    maximumVerticesPerLine: options.maximumVerticesPerLine,
+    tolerance: 0,
+    candidateOverflowPolicy: 'incomplete' as const,
+    referencePositions: createTransientView(graph, 'two-references', 'float32x2', 2)
+  };
+  props.output.positions = createTransientView(
+    graph,
+    'sized-output',
+    'float32x2',
+    options.maximumVerticesPerLine
+  );
+  props.output.sourceEdges = createTransientView(
+    graph,
+    'sized-edges',
+    'uint32',
+    options.maximumVerticesPerLine
+  );
+  const mock = mockGridIndex();
+  const nodes = new GPUSegmentSnap(props).getCommandNodes(graph);
+  mock.mockRestore();
+  const memory = createCPUGraphMemory();
+  memory.write(props.positions, Float32Array.of(0, 0, 3, 0));
+  memory.write(props.lineOffsets, Uint32Array.of(0, 2));
+  memory.write(props.referencePositions, Float32Array.of(1, 0, 2, 0));
+  executeCommandNodesOnCPU(nodes, memory);
+  expect(Array.from(memory.readUint32(props.output.counts))).toEqual(options.counts);
+  expect(Array.from(memory.readUint32(props.output.candidateOverflow))).toEqual([
+    options.candidate
+  ]);
+  expect(Array.from(memory.readUint32(props.output.issueCode))).toEqual([4]);
+  expect(Array.from(memory.readUint32(props.output.validity))).toEqual([0]);
+});
+
+it('nonfinite query lines do not report candidate capacity loss in either form', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const props = {
+    ...createProps(graph, 1, 1),
+    tolerance: 0,
+    candidateOverflowPolicy: 'incomplete' as const,
+    referencePositions: createTransientView(graph, 'three-references', 'float32x2', 3)
+  };
+  const input = {
+    positions: Float32Array.of(0, 0, NaN, 0),
+    lineOffsets: Uint32Array.of(0, 2),
+    referencePositions: Float32Array.of(0, 0, 4, 0, 6, 0)
+  };
+  const cpu = computeSegmentSnapOnCPU(input, props);
+  expect(Array.from(cpu.candidateOverflow)).toEqual([0]);
+  expect(Array.from(cpu.counts)).toEqual([0, 0, 0, 1]);
+  expect(Array.from(cpu.issueCode)).toEqual([2]);
+  expect(Array.from(cpu.validity)).toEqual([0]);
+  const mock = mockGridIndex();
+  const nodes = new GPUSegmentSnap(props).getCommandNodes(graph);
+  mock.mockRestore();
+  const memory = createCPUGraphMemory();
+  memory.write(props.positions, input.positions);
+  memory.write(props.lineOffsets, input.lineOffsets);
+  memory.write(props.referencePositions, input.referencePositions);
+  executeCommandNodesOnCPU(nodes, memory);
+  expect(Array.from(memory.readUint32(props.output.candidateOverflow))).toEqual([0]);
+  expect(Array.from(memory.readUint32(props.output.counts))).toEqual([0, 0, 0, 1]);
+  expect(Array.from(memory.readUint32(props.output.issueCode))).toEqual([2]);
+  expect(Array.from(memory.readUint32(props.output.validity))).toEqual([0]);
+});
 const device = createNullWebGPUDevice();
 afterAll(() => device.destroy());
 function createProps(graph: GPUCommandGraph, lines = 1, candidateCapacity = 16) {
@@ -44,6 +116,7 @@ function createProps(graph: GPUCommandGraph, lines = 1, candidateCapacity = 16) 
       sourceEdges: createTransientView(graph, 'edges', 'uint32', lines * 8),
       counts: createTransientView(graph, 'counts', 'uint32x4', lines),
       validity: createTransientView(graph, 'validity', 'uint32', lines),
+      issueCode: createTransientView(graph, 'issues', 'uint32', lines),
       candidateOverflow: createTransientView(graph, 'candidate-overflow', 'uint32', lines)
     }
   };
@@ -278,14 +351,15 @@ it('bounds every exhaustive overflow route and reports incomplete geometry on bo
   memory.write(props.lineOffsets, offsets);
   memory.write(props.referencePositions, references);
   executeCommandNodesOnCPU(nodes, memory);
-  expect(Array.from(memory.readUint32(props.output.counts))).toEqual([0, 0, 1, 0]);
-  expect(Array.from(memory.readUint32(props.output.validity))).toEqual([4]);
+  expect(Array.from(memory.readUint32(props.output.counts))).toEqual([0, 0, 0, 0]);
+  expect(Array.from(memory.readUint32(props.output.issueCode))).toEqual([4]);
+  expect(Array.from(memory.readUint32(props.output.validity))).toEqual([0]);
   expect(Array.from(memory.readUint32(props.output.candidateOverflow))).toEqual([1]);
   const cpu = computeSegmentSnapOnCPU(
     {positions, lineOffsets: offsets, referencePositions: references},
     props
   );
-  expect(Array.from(cpu.counts)).toEqual([0, 0, 1, 0]);
+  expect(Array.from(cpu.counts)).toEqual([0, 0, 0, 0]);
   expect(Array.from(cpu.candidateOverflow)).toEqual([1]);
 });
 

@@ -251,6 +251,9 @@ it('decodes hand-counted chain and island profiles and refuses every overflow co
     maximum: 2
   });
   // An even profile's median interpolates the middle two cardinalities, not a rounded rank.
+  expect(decodeGPUAnalysisContiguityStatistics({...values, validity: [2]})).toEqual(
+    decodeGPUAnalysisContiguityStatistics(values)
+  );
   expect(
     decodeGPUAnalysisContiguityStatistics({...values, counts: [6, 0, 0, 1, 2, 0], median: [1.5]})
   ).toMatchObject({exact: true, median: 1.5});
@@ -259,7 +262,7 @@ it('decodes hand-counted chain and island profiles and refuses every overflow co
   ).toMatchObject({exact: true, islands: 4, minimum: 0, median: 0, maximum: 0});
   for (const overflow of [0, 1]) {
     for (const candidateOverflow of [0, 1]) {
-      for (const validity of [0, 1]) {
+      for (const validity of [0, 1, 2]) {
         if (!overflow && !candidateOverflow && validity) continue;
         expect(
           decodeGPUAnalysisContiguityStatistics({

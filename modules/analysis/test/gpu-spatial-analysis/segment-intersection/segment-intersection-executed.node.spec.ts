@@ -71,8 +71,8 @@ function runOnCPU(
   const column = (name: string) => createTransientView(graph, name, 'uint32', capacity);
   const scalar = (name: string) => createTransientView(graph, name, 'uint32', 1);
   const view = {
-    leftIds: column('left-ids'),
-    rightIds: column('right-ids'),
+    leftRows: column('left-ids'),
+    rightRows: column('right-ids'),
     count: scalar('count'),
     overflow: scalar('overflow'),
     total: scalar('total'),
@@ -90,8 +90,8 @@ function runOnCPU(
     ...options,
     output: {
       pairs: {
-        leftIds: view.leftIds,
-        rightIds: view.rightIds,
+        leftRows: view.leftRows,
+        rightRows: view.rightRows,
         status: {count: view.count, overflow: view.overflow, requiredCount: view.total}
       },
       status: {uncertainCount: view.uncertain},
@@ -113,8 +113,8 @@ function runOnCPU(
     total: read(view.total),
     overflow: read(view.overflow),
     uncertain: read(view.uncertain),
-    left: words(view.leftIds),
-    right: words(view.rightIds),
+    left: words(view.leftRows),
+    right: words(view.rightRows),
     kind: words(view.kinds),
     leftFeature: words(view.leftFeatures),
     rightFeature: words(view.rightFeatures),

@@ -52,7 +52,7 @@ const OPERATION = 'GPUTerrainFlow';
  * fixpoint too, and the two paths give the same float32 values. This module computes it in four
  * stages without a length-dependent loop:
  *
- * 1. Tile fill. One workgroup per T x T tile (T = 32, or 16 when the device offers less than 12 KiB
+ * 1. Tile fill. One workgroup per T x T tile (T = 32, or 16 when the device offers less than 12,320 bytes
  *    of workgroup memory) fills the tile on its own, with every tile perimeter cell and every true
  *    boundary cell (grid edge, or next to an invalid cell) as an outlet that keeps its elevation.
  *    This yields L(c), the minimax elevation to an outlet of the tile. Then each cell takes as label
@@ -88,8 +88,8 @@ const OPERATION = 'GPUTerrainFlow';
 
 /** Edge length of the tile of stage 1 when workgroup memory allows it. @internal */
 const LARGE_TILE_SIZE = 32;
-/** Workgroup bytes of the 32 x 32 tile: key, label and category per cell plus two flags. @internal */
-const LARGE_TILE_WORKGROUP_BYTES = 3 * 4 * LARGE_TILE_SIZE * LARGE_TILE_SIZE + 8;
+/** Three aligned arrays plus two flags, each rounded to 16 bytes for the device limit. @internal */
+const LARGE_TILE_WORKGROUP_BYTES = 3 * 4 * LARGE_TILE_SIZE * LARGE_TILE_SIZE + 2 * 16;
 
 /** Gate slots of the mode gate. */
 const MODE_SLOT_TILES = 0;

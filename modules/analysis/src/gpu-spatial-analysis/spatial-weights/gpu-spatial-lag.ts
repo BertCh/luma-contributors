@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateSpatialStatisticsBindings} from './spatial-statistics-bindings';
+import {createSpatialWeightsSuppressionNodes} from './spatial-weights-suppression';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -69,8 +70,6 @@ export type GPUSpatialLagProps = {
    * each writing its rows of `output`, with the same per-row result as the whole matrix.
    */
   weights: GPUSpatialWeights | GPUChunkedSpatialWeights;
-  /** @internal First weights row when `weights` is one chunk of a chunked matrix (mask row base). */
-  rowStart?: number;
   /** Optional selection (`rows` entries): zero rows output 0 and zero neighbors are skipped. */
   mask?: GraphDataView<'uint32'>;
   /**
@@ -79,7 +78,7 @@ export type GPUSpatialLagProps = {
    * weight sum is zero output 0. Defaults to false.
    */
   normalize?: boolean;
-  /** Caller-owned lag output with `rows * columnCount` entries. */
+  /** Caller-owned lag output with `rows * columnCount` entries; NaN on either supplied neighborhood loss flag. */
   output: GraphDataView<'float32'>;
 };
 
@@ -98,7 +97,11 @@ export class GPUSpatialLag implements GPUCommandNodeProducer {
   /** Validated properties. */
   readonly props: GPUSpatialLagProps;
 
-  constructor(props: GPUSpatialLagProps) {
+  private readonly rowStart?: number;
+
+  constructor(props: GPUSpatialLagProps);
+  constructor(props: GPUSpatialLagProps, rowStart?: number) {
+    this.rowStart = rowStart;
     const id = props.id ?? 'spatial-lag';
     this.id = id;
     this.props = props;
@@ -132,7 +135,7 @@ export class GPUSpatialLag implements GPUCommandNodeProducer {
     }
     if (props.mask) {
       const maskRows = valueCount / columnCount;
-      if (props.rowStart === undefined ? maskRows !== rows : maskRows < rows) {
+      if (rowStart === undefined ? maskRows !== rows : maskRows < rows) {
         throw new Error(`${id} mask requires square weights`);
       }
       validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
@@ -179,22 +182,30 @@ export class GPUSpatialLag implements GPUCommandNodeProducer {
     ]);
     if (isGPUChunkedSpatialWeights(props.weights)) {
       // One lag per row chunk; the chunk's output is its slice of the caller's output.
-      return props.weights.chunks.flatMap((chunk, chunkIndex) =>
-        new GPUSpatialLag({
-          ...props,
-          id: `${id}-chunk${chunkIndex}`,
-          weights: chunk.weights,
-          rowStart: chunk.rowStart,
-          output: graph.createDataView(output.buffer, {
-            format: 'float32',
-            length: chunk.rowCount * columnCount,
-            byteOffset: output.byteOffset + chunk.rowStart * columnCount * 4
-          })
-        }).getCommandNodes(graph)
+      const nodes = props.weights.chunks.flatMap((chunk, chunkIndex) =>
+        (
+          Reflect.construct(GPUSpatialLag, [
+            {
+              ...props,
+              id: `${id}-chunk${chunkIndex}`,
+              weights: chunk.weights,
+              output: graph.createDataView(output.buffer, {
+                format: 'float32',
+                length: chunk.rowCount * columnCount,
+                byteOffset: output.byteOffset + chunk.rowStart * columnCount * 4
+              })
+            },
+            chunk.rowStart
+          ]) as GPUSpatialLag
+        ).getCommandNodes(graph)
       );
+      return [
+        ...nodes,
+        ...createSpatialWeightsSuppressionNodes(graph, id, OPERATION, props.weights, {output})
+      ];
     }
     const weights = props.weights;
-    const rowStart = props.rowStart;
+    const rowStart = this.rowStart;
     const rows = weights.offsets.length - 1;
     const valueRowCount = this.getValueRowCount();
     const values = createFloat32ValuesNodes(graph, `${id}-values`, props.values);
@@ -279,6 +290,9 @@ fn getLoadBalancedContribution(row: u32, item: u32, lane: u32) -> ${accumulatorT
         })
       );
     }
-    return nodes;
+    return [
+      ...nodes,
+      ...createSpatialWeightsSuppressionNodes(graph, id, OPERATION, props.weights, {output})
+    ];
   }
 }

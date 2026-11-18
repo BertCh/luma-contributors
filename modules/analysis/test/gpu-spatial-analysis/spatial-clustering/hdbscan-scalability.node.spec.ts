@@ -249,10 +249,15 @@ it('adds query lanes and tree rounds without adding distinct iterative pipelines
       coreDistanceSearch: 'neighbor-search'
     }).getCommandNodes(referenceGraph);
     for (const nodes of [small, large, timed, reference]) {
-      for (const [kernelId, source] of getParsedKernelSources(nodes)) {
+      const recordedKernelSources1 = getParsedKernelSources(nodes);
+      for (const {
+        id: kernelId,
+        source: source,
+        constants
+      } of recordedKernelSources1.configurations) {
         expect(getReservedWGSLIdentifiers(source), kernelId).toEqual([]);
         expect(getStorageBindingCount(source), kernelId).toBeLessThanOrEqual(8);
-        expect(getPrivateMemoryBytes(source), kernelId).toBeLessThanOrEqual(8192);
+        expect(getPrivateMemoryBytes(source, constants), kernelId).toBeLessThanOrEqual(8192);
       }
     }
   } finally {
@@ -422,7 +427,7 @@ it('bounds each reconstruction dispatch and keeps splice shader/pipeline counts 
       dendrogram: view('dendrogram', diagnosticRows * 6),
       spliceMaximumWork: view('maximum-work', 1)
     });
-    for (const [kernelId, source] of getParsedKernelSources(diagnostic.nodes)) {
+    for (const {id: kernelId, source} of getParsedKernelSources(diagnostic.nodes).configurations) {
       expect(getReservedWGSLIdentifiers(source), kernelId).toEqual([]);
       expect(getStorageBindingCount(source), kernelId).toBeLessThanOrEqual(8);
     }

@@ -40,11 +40,9 @@ it('3D neighborhoods and covariance match independent NumPy eigh on a translated
     fixture.graph.add(
       new GPUPointCloudNeighborhoods({
         positions: positions.view,
-        indices: indices.view,
-        squaredDistances: distances.view,
-        counts: counts.view,
         radius: 5,
-        capacity: 8
+        capacity: 8,
+        output: {indices: indices.view, squaredDistances: distances.view, counts: counts.view}
       })
     );
     fixture.graph.add(
@@ -52,12 +50,14 @@ it('3D neighborhoods and covariance match independent NumPy eigh on a translated
         positions: positions.view,
         indices: indices.view,
         counts: counts.view,
-        normals: normals.view,
-        eigenvalues: eigenvalues.view,
-        shapes: shapes.view,
-        status: status.view,
         capacity: 8,
-        covariance: covariance.view
+        output: {
+          normals: normals.view,
+          eigenvalues: eigenvalues.view,
+          shapes: shapes.view,
+          status: status.view,
+          covariance: covariance.view
+        }
       })
     );
     await fixture.run(2);
@@ -107,11 +107,9 @@ it('3D neighborhoods expose truncation, stable ties and collinear degeneracy', a
     fixture.graph.add(
       new GPUPointCloudNeighborhoods({
         positions: positions.view,
-        indices: indices.view,
-        squaredDistances: distances.view,
-        counts: counts.view,
         radius: 5,
-        capacity: 3
+        capacity: 3,
+        output: {indices: indices.view, squaredDistances: distances.view, counts: counts.view}
       })
     );
     fixture.graph.add(
@@ -119,11 +117,13 @@ it('3D neighborhoods expose truncation, stable ties and collinear degeneracy', a
         positions: positions.view,
         indices: indices.view,
         counts: counts.view,
-        normals: normals.view,
-        eigenvalues: eigenvalues.view,
-        shapes: shapes.view,
-        status: status.view,
-        capacity: 3
+        capacity: 3,
+        output: {
+          normals: normals.view,
+          eigenvalues: eigenvalues.view,
+          shapes: shapes.view,
+          status: status.view
+        }
       })
     );
     await fixture.run();
@@ -153,11 +153,9 @@ it('statistical filtering retains original rows and voxel downsampling keeps min
     fixture.graph.add(
       new GPUPointCloudNeighborhoods({
         positions: positions.view,
-        indices: indices.view,
-        squaredDistances: distances.view,
-        counts: counts.view,
         radius: 200,
-        capacity: 2
+        capacity: 2,
+        output: {indices: indices.view, squaredDistances: distances.view, counts: counts.view}
       })
     );
     fixture.graph.add(
@@ -166,8 +164,7 @@ it('statistical filtering retains original rows and voxel downsampling keeps min
         counts: counts.view,
         capacity: 2,
         standardDeviations: 1,
-        meanDistances: means.view,
-        validity: mask.view
+        output: {meanDistances: means.view, validity: mask.view}
       })
     );
     const representatives = fixture.view('uint32', new Uint32Array(2));
@@ -221,10 +218,12 @@ it('cell terrain/surface/canopy and HAG preserve negative heights and missing co
         positions: positions.view,
         classifications: classes.view,
         grid,
-        terrain: terrain.view,
-        surface: surface.view,
-        canopy: canopy.view,
-        coverage: coverage.view
+        output: {
+          terrain: terrain.view,
+          surface: surface.view,
+          canopy: canopy.view,
+          coverage: coverage.view
+        }
       })
     );
     fixture.graph.add(
@@ -234,8 +233,7 @@ it('cell terrain/surface/canopy and HAG preserve negative heights and missing co
         terrain: terrain.view,
         coverage: coverage.view,
         coverageBit: 2,
-        heights: heights.view,
-        status: status.view
+        output: {heights: heights.view, status: status.view}
       })
     );
     await fixture.run();
@@ -273,15 +271,13 @@ it('progressive morphology removes an elevated obstacle and reports edge support
         positions: positions.view,
         classifications: classes.view,
         grid: {origin: [0, 0], cellSize: 1, width: 7, height: 7},
-        minimumSurface: minimum.view,
-        coverage: coverage.view,
         radii: [1, 2],
         initialThreshold: 0.2,
         slope: 0.1,
         maximumThreshold: 1,
-        groundMask: ground.view,
-        outputClassifications: output.view,
-        status: status.view
+        minimumSurface: minimum.view,
+        coverage: coverage.view,
+        output: {groundMask: ground.view, outputClassifications: output.view, status: status.view}
       })
     );
     await fixture.run();
@@ -310,10 +306,12 @@ it('bounded rigid ICP matches independent NumPy SVD Kabsch and reports convergen
         target: target.view,
         maximumDistance: 1,
         iterations: 4,
-        transform: transform.view,
-        history: history.view,
-        inlierMask: mask.view,
-        status: status.view
+        output: {
+          transform: transform.view,
+          history: history.view,
+          inlierMask: mask.view,
+          status: status.view
+        }
       })
     );
     await fixture.run(2);
@@ -352,10 +350,12 @@ it('ICP reports insufficient correspondences rather than a zero-error success', 
         target: target.view,
         maximumDistance: 1,
         iterations: 1,
-        transform: transform.view,
-        history: history.view,
-        inlierMask: mask.view,
-        status: status.view
+        output: {
+          transform: transform.view,
+          history: history.view,
+          inlierMask: mask.view,
+          status: status.view
+        }
       })
     );
     await fixture.run();
@@ -395,10 +395,12 @@ it('cylindrical surface change matches analytic roughness/CI and reverses signed
         radius: 1,
         halfDepth: 2,
         registrationError: 0.02,
-        changes: changes.view,
-        roughness: roughness.view,
-        counts: counts.view,
-        status: status.view
+        output: {
+          changes: changes.view,
+          roughness: roughness.view,
+          counts: counts.view,
+          status: status.view
+        }
       })
     );
     await fixture.run();
@@ -452,10 +454,12 @@ it('ICP distinguishes iteration exhaustion, supplied alignment and underdetermin
           initialTransform: scenario.initialTransform,
           maximumDistance: 1,
           iterations: 1,
-          transform: transform.view,
-          history: history.view,
-          inlierMask: mask.view,
-          status: status.view
+          output: {
+            transform: transform.view,
+            history: history.view,
+            inlierMask: mask.view,
+            status: status.view
+          }
         })
       );
       await fixture.run();
@@ -496,10 +500,12 @@ it('surface change applies a supplied resident comparison-to-reference alignment
         alignment: {transform: transform.view},
         radius: 1,
         halfDepth: 2,
-        changes: changes.view,
-        roughness: roughness.view,
-        counts: counts.view,
-        status: status.view
+        output: {
+          changes: changes.view,
+          roughness: roughness.view,
+          counts: counts.view,
+          status: status.view
+        }
       })
     );
     await fixture.run();

@@ -13,6 +13,44 @@ import {getGPUTrajectoryStaypointsParameterValues} from '../../../src/gpu-spatia
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 
+it('both staypoint forms split an explicitly bounded stationary search', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const Operation of [GPUTrajectoryStaypointsOperation, CPUTrajectoryStaypointsOperation]) {
+    const result = await runOperationGraph(device, {
+      inputs: {
+        positions: {format: 'float32x2', values: new Float32Array(8)},
+        timestamps: {format: 'float32', values: Float32Array.of(0, 1, 2, 3)},
+        offsets: {format: 'uint32', values: Uint32Array.of(0, 4)},
+        parameters: {format: 'float32', values: Float32Array.of(1, 1, 0, 1)}
+      },
+      operations: [
+        new Operation({
+          positions: 'positions',
+          timestamps: 'timestamps',
+          trackOffsets: 'offsets',
+          parameters: 'parameters',
+          rowCount: 4,
+          capacity: 2,
+          maximumSearchRows: 1,
+          output: {
+            ids: 'ids',
+            startRows: 'starts',
+            finishRows: 'finishes',
+            status: {count: 'count', overflow: 'overflow', candidateOverflow: 'candidate'}
+          }
+        })
+      ],
+      outputs: ['starts', 'finishes', 'count', 'candidate', 'overflow']
+    });
+    expect(Array.from(result['starts'])).toEqual([0, 2]);
+    expect(Array.from(result['finishes'])).toEqual([2, 3]);
+    expect(Array.from(result['count'])).toEqual([2]);
+    expect(Array.from(result['candidate'])).toEqual([1]);
+    expect(Array.from(result['overflow'])).toEqual([0]);
+  }
+});
+
 for (const scenario of [
   'ordinary',
   'overflow',

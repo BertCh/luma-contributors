@@ -7,6 +7,7 @@ import {
   type GPUContributorOperationOutput
 } from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUKShortestPaths, type GPUKShortestPathsProps} from './gpu-k-shortest-paths';
+import {getGPUKShortestPathsOutputLayout} from './k-shortest-paths-output';
 
 /** Graph-value form of GPUKShortestPaths. counts has queryCount rows; status names map to batch scalars. */
 export type KShortestPathsOperationProps = Omit<
@@ -35,25 +36,28 @@ export type KShortestPathsOperationProps = Omit<
 /** Vector graph operation; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUKShortestPathsOperation extends GPUContributorOperation {
   constructor(props: KShortestPathsOperationProps) {
+    const id = props.id ?? 'k-shortest-paths';
+    const queryCount = props.queryCount;
+    const routeCount = props.routeCount;
+    const maximumPathLength = props.maximumPathLength ?? 64;
+    const candidateCapacity = props.candidateCapacity;
+    const maximumIterations = props.maximumIterations;
     const outputs: Record<string, GPUContributorOperationOutput> = {};
-    const pathLength = props.maximumPathLength ?? 64;
-    for (const [port, value] of Object.entries({...props.output, ...props.output.status})) {
-      if (port === 'status') continue;
+    const {status: statusLayout, ...columnLayout} = getGPUKShortestPathsOutputLayout({
+      id,
+      queryCount,
+      routeCount,
+      maximumPathLength
+    });
+    const outputByName = {...props.output, ...props.output.status};
+    for (const [port, descriptor] of Object.entries({...columnLayout, ...statusLayout})) {
       outputs[port] = {
-        value: value as string,
-        format: port === 'costs' ? 'float32' : 'uint32',
-        length:
-          port === 'vertices' || port === 'edges'
-            ? props.queryCount * props.routeCount * pathLength
-            : port === 'lengths' || port === 'costs'
-              ? props.queryCount * props.routeCount
-              : port === 'counts'
-                ? props.queryCount
-                : 1
+        value: outputByName[port as keyof typeof outputByName] as string,
+        ...descriptor
       };
     }
     super({
-      id: props.id ?? 'k-shortest-paths',
+      id,
       inputs: {
         offsets: props.topology.offsets,
         neighbors: props.topology.neighbors,
@@ -67,7 +71,11 @@ export class GPUKShortestPathsOperation extends GPUContributorOperation {
       outputs,
       createContributor: getView =>
         new GPUKShortestPaths({
-          ...props,
+          id,
+          routeCount,
+          maximumPathLength,
+          candidateCapacity,
+          maximumIterations,
           topology: {
             offsets: getView<'uint32'>('offsets'),
             neighbors: getView<'uint32'>('neighbors'),

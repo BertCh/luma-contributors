@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
-import {LON_LAT_RING_WGSL} from '../../analysis-core/lon-lat-ring-wgsl';
+import {LON_LAT_RING_WGSL} from '../../analysis-core/kernels/lon-lat-ring-wgsl';
 import {dggs} from '@luma.gl/shaders';
 import {
   EXACT_GEOMETRY_WGSL,

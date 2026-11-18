@@ -10,6 +10,8 @@ export {
 export type {
   GPUHotSpotAnalysisRecipeProps,
   GPUHotSpotAnalysisRecipeResult,
+  GPUHotSpotAnalysisRecipeOutputs,
+  GPUHotSpotAnalysisRecipeIntermediates,
   GPUHotSpotAnalysisRecipeSettings,
   GPUHotSpotColorOptions,
   GPUHotSpotLatticeSource,
@@ -28,6 +30,8 @@ export {
 export type {
   GPURateClusterMapRecipeProps,
   GPURateClusterMapRecipeResult,
+  GPURateClusterMapRecipeOutputs,
+  GPURateClusterMapRecipeIntermediates,
   GPURateClusterMapRecipeSettings,
   GPURateClusterMapRate
 } from './rate-cluster-map-recipe';
@@ -43,6 +47,7 @@ export {
 export type {
   GPUSpatialRegressionRecipeProps,
   GPUSpatialRegressionRecipeResult,
+  GPUSpatialRegressionRecipeOutputs,
   GPUSpatialRegressionRecipeSettings,
   GPUSpatialRegressionLocalFitOptions
 } from './spatial-regression-recipe';
@@ -55,6 +60,8 @@ export {
 export type {
   GPUSpaceTimeHotSpotsRecipeProps,
   GPUSpaceTimeHotSpotsRecipeResult,
+  GPUSpaceTimeHotSpotsRecipeOutputs,
+  GPUSpaceTimeHotSpotsRecipeIntermediates,
   GPUSpaceTimeHotSpotsRecipeSettings,
   GPUSpaceTimeSlices,
   GPUSpaceTimeCellIds,
@@ -66,6 +73,8 @@ export {addPeriodComparisonRecipe} from './period-comparison-recipe';
 export type {
   GPUPeriodComparisonRecipeProps,
   GPUPeriodComparisonRecipeResult,
+  GPUPeriodComparisonRecipeOutputs,
+  GPUPeriodComparisonRecipeIntermediates,
   GPUPeriodRows,
   GPUPeriodComparisonVariable
 } from './period-comparison-recipe';
@@ -75,32 +84,43 @@ export type {
   GPUChoroplethPolygons,
   GPUChoroplethStatistic,
   GPUPointsInPolygonsChoroplethRecipeProps,
-  GPUPointsInPolygonsChoroplethRecipeResult
+  GPUPointsInPolygonsChoroplethRecipeResult,
+  GPUPointsInPolygonsChoroplethRecipeOutputs
 } from './points-in-polygons-choropleth-recipe';
 export {addClusterAndOutlineRecipe} from './cluster-and-outline-recipe';
 export type {
   GPUClusterAndOutlineRecipeProps,
-  GPUClusterAndOutlineRecipeResult
+  GPUClusterAndOutlineRecipeResult,
+  GPUClusterAndOutlineRecipeOutputs,
+  GPUClusterAndOutlineRecipeIntermediates
 } from './cluster-and-outline-recipe';
 export {addChangeOfSupportRecipe} from './change-of-support-recipe';
 export type {
   GPUChangeOfSupportRecipeProps,
   GPUChangeOfSupportRecipeResult,
+  GPUChangeOfSupportRecipeOutputs,
+  GPUChangeOfSupportRecipeIntermediates,
   GPUChangeOfSupportZones
 } from './change-of-support-recipe';
 export {addStraightLineCatchmentsRecipe} from './straight-line-catchments-recipe';
 export type {
   GPUStraightLineCatchmentsRecipeProps,
-  GPUStraightLineCatchmentsRecipeResult
+  GPUStraightLineCatchmentsRecipeResult,
+  GPUStraightLineCatchmentsRecipeOutputs
 } from './straight-line-catchments-recipe';
 export {addFleetDwellRecipe, addFleetDwellZoneEventsRecipe} from './fleet-dwell-recipe';
 export type {
   GPUFleetDwellPolygonZones,
   GPUFleetDwellRecipeProps,
   GPUFleetDwellRecipeResult,
+  GPUFleetDwellRecipeOutputs,
+  GPUFleetDwellRecipeIntermediates,
   GPUFleetDwellTrajectories,
   GPUFleetDwellZoneEventsRecipeProps,
   GPUFleetDwellZoneEventsRecipeResult,
+  GPUFleetDwellZoneEventsRecipeOutputs,
+  GPUFleetDwellZoneEventsRecipeIntermediates,
+  GPUFleetDwellZoneEventsTrajectories,
   GPUFleetDwellZoneTable,
   GPUFleetDwellZoneTableViews
 } from './fleet-dwell-recipe';

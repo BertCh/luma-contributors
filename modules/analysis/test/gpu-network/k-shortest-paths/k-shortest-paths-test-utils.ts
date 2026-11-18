@@ -25,6 +25,69 @@ export function getFixtureInput(fixture: Fixture): CPUKShortestPathsInput {
   };
 }
 
+/** An overlong first spur precedes a second spur whose 66-hop search interrupts the batch. */
+export function getSpurInterruptionInput(): CPUKShortestPathsInput {
+  const edges = [
+    [0, 1],
+    [1, 2],
+    [0, 3],
+    [3, 4],
+    [4, 2],
+    [1, 5],
+    [71, 73],
+    [71, 72],
+    [72, 73]
+  ];
+  for (let node = 5; node < 70; node++) edges.push([node, node + 1]);
+  for (let node = 12; node <= 68; node += 8) edges.push([0, node]);
+  edges.sort((first, second) => first[0] - second[0]);
+  const offsets = new Uint32Array(75);
+  for (const [source] of edges) offsets[source + 1]++;
+  for (let node = 1; node < offsets.length; node++) offsets[node] += offsets[node - 1];
+  return {
+    topology: {
+      offsets,
+      neighbors: Uint32Array.from(edges, edge => edge[1]),
+      weights: new Float32Array(edges.length).fill(1)
+    },
+    sources: Uint32Array.of(0, 71),
+    targets: Uint32Array.of(2, 73)
+  };
+}
+
+/** Two valid alternatives fill a one-slot pool before the final spur's search interrupts. */
+export function getCandidateSpurInterruptionInput(): CPUKShortestPathsInput {
+  const edges = [
+    [0, 1],
+    [1, 2],
+    [2, 3],
+    [0, 4],
+    [4, 5],
+    [5, 3],
+    [1, 6],
+    [6, 3],
+    [2, 7],
+    [73, 75],
+    [73, 74],
+    [74, 75]
+  ];
+  for (let node = 7; node < 72; node++) edges.push([node, node + 1]);
+  for (let node = 14; node <= 70; node += 8) edges.push([0, node]);
+  edges.sort((first, second) => first[0] - second[0]);
+  const offsets = new Uint32Array(77);
+  for (const [source] of edges) offsets[source + 1]++;
+  for (let node = 1; node < offsets.length; node++) offsets[node] += offsets[node - 1];
+  return {
+    topology: {
+      offsets,
+      neighbors: Uint32Array.from(edges, edge => edge[1]),
+      weights: new Float32Array(edges.length).fill(1)
+    },
+    sources: Uint32Array.of(0, 73),
+    targets: Uint32Array.of(3, 75)
+  };
+}
+
 /** Declaration-only graph, also usable as a kernel-audit builder. */
 export function setupKShortestPaths(
   options: {

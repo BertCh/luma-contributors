@@ -28,7 +28,7 @@ import {
 import {
   validateRasterCellSizeMode,
   type GPURasterCellSizeMode
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 import {createRasterCountNodes} from '../../raster-analysis/remote-sensing/raster-kernel-utils';
 import {
   validateRasterGrid,
@@ -93,11 +93,13 @@ export type GPUTerrainBranchingFlowProps = {
   };
 };
 
+// Construction-time shader facts remain private to this module and internal composition.
+const distanceDeclarationsByContributor = new WeakMap<GPUTerrainBranchingFlow, string>();
+
 /** Deterministic DAG pulls with atomic value/readiness publication and GPU-gated successor walks. */
 export class GPUTerrainBranchingFlow implements GPUCommandNodeProducer {
   readonly id: string;
   readonly estimatedCommandNodeCount: number;
-  private readonly distanceDeclarations: string;
   constructor(readonly props: GPUTerrainBranchingFlowProps) {
     this.id = props.id ?? 'terrain-branching-flow';
     const count = validateRasterGrid(this.id, props.grid);
@@ -116,7 +118,7 @@ export class GPUTerrainBranchingFlow implements GPUCommandNodeProducer {
         );
       }
     }
-    this.distanceDeclarations = distanceDeclarations;
+    distanceDeclarationsByContributor.set(this, distanceDeclarations);
     validateViewLength(this.id, 'fractions', props.fractions, count * 8);
     validateViewLength(this.id, 'values', props.values, count);
     if (props.edgeLengths) {
@@ -162,57 +164,62 @@ export class GPUTerrainBranchingFlow implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    return this.getCommandNodesWithIterationStatus(graph).nodes;
+    return getTerrainBranchingFlowNodes(graph, this).nodes;
   }
+}
 
-  /** Returns the graph-owned gate status alongside the nodes for terrain composition. @internal */
-  getCommandNodesWithIterationStatus<Parameters>(graph: GPUCommandGraph<Parameters>): {
-    nodes: readonly GPUCommandNode<Parameters>[];
-    /** [changed, enabled, executed iteration count, stopped because no progress]. */
-    iterationStatus: GraphDataView<'uint32'>;
-  } {
-    const {props, id} = this;
-    const count = props.values.length;
-    validateGraphViewsBelongToGraph(id, graph, [props.edgeLengths]);
-    checkTerrainGraph(id, graph, [
-      props.fractions,
-      props.values,
-      ...(this.props.mode !== 'transport' &&
-      this.props.mode !== 'fractional-catchment' &&
-      props.edgeLengths
-        ? [props.edgeLengths]
-        : []),
-      ...(props.validity ? [props.validity] : []),
-      ...Object.values(props.output)
-    ]);
-    validateTerrainBranchingFlowScratch(
-      graph,
-      id,
-      count,
-      props.maximumIterations ?? clamp(props.grid.width + props.grid.height, 128, 1024)
-    );
-    const masked = createTerrainValidityMask(graph, {
-      id,
+/** Builds the validated contributor with private gate status for resident terrain composition. @internal */
+export function createTerrainBranchingFlowNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUTerrainBranchingFlowProps
+): {nodes: readonly GPUCommandNode<Parameters>[]; iterationStatus: GraphDataView<'uint32'>} {
+  return getTerrainBranchingFlowNodes(graph, new GPUTerrainBranchingFlow(props));
+}
+
+function getTerrainBranchingFlowNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  contributor: GPUTerrainBranchingFlow
+): {nodes: readonly GPUCommandNode<Parameters>[]; iterationStatus: GraphDataView<'uint32'>} {
+  const {props, id} = contributor;
+  const count = props.values.length;
+  validateGraphViewsBelongToGraph(id, graph, [props.edgeLengths]);
+  checkTerrainGraph(id, graph, [
+    props.fractions,
+    props.values,
+    ...(props.mode !== 'transport' && props.mode !== 'fractional-catchment' && props.edgeLengths
+      ? [props.edgeLengths]
+      : []),
+    ...(props.validity ? [props.validity] : []),
+    ...Object.values(props.output)
+  ]);
+  validateTerrainBranchingFlowScratch(
+    graph,
+    id,
+    count,
+    props.maximumIterations ?? clamp(props.grid.width + props.grid.height, 128, 1024)
+  );
+  const masked = createTerrainValidityMask(graph, {
+    id,
+    operation: 'GPUTerrainBranchingFlow',
+    values: props.values,
+    validity: props.validity
+  });
+  const state = createTransientView(graph, `${id}-state`, 'uint32', count);
+  const iterationState = createRasterIterationState(graph, id, 'GPUTerrainBranchingFlow', count);
+  const declarations = `${getTerrainFlowTracingWGSL(props.grid.width, props.grid.height)}\n${TERRAIN_FINITE_WGSL}`;
+  const nodes: GPUCommandNode<Parameters>[] = [
+    ...masked.nodes,
+    createWGSLKernelNode(graph, {
+      id: `${id}-initialize`,
       operation: 'GPUTerrainBranchingFlow',
-      values: props.values,
-      validity: props.validity
-    });
-    const state = createTransientView(graph, `${id}-state`, 'uint32', count);
-    const iterationState = createRasterIterationState(graph, id, 'GPUTerrainBranchingFlow', count);
-    const declarations = `${getTerrainFlowTracingWGSL(props.grid.width, props.grid.height)}\n${TERRAIN_FINITE_WGSL}`;
-    const nodes: GPUCommandNode<Parameters>[] = [
-      ...masked.nodes,
-      createWGSLKernelNode(graph, {
-        id: `${id}-initialize`,
-        operation: 'GPUTerrainBranchingFlow',
-        invocationCount: count,
-        bindings: [
-          terrainBinding('fractions', props.fractions),
-          terrainBinding('source', masked.values),
-          terrainBinding('state', state, 'read_write')
-        ],
-        declarations,
-        body: `var valid = isFiniteValue(source[sourceOffset + index]) && source[sourceOffset + index] >= 0.0;
+      invocationCount: count,
+      bindings: [
+        terrainBinding('fractions', props.fractions),
+        terrainBinding('source', masked.values),
+        terrainBinding('state', state, 'read_write')
+      ],
+      declarations,
+      body: `var valid = isFiniteValue(source[sourceOffset + index]) && source[sourceOffset + index] >= 0.0;
 var total = 0.0;
 for (var direction = 0u; direction < 8u; direction++) {
  let fraction = fractions[fractionsOffset + index * 8u + direction];
@@ -223,14 +230,14 @@ for (var direction = 0u; direction < 8u; direction++) {
 valid = valid && (total == 0.0 || abs(total - 1.0) <= 0.00001);
 ${props.mode === 'fractional-catchment' ? 'valid = valid && source[sourceOffset + index] <= 1.0;' : ''}
 state[stateOffset + index] = select(0xfffffffeu, 0xffffffffu, valid);`
-      })
-    ];
-    const transport = props.mode === 'transport';
-    const measureDistances = !transport && props.mode !== 'fractional-catchment';
-    const lengths =
-      measureDistances && props.edgeLengths ? [terrainBinding('lengths', props.edgeLengths)] : [];
-    const solveDeclarations = `${declarations}
-${this.distanceDeclarations}
+    })
+  ];
+  const transport = props.mode === 'transport';
+  const measureDistances = !transport && props.mode !== 'fractional-catchment';
+  const lengths =
+    measureDistances && props.edgeLengths ? [terrainBinding('lengths', props.edgeLengths)] : [];
+  const solveDeclarations = `${declarations}
+${distanceDeclarationsByContributor.get(contributor)!}
 const WAITING: u32 = 0xffffffffu;
 const INVALID: u32 = 0xfffffffeu;
 fn tryFinalize(cell: u32) -> bool {
@@ -274,43 +281,43 @@ if (!ready) { return false; }
  }
  return false;
 }`;
-    nodes.push(
-      createRasterIterationResetNode(graph, {
-        id: `${id}-reset`,
-        operation: 'GPUTerrainBranchingFlow',
-        state: iterationState
-      })
-    );
-    nodes.push(
-      ...createRasterGatedLoopNodes<Parameters>(graph, {
-        id: `${id}-solve`,
-        operation: 'GPUTerrainBranchingFlow',
-        state: iterationState,
-        maxIterations:
-          props.maximumIterations ?? clamp(props.grid.width + props.grid.height, 128, 1024),
-        createRound: ({nodeId, slotBinding, markChangedWGSL, condition, extraResources}) =>
-          createWGSLKernelNode(graph, {
-            id: nodeId,
-            operation: 'GPUTerrainBranchingFlow',
-            variant: props.mode,
-            invocationCount: count,
-            bindings: [
-              terrainBinding('fractions', props.fractions),
-              terrainBinding('source', masked.values),
-              {name: 'state', view: state, type: 'atomic<u32>', access: 'read_write'},
-              ...lengths,
-              {
-                name: 'status',
-                view: iterationState.status,
-                type: 'atomic<u32>',
-                access: 'read_write'
-              },
-              slotBinding
-            ],
-            declarations: solveDeclarations,
-            condition,
-            extraResources,
-            body: `var current = index;
+  nodes.push(
+    createRasterIterationResetNode(graph, {
+      id: `${id}-reset`,
+      operation: 'GPUTerrainBranchingFlow',
+      state: iterationState
+    })
+  );
+  nodes.push(
+    ...createRasterGatedLoopNodes<Parameters>(graph, {
+      id: `${id}-solve`,
+      operation: 'GPUTerrainBranchingFlow',
+      state: iterationState,
+      maxIterations:
+        props.maximumIterations ?? clamp(props.grid.width + props.grid.height, 128, 1024),
+      createRound: ({nodeId, slotBinding, markChangedWGSL, condition, extraResources}) =>
+        createWGSLKernelNode(graph, {
+          id: nodeId,
+          operation: 'GPUTerrainBranchingFlow',
+          variant: props.mode,
+          invocationCount: count,
+          bindings: [
+            terrainBinding('fractions', props.fractions),
+            terrainBinding('source', masked.values),
+            {name: 'state', view: state, type: 'atomic<u32>', access: 'read_write'},
+            ...lengths,
+            {
+              name: 'status',
+              view: iterationState.status,
+              type: 'atomic<u32>',
+              access: 'read_write'
+            },
+            slotBinding
+          ],
+          declarations: solveDeclarations,
+          condition,
+          extraResources,
+          body: `var current = index;
 var changed = tryFinalize(current);
 var published = changed;
 for (var step = 0u; step < ${props.maximumWalkLength ?? 32}u && changed; step++) {
@@ -324,34 +331,33 @@ for (var step = 0u; step < ${props.maximumWalkLength ?? 32}u && changed; step++)
  current = successor; changed = successor != NO_CELL;
 }
 if (published) { ${markChangedWGSL} }`
-          })
-      })
-    );
-    nodes.push(
-      createWGSLKernelNode(graph, {
-        id: `${id}-publish`,
-        operation: 'GPUTerrainBranchingFlow',
-        invocationCount: count,
-        bindings: [
-          terrainBinding('state', state),
-          terrainBinding('values', props.output.values, 'read_write'),
-          terrainBinding('status', props.output.status, 'read_write')
-        ],
-        declarations: TERRAIN_FINITE_WGSL,
-        body: `let bits = state[stateOffset + index];
+        })
+    })
+  );
+  nodes.push(
+    createWGSLKernelNode(graph, {
+      id: `${id}-publish`,
+      operation: 'GPUTerrainBranchingFlow',
+      invocationCount: count,
+      bindings: [
+        terrainBinding('state', state),
+        terrainBinding('values', props.output.values, 'read_write'),
+        terrainBinding('status', props.output.status, 'read_write')
+      ],
+      declarations: TERRAIN_FINITE_WGSL,
+      body: `let bits = state[stateOffset + index];
 let statusValue = select(select(1u, 0u, bits == 0xfffffffeu), 2u, bits == 0xffffffffu);
 status[statusOffset + index] = statusValue;
 values[valuesOffset + index] = select(getNaN(), bitcast<f32>(bits), statusValue == 1u);`
-      }),
-      ...createRasterCountNodes(graph, {
-        id: `${id}-status`,
-        operation: 'GPUTerrainBranchingFlow',
-        values: props.output.status,
-        count,
-        condition: 'value != 1u',
-        output: props.output.unresolvedCount
-      })
-    );
-    return {nodes, iterationStatus: iterationState.status};
-  }
+    }),
+    ...createRasterCountNodes(graph, {
+      id: `${id}-status`,
+      operation: 'GPUTerrainBranchingFlow',
+      values: props.output.status,
+      count,
+      condition: 'value != 1u',
+      output: props.output.unresolvedCount
+    })
+  );
+  return {nodes, iterationStatus: iterationState.status};
 }

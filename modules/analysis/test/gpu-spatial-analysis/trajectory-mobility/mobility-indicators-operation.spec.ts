@@ -9,6 +9,187 @@ import {GPUMobilityIndicatorsOperation} from '../../../src/gpu-spatial-analysis/
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {getMobilityFixture, getMobilityProps} from './mobility-indicators-operation-fixture';
+import {GPUTrajectoryStaypointsOperation} from '../../../src/gpu-spatial-analysis/trajectory-staypoints/gpu-trajectory-staypoints-operation';
+import {CPUTrajectoryStaypointsOperation} from '../../../src/gpu-spatial-analysis/trajectory-staypoints/cpu-trajectory-staypoints-operation';
+
+it('suppresses truncated staypoint compositions and recovers complete indicators in both forms', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const [Staypoints, Mobility] of [
+    [GPUTrajectoryStaypointsOperation, GPUMobilityIndicatorsOperation],
+    [CPUTrajectoryStaypointsOperation, CPUMobilityIndicatorsOperation]
+  ] as const) {
+    for (const coordinates of [
+      [0, 10, 20],
+      [0, 0, 10, 10, 20, 20]
+    ]) {
+      const total = coordinates.length === 3 ? 2 : 3;
+      for (const capacity of [total - 1, total]) {
+        const props = {
+          ...getMobilityProps(),
+          trackCount: 1,
+          rowCount: coordinates.length,
+          staypointCapacity: capacity,
+          triplegs: undefined,
+          staypoints: {
+            tracks: 'stayTracks',
+            centroids: 'centroids',
+            startRows: 'stayStartRows',
+            durations: 'durations',
+            locationIds: 'locationIds',
+            status: {
+              count: 'stayCount',
+              overflow: 'stayOverflow',
+              candidateOverflow: 'stayCandidateOverflow'
+            }
+          },
+          output: {
+            radiusOfGyration: 'radiusOfGyration',
+            randomEntropy: 'randomEntropy',
+            homeLocations: 'homeLocations',
+            workLocations: 'workLocations',
+            realEntropy: 'realEntropy',
+            jumpLengths: 'jumpLengths',
+            waitingTimes: 'waitingTimes',
+            uncorrelatedEntropy: 'uncorrelatedEntropy',
+            status: {candidateOverflow: 'indicatorCandidateOverflow'}
+          }
+        };
+        const indicator = new Mobility(props);
+        delete (props.staypoints.status as {overflow?: string}).overflow;
+        delete (props.staypoints.status as {candidateOverflow?: string}).candidateOverflow;
+        const result = await runOperationGraph(device, {
+          inputs: {
+            positions: {
+              format: 'float32x2',
+              values: Float32Array.from(coordinates.flatMap(x => [x, 0]))
+            },
+            timestamps: {
+              format: 'float32',
+              values: Float32Array.from(coordinates, (_, row) => row)
+            },
+            trackOffsets: {format: 'uint32', values: Uint32Array.of(0, coordinates.length)},
+            parameters: {format: 'float32', values: Float32Array.of(1, 1, 0, Number(total === 3))},
+            locationIds: {
+              format: 'uint32',
+              values: Uint32Array.from({length: capacity}, (_, row) => row)
+            }
+          },
+          operations: [
+            new Staypoints({
+              positions: 'positions',
+              timestamps: 'timestamps',
+              trackOffsets: 'trackOffsets',
+              parameters: 'parameters',
+              rowCount: coordinates.length,
+              capacity,
+              maximumSearchRows: 8,
+              output: {
+                ids: 'stayTracks',
+                centroids: 'centroids',
+                startRows: 'stayStartRows',
+                durations: 'durations',
+                status: {
+                  count: 'stayCount',
+                  requiredCount: 'stayRequiredCount',
+                  overflow: 'stayOverflow',
+                  candidateOverflow: 'stayCandidateOverflow'
+                }
+              }
+            }),
+            indicator
+          ],
+          outputs: [
+            'stayCount',
+            'stayRequiredCount',
+            'stayOverflow',
+            'indicatorCandidateOverflow',
+            'radiusOfGyration',
+            'randomEntropy',
+            'realEntropy',
+            'homeLocations',
+            'workLocations',
+            'jumpLengths',
+            'waitingTimes',
+            'uncorrelatedEntropy'
+          ]
+        });
+        expect(result['stayCount'][0]).toBe(capacity);
+        expect(result['stayRequiredCount'][0]).toBe(total);
+        expect(result['stayOverflow'][0]).toBe(Number(capacity < total));
+        expect(result['indicatorCandidateOverflow'][0]).toBe(Number(capacity < total));
+        if (capacity < total) {
+          for (const port of [
+            'radiusOfGyration',
+            'randomEntropy',
+            'realEntropy',
+            'jumpLengths',
+            'waitingTimes',
+            'uncorrelatedEntropy'
+          ]) {
+            expect(Array.from(result[port])).toEqual(new Array(result[port].length).fill(NaN));
+          }
+          expect(Array.from(result['homeLocations'])).toEqual([0xffffffff]);
+          expect(Array.from(result['workLocations'])).toEqual([0xffffffff]);
+        } else {
+          expect(result['radiusOfGyration'][0]).toBeCloseTo(
+            total === 2 ? 5 : Math.sqrt(200 / 3),
+            5
+          );
+          expect(result['randomEntropy'][0]).toBeCloseTo(Math.log2(total), 6);
+        }
+      }
+    }
+  }
+});
+
+it('suppresses tracking quality for either supplied tripleg loss flag', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = getMobilityFixture();
+  for (const Operation of [GPUMobilityIndicatorsOperation, CPUMobilityIndicatorsOperation]) {
+    for (const [overflow, candidateOverflow] of [
+      [1, 0],
+      [0, 1],
+      [0, 0]
+    ]) {
+      const props = getMobilityProps();
+      props.triplegs!.status.overflow = 'triplegOverflow';
+      props.triplegs!.status.candidateOverflow = 'triplegCandidateOverflow';
+      props.output = {trackingQuality: 'trackingQuality'};
+      const operation = new Operation(props);
+      delete props.triplegs!.status.overflow;
+      delete props.triplegs!.status.candidateOverflow;
+      const result = await runOperationGraph(device, {
+        inputs: {
+          timestamps: {format: 'float32', values: fixture.timestamps},
+          stayTracks: {format: 'uint32', values: fixture.staypoints.tracks},
+          centroids: {format: 'float32x2', values: fixture.staypoints.centroids},
+          stayStartRows: {format: 'uint32', values: fixture.staypoints.startRows},
+          durations: {format: 'float32', values: fixture.staypoints.durations},
+          locationIds: {format: 'uint32', values: fixture.staypoints.locationIds},
+          stayCount: {format: 'uint32', values: fixture.staypoints.count},
+          triplegTracks: {format: 'uint32', values: fixture.triplegs.tracks},
+          triplegStartRows: {format: 'uint32', values: fixture.triplegs.startRows},
+          triplegEndRows: {format: 'uint32', values: fixture.triplegs.endRows},
+          triplegCount: {format: 'uint32', values: fixture.triplegs.count},
+          stayFinishRows: {format: 'uint32', values: fixture.triplegs.staypointFinishRows},
+          triplegOverflow: {format: 'uint32', values: Uint32Array.of(overflow)},
+          triplegCandidateOverflow: {format: 'uint32', values: Uint32Array.of(candidateOverflow)}
+        },
+        operations: [operation],
+        outputs: ['trackingQuality']
+      });
+      if (overflow || candidateOverflow)
+        expect(Array.from(result['trackingQuality'])).toEqual([NaN, NaN, NaN]);
+      else {
+        expect(result['trackingQuality'][0]).toBeCloseTo(0.8, 6);
+        expect(result['trackingQuality'][1]).toBeCloseTo(9 / 13, 6);
+        expect(result['trackingQuality'][2]).toBe(0);
+      }
+    }
+  }
+});
 
 for (const [spatialContext, expectedError] of [
   [{coordinateSpace: 'planar', metric: 'native'}, undefined],

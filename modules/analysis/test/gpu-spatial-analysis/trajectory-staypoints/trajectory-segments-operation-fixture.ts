@@ -87,7 +87,8 @@ export function getSegmentsProps(
         status: {
           count: 'triplegCount',
           requiredCount: 'triplegRequiredCount',
-          overflow: 'triplegOverflow'
+          overflow: 'triplegOverflow',
+          candidateOverflow: 'triplegCandidateOverflow'
         }
       },
       trips: {
@@ -97,7 +98,12 @@ export function getSegmentsProps(
         originStaypoints: 'originStaypoints',
         destinationStaypoints: 'destinationStaypoints',
         triplegTripIds: 'triplegTripIds',
-        status: {count: 'tripCount', requiredCount: 'tripRequiredCount', overflow: 'tripOverflow'}
+        status: {
+          count: 'tripCount',
+          requiredCount: 'tripRequiredCount',
+          overflow: 'tripOverflow',
+          candidateOverflow: 'tripCandidateOverflow'
+        }
       }
     }
   };

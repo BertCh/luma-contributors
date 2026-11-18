@@ -37,6 +37,10 @@ export {
   getGPUConformalPredictionParameterValues,
   GPU_CONFORMAL_PREDICTION_PARAMETER_LENGTH
 } from './conformal-prediction-nodes';
+export {
+  getConformalPredictionRanks,
+  GPU_CONFORMAL_MAXIMUM_CALIBRATION_COUNT
+} from './conformal-prediction-ranks';
 export type {
   GPUConformalCalibration,
   GPUConformalQuery,

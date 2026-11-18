@@ -18,7 +18,7 @@ import {
 import {getCellKeyLayout} from '../cell-aggregation/cell-keys';
 import {
   validateCellIndexResolution,
-  type GPUCellFamily
+  type GPUCellTopologyFamily
 } from '../cell-indexing/cell-index-families';
 import {
   getS2CellCoverNodes,
@@ -151,7 +151,7 @@ export type GPUCellCoverProps = GPUPolygonGeometryFields & {
   /** Prefix for generated node and transient IDs. Defaults to `'cell-cover'`. */
   id?: string;
   /** Cell family. Quadbin supports every containment; H3 and S2 support center containment. */
-  family: GPUCellFamily;
+  family: GPUCellTopologyFamily;
   /**
    * Coordinate contract of `positions`. Defaults to, and must be, longitude/latitude without
    * a metric; the cover is planar in degrees, like `h3.polygonToCells` and turf.

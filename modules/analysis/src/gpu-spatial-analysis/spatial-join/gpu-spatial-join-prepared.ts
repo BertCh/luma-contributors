@@ -51,6 +51,10 @@ import {
 } from './spatial-join-binding-preflight';
 import {validateGraphChunkGroupKernelSupport} from '../../analysis-core/kernels/graph-chunk-groups';
 import type {GPUSpatialJoinGeometry} from './spatial-join-types';
+import {
+  advancePreparedGeometryGeneration,
+  createPreparedGeometrySnapshot
+} from './prepared-geometry-snapshot';
 
 /** Geometry lengths and every generated row address are uint32. */
 const SPATIAL_JOIN_PREPARED_MAXIMUM_ROWS = 0xffffffff;
@@ -77,7 +81,7 @@ export type GPUSpatialJoinPreparedStorage = SpatialJoinBVHStorage & {
 };
 
 /** Properties for {@link GPUSpatialJoinPrepared}. */
-export type GPUSpatialJoinPreparedProps = {
+export type GPUSpatialJoinPreparedProps<Parameters = unknown> = {
   /** Prefix for generated node, buffer and transient IDs. Defaults to `'spatial-join-prepared'`. */
   id?: string;
   /**
@@ -109,37 +113,40 @@ export type GPUSpatialJoinPreparedProps = {
    */
   storage?: GPUSpatialJoinPreparedStorage;
   /**
-   * Optional CPU predicate evaluated once per encoding, with the encoding's parameters. Return true
-   * to rebuild the index in that encoding (for example when the right-hand side changed). Combine
-   * with {@link GPUSpatialJoinPrepared.invalidate}.
+   * Optional CPU predicate bypassed by a queued refresh request.
+   * The first encoding and first encoding after invalidate() bypass it; other encodings call it
+   * once with their parameters. True requests a new geometry generation. Requested generations
+   * remain pending on the GPU until their complete preparation executes, including after discard.
    */
-  // biome-ignore lint/suspicious/noExplicitAny: the handle is shared by graphs with any Parameters.
-  rebuildWhen?: (parameters: any) => boolean;
+  rebuildWhen?: (parameters: Parameters) => boolean;
 };
 
 /**
- * A prepared (static) right-hand side: the bounds and BVH of a feature set, built once and reused
- * by every encoding until it is invalidated. This is the GPU analogue of GEOS `PreparedGeometry`
- * for the index stage: animated left features, such as moving points, query the same polygon tree
- * without rebuilding it.
+ * A prepared static right-hand side whose geometry snapshot changes only when invalidated.
+ * Animated left features query bounds of the retained geometry. Published BVH/sort builders replay
+ * against that snapshot on every encoding; geometry refresh alone uses GPU generation gating.
  *
- * It reuses a build. It never caches results: every join still evaluates every candidate against
+ * It reuses geometry. It never caches results: every join still evaluates every candidate against
  * the current left geometry on every encoding.
  *
  * Usage: add the handle to the graph before the joins that use it, and hand it to each join as
- * `prepared`. The first encoding builds the index. Later encodings skip all build nodes (CPU
- * conditions, so no GPU work is recorded) until {@link invalidate} is called or `rebuildWhen`
- * returns true; the next encoding then rebuilds. If the right-hand side changes and the index is
+ * `prepared`. The first submitted encoding captures the geometry. Invalidate or rebuildWhen requests
+ * a new generation, committed only after the complete build executes; discarded encodings retry
+ * automatically. Replaying public builders avoids private dispatch APIs and repeats build work.
+ * Resident overhead is one copy of every geometry view plus 24 generation-control bytes.
+ * If the right-hand side changes and the index is
  * not invalidated, joins keep querying the stale index (by design: the contract of a static
  * right-hand side). Changing view lengths still requires a new handle and graph.
  *
  * One handle belongs to one graph. Several joins in that graph may share it.
  */
-export class GPUSpatialJoinPrepared implements GPUCommandNodeProducer {
+export class GPUSpatialJoinPrepared<Parameters = unknown>
+  implements GPUCommandNodeProducer<Parameters>
+{
   /** Prefix for every node, buffer and transient ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUSpatialJoinPreparedProps;
+  readonly props: GPUSpatialJoinPreparedProps<Parameters>;
   /** Indexed geometry. */
   readonly geometry: GPUSpatialJoinGeometry;
   /** Number of indexed features. */
@@ -152,21 +159,23 @@ export class GPUSpatialJoinPrepared implements GPUCommandNodeProducer {
   readonly edgeSlabs: boolean;
   /** Feature-row partitions associated with this index, when it is built per partition. */
   readonly partitioning?: GPUPartitionDescriptor;
-  /** Number of encodings that rebuilt the index so far (counted on the CPU at encode time). */
+  /** CPU refresh-request encodings, including discarded requests; excludes automatic GPU retries. */
   encodedBuildCount = 0;
 
   private graph: unknown;
   private preparedStorage: GPUSpatialJoinPreparedStorage | undefined;
+  private ownsPreparedStorage = false;
   private ownedBuffers: Buffer[] = [];
-  private dirty = true;
+  private readonly rebuildGeneration = new Uint32Array([1, 0]);
+  private encodingRequestPending = true;
   private internalNodeCount = 0;
   private slabStorage: {slabs: PolygonEdgeSlabs; layout: GraphDataView<'uint32'>} | undefined;
 
-  constructor(props: GPUSpatialJoinPreparedProps) {
+  constructor(props: GPUSpatialJoinPreparedProps<Parameters>) {
     this.id = props.id ?? 'spatial-join-prepared';
     this.props = props;
     this.geometry = props.geometry;
-    validateSpatialJoinGeometry(this.id, 'geometry', props.geometry);
+    validateSpatialJoinGeometry(this.id, 'geometry', props.geometry, {allowMultipart: true});
     for (const view of getSpatialJoinGeometryViews(props.geometry))
       validateCapacity(
         this.id,
@@ -264,7 +273,8 @@ export class GPUSpatialJoinPrepared implements GPUCommandNodeProducer {
 
   /** Forces the next encoding to rebuild the index. Call it after the right-hand side changed. */
   invalidate(): void {
-    this.dirty = true;
+    advancePreparedGeometryGeneration(this.rebuildGeneration);
+    this.encodingRequestPending = true;
   }
 
   /** Destroys buffers the handle allocated itself. Destroy compiled graphs that use it first. */
@@ -272,14 +282,16 @@ export class GPUSpatialJoinPrepared implements GPUCommandNodeProducer {
     for (const buffer of this.ownedBuffers) {
       buffer.destroy();
     }
-    if (this.ownedBuffers.length > 0) {
+    if (this.ownsPreparedStorage) {
       // The storage views pointed at the buffers just destroyed.
       this.preparedStorage = undefined;
-      this.slabStorage = undefined;
     }
+    this.ownsPreparedStorage = false;
+    this.slabStorage = undefined;
     this.ownedBuffers = [];
     this.graph = undefined;
-    this.dirty = true;
+    this.rebuildGeneration.set([1, 0]);
+    this.encodingRequestPending = true;
   }
 
   private validateStorage(storage: GPUSpatialJoinPreparedStorage): void {
@@ -446,13 +458,11 @@ export class GPUSpatialJoinPrepared implements GPUCommandNodeProducer {
   }
 
   /**
-   * Returns the bounds, feature-ring and BVH build nodes, each conditioned on the rebuild
-   * decision of the current encoding.
+   * Returns gated geometry refresh, replayed public builds, and a final GPU generation commit.
    */
-  getCommandNodes<Parameters>(
-    graph: GPUCommandGraph<Parameters>
-  ): readonly GPUCommandNode<Parameters>[] {
-    const {id, geometry, featureCount} = this;
+  getCommandNodes(graph: GPUCommandGraph<Parameters>): readonly GPUCommandNode<Parameters>[] {
+    const {id, featureCount} = this;
+    let geometry = this.geometry;
     if (this.graph) {
       throw new Error(`${id} is already added to a graph`);
     }
@@ -513,9 +523,34 @@ export class GPUSpatialJoinPrepared implements GPUCommandNodeProducer {
       scratchBytes
     );
     validateGraphChunkGroupKernelSupport(graph, id, 8);
+    const snapshotViews: Record<string, GraphDataView> = {positions: geometry.positions};
+    if ('featureOffsets' in geometry && geometry.featureOffsets)
+      snapshotViews['featureOffsets'] = geometry.featureOffsets;
+    if (geometry.kind === 'lines') snapshotViews['lineOffsets'] = geometry.lineOffsets;
+    if (geometry.kind === 'polygons') {
+      snapshotViews['featureOffsets'] = geometry.featureOffsets;
+      snapshotViews['polygonOffsets'] = geometry.polygonOffsets;
+      snapshotViews['ringOffsets'] = geometry.ringOffsets;
+    }
+    const snapshot = createPreparedGeometrySnapshot(graph, {
+      id,
+      views: snapshotViews,
+      generation: this.rebuildGeneration,
+      ownedBuffers: this.ownedBuffers,
+      recordEncoding: parameters => {
+        if (this.encodingRequestPending) this.encodedBuildCount++;
+        else if (this.props.rebuildWhen?.(parameters)) {
+          advancePreparedGeometryGeneration(this.rebuildGeneration);
+          this.encodedBuildCount++;
+        }
+        this.encodingRequestPending = false;
+      }
+    });
+    geometry = {...geometry, ...snapshot.views} as GPUSpatialJoinGeometry;
     this.graph = graph;
     if (!this.preparedStorage) {
       this.preparedStorage = this.allocateStorage(graph);
+      this.ownsPreparedStorage = true;
     }
     const storage = this.preparedStorage;
 
@@ -557,35 +592,6 @@ export class GPUSpatialJoinPrepared implements GPUCommandNodeProducer {
       nodes.push(...this.getEdgeSlabNodes(graph, geometry, slabEntryCapacity));
     }
 
-    // Every node of one encoding sees the same decision: it is latched when the first node of the
-    // encoding is evaluated and released after the last one.
-    const nodeCount = nodes.length;
-    let evaluations = 0;
-    let latched = true;
-    const evaluate = (parameters: unknown): boolean => {
-      if (evaluations === 0) {
-        latched = this.dirty || (this.props.rebuildWhen?.(parameters) ?? false);
-        if (latched) {
-          this.encodedBuildCount++;
-        }
-      }
-      evaluations++;
-      if (evaluations === nodeCount) {
-        evaluations = 0;
-        if (latched) {
-          this.dirty = false;
-        }
-      }
-      return latched;
-    };
-    return nodes.map(node => {
-      // The bounds, ring and BVH build nodes are created above without conditions; the rebuild
-      // condition replaces none.
-      validateRequirement(id, !node.condition, 'build nodes must be unconditional');
-      return {
-        ...node,
-        condition: {id: `${id}-rebuild`, source: 'cpu', evaluate}
-      } as GPUCommandNode<Parameters>;
-    });
+    return [...snapshot.nodes, ...nodes, snapshot.commit(nodes)];
   }
 }

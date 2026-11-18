@@ -123,7 +123,9 @@ it('GPUTerrainCriticalPoints validates props and schedules its nodes', () => {
     create({}, {counts: createTransientView(graph, 'short-counts', 'uint32', 5)})
   ).toThrow(/one value per class/);
   const shared = createTransientView(graph, 'shared', 'uint32', 30);
-  expect(() => create({}, {classes: shared, signChanges: shared})).toThrow(/share buffers/);
+  expect(() => create({}, {classes: shared, signChanges: shared})).toThrow(
+    /^terrain-critical-points output\[1\] chunk 0 logical byte ranges must not overlap \(writable storage\)$/
+  );
   const otherGraph = new GPUCommandGraph(device);
   expect(() =>
     new GPUTerrainCriticalPoints({

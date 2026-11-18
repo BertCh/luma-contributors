@@ -45,8 +45,8 @@ it('saturates every arc prefix after the uint32 boundary, not just the final tot
       status: {overflow: view('uint32', 1)}
     }
   }).getCommandNodes(graph);
-  for (const [name, source] of getParsedKernelSources(nodes))
-    expect(auditWGSLModule(source), name).toEqual([]);
+  for (const {id: name, source, constants} of getParsedKernelSources(nodes).configurations)
+    expect(auditWGSLModule(source, constants), name).toEqual([]);
   const record = getWGSLKernelNodeRecord(graph, 'saturation-scan-saturate')!;
   expect(record).toBeDefined();
   expect(auditWGSLModule(record.source)).toEqual([]);

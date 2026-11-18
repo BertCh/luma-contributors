@@ -21,7 +21,7 @@ it('nearest feature weights carry the join context and require distance-compatib
     new GPUNearestFeatureWeights({
       spatialContext,
       slotCapacity: 2,
-      neighborIds: view('uint32', 6),
+      neighborRows: view('uint32', 6),
       neighborCounts: view('uint32', 3),
       neighborDistances: view('float32', 6),
       output: {
@@ -39,7 +39,11 @@ it('nearest feature weights carry the join context and require distance-compatib
   } as const;
   expect(create().outputWeights.spatialContext).toBe(GPU_PLANAR_SPATIAL_CONTEXT);
   const adapter = create(greatCircle);
-  expect(adapter.outputWeights.spatialContext).toBe(greatCircle);
+  expect(adapter.outputWeights.spatialContext).toEqual(greatCircle);
+  expect(adapter.outputWeights.spatialContext).not.toBe(greatCircle);
+  Reflect.set(greatCircle, 'metric', 'native');
+  expect(adapter.outputWeights.spatialContext?.metric).toBe('great-circle');
+  expect(Object.isFrozen(adapter.props.spatialContext)).toBe(true);
   expect(adapter.outputWeights.distances).toBe(adapter.props.output.distances);
   expect(adapter.outputWeights.information?.provenance).toEqual({
     source: 'GPUNearestFeatureWeights',

@@ -37,13 +37,14 @@ export type CPULineSimplificationInput = {
   parameters?: Float32Array;
   importance?: Float32Array;
 };
-/** Settings for the pure computation; GPU scheduling budgets are accepted but not imposed. */
+/** Settings for the pure computation; an explicit iteration budget limits unfinished work. */
 export type CPULineSimplificationOptions = {
   spatialContext?: GPUSpatialContext;
   method?: 'douglas-peucker' | 'visvalingam';
   metric?: 'segment' | 'time-ratio';
   computeImportance?: boolean;
   finishSpanLimit?: number;
+  maximumIterations?: number;
   capacity?: number;
 };
 /** Same fixed-size and compact columns as GPULineSimplification. */
@@ -135,8 +136,8 @@ function computeDistance(
   const cosine = computeCosLatitude(pointY);
   const startX = computeLongitudeDelta(pointX, firstX) * cosine;
   const startY = firstY - pointY;
-  const segmentX = computeLongitudeDelta(pointX, lastX) * cosine - startX;
-  const segmentY = lastY - pointY - startY;
+  const segmentX = computeLongitudeDelta(firstX, lastX) * cosine;
+  const segmentY = lastY - firstY;
   const squared = segmentX * segmentX + segmentY * segmentY;
   if ((firstX !== lastX || firstY !== lastY) && squared > 0)
     fraction = Math.max(0, Math.min(1, -(startX * segmentX + startY * segmentY) / squared));
@@ -148,7 +149,13 @@ function computeDistance(
     computeCosLatitude(pointY) *
       computeCosLatitude(pointY + latitudeOffset) *
       Math.sin((longitudeOffset * Math.PI) / 360) ** 2;
-  return 2 * radius * Math.asin(Math.sqrt(Math.max(0, Math.min(1, term))));
+  return Math.min(
+    2 * radius * Math.asin(Math.sqrt(Math.max(0, Math.min(1, term)))),
+    radius *
+      computeCentralAngle((computeLongitudeDelta(pointX, firstX) * Math.PI) / 180, pointY, firstY),
+    radius *
+      computeCentralAngle((computeLongitudeDelta(pointX, lastX) * Math.PI) / 180, pointY, lastY)
+  );
 }
 
 /**
@@ -157,12 +164,14 @@ function computeDistance(
  * comparisons to tolerance; the returned importance column is rounded only after selection.
  *
  * What differs from the GPU contributor:
- * - No iteration, finish-span, or neighborhood budget limits correctness. Douglas-Peucker is
+ * - An explicit maximumIterations binds the CPU rounds; omission leaves the CPU uncapped. Douglas-Peucker is
  *   complete; Visvalingam uses global smallest-(area,row) sequential removal per line, with the
  *   effective-area floor propagated to surviving neighbors, rather than a parallel approximation.
  * - Distances/areas use float64 (ordinary division and square root), not the GPU's defined f32
  *   floor operations. Near ties and tolerance boundaries can therefore select different rows.
- * - converged is always 1. iterationCount is the unbounded logical split-round count for
+ * - At the explicit limit, unresolved Visvalingam rows have infinite importance; unresolved
+ *   Douglas-Peucker rows retain the parent split bound. converged is 0.
+ *   iterationCount is the logical split-round count for
  *   Douglas-Peucker (honoring finishSpanLimit), or the maximum sequential removals in one line
  *   for Visvalingam (at least 1). The latter is not the GPU's parallel round count.
  * - Unused ids slots are zero; the GPU leaves them unwritten. Only the first count slots are
@@ -207,12 +216,21 @@ export function computeLineSimplificationOnCPU(
     throw new Error(`parameters must contain ${GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH} values`);
   const capacity = options.capacity ?? rowCount;
   validateCapacity('computeLineSimplificationOnCPU', 'capacity', capacity, 0);
+  const maximumIterations = options.maximumIterations ?? Number.MAX_SAFE_INTEGER;
+  validateCapacity(
+    'computeLineSimplificationOnCPU',
+    'maximumIterations',
+    maximumIterations,
+    1,
+    Number.MAX_SAFE_INTEGER
+  );
   const lineCount = input.lineOffsets.length - 1;
   const importance =
     options.computeImportance === false
       ? Array.from(input.importance!)
       : Array<number>(rowCount).fill(0);
   let iterationCount = 1;
+  let converged = 1;
   if (options.computeImportance !== false)
     for (let line = 0; line < lineCount; line++) {
       const first = input.lineOffsets[line];
@@ -224,8 +242,9 @@ export function computeLineSimplificationOnCPU(
         const survivors = Array.from({length: last - first + 1}, (_, index) => first + index);
         const floors = new Map<number, number>();
         const interiorCount = survivors.length - 2;
-        iterationCount = Math.max(iterationCount, interiorCount);
-        while (survivors.length > 2) {
+        iterationCount = Math.max(iterationCount, Math.min(interiorCount, maximumIterations));
+        let removedCount = 0;
+        while (survivors.length > 2 && removedCount < maximumIterations) {
           let bestSlot = 1;
           let bestArea = Infinity;
           for (let slot = 1; slot < survivors.length - 1; slot++) {
@@ -249,12 +268,23 @@ export function computeLineSimplificationOnCPU(
           for (const neighbor of [survivors[bestSlot - 1], survivors[bestSlot + 1]])
             floors.set(neighbor, Math.max(floors.get(neighbor) ?? 0, importance[row]));
           survivors.splice(bestSlot, 1);
+          removedCount++;
+        }
+        if (survivors.length > 2) {
+          converged = 0;
+          for (const row of survivors.slice(1, -1)) importance[row] = Infinity;
         }
       } else {
         const pending = [{first, last, parent: Infinity, round: 1}];
         while (pending.length > 0) {
           const interval = pending.pop()!;
           if (interval.last - interval.first < 2) continue;
+          if (interval.round > maximumIterations) {
+            converged = 0;
+            for (let row = interval.first + 1; row < interval.last; row++)
+              importance[row] = interval.parent;
+            continue;
+          }
           iterationCount = Math.max(iterationCount, interval.round);
           let bestDistance = 0;
           let bestRow = -1;
@@ -295,7 +325,7 @@ export function computeLineSimplificationOnCPU(
     count: new Uint32Array(1),
     requiredCount: new Uint32Array(1),
     overflow: new Uint32Array(1),
-    converged: new Uint32Array([1]),
+    converged: new Uint32Array([converged]),
     iterationCount: new Uint32Array([iterationCount])
   };
   // The packer defines [tolerance, 0, 0, 0]; it exposes a length constant, no offset constants.
@@ -317,7 +347,7 @@ export function computeLineSimplificationOnCPU(
   return result;
 }
 
-/** Complete CPU simplification; GPU iteration and neighborhood caps are dropped. */
+/** CPU simplification honors explicit iteration budgets; neighborhood scheduling remains sequential. */
 export class CPULineSimplificationOperation extends GPUCPUOperation {
   constructor(props: LineSimplificationOperationProps) {
     const id = props.id ?? 'line-simplification';

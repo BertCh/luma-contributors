@@ -107,7 +107,8 @@ it('same-CRS sampling has no destination scratch or grid pass', () => {
   expect([...kernels.keys()].filter(id => !id.includes('elevation'))).toEqual([
     'reprojection-sample'
   ]);
-  expect(getStorageBindingCount(kernels.get('reprojection-sample')!)).toBe(5);
+  for (const {source} of kernels.getConfigurations('reprojection-sample'))
+    expect(getStorageBindingCount(source)).toBe(5);
   graph.device.destroy();
 });
 

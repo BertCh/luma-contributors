@@ -12,7 +12,7 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {createGroupStatisticsKernelNode} from './group-statistics-kernel';
-import {ORDERED_KEY_WGSL} from '../../analysis-core/cell-key-wgsl';
+import {ORDERED_KEY_WGSL} from '../../analysis-core/kernels/cell-key-wgsl';
 import {
   atomicBinding,
   GROUP_VALUE_KEY_WGSL,

@@ -26,6 +26,7 @@ const PROPS: SpaceTimeHawkesOperationProps = {
   output: {
     estimates: 'estimates',
     logLikelihood: 'logLikelihood',
+    fittedLogLikelihood: 'fittedLogLikelihood',
     backgroundProbability: 'backgroundProbability',
     status: {
       converged: 'converged',
@@ -49,6 +50,35 @@ function createInput() {
     parameters: Float32Array.from(fixture.parameters)
   };
 }
+
+it('evaluates fitted likelihood at the published one-update estimates', () => {
+  const input = {
+    positions: Float32Array.of(0, 0, 1, 1),
+    times: Float32Array.of(2, 2),
+    parameters: Float32Array.of(1, 10, 10, 10, 1e-8, 1, 0.5, 1, 1)
+  };
+  const result = computeSpaceTimeHawkesOnCPU(input, {maximumIterations: 1});
+  // Equal times have no parents: the updated rate is 2 / (1 * 10) and omega hits its floor.
+  expect(result.estimates[0]).toBe(Math.fround(0.2));
+  expect(result.fittedLogLikelihood[0]).toBe(Math.fround(2 * Math.log(0.2) - 2));
+  expect(result.logLikelihood[0]).toBe(Math.fround(-10 - (1 - Math.exp(-8))));
+  expect(result.fittedLogLikelihood[0]).not.toBe(result.logLikelihood[0]);
+  expect(result.iterationCount[0]).toBe(1);
+});
+
+it('leaves endpoint-event probabilities undefined when the fitted temporal mass is zero', () => {
+  const result = computeSpaceTimeHawkesOnCPU(
+    {
+      positions: Float32Array.of(0, 0, 1, 1),
+      times: Float32Array.of(10, 10),
+      parameters: Float32Array.of(1, 10, 10, 10, 1e-8, 1, 0.5, 1, 1)
+    },
+    {maximumIterations: 1}
+  );
+  expect(result.estimates.every(Number.isNaN)).toBe(true);
+  expect(Array.from(result.backgroundProbability)).toEqual([NaN, NaN]);
+  expect(Number.isNaN(result.fittedLogLikelihood[0])).toBe(true);
+});
 
 it('agrees with SciPy simultaneous solution of the four fixed-point equations', () => {
   const input = createInput();

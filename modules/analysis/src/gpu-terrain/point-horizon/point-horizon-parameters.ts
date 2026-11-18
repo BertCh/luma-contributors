@@ -6,7 +6,7 @@ import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import type {GPUTerrainHeightReference} from '../../analysis-core/contracts/vertical-datum';
 import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../analysis-core/contracts/earth';
 import {WEB_MERCATOR_EARTH_RADIUS} from '@luma.gl/graph/gpu-project';
-import {getRasterGridGeoreference} from '../../analysis-core/raster-grid';
+import {getRasterGridGeoreference} from '../../analysis-core/contracts/raster-grid';
 import {validateParameterTarget} from '../../raster-analysis/raster-band-utils';
 
 /** Number of float32 values read from `GPUPointHorizonProfileProps.parameters`. */

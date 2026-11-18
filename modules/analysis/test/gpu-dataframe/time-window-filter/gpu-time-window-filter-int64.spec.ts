@@ -170,7 +170,7 @@ async function runWordFilter(
       endTimestamps: props.ends ? importWords('ends', props.ends) : undefined,
       window: window.importToGraph(graph),
       output: {
-        ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', rows),
+        rows: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', rows),
         status: {
           count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
           overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
@@ -412,7 +412,7 @@ it('GPUTimeWindowFilter validates word and float inputs', async () => {
   const words = importGraphBuffer(graph, 'words', wordsBuffer, 'uint32x2', 2);
   const floats = importGraphBuffer(graph, 'floats', floatsBuffer, 'float32', 2);
   const output = {
-    ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', 2),
+    rows: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', 2),
     status: {
       count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
       overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)

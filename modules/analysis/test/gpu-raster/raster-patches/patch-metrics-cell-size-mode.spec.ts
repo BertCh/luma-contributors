@@ -5,7 +5,7 @@
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {expect, it} from 'vitest';
-import {getRasterGroundScale} from '../../../src/analysis-core/raster-grid';
+import {getRasterGroundScale} from '../../../src/analysis-core/contracts/raster-grid';
 import {getGPURasterFractionalCoverageParameterValues} from '../../../src/raster-analysis/gpu-raster-fractional-coverage';
 import {
   GPURasterPatchMetrics,

@@ -6,6 +6,7 @@ import type {
   GPUTemporalCalendarStep,
   GPUTemporalCalendarUnit
 } from '../../analysis-core/contracts/temporal-context';
+import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /**
  * Local calendar time written as fields. Unset fields default to the start of the step: month 1,
@@ -65,6 +66,35 @@ export function getGPUPeriodIndexStepIndex(
 /** Whole steps in one period: `interval`, times 7 for a week (counted in days). */
 export function getGPUPeriodIndexStepsPerPeriod(step: GPUTemporalCalendarStep): number {
   return (step.interval ?? 1) * (step.calendarUnit === 'week' ? 7 : 1);
+}
+
+/** Checks the signed WGSL divisor, including the seven-day weekly multiplier. @internal */
+export function validateGPUPeriodIndexStepsPerPeriod(
+  id: string,
+  step: GPUTemporalCalendarStep
+): void {
+  validateCapacity(
+    id,
+    'periods.step steps per period (MAXIMUM_CALENDAR_STEPS_PER_PERIOD)',
+    getGPUPeriodIndexStepsPerPeriod(step),
+    1,
+    0x7fffffff
+  );
+}
+
+/** Checks the signed whole-step origin used by calendar WGSL. @internal */
+export function validateGPUPeriodIndexOriginStep(
+  id: string,
+  calendarUnit: GPUTemporalCalendarUnit,
+  origin: GPUPeriodIndexCalendarFields
+): void {
+  validateCapacity(
+    id,
+    'periods.origin step index (MINIMUM_CALENDAR_STEP_INDEX..MAXIMUM_CALENDAR_STEP_INDEX)',
+    getGPUPeriodIndexStepIndex(calendarUnit, origin),
+    -0x80000000,
+    0x7fffffff
+  );
 }
 
 /**

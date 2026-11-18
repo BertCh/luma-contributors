@@ -6,7 +6,6 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
   getGPUSpatialScanStatisticParameterValues,
-  GPUSpatialScanStatistic,
   GPU_SPATIAL_SCAN_STATISTIC_CLUSTER,
   GPU_SPATIAL_SCAN_STATISTIC_CLUSTER_INDEX,
   GPU_SPATIAL_SCAN_STATISTIC_INDEX_WORDS,
@@ -14,6 +13,7 @@ import {
   GPU_SPATIAL_SCAN_STATISTIC_SUMMARY,
   GPU_SPATIAL_SCAN_STATISTIC_SUMMARY_LENGTH
 } from '../../../src/gpu-spatial-analysis/scan-statistics/index';
+import {createSpatialScanStatisticForTesting} from '../../../src/gpu-spatial-analysis/scan-statistics/gpu-spatial-scan-statistic';
 import {AnalysisRig, createSeededRandom} from '../catchment-accessibility/rig';
 import {
   computeScanOracle,
@@ -86,7 +86,7 @@ async function runScan(
   const summary = rig.output('uint32', GPU_SPATIAL_SCAN_STATISTIC_SUMMARY_LENGTH);
   const zoneStatistics = rig.output('float32', zones);
   rig.run(
-    new GPUSpatialScanStatistic({
+    createSpatialScanStatisticForTesting({
       positions: rig.input(scene.positions, 'float32x2', zones),
       spatialContext: scene.spatialContext,
       model: scene.model,

@@ -172,14 +172,15 @@ async function createRunner(layout: Layout, localized = false) {
 // ---- Independent binary64 references. ----
 const f = Math.fround;
 
-/** Brute force: every candidate value, sorted, with the rank from exact rational arithmetic. */
+/**
+ * Brute force: every candidate sorted, with independent binary64 rank arithmetic.
+ * A float32 significand times these small fixture counts (at most 1000) is exact in binary64.
+ */
 function referenceIntervals(
   layout: Layout,
-  inputs: Inputs,
-  alphaRational: [number, number]
+  inputs: Inputs
 ): {intervals: number[]; status: number[]; count: number} {
   const foldCount = layout.foldCount ?? 1;
-  const [numerator, denominator] = alphaRational;
   const used: {score: number; fold: number}[] = [];
   for (let row = 0; row < layout.rows; row++) {
     const fold = inputs.folds ? inputs.folds[row] : 0;
@@ -191,11 +192,8 @@ function referenceIntervals(
     used.push({score: f(f(Math.abs(f(observation - prediction))) / scale), fold});
   }
   const n = used.length;
-  const upperRank = Math.max(
-    Math.ceil(((denominator - numerator) * (n + 1)) / denominator - 1e-9),
-    1
-  );
-  const lowerRank = Math.floor((numerator * (n + 1)) / denominator + 1e-9);
+  const lowerRank = Math.floor(Math.fround(inputs.alpha) * (n + 1));
+  const upperRank = n + 1 - lowerRank;
   const intervals: number[] = [];
   const status: number[] = [];
   for (let query = 0; query < layout.queryRows; query++) {
@@ -264,7 +262,7 @@ function buildRandomInputs(
 }
 
 it('split conformal equals the sorted-score reference, including exact integer ranks', async () => {
-  // alpha 2/5 with 24 or 44 scores is the case where float32 (1 - alpha) * (n + 1) lands above the integer 15 or 27;
+  // The packed alpha 2/5 with 24 or 44 scores gives exact ranks 15 or 27 without rounding 1 - alpha;
   // alpha 1/10 with 99 scores gives rank 90 exactly; alpha 1/20 with 19 gives 19; alpha 1/4 with 7 gives 6.
   for (const [rows, alphaRational] of [
     [99, [1, 10]],
@@ -280,13 +278,35 @@ it('split conformal equals the sorted-score reference, including exact integer r
       const random = createRandom(rows);
       const inputs = buildRandomInputs(layout, random, alphaRational[0] / alphaRational[1]);
       const actual = await runner.execute(inputs);
-      const expected = referenceIntervals(layout, inputs, [...alphaRational]);
+      const expected = referenceIntervals(layout, inputs);
       expect(actual.count).toBe(expected.count);
       expect(actual.status).toEqual(expected.status);
       expect(actual.intervals).toEqual(expected.intervals);
     } finally {
       runner.destroy();
     }
+  }
+});
+
+it('selects interval endpoints from exact packed-alpha ranks at decimal boundaries', async () => {
+  const runner = await createRunner({rows: 9, queryRows: 1});
+  try {
+    for (const [alpha, endpoint] of [
+      [0.7, 4],
+      [0.9, 2]
+    ]) {
+      const actual = await runner.execute({
+        alpha,
+        observations: [1, 2, 3, 4, 5, 6, 7, 8, 9],
+        predictions: new Array(9).fill(0),
+        queryPredictions: [0]
+      });
+      expect(actual.count).toBe(9);
+      expect(actual.status).toEqual([0]);
+      expect(actual.intervals).toEqual([-endpoint, endpoint]);
+    }
+  } finally {
+    runner.destroy();
   }
 });
 
@@ -312,7 +332,7 @@ it('CV+ equals the brute-force order statistics with folds, scales and masks', a
       inputs.observations[3] = NaN;
       inputs.queryPredictions[5] = NaN;
       const actual = await runner.execute(inputs);
-      const expected = referenceIntervals(layout, inputs, [...alphaRational]);
+      const expected = referenceIntervals(layout, inputs);
       expect(actual.count).toBe(expected.count);
       expect(actual.status).toEqual(expected.status);
       expect(actual.intervals).toEqual(expected.intervals);
@@ -320,6 +340,48 @@ it('CV+ equals the brute-force order statistics with folds, scales and masks', a
     } finally {
       runner.destroy();
     }
+  }
+});
+
+it('keeps both sides unbounded at the packed 0.02 boundary with 49 scores (R4)', async () => {
+  const layout: Layout = {rows: 49, queryRows: 1};
+  const inputs: Inputs = {
+    alpha: 0.02,
+    observations: Array.from({length: 49}, (_, row) => row + 1),
+    predictions: new Array(49).fill(0),
+    queryPredictions: [0]
+  };
+  const expected = referenceIntervals(layout, inputs);
+  expect(expected).toEqual({intervals: [-Infinity, Infinity], status: [3], count: 49});
+  const runner = await createRunner(layout);
+  try {
+    const actual = await runner.execute(inputs);
+    expect(actual.intervals).toEqual([-Infinity, Infinity]);
+    expect(actual.status).toEqual([3]);
+    expect(actual.count).toBe(49);
+  } finally {
+    runner.destroy();
+  }
+});
+
+it('retains tied scores even when coverage exceeds the distinct-score upper bound (R5)', async () => {
+  const runner = await createRunner({rows: 7, queryRows: 1});
+  try {
+    const actual = await runner.execute({
+      alpha: 0.25,
+      observations: new Array(7).fill(1),
+      predictions: new Array(7).fill(0),
+      queryPredictions: [0]
+    });
+    expect(actual.intervals).toEqual([-1, 1]);
+    expect(actual.status).toEqual([0]);
+    expect(actual.count).toBe(7);
+    // A population always equal to one is exchangeable and is covered with probability one.
+    const coverage = Number(actual.intervals[0] <= 1 && actual.intervals[1] >= 1);
+    expect(coverage).toBe(1);
+    expect(coverage).toBeGreaterThan(1 - 0.25 + 1 / 8);
+  } finally {
+    runner.destroy();
   }
 });
 
@@ -411,6 +473,40 @@ it('rejects CV+ without folds, a query shape mismatch and aliased outputs', asyn
 });
 
 // ---- Localized (GeoConformal) intervals. ----
+it('spatial-4:F4 equal-weight localized and global intervals share both unbounded status bits', async () => {
+  const rows = 49;
+  const layout: Layout = {rows, queryRows: 1};
+  const global = await createRunner(layout);
+  const localized = await createRunner({...layout, neighbors: rows}, true);
+  try {
+    const inputs: Inputs = {
+      alpha: 0.02,
+      observations: Array.from({length: rows}, (_, row) => row + 1),
+      predictions: new Array(rows).fill(0),
+      queryPredictions: [0]
+    };
+    const globalResult = await global.execute(inputs);
+    for (const selfWeight of [1, 0.1, 1e37]) {
+      const localizedResult = await localized.execute({
+        ...inputs,
+        selfWeight,
+        neighborOffsets: [0, rows],
+        neighborIndices: Array.from({length: rows}, (_, row) => row),
+        neighborWeights: new Array(rows).fill(selfWeight)
+      });
+      expect(globalResult.intervals).toEqual([-Infinity, Infinity]);
+      expect(globalResult.status).toEqual([
+        GPU_CONFORMAL_STATUS_LOWER_UNBOUNDED | GPU_CONFORMAL_STATUS_UPPER_UNBOUNDED
+      ]);
+      expect(localizedResult.intervals).toEqual(globalResult.intervals);
+      expect(localizedResult.status).toEqual(globalResult.status);
+    }
+  } finally {
+    global.destroy();
+    localized.destroy();
+  }
+});
+
 it('localized intervals equal the weighted-quantile reference and, with equal weights, the global result', async () => {
   const rows = 39;
   const layout: Layout = {rows, queryRows: 16, scales: true, queryScales: true};

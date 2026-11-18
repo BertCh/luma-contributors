@@ -27,14 +27,22 @@ export function validateNetworkRoutingArrays(topology: CPUNetworkRoutingInput['t
 }
 
 /**
- * Exact nonnegative shortest paths in float64 using a binary min heap. `id` names the calling
- * function in messages. @internal
+ * Nonnegative shortest paths in float64. Unbounded searches use a binary min heap; an explicit
+ * maximumHops uses a synchronous frontier and converges only when that frontier empties.
+ * `id` names the calling function in messages. @internal
  */
 export function computeNetworkRoutingDistances(
   id: string,
   input: CPUNetworkRoutingInput,
-  laneCount = 1
-): {distances: Float64Array; scannedEdges: number; reachedEdges: number} {
+  laneCount = 1,
+  maximumHops = Infinity
+): {
+  distances: Float64Array;
+  scannedEdges: number;
+  reachedEdges: number;
+  converged: boolean;
+  hopCount: number;
+} {
   const nodeCount = validateNetworkRoutingArrays(input.topology);
   validateCapacity(id, 'laneCount', laneCount);
   if (input.startCosts && input.startCosts.length !== input.startNodes.length)
@@ -86,6 +94,56 @@ export function computeNetworkRoutingDistances(
   let scannedEdges = 0;
   let reachedEdges = 0;
   const {offsets, neighbors, weights} = input.topology;
+  if (maximumHops !== Infinity) {
+    validateCapacity(id, 'maximumHops', maximumHops, 0);
+    let frontier = new Set(heap.map(entry => entry.node));
+    let hopCount = 0;
+    // A synchronous frontier consumes at most one edge per hop, independent of CSR row order.
+    // Never compute labels beyond the caller's explicit round × local-hop allowance.
+    while (frontier.size && hopCount < maximumHops) {
+      const sources = Array.from(frontier, source => ({source, cost: distances[source]}));
+      const next = new Set<number>();
+      for (const {source, cost} of sources) {
+        const node = source % nodeCount;
+        const laneBase = source - node;
+        for (
+          let edge = Math.min(offsets[node], neighbors.length);
+          edge < Math.min(offsets[node + 1], neighbors.length);
+          edge++
+        ) {
+          scannedEdges++;
+          const target = neighbors[edge];
+          if (target >= nodeCount) continue;
+          reachedEdges++;
+          const candidate = cost + weights[edge];
+          if (
+            weights[edge] >= 0 &&
+            Number.isFinite(candidate) &&
+            !(candidate > costLimit) &&
+            candidate < distances[laneBase + target]
+          ) {
+            distances[laneBase + target] = candidate;
+            next.add(laneBase + target);
+          }
+        }
+      }
+      frontier = next;
+      hopCount++;
+    }
+    // reachedEdges is the degree sum of final finite labels, not repeated relaxation visits.
+    reachedEdges = 0;
+    for (let source = 0; source < distances.length; source++) {
+      if (!Number.isFinite(distances[source])) continue;
+      const node = source % nodeCount;
+      for (
+        let edge = Math.min(offsets[node], neighbors.length);
+        edge < Math.min(offsets[node + 1], neighbors.length);
+        edge++
+      )
+        if (neighbors[edge] < nodeCount) reachedEdges++;
+    }
+    return {distances, scannedEdges, reachedEdges, converged: frontier.size === 0, hopCount};
+  }
   while (heap.length) {
     const entry = heap[0];
     const last = heap.pop()!;
@@ -124,7 +182,7 @@ export function computeNetworkRoutingDistances(
       }
     }
   }
-  return {distances, scannedEdges, reachedEdges};
+  return {distances, scannedEdges, reachedEdges, converged: true, hopCount: 0};
 }
 
 /**
@@ -135,7 +193,8 @@ export function computeNetworkRoutingDistances(
 export function computeNetworkRoutingPredecessors(
   input: CPUNetworkRoutingInput,
   distances: Float64Array,
-  labels?: Uint32Array
+  labels?: Uint32Array,
+  maximumTieHops = Infinity
 ): Uint32Array {
   const {offsets, neighbors, weights} = input.topology;
   const nodeCount = offsets.length - 1;
@@ -204,6 +263,7 @@ export function computeNetworkRoutingPredecessors(
   for (let node = 0; node < nodeCount; node++) if (levels[node] === 0) queue.push(node);
   for (let cursor = 0; cursor < queue.length; cursor++) {
     const source = queue[cursor];
+    if (levels[source] >= maximumTieHops) continue;
     for (const target of ties[source])
       if (levels[target] === Infinity) {
         levels[target] = levels[source] + 1;

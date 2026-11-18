@@ -1,6 +1,7 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
 
 import {
   validateTrajectoryBindings,
@@ -358,7 +359,6 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
 
   constructor(props: GPUTrackSimilarityProps) {
     this.id = props.id ?? 'track-similarity';
-    this.props = props;
     const {id} = this;
     this.spatialContext = resolveGPUSpatialContext(
       id,
@@ -366,6 +366,12 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
       SPATIAL_CONTEXT_SUPPORT
     );
     this.sphereRadius = getGPUGreatCircleRadius(this.spatialContext);
+    props = {
+      ...props,
+      linesA: snapshotSinglePartGeometryPort(id, 'linesA', props.linesA),
+      linesB: props.linesB && snapshotSinglePartGeometryPort(id, 'linesB', props.linesB)
+    };
+    this.props = props;
     const {linesA, linesB, output} = props;
     validateSinglePackedView(linesA.positions, ['float32x2'], `${id} linesA.positions`);
     validateSinglePackedView(linesA.lineOffsets, ['uint32'], `${id} linesA.lineOffsets`);
@@ -557,6 +563,15 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
       ...(output.frechetWithin ? {'decision pair ranges': pairCount * 16} : {})
     });
     const nodes: GPUCommandNode<Parameters>[] = [];
+    const requiresDynamicProgram = Boolean(
+      output.frechet ||
+        output.frechetWithin ||
+        output.dynamicTimeWarping ||
+        output.editDistanceOnRealSequence ||
+        output.editDistanceWithRealPenalty ||
+        output.longestCommonSubsequence
+    );
+    const requiresDensification = Boolean(output.hausdorff || requiresDynamicProgram);
     const constants = `const PAIR_COUNT: u32 = ${pairCount}u;
 const TRACK_COUNT_A: u32 = ${linesA.lineOffsets.length - 1}u;
 const TRACK_COUNT_B: u32 = ${offsetsB.length - 1}u;
@@ -610,10 +625,10 @@ const STATUS_INVALID: u32 = ${GPU_TRACK_SIMILARITY_STATUS.invalidPair}u;`;
       flags = STATUS_INVALID;
     } else if (countA == 0u || countB == 0u) {
       flags = STATUS_EMPTY;
-    } else if (max(countA - 1u, countB - 1u) > (MAXIMUM_DENSIFIED_VERTICES - 1u) / DENSIFY) {
+    } else if (${requiresDensification} && max(countA - 1u, countB - 1u) > (MAXIMUM_DENSIFIED_VERTICES - 1u) / DENSIFY) {
       // A densified vertex count must fit uint32 before any distance kernel uses it.
       flags = STATUS_INVALID;
-    } else if (min(countA - 1u, countB - 1u) > (FRECHET_CAP - 1u) / DENSIFY) {
+    } else if (${requiresDynamicProgram} && min(countA - 1u, countB - 1u) > (FRECHET_CAP - 1u) / DENSIFY) {
       flags = STATUS_TOO_LONG;
     }
   }

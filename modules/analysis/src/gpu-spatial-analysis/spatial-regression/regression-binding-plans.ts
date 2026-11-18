@@ -20,18 +20,22 @@ import {
   type GPUSpatialWeightsTracesMode
 } from './spatial-weights-traces-parameters';
 import {padToAlignedElementCount} from './spatial-maximum-likelihood-nodes';
+import {getRegressionLossViews} from './regression-weights-completeness';
 
-/** Actual CSR bindings; optional distance and descriptive status metadata are not read by these fits. */
+/** CSR and completeness bindings; optional distances and descriptive metadata are not read. */
 export function getRegressionWeightBindings(
   weights: GPUSpatialWeights | GPUChunkedSpatialWeights
 ): Record<string, GraphDataView> {
-  return Object.fromEntries(
-    getGPUSpatialWeightsChunks(weights).flatMap((chunk, index) => [
+  return Object.fromEntries([
+    ...getGPUSpatialWeightsChunks(weights).flatMap((chunk, index) => [
       [`offsets ${index}`, chunk.weights.offsets] as const,
       [`neighbors ${index}`, chunk.weights.neighbors] as const,
       [`weights ${index}`, chunk.weights.weights] as const
-    ])
-  );
+    ]),
+    ...getRegressionLossViews(weights).map(
+      (view, index) => [`weights loss ${index}`, view] as const
+    )
+  ]);
 }
 
 /** Largest chunk capacity, since no CSR-reading dispatch binds all chunks together. */

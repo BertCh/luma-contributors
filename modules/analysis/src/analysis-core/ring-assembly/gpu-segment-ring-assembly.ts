@@ -44,6 +44,10 @@ import {getRingQuantizerWGSL} from './ring-vertex-quantizer';
 import {getRingShellIndexNodes, RING_SHELL_RECORD_WORDS} from './ring-shell-index';
 import {EXACT_ORIENTATION_WGSL} from '../kernels/exact-orientation-wgsl';
 import {EXACT_GEOMETRY_WGSL, getExactRingWindingWGSL} from '../kernels/exact-geometry-wgsl';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../kernels/construction-snapshot';
 
 /** A positive float32 tolerance must survive rounding before division in the vertex quantizer. */
 const GPU_SEGMENT_RING_ASSEMBLY_MINIMUM_VERTEX_TOLERANCE = 2 ** -149;
@@ -502,11 +506,63 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUSegmentRingAssemblyProps) {
+    props = Object.freeze({
+      ...snapshotConstructionFields(props, [
+        'id',
+        'endpoints',
+        'count',
+        'groups',
+        'pairedOpposites',
+        'vertexTolerance',
+        'interiorSide',
+        'normalizeWinding',
+        'spatialContext',
+        'cancelOpposingSegments',
+        'splitTouchingRings',
+        'output'
+      ]),
+      spatialContext:
+        props.spatialContext && snapshotConstructionSpatialContext(props.spatialContext),
+      output: Object.freeze({
+        ...snapshotConstructionFields(props.output, [
+          'ringOffsets',
+          'positions',
+          'ringAreas',
+          'ringIsHole',
+          'ringShells',
+          'ringGroups',
+          'segmentRings',
+          'segmentVertices',
+          'segmentFlags',
+          'polygons',
+          'status'
+        ]),
+        status: snapshotConstructionFields(props.output.status, [
+          'count',
+          'overflow',
+          'requiredCount',
+          'openSegmentCount',
+          'touchingSegmentCount'
+        ]),
+        polygons:
+          props.output.polygons &&
+          snapshotConstructionFields(props.output.polygons, [
+            'kind',
+            'positions',
+            'ringOffsets',
+            'polygonOffsets',
+            'featureOffsets',
+            'sourceIds'
+          ])
+      })
+    });
     this.id = props.id ?? 'segment-ring-assembly';
-    this.spatialContext = resolveGPUSpatialContext(
-      this.id,
-      props.spatialContext,
-      GPU_RING_ASSEMBLY_SPATIAL_CONTEXT_SUPPORT
+    this.spatialContext = snapshotConstructionSpatialContext(
+      resolveGPUSpatialContext(
+        this.id,
+        props.spatialContext,
+        GPU_RING_ASSEMBLY_SPATIAL_CONTEXT_SUPPORT
+      )
     );
     this.props = props;
     const id = this.id;
@@ -764,7 +820,11 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
         'quantize-init',
         [...countBinding, write('counters', counters)],
         1,
-        `for (var slot = 0u; slot < 5u; slot++) { counters[countersOffset + slot] = 0u; }
+        `counters[countersOffset] = 0u;
+  counters[countersOffset + 1u] = 0u;
+  counters[countersOffset + 2u] = 0u;
+  counters[countersOffset + 3u] = 0u;
+  counters[countersOffset + 4u] = 0u;
   counters[countersOffset + 5u] = ${validRowsExpression};`
       ),
       kernel(
@@ -1385,6 +1445,7 @@ ${RING_EXACT_TURN_WGSL}`
   ringStarts[ringStartsOffset + ring] = vertexScan[vertexScanOffset + index] - (hops[hopsOffset + index] + 2u);
   ringLeaders[ringLeadersOffset + ring] = index;`
       ),
+      // contract-allow: single-invocation — capacity binary search, at most 32 uint32 bisections.
       kernel(
         'ring-count',
         [
@@ -1981,6 +2042,7 @@ ${getExactRingWindingWGSL('getShellWinding', 'getRingVertex')}`
               )
             ]
           : []),
+        // contract-allow: single-invocation — capacity binary search, at most 32 uint32 bisections.
         kernel(
           'polygon-counts',
           [read('sortedKeys', sortedPolygonKeys), write('validRings', validRings)],

@@ -44,7 +44,7 @@ import {
   type GPURasterCellSizeMode,
   type GPURasterRowDirection,
   validateRasterCellSizeMode
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 
 /**
  * Estimator of the local partial derivatives `p, q, r, s, t`.

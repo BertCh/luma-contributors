@@ -10,11 +10,14 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {CompiledProjection, ProjectionShader} from '@luma.gl/graph/gpu-project';
-import type {GPURasterBufferBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   getRasterBufferBandNodes,
   getRasterBandViews,
+  snapshotRasterBand,
   validateRasterGrid,
+  validateRasterTextureBand,
+  validateRasterBandBelongsToGraph,
   validateParameterTarget,
   validateRasterParameters
 } from './raster-band-utils';
@@ -26,7 +29,7 @@ import {
   validateRequirement,
   getGraphOutputViews as getRasterPreflightOutputViews
 } from '../analysis-core/kernels/gpu-contributor-utils';
-import {resolveGPURasterContext} from '../analysis-core/raster-grid';
+import {resolveGPURasterContext} from '../analysis-core/contracts/raster-grid';
 import {IS_FINITE_VALUE_WGSL} from '../analysis-core/kernels/wgsl-common';
 import {
   requireRasterLength,
@@ -38,7 +41,7 @@ export type GPURasterReprojectionProps = {
   id?: string;
   sourceGrid: GPURasterMetadata;
   destinationGrid: GPURasterMetadata;
-  input: GPURasterBufferBand;
+  input: GPURasterBand;
   /** Explicit destination-world to source-world program. Omit only for grids in the same CRS. */
   inverseProjection?: CompiledProjection;
   method?: 'nearest' | 'bilinear';
@@ -51,6 +54,9 @@ export type GPURasterReprojectionProps = {
 /** Number of float32 words in the reprojection georeference. */
 export const GPU_RASTER_REPROJECTION_PARAMETER_LENGTH = 20;
 
+/** Layout version stored in word 17; older manually packed layouts must be repacked. */
+export const GPU_RASTER_REPROJECTION_PARAMETER_VERSION = 3;
+
 /** Per-frame grids; dimensions, CRS and pixel interpretation must match the contributor. */
 export type GPURasterReprojectionSettings = {
   sourceGrid: GPURasterMetadata;
@@ -60,12 +66,17 @@ export type GPURasterReprojectionSettings = {
 };
 
 /**
- * Packs both affine matrices and precision-preserving origin differences in float64 before rounding.
- * Layout: `[destinationA, destinationB, destinationD, destinationE, destinationOriginX,
- * destinationOriginY, sourceA, sourceB, sourceD, sourceE, sourceDeterminant, sampleShiftX,
- * sampleShiftY, sourceOriginXHigh, sourceOriginXLow, sourceOriginYHigh, sourceOriginYLow, 0, 0, 0]`.
- * Same-CRS origins are relative to the source; projected destinations use their declared frame.
- * Double-single projection results subtract the split source origin before rounding.
+ * Packs layout version 3, composing same-CRS affines in float64 before rounding once.
+ * Layout: `[a, b, d, e, originX, originY, inverseA, inverseB, inverseD, inverseE, 0,
+ * sampleShiftX, sampleShiftY, sourceOriginXHigh, sourceOriginXLow, sourceOriginYHigh,
+ * sourceOriginYLow, version, anchorColumn, anchorRow]`.
+ * Without a projection, subtract the destination pixel anchor in words 18..19 before applying
+ * words 0..5 to obtain source sample coordinates. The anchor is near source support, preserving
+ * cancellation between large scales and translations. Area/point shifts are already included.
+ * With a projection, words 0..5 are the destination world affine, words 6..9 are the source
+ * inverse linear affine computed in float64, and words 11..12 shift local-f32 projection output
+ * relative to the source origin. Double-single results subtract the split source origin first.
+ * Projected packed inverse matrices must remain invertible. Versions 1 and 2 must be repacked.
  *
  * @param settings Grids and the contributor's optional inverse projection.
  * @param target Optional destination of at least 20 words.
@@ -77,7 +88,7 @@ export function getGPURasterReprojectionParameterValues(
   const id = 'getGPURasterReprojectionParameterValues';
   validateParameterTarget(id, target, GPU_RASTER_REPROJECTION_PARAMETER_LENGTH);
   const {sourceGrid: source, destinationGrid: destination, inverseProjection} = settings;
-  const sourceContext = resolveGPURasterContext(id, {
+  resolveGPURasterContext(id, {
     grid: source,
     localOrigin: [source.affine[2], source.affine[5]]
   });
@@ -92,11 +103,88 @@ export function getGPURasterReprojectionParameterValues(
       ? [source.affine[2], source.affine[5]]
       : [0, 0];
   const sourceOriginHigh = sourceOrigin.map(Math.fround);
+  const [sourceA, sourceB, sourceOriginX, sourceD, sourceE, sourceOriginY] = source.affine;
+  const [
+    destinationA,
+    destinationB,
+    destinationOriginX,
+    destinationD,
+    destinationE,
+    destinationOriginY
+  ] = destination.affine;
+  const determinant = sourceA * sourceE - sourceB * sourceD;
+  // Divide after forming each numerator: identical axes then produce exactly 1 and 0,
+  // even when the source affine is ill-conditioned.
+  const composedA = (sourceE * destinationA - sourceB * destinationD) / determinant;
+  const composedB = (sourceE * destinationB - sourceB * destinationE) / determinant;
+  const composedD = (sourceA * destinationD - sourceD * destinationA) / determinant;
+  const composedE = (sourceA * destinationE - sourceD * destinationB) / determinant;
+  const differenceX = destinationOriginX - sourceOriginX;
+  const differenceY = destinationOriginY - sourceOriginY;
+  const destinationShift = destination.pixelInterpretation === 'area' ? 0.5 : 0;
+  const sourceShift = source.pixelInterpretation === 'area' ? 0.5 : 0;
+  const translationColumn =
+    (sourceE * differenceX - sourceB * differenceY) / determinant +
+    (composedA + composedB) * destinationShift -
+    sourceShift;
+  const translationRow =
+    (sourceA * differenceY - sourceD * differenceX) / determinant +
+    (composedD + composedE) * destinationShift -
+    sourceShift;
+  // Locate source sample (0, 0) in the destination, then use a nearby destination pixel as
+  // the evaluation origin. This keeps a large translation from cancelling a rounded product
+  // inside source support (e.g. 3355446.4 * 3 - 10066335.2 must stay at column 4).
+  const destinationDeterminant = destinationA * destinationE - destinationB * destinationD;
+  const anchorWorldX = sourceShift * (sourceA + sourceB) - differenceX;
+  const anchorWorldY = sourceShift * (sourceD + sourceE) - differenceY;
+  const anchorColumn = projected
+    ? 0
+    : Math.min(
+        destination.width - 1,
+        Math.max(
+          0,
+          Math.round(
+            (destinationE * anchorWorldX - destinationB * anchorWorldY) / destinationDeterminant -
+              destinationShift
+          )
+        )
+      );
+  const anchorRow = projected
+    ? 0
+    : Math.min(
+        destination.height - 1,
+        Math.max(
+          0,
+          Math.round(
+            (destinationA * anchorWorldY - destinationD * anchorWorldX) / destinationDeterminant -
+              destinationShift
+          )
+        )
+      );
   target.set([
-    ...destinationContext.parameterValues.subarray(2, 6),
-    projected ? destination.affine[2] : destination.affine[2] - source.affine[2],
-    projected ? destination.affine[5] : destination.affine[5] - source.affine[5],
-    ...sourceContext.parameterValues.subarray(2, 7),
+    ...(projected
+      ? [
+          ...destinationContext.parameterValues.subarray(2, 6),
+          destinationOriginX,
+          destinationOriginY
+        ]
+      : [
+          composedA,
+          composedB,
+          composedD,
+          composedE,
+          composedA * anchorColumn + composedB * anchorRow + translationColumn,
+          composedD * anchorColumn + composedE * anchorRow + translationRow
+        ]),
+    ...(projected
+      ? [
+          sourceE / determinant,
+          -sourceB / determinant,
+          -sourceD / determinant,
+          sourceA / determinant
+        ]
+      : [0, 0, 0, 0]),
+    0,
     projected && inverseProjection.precision !== 'double-single'
       ? (projectionOrigin?.[0] ?? 0) - source.affine[2]
       : 0,
@@ -107,15 +195,22 @@ export function getGPURasterReprojectionParameterValues(
     sourceOrigin[0] - sourceOriginHigh[0],
     sourceOriginHigh[1],
     sourceOrigin[1] - sourceOriginHigh[1],
-    0,
-    0,
-    0
+    GPU_RASTER_REPROJECTION_PARAMETER_VERSION,
+    anchorColumn,
+    anchorRow
   ]);
   validateRequirement(
     id,
     target.subarray(0, GPU_RASTER_REPROJECTION_PARAMETER_LENGTH).every(Number.isFinite),
     'grid affine origins and differences must be finite in float32'
   );
+  if (projected) {
+    validateRequirement(
+      id,
+      target[6] * target[9] - target[7] * target[8] !== 0,
+      'sourceGrid.affine inverse must remain invertible in float32'
+    );
+  }
   return target;
 }
 
@@ -125,11 +220,12 @@ export function getGPURasterReprojectionParameterValues(
  * and samples one explicitly supplied complete source tile. Invalid projection domains and absent
  * source support remain nodata. Rotated/sheared affines are supported.
  *
- * Precision. Without `inverseProjection` the two affine origins are differenced in float64 on the
- * CPU and the kernels work relative to the source origin, so grids with large projected origins
- * (UTM northings) resolve the source pixel to float32 accuracy of the offset inside the tile, not
- * of the absolute coordinate. With `inverseProjection` the destination centres are the float32
- * input of the projection, so give `destinationGrid` a local frame (a small origin, with the
+ * Precision. Without `inverseProjection` the destination-to-source sample transform, including
+ * origin differences and area/point shifts, is composed in float64 on the CPU. Evaluation is
+ * anchored near source support before rounding, preserving large scale/translation cancellation.
+ * Identical grids therefore sample identically on wide sheared grids within float32 index precision.
+ * With `inverseProjection` the source inverse linear affine is computed in float64 before packing;
+ * destination centres are the float32 input of the projection, so give `destinationGrid` a local frame (a small origin, with the
  * offset to the absolute frame inside the projection program). For local-f32 output, set its
  * `destinationOrigin` near the source grid origin: the projected result is relative to that
  * origin and the kernel adds `destinationOrigin - sourceGrid origin`, differenced in float64.
@@ -151,8 +247,10 @@ export class GPURasterReprojection implements GPUCommandNodeProducer {
   private projectionRegistered = false;
   private affineParameters?: GPUParameterBuffer<'float32'>;
   constructor(props: GPURasterReprojectionProps) {
+    props = {...props, input: snapshotRasterBand(props.input)};
     this.id = props.id ?? 'raster-reprojection';
     this.props = props;
+    validateRasterTextureBand(this.id, props.input, props.sourceGrid);
     const count = validateRasterExpansionViews(
       this.id,
       props.destinationGrid,
@@ -240,6 +338,7 @@ export class GPURasterReprojection implements GPUCommandNodeProducer {
     const source = props.sourceGrid,
       destination = props.destinationGrid;
     const count = destination.width * destination.height;
+    validateRasterBandBelongsToGraph(id, graph, props.input, []);
     validateRasterExpansionGraph(id, graph, [
       ...getRasterBandViews(props.input),
       ...(props.parameters ? [props.parameters] : []),
@@ -294,8 +393,8 @@ export class GPURasterReprojection implements GPUCommandNodeProducer {
       });
       affineParameters = this.affineParameters.importToGraph(graph);
     }
-    const destinationPosition = `let destinationColumn=f32(index%${destination.width}u)+${destination.pixelInterpretation === 'area' ? '0.5' : '0.0'};
-let destinationRow=f32(index/${destination.width}u)+${destination.pixelInterpretation === 'area' ? '0.5' : '0.0'};
+    const destinationPosition = `let destinationColumn=f32(index%${destination.width}u)${shader ? `+${destination.pixelInterpretation === 'area' ? '0.5' : '0.0'}` : '-readAffine(18u)'};
+let destinationRow=f32(index/${destination.width}u)${shader ? `+${destination.pixelInterpretation === 'area' ? '0.5' : '0.0'}` : '-readAffine(19u)'};
 let destinationPosition=vec2f(readAffine(0u)*destinationColumn+readAffine(1u)*destinationRow+readAffine(4u), readAffine(2u)*destinationColumn+readAffine(3u)*destinationRow+readAffine(5u));`;
     const projectedPosition = shader
       ? `let projected=${shader.entryPoint}(destinationPosition, 1u);
@@ -333,10 +432,10 @@ let position=vec2f(relativeX.x+relativeX.y, relativeY.x+relativeY.y);`
         declarations: `${shader?.source ?? ''}\n${IS_FINITE_VALUE_WGSL}\nfn readAffine(slot: u32) -> f32 { return affine[affineOffset + slot]; }`,
         modules: shader?.modules,
         defines: shader?.defines,
-        body: `${destinationPosition}\n${projectedPosition}\nlet x=position.x;let y=position.y;let column=((readAffine(9u))*x-(readAffine(7u))*y)/(readAffine(10u))-${source.pixelInterpretation === 'area' ? '0.5' : '0.0'};let row=(-(readAffine(8u))*x+(readAffine(6u))*y)/(readAffine(10u))-${source.pixelInterpretation === 'area' ? '0.5' : '0.0'};
-var valid=isFiniteValue(column)&&isFiniteValue(row)${shader ? '&&projected.valid!=0u' : ''};var total=0.0;var weightSum=0.0;
-${props.method === 'nearest' ? `let sampleColumn=i32(floor(column+0.5));let sampleRow=i32(floor(row+0.5));if(sampleColumn<0||sampleRow<0||sampleColumn>=${source.width}||sampleRow>=${source.height}){valid=false;}else{let sampleIndex=u32(sampleRow)*${source.width}u+u32(sampleColumn);valid=valid&&sourceValidity[sourceValidityOffset+sampleIndex]!=0u;total=source[sourceOffset+sampleIndex];weightSum=1.0;}` : `let baseColumn=i32(floor(column));let baseRow=i32(floor(row));let fraction=vec2<f32>(fract(column),fract(row));for(var rowOffset=0;rowOffset<2;rowOffset++){for(var columnOffset=0;columnOffset<2;columnOffset++){let weight=select(1.0-fraction.x,fraction.x,columnOffset==1)*select(1.0-fraction.y,fraction.y,rowOffset==1);if(weight==0.0){continue;}let sampleColumn=baseColumn+columnOffset;let sampleRow=baseRow+rowOffset;var sampleValid=sampleColumn>=0&&sampleRow>=0&&sampleColumn<${source.width}&&sampleRow<${source.height};if(sampleValid){let sampleIndex=u32(sampleRow)*${source.width}u+u32(sampleColumn);sampleValid=sourceValidity[sourceValidityOffset+sampleIndex]!=0u;if(sampleValid){total+=weight*source[sourceOffset+sampleIndex];weightSum+=weight;}}${props.noDataPolicy === 'renormalize' ? '' : 'valid=valid&&sampleValid;'}}}`}
-valid=valid&&weightSum>0.0;let result=total/max(weightSum,1.0e-30);valid=valid&&isFiniteValue(result);values[valuesOffset+index]=select(bitcast<f32>(0x7fc00000u | (index & 0u)),result,valid);validity[validityOffset+index]=u32(valid);`
+        body: `${destinationPosition}\n${projectedPosition}\n${shader ? `let column=readAffine(6u)*position.x+readAffine(7u)*position.y-${source.pixelInterpretation === 'area' ? '0.5' : '0.0'};let row=readAffine(8u)*position.x+readAffine(9u)*position.y-${source.pixelInterpretation === 'area' ? '0.5' : '0.0'};` : 'let column=position.x;let row=position.y;'}
+var valid=readAffine(17u)==${GPU_RASTER_REPROJECTION_PARAMETER_VERSION}.0&&isFiniteValue(column)&&isFiniteValue(row)${shader ? '&&projected.valid!=0u' : ''};var total=0.0;var weightSum=0.0;
+${props.method === 'nearest' ? `let sampleColumn=i32(floor(column))+select(0,1,fract(column)>=0.5);let sampleRow=i32(floor(row))+select(0,1,fract(row)>=0.5);if(sampleColumn<0||sampleRow<0||sampleColumn>=${source.width}||sampleRow>=${source.height}){valid=false;}else{let sampleIndex=u32(sampleRow)*${source.width}u+u32(sampleColumn);valid=valid&&sourceValidity[sourceValidityOffset+sampleIndex]!=0u;total=source[sourceOffset+sampleIndex];weightSum=1.0;}` : `let baseColumn=i32(floor(column));let baseRow=i32(floor(row));let fraction=vec2<f32>(fract(column),fract(row));for(var rowOffset=0;rowOffset<2;rowOffset++){for(var columnOffset=0;columnOffset<2;columnOffset++){let weight=select(1.0-fraction.x,fraction.x,columnOffset==1)*select(1.0-fraction.y,fraction.y,rowOffset==1);if(weight==0.0){continue;}let sampleColumn=baseColumn+columnOffset;let sampleRow=baseRow+rowOffset;var sampleValid=sampleColumn>=0&&sampleRow>=0&&sampleColumn<${source.width}&&sampleRow<${source.height};if(sampleValid){let sampleIndex=u32(sampleRow)*${source.width}u+u32(sampleColumn);sampleValid=sourceValidity[sourceValidityOffset+sampleIndex]!=0u;if(sampleValid){total+=weight*source[sourceOffset+sampleIndex];weightSum+=weight;}}${props.noDataPolicy === 'renormalize' ? '' : 'valid=valid&&sampleValid;'}}}`}
+valid=valid&&weightSum>0.0;let result=total/select(1.0,weightSum,weightSum>0.0);valid=valid&&isFiniteValue(result);values[valuesOffset+index]=select(bitcast<f32>(0x7fc00000u | (index & 0u)),result,valid);validity[validityOffset+index]=u32(valid);`
       })
     ];
   }

@@ -42,8 +42,9 @@ it.each([
         }
       };
       const contributor = new GPURasterSpectralUnmixing(props);
-      for (const source of getParsedKernelSources(contributor.getCommandNodes(graph)).values()) {
-        expect(auditWGSLModule(source)).toEqual([]);
+      for (const {source, constants} of getParsedKernelSources(contributor.getCommandNodes(graph))
+        .configurations) {
+        expect(auditWGSLModule(source, constants)).toEqual([]);
       }
       expect(
         () => new GPURasterSpectralUnmixing({...props, bandCount: props.bandCount + 1})

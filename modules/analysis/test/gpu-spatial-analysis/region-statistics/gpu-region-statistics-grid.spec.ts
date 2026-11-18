@@ -93,6 +93,9 @@ function expectIdentical(
   }
   expect(grid.ids, message('ids')).toEqual(brute.ids);
   expect(grid.outputOverflow, message('output overflow')).toBe(brute.outputOverflow);
+  expect(grid.outputCandidateOverflow, message('output candidate overflow')).toBe(
+    brute.outputCandidateOverflow
+  );
   expect(grid.outputTotal, message('output total')).toBe(brute.outputTotal);
   expect(grid.mask, message('mask')).toEqual(brute.mask);
 }
@@ -362,7 +365,9 @@ it('GPURegionStatistics grid index flags candidate overflow', async () => {
   expect(grid.words[WORD.flags] & CANDIDATES_TRUNCATED).toBe(CANDIDATES_TRUNCATED);
   expect(grid.result.selectedCount).toBeLessThanOrEqual(100);
   expect(grid.result.selectedCount).toBeLessThan(brute.result.selectedCount);
-  expect(grid.outputOverflow).toBe(1);
+  expect(grid.outputOverflow).toBe(0);
+  expect(grid.outputCandidateOverflow).toBe(1);
+  expect(grid.outputTotal).toBe(grid.result.selectedCount);
   // A small region fits in the same capacity (a few cells plus margin) and clears the flag on the next encoding.
   harness.setRectangle([100, 100, 105, 105]);
   harness.encodeBoth();
@@ -370,6 +375,8 @@ it('GPURegionStatistics grid index flags candidate overflow', async () => {
   const smallGrid = await harness.read('grid');
   expect(smallBrute.result.selectedCount).toBeLessThanOrEqual(100);
   expectIdentical(smallBrute, smallGrid, true, 'small region after overflow');
+  expect(smallGrid.outputOverflow).toBe(0);
+  expect(smallGrid.outputCandidateOverflow).toBe(0);
   harness.destroy();
 });
 

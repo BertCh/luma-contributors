@@ -3,6 +3,20 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
+
+it('honors an explicit one-row search budget on a stationary track', () => {
+  const result = computeTrajectoryThinningOnCPU(
+    {
+      positions: new Float32Array(8),
+      timestamps: Float32Array.of(0, 1, 2, 3),
+      trackOffsets: Uint32Array.of(0, 4),
+      parameters: Float32Array.of(10, 0, 0, 0)
+    },
+    {mode: 'minimum-time', capacity: 4, maximumSearchRows: 1}
+  );
+  expect(Array.from(result.rowIds)).toEqual([0, 2, 3, 0xffffffff]);
+  expect(result.candidateOverflow[0]).toBe(1);
+});
 import {
   computeTrajectoryThinningOnCPU,
   CPUTrajectoryThinningOperation

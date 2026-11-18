@@ -17,6 +17,50 @@ import {
   packOperationPolygons
 } from './polygon-triangulation-operation-cases';
 
+for (const Operation of [GPUPolygonTriangulationOperation, CPUPolygonTriangulationOperation]) {
+  it(`CORE-08 ${Operation.name} keeps its original triangle contract after props mutation`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const input = packOperationPolygons([
+      [
+        [
+          [0, 0],
+          [1, 0],
+          [0, 1]
+        ]
+      ]
+    ]);
+    const props = {
+      ...getTriangulationOperationProps(input, 3),
+      maximumWork: 100,
+      spatialContext: {coordinateSpace: 'planar' as const, metric: 'native' as const}
+    };
+    const operation = new Operation(props);
+    props.polygonCount = 2;
+    props.indexCapacity = 6;
+    props.maximumWork = 0;
+    props.positions = 'changed-positions';
+    props.output.indices = 'changed-indices';
+    delete props.output.triangleCount;
+    delete props.output.triangleOffsets;
+    Reflect.set(props.spatialContext, 'coordinateSpace', 'longitude-latitude');
+    const result = await runOperationGraph(device, {
+      inputs: {
+        positions: {format: 'float32x2', values: input.positions},
+        featureOffsets: {format: 'uint32', values: input.featureOffsets},
+        polygonOffsets: {format: 'uint32', values: input.polygonOffsets},
+        ringOffsets: {format: 'uint32', values: input.ringOffsets}
+      },
+      operations: [operation],
+      outputs: ['indices', 'valid', 'triangleCount', 'triangleOffsets']
+    });
+    expect(Array.from(result['triangleCount'])).toEqual([1]);
+    expect(Array.from(result['triangleOffsets'])).toEqual([0, 1]);
+    expect(Array.from(result['valid'])).toEqual([1]);
+    expect(Array.from(result['indices']).sort()).toEqual([0, 1, 2]);
+  });
+}
+
 for (const scenario of ['ordinary', 'empty-and-overflow', 'closed-ring'] as const) {
   it(`polygon operations compare every output exactly on ${scenario}`, async () => {
     const device = await getWebGPUTestDevice();

@@ -38,10 +38,12 @@ for (const scale of [1e-6, 1, 1e6]) {
           indices: fixture.view('uint32', new Uint32Array([0, 1, 2, 3, 4, 5])).view,
           counts: fixture.view('uint32', new Uint32Array([6])).view,
           capacity: 6,
-          normals: normals.view,
-          eigenvalues: eigenvalues.view,
-          shapes: fixture.view('float32x3', new Float32Array(3)).view,
-          status: status.view
+          output: {
+            normals: normals.view,
+            eigenvalues: eigenvalues.view,
+            shapes: fixture.view('float32x3', new Float32Array(3)).view,
+            status: status.view
+          }
         })
       );
       await fixture.run();
@@ -88,10 +90,12 @@ for (const scale of [1e-6, 1, 1e6]) {
           iterations: 6,
           translationTolerance: 1e-5 * scale,
           rotationTolerance: 1e-5,
-          transform: transform.view,
-          status: status.view,
-          inlierMask: inlierMask.view,
-          history: fixture.view('float32x3', new Float32Array(18)).view
+          output: {
+            transform: transform.view,
+            status: status.view,
+            inlierMask: inlierMask.view,
+            history: fixture.view('float32x3', new Float32Array(18)).view
+          }
         })
       );
       await fixture.run();

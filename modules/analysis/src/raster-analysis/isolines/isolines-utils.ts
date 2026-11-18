@@ -5,6 +5,7 @@
 import {GraphVectorView, validatePackedView, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {validateRasterAlgebraAliasing} from '../raster-algebra/raster-algebra-utils';
 
 /**
  * Throws unless `view` is one packed view of `format` with at least `rowCount` rows.
@@ -37,17 +38,10 @@ export function validateIsolinesView(
  */
 export function validateIsolinesAliasing(
   id: string,
-  outputs: readonly (GraphDataView | undefined)[],
-  inputs: readonly (GraphDataView | undefined)[]
+  outputs: Parameters<typeof validateRasterAlgebraAliasing>[1],
+  inputs: Parameters<typeof validateRasterAlgebraAliasing>[2]
 ): void {
-  const outputBuffers = outputs.filter(view => view !== undefined).map(view => view.buffer);
-  if (new Set(outputBuffers).size !== outputBuffers.length) {
-    throw new Error(`${id} outputs must not share buffers`);
-  }
-  const inputBuffers = new Set(inputs.filter(view => view !== undefined).map(view => view.buffer));
-  if (outputBuffers.some(buffer => inputBuffers.has(buffer))) {
-    throw new Error(`${id} outputs must not share buffers with inputs`);
-  }
+  validateRasterAlgebraAliasing(id, outputs, inputs);
 }
 
 /**

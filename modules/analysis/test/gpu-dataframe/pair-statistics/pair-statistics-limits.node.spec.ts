@@ -27,9 +27,9 @@ let serial = 0;
 
 function expectWithinCoreLimits(nodes: readonly unknown[], label: string): number {
   let largest = 0;
-  for (const {id, source} of getGPUCommandNodeKernelSources(nodes)) {
+  for (const {id, source, constants} of getGPUCommandNodeKernelSources(nodes)) {
     expect(() => new WgslReflect(source), id).not.toThrow();
-    const bytes = getWorkgroupMemoryBytes(source);
+    const bytes = getWorkgroupMemoryBytes(source, constants);
     largest = Math.max(largest, bytes);
     expect(bytes, `${label} ${id} workgroup bytes`).toBeLessThanOrEqual(
       CORE_WORKGROUP_STORAGE_LIMIT_BYTES

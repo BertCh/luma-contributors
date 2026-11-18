@@ -20,7 +20,7 @@ import {
   getGPUTerrainHydrologicIndicesParameterValues,
   type GPUTerrainHydrologicIndicesSettings
 } from '../../../src/gpu-terrain/hydrology/gpu-terrain-hydrologic-indices';
-import type {GPURasterCellSizeMode} from '../../../src/analysis-core/raster-grid';
+import type {GPURasterCellSizeMode} from '../../../src/analysis-core/contracts/raster-grid';
 import {
   createInputBuffer,
   createOutputBuffer,

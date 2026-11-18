@@ -49,6 +49,7 @@ export type ContributorReadback = {
   result: GPURegionStatisticsResult;
   ids?: number[];
   outputOverflow?: number;
+  outputCandidateOverflow?: number;
   outputTotal?: number;
   mask?: number[];
 };
@@ -58,6 +59,7 @@ type ContributorBuffers = {
   ids?: Buffer;
   count?: Buffer;
   overflow?: Buffer;
+  candidateOverflow?: Buffer;
   total?: Buffer;
   mask?: Buffer;
 };
@@ -201,12 +203,20 @@ export class GridStatisticsHarness {
         buffers.ids = createOutputBuffer(device, this.rowCount);
         buffers.count = createOutputBuffer(device, 1);
         buffers.overflow = createOutputBuffer(device, 1);
+        buffers.candidateOverflow = createOutputBuffer(device, 1);
         buffers.total = createOutputBuffer(device, 1);
         props.output.selectedRows = {
           ids: importGraphBuffer(graph, 'ids', buffers.ids, 'uint32', this.rowCount),
           status: {
             count: importGraphBuffer(graph, 'count', buffers.count, 'uint32', 1),
             overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1),
+            candidateOverflow: importGraphBuffer(
+              graph,
+              'candidate-overflow',
+              buffers.candidateOverflow,
+              'uint32',
+              1
+            ),
             requiredCount: importGraphBuffer(graph, 'total', buffers.total, 'uint32', 1)
           }
         };
@@ -386,6 +396,7 @@ export class GridStatisticsHarness {
     if (buffers.ids && buffers.count && buffers.overflow && buffers.total) {
       readback.ids = await readCompactIds(buffers.ids, buffers.count);
       readback.outputOverflow = (await readUint32(buffers.overflow, 1))[0];
+      readback.outputCandidateOverflow = (await readUint32(buffers.candidateOverflow!, 1))[0];
       readback.outputTotal = (await readUint32(buffers.total, 1))[0];
     }
     if (buffers.mask) {

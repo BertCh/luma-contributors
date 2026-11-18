@@ -6,7 +6,7 @@
 
 /** Mirrors `GPU_LOCATION_ALLOCATION_SWAP_TOLERANCE` (a swap must beat this fraction of the scale). */
 const SWAP_TOLERANCE = 1e-6;
-const LARGE_COST = 1e30;
+const LARGE_COST = Infinity;
 
 export type LocationAllocationOracleOperation = 'p-median' | 'maximum-coverage';
 
@@ -100,7 +100,13 @@ export function getObjective(
   }
   let total = 0;
   for (let row = 0; row < costs.length / facilityCount; row++) {
-    if (selected.some(facility => costs[row * facilityCount + facility] <= distance)) {
+    if (
+      selected.some(
+        facility =>
+          Number.isFinite(costs[row * facilityCount + facility]) &&
+          costs[row * facilityCount + facility] <= distance
+      )
+    ) {
       total += 1;
     }
   }
@@ -138,7 +144,11 @@ export function runGreedyOnCPU(
           } else {
             score += 1;
           }
-        } else if (best[row] > distance && candidate <= distance) {
+        } else if (
+          (!Number.isFinite(best[row]) || best[row] > distance) &&
+          Number.isFinite(candidate) &&
+          candidate <= distance
+        ) {
           score += 1;
         }
       }
@@ -195,7 +205,7 @@ export function runSwapPhaseOnCPU(
         const current = Math.min(
           ...selected.map(f => Math.min(costs[row * facilityCount + f], LARGE_COST))
         );
-        if (current < 1e29) scale += current;
+        if (Number.isFinite(current)) scale += current;
       } else {
         scale += 1;
       }
@@ -474,7 +484,8 @@ function getWeightedParts(
     );
     if (nearest < LARGE_COST) cost += weights[row] * nearest;
     else unreachableWeight += weights[row];
-    if (operation === 'maximum-coverage' && nearest <= distance) coveredWeight += weights[row];
+    if (operation === 'maximum-coverage' && Number.isFinite(nearest) && nearest <= distance)
+      coveredWeight += weights[row];
   }
   return {unreachableWeight, cost, coveredWeight};
 }
@@ -588,7 +599,7 @@ export function getDecomposedSwapScores(
       } else if (cost < second[demand]) {
         second[demand] = cost;
       }
-      if (cost <= distance) {
+      if (Number.isFinite(cost) && cost <= distance) {
         coveringCount[demand]++;
         soleSlot[demand] = slot;
       }
@@ -637,11 +648,12 @@ export function getDecomposedSwapScores(
       const slot = operation === 'maximum-coverage' ? soleSlot[demand] : slotOfNearest[demand];
       if (operation === 'maximum-coverage') {
         if (coveringCount[demand] === 0) {
-          if (c <= distance) gainReach = round(gainReach + weight);
+          if (Number.isFinite(c) && c <= distance) gainReach = round(gainReach + weight);
         } else if (coveringCount[demand] === 1) {
           if (options.netTerms) {
-            if (c > distance) extraReach[slot] = round(extraReach[slot] - weight);
-          } else if (c <= distance) {
+            if (!Number.isFinite(c) || c > distance)
+              extraReach[slot] = round(extraReach[slot] - weight);
+          } else if (Number.isFinite(c) && c <= distance) {
             extraReach[slot] = round(extraReach[slot] + weight);
           }
         }
@@ -804,7 +816,11 @@ export function runColumnGreedyOnCPU(
               saved -= weight * c;
             }
           }
-        } else if (best[demand] > distance && c <= distance) {
+        } else if (
+          (!Number.isFinite(best[demand]) || best[demand] > distance) &&
+          Number.isFinite(c) &&
+          c <= distance
+        ) {
           reach += weight;
         }
       }

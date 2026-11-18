@@ -14,7 +14,7 @@ import type {
 import {
   createLonLatPolygonCheckNode,
   hasLonLatPolygonStatus
-} from '../../analysis-core/lon-lat-ring-wgsl';
+} from '../../analysis-core/kernels/lon-lat-ring-wgsl';
 import {createStorageTopKNode} from '../../analysis-core/kernels/storage-backed-top-k';
 import {createFillNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
@@ -52,7 +52,7 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createSpatialJoinClearNode,
-  createSpatialJoinFinalizeNode,
+  createSpatialJoinFinalizeNodes,
   getChunkNodeId,
   getDefaultSpatialSort,
   type SpatialSortCurve,
@@ -66,10 +66,17 @@ import {
   validateMatchingChunks
 } from './spatial-join-passes';
 import {NEAREST_NODE_WORDS} from './nearest-wgsl';
+import {validateSpatialJoinReadWriteBindings} from './spatial-join-binding-preflight';
 import type {GPUNearestFeatureSource, GPUSpatialJoinOnAttribute} from './spatial-join-types';
-import {validateStatusScalars} from './spatial-join-geometry';
+import {
+  validateStatusScalars,
+  validateSpatialJoinGeometry,
+  isMultipartJoinGeometry,
+  isSameSpatialJoinGeometry
+} from './spatial-join-geometry';
 import type {
   GPULineGeometryPort,
+  GPUMultipartGeometryPort,
   GPUPackedGeometryPort,
   GPUPolygonGeometryPort
 } from '../../analysis-core/contracts/index';
@@ -131,6 +138,12 @@ export type GPUNearestFeatureJoinOutput<
    * `GPU_SPATIAL_JOIN_NO_FEATURE`. Length `queryCount * neighborCapacity`.
    */
   neighborIds?: GraphDataView<'uint32'>;
+  /**
+   * Neighbors mode: feature row before applying `features.sourceIds`, with the same layout and
+   * missing sentinel as `neighborIds`. Wire this to `GPUPairGather.neighbors.rows` to gather
+   * feature attributes. Requires `neighborIds`; both outputs must be disjoint.
+   */
+  neighborRows?: GraphDataView<'uint32'>;
   /** Neighbors mode, required with `neighborIds`: number of filled slots per query. Length `queryCount`. */
   neighborCounts?: GraphDataView<'uint32'>;
   /** Neighbors mode: distance per slot (in the spatial context length unit), `-1` in unused slots. Same layout as `neighborIds`. */
@@ -241,7 +254,8 @@ export function getGPUNearestFeatureJoinMaximumLeafCapacity(device: Device): num
 export type GPUNearestFeatureJoinProps<
   IdRows extends GPUUint32Rows = GraphDataView<'uint32'>,
   DistanceRows extends NearestDistanceRows = GraphDataView<'float32'>,
-  QueryGeometry extends GPUNearestQueryGeometry = GPUNearestQueryGeometry
+  QueryGeometry extends GPUNearestQueryGeometry = GPUNearestQueryGeometry,
+  Parameters = unknown
 > = {
   /** Prefix for generated node and transient IDs. Defaults to `'nearest-feature-join'`. */
   id?: string;
@@ -380,12 +394,12 @@ export type GPUNearestFeatureJoinProps<
    * `features` (points, lines or polygons), and be invalidated when they change. It reuses a
    * build; results are never cached.
    */
-  prepared?: GPUSpatialJoinPrepared;
+  prepared?: GPUSpatialJoinPrepared<Parameters>;
 };
 
 /** Flat internal view of the props that the node builders read. */
 type NearestFeatureJoinViews = Omit<
-  GPUNearestFeatureJoinProps<GPUUint32Rows, NearestDistanceRows>,
+  GPUNearestFeatureJoinProps<GPUUint32Rows, NearestDistanceRows, GPUNearestQueryGeometry, never>,
   'queries' | 'output'
 > &
   Omit<GPUNearestFeatureJoinOutput<GPUUint32Rows, NearestDistanceRows>, 'status'> &
@@ -393,7 +407,9 @@ type NearestFeatureJoinViews = Omit<
     /** Point queries, possibly chunked. */
     points?: GPUFloat32Positions;
     /** Line or polygon queries. */
-    queries?: GPUPackedGeometryPort<GPULineGeometryPort | GPUPolygonGeometryPort>;
+    queries?: GPUPackedGeometryPort<
+      GPULineGeometryPort | GPUPolygonGeometryPort | GPUMultipartGeometryPort
+    >;
     /** Point query IDs with the chunk topology of `points`. */
     sourceIds?: GPUUint32Rows;
     /** Feature IDs written instead of feature rows. */
@@ -404,16 +420,30 @@ type NearestFeatureJoinViews = Omit<
   };
 
 function getNearestFeatureJoinViews(
-  props: GPUNearestFeatureJoinProps<GPUUint32Rows, NearestDistanceRows>
+  props: GPUNearestFeatureJoinProps<
+    GPUUint32Rows,
+    NearestDistanceRows,
+    GPUNearestQueryGeometry,
+    never
+  >
 ): NearestFeatureJoinViews {
   const {queries, output, ...scalars} = props;
   const {status, ...outputs} = output;
   return {
     ...scalars,
     ...outputs,
-    points: queries.kind === 'points' ? queries.positions : undefined,
-    queries: queries.kind === 'points' ? undefined : queries,
-    sourceIds: queries.kind === 'points' ? queries.sourceIds : undefined,
+    points:
+      queries.kind === 'points' && !isMultipartJoinGeometry(queries)
+        ? queries.positions
+        : undefined,
+    queries:
+      queries.kind === 'points' && !isMultipartJoinGeometry(queries)
+        ? undefined
+        : (queries as NearestFeatureJoinViews['queries']),
+    sourceIds:
+      queries.kind === 'points' && !isMultipartJoinGeometry(queries)
+        ? queries.sourceIds
+        : undefined,
     featureIds: props.features.sourceIds,
     overflow: status.overflow,
     candidateCount: status.candidateCount,
@@ -441,13 +471,14 @@ function getNearestFeatureJoinViews(
 export class GPUNearestFeatureJoin<
   IdRows extends GPUUint32Rows = GraphDataView<'uint32'>,
   DistanceRows extends NearestDistanceRows = GraphDataView<'float32'>,
-  QueryGeometry extends GPUNearestQueryGeometry = GPUNearestQueryGeometry
+  QueryGeometry extends GPUNearestQueryGeometry = GPUNearestQueryGeometry,
+  Parameters = unknown
 > implements GPUCommandNodeProducer
 {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUNearestFeatureJoinProps<IdRows, DistanceRows, QueryGeometry>;
+  readonly props: GPUNearestFeatureJoinProps<IdRows, DistanceRows, QueryGeometry, Parameters>;
   /** Flat view of `props` read by the node builders. */
   private readonly views: NearestFeatureJoinViews;
   /** `'neighbors'` when `neighborIds` is set, otherwise the original `'nearest-feature'` mode. */
@@ -477,8 +508,27 @@ export class GPUNearestFeatureJoin<
   /** Sphere radius in the context length unit of a great-circle search, or undefined for planar distances. */
   readonly sphereRadius: number | undefined;
 
-  constructor(props: GPUNearestFeatureJoinProps<IdRows, DistanceRows, QueryGeometry>) {
+  constructor(props: GPUNearestFeatureJoinProps<IdRows, DistanceRows, QueryGeometry, Parameters>) {
     this.id = props.id ?? 'nearest-feature-join';
+    const multipart =
+      isMultipartJoinGeometry(props.queries) || isMultipartJoinGeometry(props.features);
+    if (multipart) {
+      validateRequirement(
+        this.id,
+        props.output.neighborIds !== undefined,
+        'featureOffsets multipart nearest requires neighbors mode (neighborIds and neighborCounts)'
+      );
+      if (props.features.kind !== 'segments')
+        validateSpatialJoinGeometry(this.id, 'features', props.features, {
+          allowMultipart: true,
+          allowEmpty: true
+        });
+      if (isMultipartJoinGeometry(props.queries))
+        validateSpatialJoinGeometry(this.id, 'queries', props.queries, {
+          allowMultipart: true,
+          allowEmpty: true
+        });
+    }
     this.props = props;
     const views = getNearestFeatureJoinViews(props);
     this.views = views;
@@ -511,7 +561,10 @@ export class GPUNearestFeatureJoin<
     this.ties = views.ties ?? 'lowest-id';
     const {prepared} = views;
     if (prepared) {
-      if (views.features.kind === 'segments' || prepared.geometry.kind !== views.features.kind) {
+      if (
+        views.features.kind === 'segments' ||
+        !isSameSpatialJoinGeometry(prepared.geometry, views.features)
+      ) {
         throw new Error(`${id} prepared must index the same point, line or polygon features`);
       }
       if (prepared.featureCount !== this.featureCount) {
@@ -601,6 +654,19 @@ export class GPUNearestFeatureJoin<
     );
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     this.validateFilters();
+    if (this.mode === 'neighbors') {
+      validateSpatialJoinReadWriteBindings(
+        id,
+        [views.featureIds],
+        [
+          views.neighborIds,
+          views.neighborRows,
+          views.neighborCounts,
+          views.neighborDistances,
+          views.overflow
+        ]
+      );
+    }
     validateDisjointWritableViews(
       id,
       Object.fromEntries(getOutputs(views).map((view, index) => [`output ${index}`, view]))
@@ -669,6 +735,7 @@ export class GPUNearestFeatureJoin<
     const slotCount = queryCount * neighborCapacity;
     for (const [name, view, length] of [
       ['neighborIds', views.neighborIds, slotCount],
+      ['neighborRows', views.neighborRows, slotCount],
       ['neighborCounts', views.neighborCounts, queryCount],
       ['neighborDistances', views.neighborDistances, slotCount],
       ['neighborFootPoints', views.neighborFootPoints, slotCount],
@@ -700,6 +767,7 @@ export class GPUNearestFeatureJoin<
   private validateNearestFeature(): number {
     const {id, views} = this;
     const {features} = views;
+    validateRequirement(id, !views.neighborRows, 'output.neighborRows requires output.neighborIds');
     if (
       views.queries ||
       views.k !== undefined ||
@@ -765,6 +833,7 @@ export class GPUNearestFeatureJoin<
       maxDistance: views.radius,
       featureIds: views.featureIds,
       neighborIds: views.neighborIds!,
+      neighborRows: views.neighborRows,
       neighborCounts: views.neighborCounts!,
       neighborDistances: views.neighborDistances,
       neighborFootPoints: views.neighborFootPoints,
@@ -1069,7 +1138,7 @@ export class GPUNearestFeatureJoin<
       );
     }
     nodes.push(
-      createSpatialJoinFinalizeNode<Parameters>(graph, {
+      ...createSpatialJoinFinalizeNodes<Parameters>(graph, {
         id: `${id}-finalize`,
         operation: OPERATION,
         state,
@@ -1417,7 +1486,7 @@ fn rejectCandidate(index: u32) { candidateSquaredDistances[candidateSquaredDista
       );
     }
     nodes.push(
-      createSpatialJoinFinalizeNode<Parameters>(graph, {
+      ...createSpatialJoinFinalizeNodes<Parameters>(graph, {
         id: `${id}-finalize`,
         operation: OPERATION,
         state,
@@ -1464,6 +1533,7 @@ function getOutputs(
     props.antimeridianUncertainCount,
     props.poleUncertainCount,
     props.neighborIds,
+    props.neighborRows,
     props.neighborCounts,
     props.neighborDistances,
     props.neighborFootPoints,
@@ -1472,6 +1542,7 @@ function getOutputs(
     props.matches?.ids,
     props.matches?.status.count,
     props.matches?.status.overflow,
-    props.matches?.status.requiredCount
+    props.matches?.status.requiredCount,
+    props.matches?.status.candidateOverflow
   ];
 }

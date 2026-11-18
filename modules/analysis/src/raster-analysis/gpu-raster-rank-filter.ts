@@ -14,12 +14,14 @@ import type {
   GPUCommandNodeProducer,
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {
-  GPURasterBufferBand,
-  GPURasterHaloStage,
-  GPURasterMetadata
-} from '@luma.gl/graph/gpu-raster';
-import {getRasterBandViews, getRasterBufferBandNodes} from './raster-band-utils';
+import type {GPURasterBand, GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  snapshotRasterBand,
+  validateRasterTextureBand,
+  validateRasterBandBelongsToGraph
+} from './raster-band-utils';
 import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   requireRasterLength,
@@ -33,7 +35,7 @@ const MAXIMUM_RADIUS = 8;
 export type GPURasterRankFilterProps = {
   id?: string;
   grid: GPURasterMetadata;
-  input: GPURasterBufferBand;
+  input: GPURasterBand;
   /** Square footprint radius in [0,8]. */
   radius: number;
   /** Quantile in [0,1], default 0.5. Selects floor(q * n), capped at n - 1 (SciPy rank convention). */
@@ -57,8 +59,10 @@ export class GPURasterRankFilter implements GPUCommandNodeProducer, GPURasterHal
   /** Receptive field in pixels (`GPURasterHaloStage` contract): the square footprint radius. */
   readonly requiredHalo: number;
   constructor(props: GPURasterRankFilterProps) {
+    props = {...props, input: snapshotRasterBand(props.input)};
     this.id = props.id ?? 'raster-rank-filter';
     this.props = props;
+    validateRasterTextureBand(this.id, props.input, props.grid);
     const count = validateRasterExpansionViews(
       this.id,
       props.grid,
@@ -89,6 +93,7 @@ export class GPURasterRankFilter implements GPUCommandNodeProducer, GPURasterHal
 
     const {id, props} = this;
     const {grid, output} = props;
+    validateRasterBandBelongsToGraph(id, graph, props.input, []);
     validateRasterExpansionGraph(id, graph, [
       ...getRasterBandViews(props.input),
       ...Object.values(output)

@@ -51,6 +51,58 @@ async function run(
   );
 }
 
+it('RS11 largest period-12 history preserves the analytic trend, phases and jump', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createRemoteSensingHarness(device);
+  const sliceCount = 130;
+  const historyLength = 129;
+  const result = await harness.run(
+    new GPURasterSeasonalBreak({
+      cellCount: 1,
+      sliceCount,
+      period: 12,
+      seasonality: 'dummy',
+      minimumSegmentLength: 24,
+      missingPolicy: 'reject',
+      monitoring: {historyLength, threshold: 4, minimumConsecutive: 1},
+      values: harness.input(
+        Array.from(
+          {length: sliceCount},
+          (_, slice) => 2 + slice * 0.125 + (slice % 12) * 0.5 + (slice >= 60 ? 4 : 0)
+        )
+      ),
+      output: {
+        coefficients: harness.output('coefficients', 'float32', 14),
+        components: harness.output('components', 'float32', sliceCount * 3),
+        breakIndex: harness.output('breakIndex', 'uint32', 1),
+        improvement: harness.output('improvement', 'float32', 1),
+        status: harness.output('status', 'uint32', 1),
+        diagnostics: harness.output('diagnostics', 'float32', 6)
+      }
+    })
+  );
+  expect(result['status']).toEqual([0]);
+  expect(result['breakIndex']).toEqual([60]);
+  const expectedCoefficients = [
+    2,
+    sliceCount * 0.125,
+    ...Array.from({length: 11}, (_, phase) => (phase + 1) * 0.5),
+    4
+  ];
+  for (const [column, expected] of expectedCoefficients.entries())
+    expect(result['coefficients'][column]).toBeCloseTo(expected, 3);
+  for (let slice = 0; slice < sliceCount; slice++) {
+    expect(result['components'][slice * 3]).toBeCloseTo(
+      2 + slice * 0.125 + (slice >= 60 ? 4 : 0),
+      3
+    );
+    expect(result['components'][slice * 3 + 1]).toBeCloseTo((slice % 12) * 0.5, 3);
+    expect(result['components'][slice * 3 + 2]).toBeCloseTo(0, 3);
+  }
+  expect(result['diagnostics'][2]).toBe(historyLength);
+});
+
 for (const entry of reference.cases) {
   it(`RS11 extended direct NumPy reference: ${entry.name}`, async () => {
     const result = await run(entry);

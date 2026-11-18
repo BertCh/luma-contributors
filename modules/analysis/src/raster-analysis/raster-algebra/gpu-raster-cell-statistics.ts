@@ -19,6 +19,7 @@ import {
   getRasterAlgebraStackNodeCount,
   getRasterAlgebraStackNodes,
   getRasterAlgebraStackViews,
+  getNamedRasterAlgebraStackViews,
   isRasterAlgebraBandStack,
   validateRasterAlgebraStack
 } from './raster-algebra-stack-input';
@@ -160,8 +161,12 @@ export class GPURasterCellStatistics implements GPUCommandNodeProducer {
     }
     validateRasterAlgebraAliasing(
       id,
-      outputs.map(([, view]) => view),
-      [...getRasterAlgebraStackViews(props.stack), props.mask, props.parameters]
+      Object.fromEntries(outputs.map(([name, view]) => [`output.${name}`, view])),
+      {
+        ...getNamedRasterAlgebraStackViews(props.stack),
+        mask: props.mask,
+        parameters: props.parameters
+      }
     );
   }
 

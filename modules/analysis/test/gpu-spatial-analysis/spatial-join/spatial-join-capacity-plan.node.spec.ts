@@ -85,8 +85,8 @@ describe('getGPUSpatialJoinCapacityPlan', () => {
           candidateTileCapacity,
           output: {
             pairs: {
-              leftIds: pairView('left', pairCapacity),
-              rightIds: pairView('right', pairCapacity),
+              leftRows: pairView('left', pairCapacity),
+              rightRows: pairView('right', pairCapacity),
               status: {
                 count: pairView('count', 1),
                 overflow: pairView('overflow', 1)
@@ -132,8 +132,8 @@ describe('getGPUSpatialJoinCapacityPlan', () => {
       predicate: 'intersects',
       output: {
         pairs: {
-          leftIds: createTransientView(graph, 'input-left-ids', 'uint32', 4),
-          rightIds: createTransientView(graph, 'input-right-ids', 'uint32', 4),
+          leftRows: createTransientView(graph, 'input-left-ids', 'uint32', 4),
+          rightRows: createTransientView(graph, 'input-right-ids', 'uint32', 4),
           status: {
             count: createTransientView(graph, 'input-count', 'uint32', 1),
             overflow: createTransientView(graph, 'input-overflow', 'uint32', 1)

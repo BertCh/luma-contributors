@@ -90,9 +90,9 @@ it('network expansion kernels parse and stay within eight storage bindings', () 
   ]) {
     const sources = getParsedKernelSources(nodes);
     expect(sources.size).toBeGreaterThan(0);
-    for (const [name, source] of sources) {
+    for (const {id: name, source: source, constants} of sources.configurations) {
       expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
-      expect(getPrivateMemoryBytes(source), name).toBeLessThanOrEqual(
+      expect(getPrivateMemoryBytes(source, constants), name).toBeLessThanOrEqual(
         CORE_PRIVATE_MEMORY_LIMIT_BYTES
       );
     }
@@ -128,13 +128,15 @@ it('bounded graph traversal scratch fits the core private-memory budget at maxim
       complete: view('uint32', 1)
     }
   });
-  for (const contributor of [structure, routes])
-    for (const [name, source] of getParsedKernelSources(contributor.getCommandNodes(graph))) {
+  for (const contributor of [structure, routes]) {
+    const recordedKernelSources1 = getParsedKernelSources(contributor.getCommandNodes(graph));
+    for (const {id: name, source: source, constants} of recordedKernelSources1.configurations) {
       expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
-      expect(getPrivateMemoryBytes(source), name).toBeLessThanOrEqual(
+      expect(getPrivateMemoryBytes(source, constants), name).toBeLessThanOrEqual(
         CORE_PRIVATE_MEMORY_LIMIT_BYTES
       );
     }
+  }
 });
 
 it('bounded exact network algorithms reject graphs above their documented node caps', () => {

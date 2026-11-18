@@ -225,7 +225,7 @@ it('GPUMaxPRegions has no row cap: 262,144 rows build, and scratch beyond one bi
   const nodes = build(262144, 1, 16);
   expect(nodes.length).toBeGreaterThan(10);
   for (const kernel of getGPUCommandNodeKernelSources(nodes)) {
-    expect(getPrivateMemoryBytes(kernel.source), kernel.id).toBeLessThanOrEqual(
+    expect(getPrivateMemoryBytes(kernel.source, kernel.constants), kernel.id).toBeLessThanOrEqual(
       CORE_PRIVATE_MEMORY_LIMIT_BYTES
     );
   }
@@ -282,11 +282,11 @@ it('GPUAZPRegions has no row cap and keeps private memory independent of the row
   const privateBytes = sizes.map(rows =>
     getGPUCommandNodeKernelSources(build(rows, 8, 64)).map(kernel => {
       expect(kernel.source, kernel.id).not.toMatch(/var<private> reached:/);
-      expect(getPrivateMemoryBytes(kernel.source), kernel.id).toBeLessThanOrEqual(
+      expect(getPrivateMemoryBytes(kernel.source, kernel.constants), kernel.id).toBeLessThanOrEqual(
         CORE_PRIVATE_MEMORY_LIMIT_BYTES
       );
       expect(getStorageBindingCount(kernel.source), kernel.id).toBeLessThanOrEqual(8);
-      return getPrivateMemoryBytes(kernel.source);
+      return getPrivateMemoryBytes(kernel.source, kernel.constants);
     })
   );
   // The kernel list grows with the row count (reduction levels), the private memory does not.
@@ -295,7 +295,7 @@ it('GPUAZPRegions has no row cap and keeps private memory independent of the row
     id.endsWith('-iteration-0-candidates')
   );
   // Neighborhood rows, hash table, stack, visited bits and the count: 2,068 bytes.
-  expect(candidates && getPrivateMemoryBytes(candidates.source)).toBe(2068);
+  expect(candidates && getPrivateMemoryBytes(candidates.source, candidates.constants)).toBe(2068);
   for (const rows of [65, 257, 4097]) {
     const reductions = build(rows, 1, 4).filter(
       node => node.workload?.variant === 'deterministic-objective-reduction'

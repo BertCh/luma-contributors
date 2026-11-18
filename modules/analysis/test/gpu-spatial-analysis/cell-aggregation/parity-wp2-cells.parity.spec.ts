@@ -67,7 +67,8 @@ for (const fixture of cellFixtures)
                     `${label}/resolution=${[9, 7, 5][levelIndex]}`,
                     expected.reference,
                     table,
-                    frames[frameIndex].levels[levelIndex]
+                    frames[frameIndex].levels[levelIndex],
+                    levelIndex === 0 ? 0 : frames[frameIndex].levels[levelIndex - 1].overflow
                   );
                 if (pyramid)
                   compareParity(

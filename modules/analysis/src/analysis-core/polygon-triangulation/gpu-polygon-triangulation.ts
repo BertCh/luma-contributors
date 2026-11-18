@@ -34,6 +34,10 @@ import {
 import {EXACT_GEOMETRY_WGSL} from '../kernels/exact-geometry-wgsl';
 import {EXACT_ORIENTATION_WGSL} from '../kernels/exact-orientation-wgsl';
 import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../kernels/construction-snapshot';
 import type {GPUPolygonGeometryFields} from '../contracts/index';
 
 import {
@@ -316,8 +320,38 @@ export class GPUPolygonTriangulation implements GPUCommandNodeProducer {
   readonly indexCount: number;
 
   constructor(props: GPUPolygonTriangulationProps) {
-    this.id = props.id ?? 'polygon-triangulation';
-    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    const contextProps = snapshotConstructionFields(props, ['id', 'spatialContext']);
+    this.id = contextProps.id ?? 'polygon-triangulation';
+    const spatialContext =
+      contextProps.spatialContext &&
+      snapshotConstructionSpatialContext(contextProps.spatialContext);
+    // Reject unsupported coordinates before evaluating geometry or output getters.
+    this.spatialContext = snapshotConstructionSpatialContext(
+      resolveGPUSpatialContext(this.id, spatialContext)
+    );
+    const constructionProps = snapshotConstructionFields(props, [
+      'positions',
+      'featureOffsets',
+      'polygonOffsets',
+      'ringOffsets',
+      'output',
+      'maximumWork',
+      'useZOrderHash',
+      'largePolygonMethod',
+      'monotoneMinimumVertices',
+      'monotoneMaximumVertices'
+    ]);
+    props = Object.freeze({
+      ...contextProps,
+      ...constructionProps,
+      spatialContext,
+      output: snapshotConstructionFields(constructionProps.output, [
+        'indices',
+        'valid',
+        'triangleCount',
+        'triangleOffsets'
+      ])
+    });
     this.props = props;
     const {id} = this;
     const {output} = props;

@@ -5,15 +5,14 @@
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {WgslExec, WgslParser, WgslReflect} from 'wgsl_reflect';
-import {createSpatialJoinFinalizeNode} from '../../../src/gpu-spatial-analysis/spatial-join/spatial-join-passes';
+import {createSpatialJoinFinalizeNodes} from '../../../src/gpu-spatial-analysis/spatial-join/spatial-join-passes';
 import {
   createNullWebGPUDevice,
   getGPUCommandNodeKernelSources
 } from '../../utils/gpu-contributor-test-utils';
 import {getReservedWGSLWords} from './wgsl-reserved-words';
 
-// GPUCompactOutput documents aggregate completeness: an intermediate overflow makes the compact
-// result incomplete even when the retained matches fit its final capacity. These expectations are
+// Compact final capacity and candidate completeness use separate words. These expectations are
 // explicit rather than inferred from the implementation or from packed/chunked agreement.
 const STATUS_CASES = [
   {
@@ -22,7 +21,7 @@ const STATUS_CASES = [
     matchCapacity: 20,
     state: [10, 0, 4, 0],
     leafOverflow: 0,
-    expected: [1, 10, 0, 4, 1, 4]
+    expected: [1, 10, 0, 4, 0, 4, 1]
   },
   {
     name: 'candidate capacity five',
@@ -30,7 +29,7 @@ const STATUS_CASES = [
     matchCapacity: 20,
     state: [10, 0, 5, 0],
     leafOverflow: 0,
-    expected: [1, 10, 0, 5, 1, 5]
+    expected: [1, 10, 0, 5, 0, 5, 1]
   },
   {
     name: 'BVH leaf capacity only',
@@ -38,7 +37,7 @@ const STATUS_CASES = [
     matchCapacity: 20,
     state: [2, 0, 2, 0],
     leafOverflow: 1,
-    expected: [1, 2, 0, 2, 1, 2]
+    expected: [1, 2, 0, 2, 0, 2, 1]
   },
   {
     name: 'compact capacity only',
@@ -46,7 +45,7 @@ const STATUS_CASES = [
     matchCapacity: 4,
     state: [10, 0, 10, 0],
     leafOverflow: 0,
-    expected: [1, 10, 0, 4, 1, 10]
+    expected: [1, 10, 0, 4, 1, 10, 0]
   },
   {
     name: 'candidate and compact capacities',
@@ -54,7 +53,7 @@ const STATUS_CASES = [
     matchCapacity: 3,
     state: [10, 0, 4, 0],
     leafOverflow: 0,
-    expected: [1, 10, 0, 3, 1, 4]
+    expected: [1, 10, 0, 3, 1, 4, 1]
   },
   {
     name: 'saturated candidate count',
@@ -62,7 +61,7 @@ const STATUS_CASES = [
     matchCapacity: 20,
     state: [0xffffffff, 0, 4, 0],
     leafOverflow: 0,
-    expected: [1, 0xffffffff, 0, 4, 1, 4]
+    expected: [1, 0xffffffff, 0, 4, 0, 4, 1]
   },
   {
     name: 'exact capacities with uncertainty',
@@ -70,7 +69,7 @@ const STATUS_CASES = [
     matchCapacity: 4,
     state: [7, 3, 4, 0],
     leafOverflow: 0,
-    expected: [0, 7, 3, 4, 0, 4]
+    expected: [0, 7, 3, 4, 0, 4, 0]
   }
 ];
 
@@ -79,7 +78,7 @@ for (const testCase of STATUS_CASES) {
     const device = createNullWebGPUDevice();
     const graph = new GPUCommandGraph(device);
     const scalar = (name: string) => createTransientView(graph, name, 'uint32', 1);
-    const node = createSpatialJoinFinalizeNode(graph, {
+    const nodes = createSpatialJoinFinalizeNodes(graph, {
       id: 'join-finalize-status',
       operation: 'JoinFinalizeStatus',
       state: createTransientView(graph, 'state', 'uint32', 4),
@@ -93,48 +92,52 @@ for (const testCase of STATUS_CASES) {
         status: {
           count: scalar('match-count'),
           overflow: scalar('match-overflow'),
-          requiredCount: scalar('required-count')
+          requiredCount: scalar('required-count'),
+          candidateOverflow: scalar('candidate-overflow')
         }
       }
     });
     try {
-      const [kernel] = getGPUCommandNodeKernelSources([node]);
-      expect(getReservedWGSLWords(kernel.source)).toEqual([]);
+      const kernels = getGPUCommandNodeKernelSources(nodes);
+      for (const kernel of kernels) expect(getReservedWGSLWords(kernel.source)).toEqual([]);
       const outputNames = [
         'overflow',
         'candidateCount',
         'uncertainCount',
         'matchCount',
         'matchOverflow',
-        'matchTotalCount'
+        'matchTotalCount',
+        'matchCandidateOverflow'
       ];
       const buffers: Record<string, Uint32Array> = {
         state: new Uint32Array(4),
         bvhOverflow: new Uint32Array(1),
         ...Object.fromEntries(outputNames.map(name => [name, new Uint32Array([0xfffffffe])]))
       };
-      const bindings = Object.fromEntries(
-        new WgslReflect(kernel.source).storage.map(declaration => [
-          declaration.binding,
-          buffers[declaration.name]
-        ])
-      );
       const execute = (state: number[], leafOverflow: number) => {
         buffers['state'].set(state);
         buffers['bvhOverflow'][0] = leafOverflow;
         // Execute the generated production shader without rewriting its body or constants.
-        new WgslExec(new WgslParser().parse(kernel.source)).dispatchWorkgroups(
-          'main',
-          [1, 1, 1],
-          {0: bindings},
-          {constants: kernel.constants}
-        );
+        for (const kernel of kernels) {
+          const bindings = Object.fromEntries(
+            new WgslReflect(kernel.source).storage.map(declaration => [
+              declaration.binding,
+              buffers[declaration.name]
+            ])
+          );
+          new WgslExec(new WgslParser().parse(kernel.source)).dispatchWorkgroups(
+            'main',
+            [1, 1, 1],
+            {0: bindings},
+            {constants: kernel.constants}
+          );
+        }
         return outputNames.map(name => buffers[name][0]);
       };
       expect(execute(testCase.state, testCase.leafOverflow)).toEqual(testCase.expected);
       // Keep output memory between frames: every status must be overwritten, including uncertainty.
-      expect(execute([0, 0, 0, 0], 0)).toEqual([0, 0, 0, 0, 0, 0]);
-      expect(execute([2, 0, 2, 0], 0)).toEqual([0, 2, 0, 2, 0, 2]);
+      expect(execute([0, 0, 0, 0], 0)).toEqual([0, 0, 0, 0, 0, 0, 0]);
+      expect(execute([2, 0, 2, 0], 0)).toEqual([0, 2, 0, 2, 0, 2, 0]);
     } finally {
       device.destroy();
     }

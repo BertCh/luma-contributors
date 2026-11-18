@@ -9,6 +9,7 @@ import {
   type GPURegressionModelResult
 } from '../../analysis-core/contracts/model-result';
 import {getChiSquareSurvival} from './ordinary-least-squares-statistics';
+import {getRegressionTablePredictorCount} from './regression-table-layout';
 import {
   GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_APPROXIMATION,
   GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_AT_BOUNDARY,
@@ -34,7 +35,7 @@ import {
 
 /** Read-back arrays of one `GPUSpatialLagMaximumLikelihood` or `GPUSpatialErrorMaximumLikelihood` fit. */
 export type GPUSpatialMaximumLikelihoodReadback = {
-  /** `(predictorCount + 2) * 4` values, see the `table` output. */
+  /** Active prefix: `(predictorCount + 2) * 4` values. Pass options.predictorCount for spare capacity. */
   table: Float32Array;
   /** At least `GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LENGTH` values. */
   summary: Float32Array;
@@ -43,6 +44,8 @@ export type GPUSpatialMaximumLikelihoodReadback = {
 
 /** Options of {@link getGPUSpatialLagMaximumLikelihoodModelResult}. */
 export type GPUSpatialMaximumLikelihoodModelResultOptions = {
+  /** Fitted predictor count; required for a capacity-sized table. Omit only for an exact-length table. */
+  predictorCount?: number;
   /** Predictor names after `'CONSTANT'`; missing entries default to `'x0'`, `'x1'`, ... */
   predictorNames?: readonly string[];
 };
@@ -107,11 +110,12 @@ function getModelResult(
     );
   }
   const stride = GPU_SPATIAL_MAXIMUM_LIKELIHOOD_TABLE_STRIDE;
-  const rowCount = table.length / stride;
-  const predictorCount = rowCount - 2;
-  if (!Number.isInteger(predictorCount) || predictorCount < 1) {
-    throw new Error('Maximum likelihood table must hold (predictorCount + 2) * 4 values');
-  }
+  const predictorCount = getRegressionTablePredictorCount(
+    'Maximum likelihood',
+    table,
+    stride,
+    options.predictorCount
+  );
   const names = getGPURegressionPredictorNames(predictorCount, options.predictorNames);
   names.push(lag ? 'W_y' : 'lambda');
   const coefficients: GPURegressionCoefficient[] = names.map((name, index) => {

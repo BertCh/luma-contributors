@@ -66,7 +66,7 @@ it('RS02 maximal-category kernels parse at the default storage binding limit', (
     new GPURasterFractionalCategoricalStatistics(makeProps(graph, 65534, 1)).getCommandNodes(graph)
   );
   expect(kernels.size).toBeGreaterThan(7);
-  for (const [name, source] of kernels)
+  for (const {id: name, source} of kernels.configurations)
     expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
 });
 

@@ -16,7 +16,7 @@ import {
 import {
   getRasterGroundCellSize,
   type GPURasterCellSizeMode
-} from '../../../src/analysis-core/raster-grid';
+} from '../../../src/analysis-core/contracts/raster-grid';
 import {getOracleWebMercatorY} from '../terrain-oracle-utils';
 import {computeTerrainHorizon, createRandom, createSmoothTerrain} from './terrain-horizon-oracle';
 import {

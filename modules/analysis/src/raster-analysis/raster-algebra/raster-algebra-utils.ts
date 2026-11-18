@@ -2,15 +2,37 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GraphDataView, GraphVectorView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GraphDataView, type GraphVectorView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
   validateFiniteNumber,
   validateGraphViewsBelongToGraph,
+  validateGraphOutputsDisjointFromInputs,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
+
+type RasterAliasingViews =
+  | readonly (GraphDataView | undefined)[]
+  | Readonly<Record<string, GraphDataView | undefined>>;
+
+/** Retained raster output ports must use distinct physical allocations. @internal */
+export function validateRasterWritableBuffers(id: string, outputs: RasterAliasingViews): void {
+  const ports = new Map<unknown, string>();
+  for (const [name, view] of Object.entries(outputs)) {
+    if (!view) continue;
+    const port = Array.isArray(outputs) ? `outputs[${name}]` : name;
+    const buffer = view.buffer.defaultBuffer
+      ? getCoreDefaultBuffer(view.buffer.defaultBuffer)
+      : view.buffer;
+    const previous = ports.get(buffer);
+    if (previous !== undefined)
+      throw new Error(`${id} outputs must not share buffers: ${previous} conflicts with ${port}`);
+    ports.set(buffer, port);
+  }
+}
 
 /** Nodata description shared by raster-algebra contributors. @internal */
 export type RasterAlgebraNoData = {
@@ -75,6 +97,21 @@ export function validateRasterAlgebraNoData(id: string, noDataValue: number | un
   if (noDataValue !== undefined) validateFiniteNumber(id, 'noDataValue', noDataValue);
 }
 
+/** Collects public output paths without walking inside graph views. @internal */
+export function getNamedRasterOutputViews(
+  output: object,
+  prefix = 'output'
+): Record<string, GraphDataView | undefined> {
+  const views: Record<string, GraphDataView | undefined> = {};
+  for (const [name, value] of Object.entries(output)) {
+    const path = `${prefix}.${name}`;
+    if (value instanceof GraphDataView) views[path] = value;
+    else if (value && typeof value === 'object')
+      Object.assign(views, getNamedRasterOutputViews(value, path));
+  }
+  return views;
+}
+
 /**
  * Throws when outputs share buffers with each other or with inputs.
  *
@@ -82,17 +119,11 @@ export function validateRasterAlgebraNoData(id: string, noDataValue: number | un
  */
 export function validateRasterAlgebraAliasing(
   id: string,
-  outputs: readonly (GraphDataView | undefined)[],
-  inputs: readonly (GraphDataView | undefined)[]
+  outputs: RasterAliasingViews,
+  inputs: RasterAliasingViews
 ): void {
-  const outputBuffers = outputs.filter(view => view !== undefined).map(view => view.buffer);
-  if (new Set(outputBuffers).size !== outputBuffers.length) {
-    throw new Error(`${id} outputs must not share buffers`);
-  }
-  const inputBuffers = new Set(inputs.filter(view => view !== undefined).map(view => view.buffer));
-  if (outputBuffers.some(buffer => inputBuffers.has(buffer))) {
-    throw new Error(`${id} outputs must not share buffers with inputs`);
-  }
+  validateRasterWritableBuffers(id, outputs);
+  validateGraphOutputsDisjointFromInputs(id, outputs, inputs);
 }
 
 /** Validates that every defined view belongs to `graph`. @internal */

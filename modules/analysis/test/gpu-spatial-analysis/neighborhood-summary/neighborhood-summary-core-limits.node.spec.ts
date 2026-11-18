@@ -9,6 +9,7 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {describe, expect, it} from 'vitest';
+import type {Device} from '@luma.gl/core';
 import {
   GPUNeighborhoodSummary,
   GPU_NEIGHBORHOOD_SUMMARY_MAXIMUM_NEIGHBORS,
@@ -37,14 +38,35 @@ function expectKernelsWithinCoreLimits(nodes: readonly unknown[]): void {
   expect(kernels.length).toBeGreaterThan(0);
   for (const kernel of kernels) {
     expect(getStorageBindingCount(kernel.source), `${kernel.id} storage`).toBeLessThanOrEqual(8);
-    expect(getPrivateMemoryBytes(kernel.source), `${kernel.id} private`).toBeLessThanOrEqual(
-      CORE_PRIVATE_MEMORY_LIMIT_BYTES
-    );
-    expect(getWorkgroupMemoryBytes(kernel.source), `${kernel.id} workgroup`).toBeLessThanOrEqual(
-      CORE_WORKGROUP_STORAGE_LIMIT_BYTES
-    );
+    expect(
+      getPrivateMemoryBytes(kernel.source, kernel.constants),
+      `${kernel.id} private`
+    ).toBeLessThanOrEqual(CORE_PRIVATE_MEMORY_LIMIT_BYTES);
+    expect(
+      getWorkgroupMemoryBytes(kernel.source, kernel.constants),
+      `${kernel.id} workgroup`
+    ).toBeLessThanOrEqual(CORE_WORKGROUP_STORAGE_LIMIT_BYTES);
   }
 }
+
+it('passes recorded override constants into the resource budget assertion', () => {
+  const source = 'override N: u32 = 1u; var<workgroup> scratch: array<u32, N>;';
+  const nodes = [
+    {
+      compile: ({device}: {device: Device}) => {
+        const shader = device.createShader({stage: 'compute', source});
+        device.createComputePipeline({
+          shader,
+          constants: {N: 8192}
+        });
+        return {destroy: () => shader.destroy()};
+      }
+    }
+  ];
+  const [kernel] = getGPUCommandNodeKernelSources(nodes);
+  expect(getWorkgroupMemoryBytes(kernel.source, kernel.constants)).toBe(32768);
+  expect(() => expectKernelsWithinCoreLimits(nodes)).toThrow();
+});
 
 function expectBindingsWithinLimit(nodes: readonly unknown[], limit: number): void {
   let checked = 0;

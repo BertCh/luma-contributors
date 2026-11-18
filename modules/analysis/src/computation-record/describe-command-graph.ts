@@ -10,6 +10,7 @@ import {
   type GraphBufferHandle,
   type GraphTextureHandle
 } from '@luma.gl/graph/gpu-core';
+import {textureFormatDecoder, type TextureFormat} from '@luma.gl/core';
 import {
   getWGSLKernelNodeRecord,
   type WGSLKernelNodeRecord
@@ -99,7 +100,14 @@ export function describeGPUCommandGraph(
   const preflightById = new Map(compiled.preflight.nodes.map(node => [node.id, node]));
   const sources = new Map<string, GPUComputationSourceRef>();
   const lifetimes = new Map<string, {firstNode: string; lastNode: string}>();
-  const summaries = new Map<string, {kind: GPUComputationResource['kind']; bytes: number}>();
+  const summaries = new Map<
+    string,
+    {
+      kind: GPUComputationResource['kind'];
+      bytes: number;
+      bytesKind: GPUComputationResource['bytesKind'];
+    }
+  >();
   const edges = new Map<string, GPUComputationEdge>();
   const addEdge = (from: string, to: string, kind: GPUComputationEdgeKind, resource?: string) => {
     if (from === to) return;
@@ -145,9 +153,20 @@ export function describeGPUCommandGraph(
       if (isRead) reads.add(id);
       if (isWrite) writes.add(id);
       const summary = summaries.get(id);
+      const observedBytes =
+        resource.kind === 'buffer'
+          ? (resource.byteOffset ?? 0) + (resource.byteLength ?? 0)
+          : estimateTextureBytes({
+              format: resource.format,
+              width: resource.width,
+              height: resource.height,
+              depth: resource.depth
+            });
       summaries.set(id, {
         kind: resource.kind,
-        bytes: Math.max(summary?.bytes ?? 0, resource.byteLength ?? 0)
+        bytes: Math.max(summary?.bytes ?? 0, observedBytes ?? 0),
+        bytesKind:
+          observedBytes !== undefined ? 'lower-bound' : (summary?.bytesKind ?? 'unavailable')
       });
       const lifetime = lifetimes.get(id);
       if (lifetime) lifetime.lastNode = nodeId;
@@ -211,9 +230,11 @@ export function describeGPUCommandGraph(
     const base = {id, kind: summary.kind, ...lifetimes.get(id)};
     if (handle && 'transient' in handle) {
       const isBuffer = 'byteLength' in handle;
+      const textureBytes = !isBuffer ? estimateTextureBytes(handle) : undefined;
       resources.push({
         ...base,
-        bytes: isBuffer ? handle.byteLength : summary.bytes,
+        bytes: isBuffer ? handle.byteLength : (textureBytes ?? 0),
+        bytesKind: isBuffer ? 'logical' : textureBytes === undefined ? 'unavailable' : 'estimated',
         ownership: handle.transient ? 'transient' : 'imported',
         ...(!isBuffer && {
           format: handle.format,
@@ -226,9 +247,22 @@ export function describeGPUCommandGraph(
           }
         })
       });
+    } else if (handle) {
+      // An external-image handle is always imported, but its browser-managed storage is opaque.
+      resources.push({
+        ...base,
+        bytes: 0,
+        bytesKind: 'unavailable',
+        ownership: 'imported',
+        attrs: {width: handle.width, height: handle.height}
+      });
     } else {
-      // Without the handle, ownership is unknown; imported is the conservative statement.
-      resources.push({...base, bytes: summary.bytes, ownership: 'imported'});
+      resources.push({
+        ...base,
+        bytes: summary.bytes,
+        bytesKind: summary.bytesKind,
+        ownership: 'unknown'
+      });
     }
   }
 
@@ -245,6 +279,39 @@ export function describeGPUCommandGraph(
     },
     sources: [...sources.values()]
   };
+}
+
+function estimateTextureBytes(descriptor: {
+  format?: string;
+  width?: number;
+  height?: number;
+  depth?: number;
+  mipLevels?: number;
+  samples?: number;
+  dimension?: string;
+}): number | undefined {
+  if (!descriptor.format || descriptor.width === undefined || descriptor.height === undefined)
+    return undefined;
+  try {
+    let bytes = 0;
+    for (let level = 0; level < (descriptor.mipLevels ?? 1); level++) {
+      bytes +=
+        textureFormatDecoder.computeMemoryLayout({
+          format: descriptor.format as TextureFormat,
+          width: Math.max(1, Math.floor(descriptor.width / 2 ** level)),
+          height: Math.max(1, Math.floor(descriptor.height / 2 ** level)),
+          depth:
+            descriptor.dimension === '3d'
+              ? Math.max(1, Math.floor((descriptor.depth ?? 1) / 2 ** level))
+              : (descriptor.depth ?? 1),
+          byteAlignment: 1
+        }).byteLength * (descriptor.samples ?? 1);
+    }
+    return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : undefined;
+  } catch {
+    // Formats whose storage representation is not known must not acquire a fabricated estimate.
+    return undefined;
+  }
 }
 
 /**

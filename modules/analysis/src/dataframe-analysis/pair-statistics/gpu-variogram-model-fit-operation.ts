@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {GPUVariogramModelFit} from './gpu-variogram-model-fit';
 import type {VariogramModelType, VariogramModelWeighting} from './variogram-model';
 
@@ -30,9 +31,9 @@ export type VariogramModelFitOperationProps = {
   models?: readonly VariogramModelType[];
   /** Least-squares weighting. Defaults to `'cressie'`. */
   weighting?: VariogramModelWeighting;
-  /** Range ladder length of the GPU search. The CPU fit uses its own fixed ladder. */
+  /** Log-range ladder length in both forms, 3–1024. Defaults to 200. */
   rangeSteps?: number;
-  /** Golden-section budget of the GPU search. The CPU fit uses its own fixed budget. */
+  /** Golden-section budget per weighting pass in both forms, 0–64. Defaults to GPU 32 / CPU 60. */
   maximumIterations?: number;
   /** Graph values the fit writes, one row per model. */
   output: {
@@ -40,10 +41,32 @@ export type VariogramModelFitOperationProps = {
     parameters: string;
     /** `float32x4`: [usable bins, unweighted squared residual, AIC, relative log-range bracket]. */
     diagnostics: string;
-    /** `uint32`: 0 interior solution; 1 insufficient bins; 2 numerical failure; 3 boundary. */
+    /** `uint32`: 0 interior solution; 1 insufficient bins; 2 numerical failure; 3 boundary/budget. */
     status: string;
   };
 };
+
+/** @internal Capture options, model order and port names before either operation declares them. */
+export function snapshotVariogramModelFitOperationProps(
+  props: VariogramModelFitOperationProps
+): VariogramModelFitOperationProps {
+  const snapshot = snapshotConstructionFields(props, [
+    'id',
+    'distances',
+    'semivariances',
+    'pairCounts',
+    'models',
+    'weighting',
+    'rangeSteps',
+    'maximumIterations',
+    'output'
+  ]);
+  return Object.freeze({
+    ...snapshot,
+    models: Object.freeze([...(snapshot.models ?? VARIOGRAM_MODEL_FIT_DEFAULT_MODELS)]),
+    output: snapshotConstructionFields(snapshot.output, ['parameters', 'diagnostics', 'status'])
+  });
+}
 
 /**
  * `GPUVariogramModelFit` as a `GPUGraph` operation. Compile the graph with
@@ -53,6 +76,7 @@ export type VariogramModelFitOperationProps = {
  */
 export class GPUVariogramModelFitOperation extends GPUContributorOperation {
   constructor(props: VariogramModelFitOperationProps) {
+    props = snapshotVariogramModelFitOperationProps(props);
     const id = props.id ?? 'variogram-model-fit';
     const length = (props.models ?? VARIOGRAM_MODEL_FIT_DEFAULT_MODELS).length;
     super({

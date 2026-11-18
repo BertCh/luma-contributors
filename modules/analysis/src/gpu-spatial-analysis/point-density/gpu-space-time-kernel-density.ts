@@ -363,59 +363,6 @@ export class GPUSpaceTimeKernelDensity implements GPUCommandNodeProducer {
     ]);
   }
 
-  /** Checks caller bindings and every nested transient before graph mutation. @internal */
-  validateBindings<Parameters>(graph: GPUCommandGraph<Parameters>): void {
-    const {id, props} = this;
-    const {output, indexGridSize} = props;
-    const rowCount = props.positions.length;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.times,
-      props.weights,
-      props.parameters,
-      output.values,
-      output.weightSum,
-      output.status?.invalidCount
-    ]);
-    validateMaximumCount(
-      id,
-      'indexGridSize cells',
-      indexGridSize[0] * indexGridSize[1],
-      getGPUGridIndexMaximumCellCount(graph.device)
-    );
-    validateMaximumCount(
-      id,
-      'voxels (grid.width * grid.height * sliceCount)',
-      this.voxelCount,
-      getStorageBindingElementLimit(graph.device, 4)
-    );
-    // The cell-ordered point table holds four floats per row in one binding.
-    validateMaximumCount(
-      id,
-      'positions length',
-      rowCount,
-      getStorageBindingElementLimit(graph.device, 16)
-    );
-    validateDensityViewBindings(
-      graph,
-      id,
-      [
-        ['positions', props.positions],
-        ['times', props.times],
-        ['weights', props.weights],
-        ['parameters', props.parameters],
-        ['output.values', output.values],
-        ['output.weightSum', output.weightSum],
-        ['output.status.invalidCount', output.status?.invalidCount]
-      ],
-      {dispatchMetadata: false}
-    );
-    validateDensityIndexedScratch(graph, id, rowCount, indexGridSize[0] * indexGridSize[1]);
-    validateDensityScratchBindings(graph, id, [
-      ['cell-ordered point table scratch', rowCount * 16]
-    ]);
-  }
-
   /**
    * Returns, in order: the row keys, the time sort, the time-ordered copy of the positions, the
    * grid index and in-cell order, the cell-ordered point table, the optional weight and invalid
@@ -424,7 +371,7 @@ export class GPUSpaceTimeKernelDensity implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    this.validateBindings(graph);
+    validateSpaceTimeKernelDensityBindings(graph, this);
     const {id, props, spatialKernel, temporalKernel, normalization} = this;
     const {grid, indexBounds, indexGridSize, sliceCount} = props;
     const staged = stageDensityOutputViews(
@@ -763,4 +710,58 @@ ${temporalEdge ? getTemporalWindowMassWGSL(temporalKernel, temporalNeedsErfc) : 
     );
     return [...nodes, ...staged.publishNodes];
   }
+}
+
+/** Checks bindings and nested scratch for internal density composition. Not a barrel export. @internal */
+export function validateSpaceTimeKernelDensityBindings<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  contributor: GPUSpaceTimeKernelDensity
+): void {
+  const {id, props, voxelCount} = contributor;
+  const {output, indexGridSize} = props;
+  const rowCount = props.positions.length;
+  validateGraphViewsBelongToGraph(id, graph, [
+    props.positions,
+    props.times,
+    props.weights,
+    props.parameters,
+    output.values,
+    output.weightSum,
+    output.status?.invalidCount
+  ]);
+  validateMaximumCount(
+    id,
+    'indexGridSize cells',
+    indexGridSize[0] * indexGridSize[1],
+    getGPUGridIndexMaximumCellCount(graph.device)
+  );
+  validateMaximumCount(
+    id,
+    'voxels (grid.width * grid.height * sliceCount)',
+    voxelCount,
+    getStorageBindingElementLimit(graph.device, 4)
+  );
+  // The cell-ordered point table holds four floats per row in one binding.
+  validateMaximumCount(
+    id,
+    'positions length',
+    rowCount,
+    getStorageBindingElementLimit(graph.device, 16)
+  );
+  validateDensityViewBindings(
+    graph,
+    id,
+    [
+      ['positions', props.positions],
+      ['times', props.times],
+      ['weights', props.weights],
+      ['parameters', props.parameters],
+      ['output.values', output.values],
+      ['output.weightSum', output.weightSum],
+      ['output.status.invalidCount', output.status?.invalidCount]
+    ],
+    {dispatchMetadata: false}
+  );
+  validateDensityIndexedScratch(graph, id, rowCount, indexGridSize[0] * indexGridSize[1]);
+  validateDensityScratchBindings(graph, id, [['cell-ordered point table scratch', rowCount * 16]]);
 }

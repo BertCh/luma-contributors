@@ -6,7 +6,10 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {describe, expect, test} from 'vitest';
 import {WgslReflect} from 'wgsl_reflect';
 import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
-import {GPUSpatialScanStatistic} from '../../../src/gpu-spatial-analysis/scan-statistics/gpu-spatial-scan-statistic';
+import {
+  createSpatialScanStatisticForTesting,
+  type GPUSpatialScanStatistic
+} from '../../../src/gpu-spatial-analysis/scan-statistics/gpu-spatial-scan-statistic';
 import {PhiloxStream} from '../../../src/analysis-core/kernels/permutation-random';
 import {PHILOX_PURPOSES} from '../../../src/analysis-core/kernels/philox-random';
 import {
@@ -46,7 +49,7 @@ function createScan(
     format: Format,
     length: number
   ) => createTransientView(graph, `scan-view-${serial++}`, format, length);
-  return new GPUSpatialScanStatistic({
+  return createSpatialScanStatisticForTesting({
     positions: view('float32x2', zones),
     spatialContext: options.spatialContext,
     model,
@@ -98,9 +101,10 @@ describe('GPUSpatialScanStatistic kernels', () => {
           (kernel.source.match(/fn geodesicHaversineTerm\(/g) ?? []).length
         ).toBeLessThanOrEqual(1);
         expect(getStorageBindingCount(kernel.source), kernel.id).toBeLessThanOrEqual(8);
-        expect(getPrivateMemoryBytes(kernel.source), kernel.id).toBeLessThanOrEqual(
-          CORE_PRIVATE_MEMORY_LIMIT_BYTES
-        );
+        expect(
+          getPrivateMemoryBytes(kernel.source, kernel.constants),
+          kernel.id
+        ).toBeLessThanOrEqual(CORE_PRIVATE_MEMORY_LIMIT_BYTES);
       }
     } finally {
       device.destroy();
@@ -126,9 +130,10 @@ describe('GPUSpatialScanStatistic kernels', () => {
           /\b(let|var)\s+(target|filter|module|self|super)\b/
         );
         expect(getStorageBindingCount(kernel.source), kernel.id).toBeLessThanOrEqual(8);
-        expect(getPrivateMemoryBytes(kernel.source), kernel.id).toBeLessThanOrEqual(
-          CORE_PRIVATE_MEMORY_LIMIT_BYTES
-        );
+        expect(
+          getPrivateMemoryBytes(kernel.source, kernel.constants),
+          kernel.id
+        ).toBeLessThanOrEqual(CORE_PRIVATE_MEMORY_LIMIT_BYTES);
       }
       device.destroy();
     }

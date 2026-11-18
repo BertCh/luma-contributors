@@ -118,9 +118,9 @@ export function createHealpixDGGSJSON(props: HealpixDGGSJSONProps): HealpixDGGSJ
     schema: {
       $schema: 'https://json-schema.org/draft/2020-12/schema',
       type: 'object',
-      properties: {}
+      properties: Object.create(null)
     },
-    values: {}
+    values: Object.create(null)
   };
   for (const [name, property] of Object.entries(props.properties)) {
     if (property.values.length < props.cells.length) {

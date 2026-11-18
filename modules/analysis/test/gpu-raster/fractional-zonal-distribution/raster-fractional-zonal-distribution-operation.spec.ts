@@ -9,12 +9,95 @@ import {CPURasterFractionalZonalDistributionOperation} from '../../../src/raster
 import {GPURasterFractionalZonalDistributionOperation} from '../../../src/raster-analysis/raster-zonal-statistics/gpu-raster-fractional-zonal-distribution-operation';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {runPreparedCoverageRecovery} from '../fractional-final1-fixture';
 import {
   createDistributionGraphInputs,
   createUnitDistributionInput,
   getDistributionGraphInputs,
   DISTRIBUTION_PROPS
 } from './raster-fractional-zonal-distribution-operation-fixture';
+
+it('F1 distribution operations suppress candidate-only coverage and recover after both failure kinds', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props = {
+    ...DISTRIBUTION_PROPS,
+    grid: makeGPURasterMetadata({width: 1, height: 1}),
+    probabilityCount: 1,
+    coverage: {
+      ...DISTRIBUTION_PROPS.coverage,
+      status: {...DISTRIBUTION_PROPS.coverage.status, candidateOverflow: 'candidateOverflow'}
+    }
+  };
+  const input = createUnitDistributionInput(Float32Array.of(7), Float32Array.of(0.5));
+  const inputs = {
+    ...getDistributionGraphInputs(input),
+    candidateOverflow: {format: 'uint32' as const, values: Uint32Array.of(0)}
+  };
+  for (const Operation of [
+    CPURasterFractionalZonalDistributionOperation,
+    GPURasterFractionalZonalDistributionOperation
+  ]) {
+    for (const result of await runPreparedCoverageRecovery(
+      device,
+      new Operation(props),
+      inputs,
+      Object.values(props.output)
+    )) {
+      expect(result.rows['validity'][0]).toBe(Number(!result.incomplete));
+      expect(result.rows['status'][0] & 1).toBe(Number(result.incomplete));
+      if (result.incomplete) {
+        expect(result.rows['means'][0]).toBeNaN();
+        expect(result.rows['coveredArea'][0]).toBeNaN();
+      } else {
+        expect(result.rows['means'][0]).toBe(7);
+        expect(result.rows['coveredArea'][0]).toBe(1);
+      }
+    }
+  }
+});
+
+it('G5 distribution operations use the first word of padded coverage statuses', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props = {
+    ...DISTRIBUTION_PROPS,
+    grid: makeGPURasterMetadata({width: 1, height: 1}),
+    probabilityCount: 1,
+    coverage: {
+      ...DISTRIBUTION_PROPS.coverage,
+      status: {...DISTRIBUTION_PROPS.coverage.status, candidateOverflow: 'candidateOverflow'}
+    }
+  };
+  for (const loss of [0, 1]) {
+    const input = createUnitDistributionInput(Float32Array.of(7), Float32Array.of(0.5));
+    input.coverage.count = Uint32Array.of(1, 0xffffffff);
+    input.coverage.requiredCount = Uint32Array.of(1, 0xffffffff);
+    input.coverage.overflow = Uint32Array.of(0, 1);
+    for (const Operation of [
+      CPURasterFractionalZonalDistributionOperation,
+      GPURasterFractionalZonalDistributionOperation
+    ]) {
+      const result = await runOperationGraph(device, {
+        inputs: {
+          ...getDistributionGraphInputs(input),
+          candidateOverflow: {format: 'uint32', values: Uint32Array.of(loss, 1 - loss)}
+        },
+        operations: [new Operation(props)],
+        outputs: Object.values(props.output)
+      });
+      expect(Array.from(result['validity'])).toEqual([1 - loss]);
+      expect(Array.from(result['status'])).toEqual([8 | loss]);
+      if (loss) {
+        expect(result['means'][0]).toBeNaN();
+        expect(result['coveredArea'][0]).toBeNaN();
+      } else {
+        expect(result['means'][0]).toBe(7);
+        expect(result['coveredArea'][0]).toBe(1);
+      }
+    }
+  }
+});
 
 for (const quantileMethod of ['exactextract', 'inverse-cdf'] as const) {
   for (const empty of [false, true]) {

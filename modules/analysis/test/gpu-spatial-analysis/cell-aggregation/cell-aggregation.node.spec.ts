@@ -50,7 +50,8 @@ function createTable(graph: GPUCommandGraph, capacity: number, columns = true): 
       : {}),
     status: {
       count: view('uint32', 1),
-      overflow: view('uint32', 1)
+      overflow: view('uint32', 1),
+      candidateOverflow: view('uint32', 1)
     }
   };
 }
@@ -211,7 +212,7 @@ it('GPUCellAggregation emits deterministic nodes with one or two key sorts', () 
   expect(single.some(id => id.includes('-sort-high'))).toBe(false);
   expect(double.some(id => id.includes('-sort-high'))).toBe(true);
   expect(single[0]).toBe('agg-15-chunk-parameters-upload');
-  expect(single.at(-1)).toBe('agg-15-publish');
+  expect(single.at(-1)).toBe('agg-15-candidate-status');
   device.destroy();
 });
 

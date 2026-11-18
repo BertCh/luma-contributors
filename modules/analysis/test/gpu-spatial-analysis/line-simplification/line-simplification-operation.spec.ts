@@ -13,6 +13,112 @@ import {getGPULineSimplificationParameterValues} from '../../../src/gpu-spatial-
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 
+it('publishes unfinished one-round Visvalingam importance in both forms', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const Operation of [GPULineSimplificationOperation, CPULineSimplificationOperation]) {
+    const result = await runOperationGraph(device, {
+      inputs: {
+        positions: {format: 'float32x2', values: Float32Array.of(0, 0, 1, 1, 2, 1, 3, 0)},
+        offsets: {format: 'uint32', values: Uint32Array.of(0, 4)}
+      },
+      operations: [
+        new Operation({
+          positions: 'positions',
+          lineOffsets: 'offsets',
+          importance: 'importance',
+          rowCount: 4,
+          lineCount: 1,
+          method: 'visvalingam',
+          maximumIterations: 1,
+          output: {status: {converged: 'converged', iterationCount: 'iterations'}}
+        })
+      ],
+      outputs: ['importance', 'converged', 'iterations']
+    });
+    expect(Array.from(result['importance'])).toEqual([Infinity, 0.5, Infinity, Infinity]);
+    expect(Array.from(result['iterations'])).toEqual([1]);
+    expect(Array.from(result['converged'])).toEqual([0]);
+  }
+});
+
+it('both Douglas-Peucker forms retain parent bounds at an explicit one-round limit', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const Operation of [GPULineSimplificationOperation, CPULineSimplificationOperation]) {
+    const result = await runOperationGraph(device, {
+      inputs: {
+        positions: {format: 'float32x2', values: Float32Array.of(0, 0, 1, 1, 2, 0, 3, 1, 4, 0)},
+        offsets: {format: 'uint32', values: Uint32Array.of(0, 5)}
+      },
+      operations: [
+        new Operation({
+          positions: 'positions',
+          lineOffsets: 'offsets',
+          importance: 'importance',
+          rowCount: 5,
+          lineCount: 1,
+          maximumIterations: 1,
+          finishSpanLimit: 1,
+          output: {status: {converged: 'converged', iterationCount: 'iterations'}}
+        })
+      ],
+      outputs: ['importance', 'converged', 'iterations']
+    });
+    expect(Array.from(result['importance'])).toEqual([Infinity, 1, 1, 1, Infinity]);
+    expect(Array.from(result['converged'])).toEqual([0]);
+    expect(Array.from(result['iterations'])).toEqual([1]);
+  }
+});
+
+it('removes the remote antimeridian middle vertex in both operation forms', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props: LineSimplificationOperationProps = {
+    positions: 'positions',
+    lineOffsets: 'offsets',
+    parameters: 'parameters',
+    importance: 'importance',
+    rowCount: 3,
+    lineCount: 1,
+    capacity: 3,
+    spatialContext: {
+      coordinateSpace: 'longitude-latitude',
+      metric: 'great-circle',
+      sphereRadius: 180 / Math.PI
+    },
+    output: {
+      ids: 'ids',
+      outputMask: 'mask',
+      lineCounts: 'lineCounts',
+      lineStarts: 'lineStarts',
+      status: {
+        count: 'count',
+        requiredCount: 'required',
+        overflow: 'overflow',
+        converged: 'converged',
+        iterationCount: 'iterations'
+      }
+    }
+  };
+  for (const Operation of [GPULineSimplificationOperation, CPULineSimplificationOperation]) {
+    const result = await runOperationGraph(device, {
+      inputs: {
+        positions: {format: 'float32x2', values: Float32Array.of(100, 0, 0, 0, -100, 0)},
+        offsets: {format: 'uint32', values: Uint32Array.of(0, 3)},
+        parameters: {
+          format: 'float32',
+          values: getGPULineSimplificationParameterValues({tolerance: 120})
+        }
+      },
+      operations: [new Operation(props)],
+      outputs: ['importance', 'mask']
+    });
+    expect(result['importance'][1]).toBeCloseTo(100, 3);
+    expect(Array.from(result['mask'])).toEqual([1, 0, 1]);
+  }
+});
+
 it('publishes the full required count and overflow when selection capacity is zero', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

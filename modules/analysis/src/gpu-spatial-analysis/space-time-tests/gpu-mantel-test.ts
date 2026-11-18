@@ -1,6 +1,8 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {createSpatialWeightsSuppressionNodes} from '../spatial-weights/spatial-weights-suppression';
+import {snapshotSpaceTimeTestProps} from './space-time-construction';
 
 import {
   validateTrajectoryBindings,
@@ -55,7 +57,7 @@ import {
   type SpaceTimeBatchNodeProps,
   validateSpaceTimeStopping
 } from './space-time-stopping';
-import type {GPUInferenceMetadata} from '../../analysis-core/contracts/index';
+import type {GPUSpaceTimeInferenceMetadata} from './space-time-parameters';
 
 const OPERATION = 'GPUMantelTest';
 /**
@@ -217,6 +219,21 @@ export class GPUMantelTest implements GPUCommandNodeProducer {
   /** Number of events. */
   readonly rows: number;
   constructor(props: GPUMantelTestProps) {
+    props = snapshotSpaceTimeTestProps(
+      props,
+      [
+        'id',
+        'pairs',
+        'times',
+        'parameters',
+        'maximumPermutations',
+        'stopAfterExceedances',
+        'distanceTransform',
+        'timeTransform',
+        'output'
+      ],
+      'pairs'
+    );
     const id = props.id ?? 'mantel-test';
     this.id = id;
     this.props = props;
@@ -273,7 +290,9 @@ export class GPUMantelTest implements GPUCommandNodeProducer {
         props.pairs.offsets,
         props.pairs.neighbors,
         props.pairs.weights,
-        props.pairs.distances
+        props.pairs.distances,
+        props.pairs.status?.overflow,
+        props.pairs.status?.candidateOverflow
       ]
     );
     if (
@@ -289,12 +308,19 @@ export class GPUMantelTest implements GPUCommandNodeProducer {
   /**
    * CPU-side description of how the `output.summary` p-values are produced, for building a
    * legend: alternative `'greater'`, Monte Carlo, no multiple-testing correction.
+   * With stopping enabled, only `requestedPermutationCount` is known. Decode final metadata with
+   * `decodeGPUSpaceTimeInferenceMetadata(metadata, publishedPermutationCount)` after caller readback.
    *
    * @param settings The per-frame settings packed into `parameters` (validated as
    * `getGPUSpaceTimeParameterValues` does; the count is clamped to `maximumPermutations`).
    */
-  getInferenceMetadata(settings: GPUSpaceTimeSettings): GPUInferenceMetadata {
-    return getGPUSpaceTimeInferenceMetadata('mantel', settings, this.props.maximumPermutations);
+  getInferenceMetadata(settings: GPUSpaceTimeSettings): GPUSpaceTimeInferenceMetadata {
+    return getGPUSpaceTimeInferenceMetadata(
+      'mantel',
+      settings,
+      this.props.maximumPermutations,
+      this.props.stopAfterExceedances
+    );
   }
 
   /** Returns `pair-mask`, `pair-stats`, `shift`, `partials`, `reduce` and `summary` nodes in order. */
@@ -619,7 +645,23 @@ ${
   let timeClosePairs = 0.0;
   let expected = 0.0;
   ${getSpaceTimeSummaryBodyWGSL('f32', stopAfterExceedances)}`
-      })
+      }),
+      ...createSpatialWeightsSuppressionNodes(
+        graph,
+        id,
+        OPERATION,
+        props.pairs,
+        {
+          statistics: props.output.statistics,
+          summary: props.output.summary,
+          permutationCount: props.output.permutationCount
+        },
+        {
+          summary: GPU_SPACE_TIME_SUMMARY_LENGTH,
+          permutationCount: 1,
+          statistics: props.maximumPermutations + 1
+        }
+      )
     ];
   }
 }

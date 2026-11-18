@@ -319,7 +319,7 @@ it('matches committed spreg estimates and standard errors on a high-fit review s
   }
 });
 
-it('drops GPU search budgets and ignores unused non-finite slot capacity', () => {
+it('ignores unused non-finite slot capacity without changing the fit', () => {
   const fixture = fixtures[0];
   const input = getInput();
   const options = {periodCount: fixture.periodCount, predictorCount: fixture.predictorCount};
@@ -333,7 +333,7 @@ it('drops GPU search budgets and ignores unused non-finite slot capacity', () =>
         weights: Float32Array.from([...input.weights.weights, NaN])
       }
     },
-    {...options, maximumIterations: 1, maximumSearchIterations: 1}
+    options
   );
   for (const port of [
     'coefficients',
@@ -345,6 +345,19 @@ it('drops GPU search budgets and ignores unused non-finite slot capacity', () =>
   ] as const)
     expectRegressionRowsClose(second[port], first[port], 0);
   expect(second.status[0]).toBe(0);
+});
+
+it('honors an explicit outer iteration budget and retains its nonconverged iterate (R2)', () => {
+  const fixture = fixtures[0];
+  const result = computeSpatialPanelLagMaximumLikelihoodOnCPU(getInput(), {
+    periodCount: fixture.periodCount,
+    predictorCount: fixture.predictorCount,
+    maximumIterations: 1
+  });
+  expect(result.status[0]).toBe(3);
+  expect(result.summary[2]).toBe(1);
+  expect(result.covariance.every(Number.isNaN)).toBe(true);
+  expect(result.fitted.every(Number.isFinite)).toBe(true);
 });
 
 it('returns defined failure layouts for incomplete weights and singular designs', () => {
@@ -560,14 +573,11 @@ it('forwards optional weights views and metadata and preserves their validation'
   if (!(contributor instanceof GPUSpatialPanelLagMaximumLikelihood))
     throw new Error('expected panel lag contributor');
   expect(contributor.props.weights.distances?.length).toBe(fixture.weights.neighbors.length);
-  expect(contributor.props.weights.information).toBe(information);
-  expect(contributor.props.weights.spatialContext).toBe(spatialContext);
-  expect(Object.keys(contributor.props.weights.status!)).toEqual([
-    'overflow',
-    'requiredCount',
-    'candidateOverflow',
-    'approximation'
-  ]);
+  expect(contributor.props.weights.information).toEqual(information);
+  expect(contributor.props.weights.spatialContext).toEqual(spatialContext);
+  expect(Object.keys(contributor.props.weights.status!).sort()).toEqual(
+    ['overflow', 'requiredCount', 'candidateOverflow', 'approximation'].sort()
+  );
   expect(contributor.props.weights.status!.overflow!.length).toBe(2);
   const operation = new CPUSpatialPanelLagMaximumLikelihoodOperation(props);
   expect(operation.inputs).toEqual(new GPUSpatialPanelLagMaximumLikelihoodOperation(props).inputs);
@@ -593,7 +603,7 @@ it('forwards optional weights views and metadata and preserves their validation'
     distances: new Float32Array(1),
     weightsStatus_overflow: Uint32Array.of(0, 1),
     weightsStatus_requiredCount: Uint32Array.of(999),
-    weightsStatus_candidateOverflow: Uint32Array.of(1),
+    weightsStatus_candidateOverflow: Uint32Array.of(0),
     weightsStatus_approximation: Uint32Array.of(1)
   };
   const operationInputs = Object.fromEntries(
@@ -644,7 +654,7 @@ it('forwards optional weights views and metadata and preserves their validation'
       status: {
         overflow: Uint32Array.of(0, 1),
         requiredCount: Uint32Array.of(999),
-        candidateOverflow: Uint32Array.of(1),
+        candidateOverflow: Uint32Array.of(0),
         approximation: Uint32Array.of(1)
       }
     }

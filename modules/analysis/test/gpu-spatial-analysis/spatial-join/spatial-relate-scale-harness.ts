@@ -84,8 +84,8 @@ export async function runScaleJoin(
     buffers.push(buffer);
     return {buffer, view: importGraphBuffer(graph, name, buffer, 'uint32', length)};
   };
-  const leftIds = output('left-ids', capacity);
-  const rightIds = output('right-ids', capacity);
+  const leftRows = output('left-ids', capacity);
+  const rightRows = output('right-ids', capacity);
   const count = output('count', 1);
   const overflow = output('overflow', 1);
   const relate = output('relate', capacity);
@@ -100,8 +100,8 @@ export async function runScaleJoin(
     candidateCapacity: capacity,
     output: {
       pairs: {
-        leftIds: leftIds.view,
-        rightIds: rightIds.view,
+        leftRows: leftRows.view,
+        rightRows: rightRows.view,
         status: {
           count: count.view,
           overflow: overflow.view
@@ -115,8 +115,8 @@ export async function runScaleJoin(
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
   const [countValue] = await readUint32(count.buffer, 1);
-  const lefted = (await readUint32(leftIds.buffer, capacity)).slice(0, countValue);
-  const righted = (await readUint32(rightIds.buffer, capacity)).slice(0, countValue);
+  const lefted = (await readUint32(leftRows.buffer, capacity)).slice(0, countValue);
+  const righted = (await readUint32(rightRows.buffer, capacity)).slice(0, countValue);
   const matrices = (await readUint32(relate.buffer, capacity)).slice(0, countValue);
   const result: JoinResult = {
     pairs: lefted.map((row, slot) => `${row},${righted[slot]}`),

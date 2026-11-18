@@ -22,7 +22,7 @@ import {getTerrainHorizonSweepNode} from '../../../src/gpu-terrain/terrain-illum
 import {
   getRasterGridGeoreference,
   type GPURasterCellSizeMode
-} from '../../../src/analysis-core/raster-grid';
+} from '../../../src/analysis-core/contracts/raster-grid';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {getOracleWebMercatorY} from '../terrain-oracle-utils';

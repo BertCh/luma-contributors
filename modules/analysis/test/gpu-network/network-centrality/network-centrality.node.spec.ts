@@ -229,17 +229,21 @@ it('GPUNetworkCentrality resolves a default lane count from the pivot count', ()
 it('GPUNetworkCentrality kernels parse, bind at most eight buffers and fit core memory', () => {
   const sources = getParsedKernelSources(build(5).nodes);
   expect(sources.size).toBeGreaterThan(10);
-  for (const [id, source] of sources) {
+  for (const {id, source: source, constants} of sources.configurations) {
     expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
-    expect(getPrivateMemoryBytes(source), id).toBeLessThanOrEqual(CORE_PRIVATE_MEMORY_LIMIT_BYTES);
-    expect(getWorkgroupMemoryBytes(source), id).toBeLessThanOrEqual(
+    expect(getPrivateMemoryBytes(source, constants), id).toBeLessThanOrEqual(
+      CORE_PRIVATE_MEMORY_LIMIT_BYTES
+    );
+    expect(getWorkgroupMemoryBytes(source, constants), id).toBeLessThanOrEqual(
       CORE_WORKGROUP_STORAGE_LIMIT_BYTES
     );
   }
   // The sigma and delta rounds bind the adjacency, the costs, the scratch array, the path-count
   // exponents (review network-paths-03) and the four frontier arrays: the core limit of eight.
-  expect(getStorageBindingCount(sources.get('centrality-batch-0-sigma-1')!)).toBe(8);
-  expect(getStorageBindingCount(sources.get('centrality-batch-0-delta-1')!)).toBe(8);
+  for (const id of ['centrality-batch-0-sigma-1', 'centrality-batch-0-delta-1']) {
+    for (const {source} of sources.getConfigurations(id))
+      expect(getStorageBindingCount(source), id).toBe(8);
+  }
 });
 
 it('GPUNetworkCentrality compiles the same pipelines for every batch and round count', () => {
@@ -454,7 +458,7 @@ for (const withBetweenness of [false, true]) {
         const nodes = contributor.getCommandNodes(graph);
         expect(nodes.length).toBe(contributor.estimatedCommandNodeCount);
         const sources = getParsedKernelSources(nodes);
-        for (const source of sources.values())
+        for (const {source} of sources.configurations)
           expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
         const source = sources.get('centrality-converged');
         expect(source).toContain(

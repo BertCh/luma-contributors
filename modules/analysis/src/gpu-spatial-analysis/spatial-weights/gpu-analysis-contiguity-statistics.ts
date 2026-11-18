@@ -105,7 +105,7 @@ export function decodeGPUAnalysisContiguityStatistics(values: {
   }
   const overflow = values.overflow[0] !== 0;
   const candidateOverflow = values.candidateOverflow[0] !== 0;
-  if (values.validity[0] !== 1 || overflow || candidateOverflow) {
+  if (values.validity[0] === 0 || overflow || candidateOverflow) {
     return {exact: false, overflow, candidateOverflow};
   }
   const layout = GPU_ANALYSIS_CONTIGUITY_STATISTICS_COUNTS;
@@ -240,30 +240,6 @@ export class GPUAnalysisContiguityStatistics implements GPUCommandNodeProducer {
     const parameterValues = getGPUColumnQuantilesParameterValues({quantiles: [0.5]});
     return [
       ...this.contiguity.getCommandNodes(graph),
-      // The underlying contributor has a legacy combined overflow flag. The profile keeps
-      // final-slot truncation separate, even when the materialized distinct count is a lower
-      // bound because candidate generation overflowed. Either flag still invalidates the profile.
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-slot-overflow`,
-        operation: OPERATION,
-        variant: 'slot-overflow',
-        bindings: [
-          {
-            name: 'requiredCount',
-            view: output.weights.status.requiredCount,
-            type: 'u32',
-            access: 'read'
-          },
-          {
-            name: 'overflow',
-            view: output.weights.status.overflow,
-            type: 'u32',
-            access: 'read_write'
-          }
-        ],
-        invocationCount: 1,
-        body: `overflow[overflowOffset] = select(0u, 1u, requiredCount[requiredCountOffset] > ${output.weights.neighbors.length}u);`
-      }),
       ...new GPUSpatialWeightsSummary({
         id: `${id}-summary`,
         weights: this.contiguity.outputWeights,

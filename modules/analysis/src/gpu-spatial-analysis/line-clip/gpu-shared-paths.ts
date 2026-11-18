@@ -1,6 +1,7 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
 
 import {createSaturatedScanTotalNodes} from '../../analysis-core/kernels/scan-total';
 import {
@@ -196,6 +197,11 @@ export class GPUSharedPaths implements GPUCommandNodeProducer {
   constructor(props: GPUSharedPathsProps) {
     this.id = props.id ?? 'shared-paths';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    props = {
+      ...props,
+      left: snapshotSinglePartGeometryPort(this.id, 'left', props.left),
+      right: snapshotSinglePartGeometryPort(this.id, 'right', props.right)
+    };
     this.props = props;
     const {id} = this;
     const {runs, status} = props.output;
@@ -332,8 +338,8 @@ export class GPUSharedPaths implements GPUCommandNodeProducer {
         leafCapacity: props.leafCapacity,
         output: {
           pairs: {
-            leftIds: pairLeft,
-            rightIds: pairRight,
+            leftRows: pairLeft,
+            rightRows: pairRight,
             status: {count: pairCount, overflow: pairOverflow}
           },
           status: {uncertainCount: status.uncertainCount},

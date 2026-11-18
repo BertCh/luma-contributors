@@ -21,3 +21,10 @@ export type {
   CPUKShortestPathsOptions,
   CPUKShortestPathsResult
 } from './cpu-k-shortest-paths-operation';
+export {getGPUKShortestPathsOutputLayout, decodeGPUKShortestPaths} from './k-shortest-paths-output';
+export type {
+  GPUKShortestPathsOutputLayoutOptions,
+  GPUKShortestPathsOutputLayout,
+  GPUKShortestPathsReadback,
+  GPUKShortestPathsDecodedResult
+} from './k-shortest-paths-output';

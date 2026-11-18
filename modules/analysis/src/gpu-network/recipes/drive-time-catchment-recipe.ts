@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {addPreparedRecipe} from '../../gpu-spatial-analysis/recipes/prepared-recipe';
+
 import {
   createTransientView,
   GPUSort,
@@ -23,7 +25,7 @@ import type {
 import {
   validateGPUNetworkTopology,
   type GPUNetworkTopology
-} from '../../analysis-core/network-topology';
+} from '../../analysis-core/contracts/network-topology';
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext,
@@ -42,6 +44,8 @@ import type {GPUSegmentRingAssemblyOutput} from '../../analysis-core/ring-assemb
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   assertRecipe,
+  getRecipeView,
+  validateRecipeBoundary,
   getOrCreateView,
   RecipeBuilder,
   type GPURecipeOverrides,
@@ -283,7 +287,7 @@ function getIsochroneStatusStages(
  * two end nodes in either direction, or the edge capacity for an unsnapped point.
  */
 function addSnappedRoadNodes<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
+  builder: RecipeBuilder<Parameters>,
   props: {
     id: string;
     snappedEdges: GraphDataView<'uint32'>;
@@ -296,27 +300,29 @@ function addSnappedRoadNodes<Parameters>(
   costs: GraphDataView<'float32x2'>;
   keys: GraphDataView<'uint32'>;
 } {
+  const {graph} = builder;
   const {id, snappedEdges, edgeSources, topology, nodeCount} = props;
   const nodes = createTransientView(graph, `${id}-nodes`, 'uint32x2', snappedEdges.length);
   const costs = createTransientView(graph, `${id}-costs`, 'float32x2', snappedEdges.length);
   const keys = createTransientView(graph, `${id}-keys`, 'uint32', snappedEdges.length);
-  graph.add(
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-kernel`,
-      operation: 'GPURecipeDriveTimeCatchment',
-      variant: 'snapped-roads',
-      bindings: [
-        {name: 'snappedEdges', view: snappedEdges, type: 'u32', access: 'read'},
-        {name: 'edgeSources', view: edgeSources, type: 'u32', access: 'read'},
-        {name: 'offsets', view: topology.offsets, type: 'u32', access: 'read'},
-        {name: 'neighbors', view: topology.neighbors, type: 'u32', access: 'read'},
-        {name: 'weights', view: topology.weights, type: 'f32', access: 'read'},
-        {name: 'roads', view: nodes, type: 'u32', access: 'read_write'},
-        {name: 'roadCosts', view: costs, type: 'f32', access: 'read_write'},
-        {name: 'roadKeys', view: keys, type: 'u32', access: 'read_write'}
-      ],
-      invocationCount: snappedEdges.length,
-      declarations: `const NODE_COUNT: u32 = ${nodeCount}u;
+  builder.addAdapter(() =>
+    graph.add(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-kernel`,
+        operation: 'GPURecipeDriveTimeCatchment',
+        variant: 'snapped-roads',
+        bindings: [
+          {name: 'snappedEdges', view: snappedEdges, type: 'u32', access: 'read'},
+          {name: 'edgeSources', view: edgeSources, type: 'u32', access: 'read'},
+          {name: 'offsets', view: topology.offsets, type: 'u32', access: 'read'},
+          {name: 'neighbors', view: topology.neighbors, type: 'u32', access: 'read'},
+          {name: 'weights', view: topology.weights, type: 'f32', access: 'read'},
+          {name: 'roads', view: nodes, type: 'u32', access: 'read_write'},
+          {name: 'roadCosts', view: costs, type: 'f32', access: 'read_write'},
+          {name: 'roadKeys', view: keys, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: snappedEdges.length,
+        declarations: `const NODE_COUNT: u32 = ${nodeCount}u;
 const EDGE_COUNT: u32 = ${topology.neighbors.length}u;
 const NONE: u32 = 0xffffffffu;
 const IMPASSABLE: f32 = 3.0e38;
@@ -341,7 +347,7 @@ fn getFirstRoadEdge(fromNode: u32, toNode: u32) -> u32 {
   }
   return EDGE_COUNT;
 }`,
-      body: `let edge = snappedEdges[snappedEdgesOffset + index];
+        body: `let edge = snappedEdges[snappedEdgesOffset + index];
   var sourceNode = NONE;
   var targetNode = NONE;
   if (edge < EDGE_COUNT) {
@@ -364,7 +370,8 @@ fn getFirstRoadEdge(fromNode: u32, toNode: u32) -> u32 {
   roadCosts[roadCostsOffset + 2u * index] = forwardCost;
   roadCosts[roadCostsOffset + 2u * index + 1u] = reverseCost;
   roadKeys[roadKeysOffset + index] = roadKey;`
-    })
+      })
+    )
   );
   return {nodes, costs, keys};
 }
@@ -478,6 +485,13 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUDriveTimeCatchmentRecipeProps
 ): GPUDriveTimeCatchmentRecipeOutput {
+  return addPreparedRecipe(graph, props, declareDriveTimeCatchmentRecipe);
+}
+
+function declareDriveTimeCatchmentRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUDriveTimeCatchmentRecipeProps
+): GPUDriveTimeCatchmentRecipeOutput {
   const id = props.id ?? 'drive-time-catchment';
   const spatialContext = resolveGPUSpatialContext(
     id,
@@ -496,6 +510,50 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
   const demandCount = props.demand.length;
   const bandCount = props.costBreaks.length;
   assertRecipe(ID, bandCount >= 1, 'costBreaks must not be empty');
+  validateRecipeBoundary(
+    graph,
+    id,
+    [
+      topology.offsets,
+      topology.neighbors,
+      topology.weights,
+      topology.nodePositions,
+      props.facilities,
+      props.demand,
+      props.demandValues,
+      props.maximumSnapDistance,
+      props.costBreaks,
+      props.costLimit,
+      props.isochrones?.costBreaks,
+      props.isochrones?.parameters
+    ],
+    [
+      outputs.assignments,
+      outputs.nodeCosts,
+      outputs.status?.serviceAreaConverged,
+      outputs.demandTimes,
+      outputs.demandBands,
+      outputs.bands?.keys,
+      outputs.bands?.counts,
+      outputs.bands?.status?.count,
+      outputs.bands?.status?.overflow,
+      outputs.bands?.status?.requiredCount,
+      props.demandValues ? outputs.bands?.sumValues : undefined,
+      props.demandValues ? outputs.bands?.means : undefined,
+      props.isochrones?.joinDemand ? outputs.isochroneDemand?.pointFeatureIds : undefined,
+      props.isochrones?.joinDemand ? outputs.isochroneDemand?.status?.overflow : undefined,
+      props.isochrones?.joinDemand ? outputs.isochroneDemand?.status?.uncertainCount : undefined,
+      props.candidateCapacity ? outputs.snapping?.status?.facilitiesOverflow : undefined,
+      props.candidateCapacity ? outputs.snapping?.status?.demandOverflow : undefined,
+      scratch.startNodes,
+      scratch.startCosts,
+      scratch.facilityEdges,
+      scratch.demandEdges,
+      scratch.demandSourceCosts,
+      scratch.demandTargetCosts,
+      props.demandValues ? scratch.bandSumWords : undefined
+    ]
+  );
 
   // Edge source node per CSR edge, shared by the demand-time adapter (instead of a binary search).
   // The shared gpu-network nodes write every row, so rows past offsets[nodeCount] are never stale.
@@ -513,7 +571,7 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
     edgeSources,
     nodeCount
   })) {
-    graph.add(node);
+    builder.addAdapter(() => graph.add(node));
   }
 
   // Longitude/latitude positions snap great-circle in the context's length unit for either metric.
@@ -598,28 +656,29 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
   // target of its road by driving source -> target and the source by driving target -> source,
   // each at the cost of an edge that goes that way; a direction with no edge gets no start row unless the facility is already at that endpoint.
   // The roads of the facilities are kept so the demand adapter can find facilities on its road.
-  const facilityRoads = addSnappedRoadNodes(graph, {
+  const facilityRoads = addSnappedRoadNodes(builder, {
     id: `${id}-facility-roads`,
     snappedEdges: facilityEdges,
     edgeSources,
     topology,
     nodeCount
   });
-  graph.add(
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-facility-starts-kernel`,
-      operation: 'GPURecipeDriveTimeCatchment',
-      variant: 'facility-starts',
-      bindings: [
-        {name: 'roads', view: facilityRoads.nodes, type: 'u32', access: 'read'},
-        {name: 'roadCosts', view: facilityRoads.costs, type: 'f32', access: 'read'},
-        {name: 'fractions', view: facilityFractions, type: 'f32', access: 'read'},
-        {name: 'startNodes', view: startNodes, type: 'u32', access: 'read_write'},
-        {name: 'startCosts', view: startCosts, type: 'f32', access: 'read_write'}
-      ],
-      invocationCount: facilityCount,
-      declarations: 'const NONE: u32 = 0xffffffffu;',
-      body: `let fraction = fractions[fractionsOffset + index];
+  builder.addAdapter(() =>
+    graph.add(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-facility-starts-kernel`,
+        operation: 'GPURecipeDriveTimeCatchment',
+        variant: 'facility-starts',
+        bindings: [
+          {name: 'roads', view: facilityRoads.nodes, type: 'u32', access: 'read'},
+          {name: 'roadCosts', view: facilityRoads.costs, type: 'f32', access: 'read'},
+          {name: 'fractions', view: facilityFractions, type: 'f32', access: 'read'},
+          {name: 'startNodes', view: startNodes, type: 'u32', access: 'read_write'},
+          {name: 'startCosts', view: startCosts, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: facilityCount,
+        declarations: 'const NONE: u32 = 0xffffffffu;',
+        body: `let fraction = fractions[fractionsOffset + index];
   let forwardCost = roadCosts[roadCostsOffset + 2u * index];
   let reverseCost = roadCosts[roadCostsOffset + 2u * index + 1u];
   let useSource = reverseCost >= 0.0 || fraction == 0.0;
@@ -628,7 +687,8 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
   startCosts[startCostsOffset + 2u * index] = select(-1.0, fraction * max(reverseCost, 0.0), useSource);
   startNodes[startNodesOffset + 2u * index + 1u] = select(NONE, roads[roadsOffset + 2u * index + 1u], useTarget);
   startCosts[startCostsOffset + 2u * index + 1u] = select(-1.0, (1.0 - fraction) * max(forwardCost, 0.0), useTarget);`
-    })
+      })
+    )
   );
   // Facilities sorted by road key, so a demand point finds the facilities on its road by a
   // binary search instead of a scan of every facility (contract sections 2 and 3: candidates
@@ -653,30 +713,32 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
     'uint32',
     facilityCount
   );
-  graph.add([
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-facility-oriented-fractions-kernel`,
-      operation: 'GPURecipeDriveTimeCatchment',
-      variant: 'facility-oriented-fractions',
-      bindings: [
-        {name: 'roads', view: facilityRoads.nodes, type: 'u32', access: 'read'},
-        {name: 'fractions', view: facilityFractions, type: 'f32', access: 'read'},
-        {name: 'oriented', view: facilityOrientedFractions, type: 'u32', access: 'read_write'}
-      ],
-      invocationCount: facilityCount,
-      body: `let isReversed = roads[roadsOffset + 2u * index] > roads[roadsOffset + 2u * index + 1u];
+  builder.addAdapter(() =>
+    graph.add([
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-facility-oriented-fractions-kernel`,
+        operation: 'GPURecipeDriveTimeCatchment',
+        variant: 'facility-oriented-fractions',
+        bindings: [
+          {name: 'roads', view: facilityRoads.nodes, type: 'u32', access: 'read'},
+          {name: 'fractions', view: facilityFractions, type: 'f32', access: 'read'},
+          {name: 'oriented', view: facilityOrientedFractions, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: facilityCount,
+        body: `let isReversed = roads[roadsOffset + 2u * index] > roads[roadsOffset + 2u * index + 1u];
   let fractionBits = bitcast<u32>(fractions[fractionsOffset + index]) & 0x7fffffffu;
   oriented[orientedOffset + index] = fractionBits | select(0u, 0x80000000u, isReversed);`
-    }),
-    ...new GPUSort({
-      id: `${id}-facility-road-sort`,
-      keys: facilityRoads.keys,
-      values: facilityOrientedFractions,
-      outputKeys: sortedFacilityKeys,
-      outputValues: sortedFacilityFractions,
-      keyBits: getSortKeyBits(edgeCount)
-    }).getCommandNodes(graph)
-  ]);
+      }),
+      ...new GPUSort({
+        id: `${id}-facility-road-sort`,
+        keys: facilityRoads.keys,
+        values: facilityOrientedFractions,
+        outputKeys: sortedFacilityKeys,
+        outputValues: sortedFacilityFractions,
+        keyBits: getSortKeyBits(edgeCount)
+      }).getCommandNodes(graph)
+    ])
+  );
 
   const assignments = getOrCreateView(
     graph,
@@ -774,22 +836,23 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
         'float32',
         2 * facilityCount
       );
-      graph.add(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-source-path-geometry`,
-          operation: 'GPURecipeDriveTimeCatchment',
-          invocationCount: facilityCount,
-          bindings: [
-            {name: 'roads', view: facilityRoads.nodes, type: 'u32', access: 'read'},
-            {name: 'fractions', view: facilityFractions, type: 'f32', access: 'read'},
-            {name: 'positions', view: topology.nodePositions, type: 'f32', access: 'read'},
-            {name: 'startNodes', view: startNodes, type: 'u32', access: 'read'},
-            {name: 'pathPositions', view: pathPositions, type: 'f32', access: 'read_write'},
-            {name: 'pathCosts', view: pathCosts, type: 'f32', access: 'read_write'},
-            {name: 'pathAssignments', view: pathAssignments, type: 'u32', access: 'read_write'}
-          ],
-          declarations: `const NODE_COUNT: u32 = ${nodeCount}u;`,
-          body: `let sourceNode = roads[roadsOffset + 2u * index];
+      builder.addAdapter(() =>
+        graph.add(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-source-path-geometry`,
+            operation: 'GPURecipeDriveTimeCatchment',
+            invocationCount: facilityCount,
+            bindings: [
+              {name: 'roads', view: facilityRoads.nodes, type: 'u32', access: 'read'},
+              {name: 'fractions', view: facilityFractions, type: 'f32', access: 'read'},
+              {name: 'positions', view: topology.nodePositions, type: 'f32', access: 'read'},
+              {name: 'startNodes', view: startNodes, type: 'u32', access: 'read'},
+              {name: 'pathPositions', view: pathPositions, type: 'f32', access: 'read_write'},
+              {name: 'pathCosts', view: pathCosts, type: 'f32', access: 'read_write'},
+              {name: 'pathAssignments', view: pathAssignments, type: 'u32', access: 'read_write'}
+            ],
+            declarations: `const NODE_COUNT: u32 = ${nodeCount}u;`,
+            body: `let sourceNode = roads[roadsOffset + 2u * index];
   let targetNode = roads[roadsOffset + 2u * index + 1u];
   let valid = sourceNode < NODE_COUNT && targetNode < NODE_COUNT;
   var startPoint = vec2f(0.0);
@@ -816,22 +879,24 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
   pathAssignments[pathAssignmentsOffset + 3u * index] = assignment;
   pathAssignments[pathAssignmentsOffset + 3u * index + 1u] = assignment;
   pathAssignments[pathAssignmentsOffset + 3u * index + 2u] = assignment;`
-        })
+          })
+        )
       );
-      graph.add(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-source-path-topology`,
-          operation: 'GPURecipeDriveTimeCatchment',
-          invocationCount: facilityCount,
-          bindings: [
-            {name: 'roadCosts', view: facilityRoads.costs, type: 'f32', access: 'read'},
-            {name: 'fractions', view: facilityFractions, type: 'f32', access: 'read'},
-            {name: 'offsets', view: pathOffsets, type: 'u32', access: 'read_write'},
-            {name: 'neighbors', view: pathNeighbors, type: 'u32', access: 'read_write'},
-            {name: 'weights', view: pathWeights, type: 'f32', access: 'read_write'}
-          ],
-          declarations: `const FACILITY_COUNT: u32 = ${facilityCount}u;`,
-          body: `let fraction = fractions[fractionsOffset + index];
+      builder.addAdapter(() =>
+        graph.add(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-source-path-topology`,
+            operation: 'GPURecipeDriveTimeCatchment',
+            invocationCount: facilityCount,
+            bindings: [
+              {name: 'roadCosts', view: facilityRoads.costs, type: 'f32', access: 'read'},
+              {name: 'fractions', view: facilityFractions, type: 'f32', access: 'read'},
+              {name: 'offsets', view: pathOffsets, type: 'u32', access: 'read_write'},
+              {name: 'neighbors', view: pathNeighbors, type: 'u32', access: 'read_write'},
+              {name: 'weights', view: pathWeights, type: 'f32', access: 'read_write'}
+            ],
+            declarations: `const FACILITY_COUNT: u32 = ${facilityCount}u;`,
+            body: `let fraction = fractions[fractionsOffset + index];
   let forwardCost = roadCosts[roadCostsOffset + 2u * index];
   let reverseCost = roadCosts[roadCostsOffset + 2u * index + 1u];
   offsets[offsetsOffset + 3u * index] = 2u * index;
@@ -842,7 +907,8 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
   neighbors[neighborsOffset + 2u * index + 1u] = 3u * index + 2u;
   weights[weightsOffset + 2u * index] = select(-1.0, fraction * max(reverseCost, 0.0), reverseCost >= 0.0 || fraction == 0.0);
   weights[weightsOffset + 2u * index + 1u] = select(-1.0, (1.0 - fraction) * max(forwardCost, 0.0), forwardCost >= 0.0 || fraction == 1.0);`
-        })
+          })
+        )
       );
       raster = {
         ...raster,
@@ -962,46 +1028,47 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
   // Adapter: demand drive time from the snapped road, the node costs and the facilities on the
   // same road. Demand is reached from the road's source driving source -> target, from its target
   // driving target -> source, or straight along the road from a facility snapped to it.
-  const demandTimes = getOrCreateView(
+  const demandTimes = getRecipeView(
     graph,
     `${id}-demand-times`,
     'float32',
     demandCount,
     outputs.demandTimes
   );
-  const demandRoads = addSnappedRoadNodes(graph, {
+  const demandRoads = addSnappedRoadNodes(builder, {
     id: `${id}-demand-roads`,
     snappedEdges,
     edgeSources,
     topology,
     nodeCount
   });
-  graph.add(
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-demand-times-kernel`,
-      operation: 'GPURecipeDriveTimeCatchment',
-      variant: 'demand-time',
-      bindings: [
-        {name: 'roads', view: demandRoads.nodes, type: 'u32', access: 'read'},
-        {name: 'roadCosts', view: demandRoads.costs, type: 'f32', access: 'read'},
-        {name: 'roadKeys', view: demandRoads.keys, type: 'u32', access: 'read'},
-        {name: 'fractions', view: demandFractions, type: 'f32', access: 'read'},
-        {name: 'nodeCosts', view: nodeCosts, type: 'f32', access: 'read'},
-        {name: 'sortedFacilityKeys', view: sortedFacilityKeys, type: 'u32', access: 'read'},
-        {
-          name: 'sortedFacilityFractions',
-          view: sortedFacilityFractions,
-          type: 'u32',
-          access: 'read'
-        },
-        {name: 'times', view: demandTimes, type: 'f32', access: 'read_write'}
-      ],
-      invocationCount: demandCount,
-      declarations: `const NODE_COUNT: u32 = ${nodeCount}u;
+  builder.addAdapter(() =>
+    graph.add(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-demand-times-kernel`,
+        operation: 'GPURecipeDriveTimeCatchment',
+        variant: 'demand-time',
+        bindings: [
+          {name: 'roads', view: demandRoads.nodes, type: 'u32', access: 'read'},
+          {name: 'roadCosts', view: demandRoads.costs, type: 'f32', access: 'read'},
+          {name: 'roadKeys', view: demandRoads.keys, type: 'u32', access: 'read'},
+          {name: 'fractions', view: demandFractions, type: 'f32', access: 'read'},
+          {name: 'nodeCosts', view: nodeCosts, type: 'f32', access: 'read'},
+          {name: 'sortedFacilityKeys', view: sortedFacilityKeys, type: 'u32', access: 'read'},
+          {
+            name: 'sortedFacilityFractions',
+            view: sortedFacilityFractions,
+            type: 'u32',
+            access: 'read'
+          },
+          {name: 'times', view: demandTimes, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: demandCount,
+        declarations: `const NODE_COUNT: u32 = ${nodeCount}u;
 const FACILITY_COUNT: u32 = ${facilityCount}u;
 const UNREACHED: f32 = 3.0e38;
 ${getBinarySearchWGSL('sortedFacilityKeys')}`,
-      body: `let sourceNode = roads[roadsOffset + 2u * index];
+        body: `let sourceNode = roads[roadsOffset + 2u * index];
   let targetNode = roads[roadsOffset + 2u * index + 1u];
   var best = UNREACHED;
   if (sourceNode < NODE_COUNT && targetNode < NODE_COUNT) {
@@ -1048,29 +1115,31 @@ ${getBinarySearchWGSL('sortedFacilityKeys')}`,
     var infinityBits = 0x7f800000u;
     times[timesOffset + index] = bitcast<f32>(infinityBits);
   }`
-    })
+      })
+    )
   );
 
-  const demandBands = getOrCreateView(
+  const demandBands = getRecipeView(
     graph,
     `${id}-demand-bands`,
     'uint32',
     demandCount,
     outputs.demandBands
   );
-  graph.add(
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-demand-bands-kernel`,
-      operation: 'GPURecipeDriveTimeCatchment',
-      variant: 'band',
-      bindings: [
-        {name: 'times', view: demandTimes, type: 'f32', access: 'read'},
-        {name: 'bandBreaks', view: props.costBreaks, type: 'f32', access: 'read'},
-        {name: 'bands', view: demandBands, type: 'u32', access: 'read_write'}
-      ],
-      invocationCount: demandCount,
-      declarations: `const BAND_COUNT: u32 = ${bandCount}u;`,
-      body: `let time = times[timesOffset + index];
+  builder.addAdapter(() =>
+    graph.add(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-demand-bands-kernel`,
+        operation: 'GPURecipeDriveTimeCatchment',
+        variant: 'band',
+        bindings: [
+          {name: 'times', view: demandTimes, type: 'f32', access: 'read'},
+          {name: 'bandBreaks', view: props.costBreaks, type: 'f32', access: 'read'},
+          {name: 'bands', view: demandBands, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: demandCount,
+        declarations: `const BAND_COUNT: u32 = ${bandCount}u;`,
+        body: `let time = times[timesOffset + index];
   var band = 0xffffffffu;
   if (time < 3.0e38) {
     for (var k = 0u; k < BAND_COUNT; k++) {
@@ -1081,7 +1150,8 @@ ${getBinarySearchWGSL('sortedFacilityKeys')}`,
     }
   }
   bands[bandsOffset + index] = band;`
-    })
+      })
+    )
   );
 
   const capacity = props.bandCapacity ?? bandCount;

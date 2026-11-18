@@ -6,7 +6,21 @@ import {GraphVectorView, validatePackedView, type GraphDataView} from '@luma.gl/
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {validateRasterGrid} from '../raster-band-utils';
-import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {isRasterAlgebraBand} from '../raster-algebra/raster-algebra-input';
+
+/** Names original raster buffer ports before any conversion or staging. @internal */
+export function getNamedRasterSamplingInputViews(
+  values: GraphDataView<'float32'> | GPURasterBand
+): Record<string, GraphDataView | undefined> {
+  return isRasterAlgebraBand(values)
+    ? {
+        'values.storage.values':
+          values.storage.kind === 'buffer' ? values.storage.values : undefined,
+        'values.validity': values.validity
+      }
+    : {values};
+}
 
 /** Throws unless `view` is a packed single view of `format` with at least `rowCount` rows. @internal */
 export function validateRasterSamplingView(

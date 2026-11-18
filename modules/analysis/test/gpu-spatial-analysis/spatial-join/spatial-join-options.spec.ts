@@ -370,8 +370,8 @@ describe('GPUSpatialPredicateJoin onAttribute', () => {
       return {buffer, view: importGraphBuffer(graph, id, buffer, 'uint32', length)};
     };
     const capacity = 100;
-    const leftIds = output('left-ids', capacity);
-    const rightIds = output('right-ids', capacity);
+    const leftRows = output('left-ids', capacity);
+    const rightRows = output('right-ids', capacity);
     const count = output('count', 1);
     const overflow = output('overflow', 1);
     const unmatchedIds = output('unmatched-ids', 10);
@@ -397,8 +397,8 @@ describe('GPUSpatialPredicateJoin onAttribute', () => {
           pairs: options.anti
             ? undefined
             : {
-                leftIds: leftIds.view,
-                rightIds: rightIds.view,
+                leftRows: leftRows.view,
+                rightRows: rightRows.view,
                 status: {count: count.view, overflow: overflow.view}
               },
           unmatched: options.anti
@@ -417,8 +417,8 @@ describe('GPUSpatialPredicateJoin onAttribute', () => {
     const compiled = graph.compile();
     submitGraph(device, compiled, undefined);
     const total = (await readUint32(count.buffer, 1))[0];
-    const lefts = await readUint32(leftIds.buffer, capacity);
-    const rights = await readUint32(rightIds.buffer, capacity);
+    const lefts = await readUint32(leftRows.buffer, capacity);
+    const rights = await readUint32(rightRows.buffer, capacity);
     const unmatched = (await readUint32(unmatchedIds.buffer, 10)).slice(
       0,
       (await readUint32(unmatchedCount.buffer, 1))[0]

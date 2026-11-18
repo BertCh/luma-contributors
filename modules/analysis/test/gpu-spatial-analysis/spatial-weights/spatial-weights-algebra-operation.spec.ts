@@ -41,9 +41,151 @@ const OUTPUT = {
   offsets: 'offsets',
   neighbors: 'neighbors',
   weights: 'weights',
-  status: {overflow: 'overflow', requiredCount: 'requiredCount'}
+  status: {
+    overflow: 'overflow',
+    requiredCount: 'requiredCount',
+    candidateOverflow: 'candidateOverflow'
+  }
 };
 const BASE = {rowCount: 4, capacity: 32, output: OUTPUT};
+
+it('final2 algebra separates inherited loss, frontier loss and destination loss for both backends', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const weights = {
+    offsets: 'sourceOffsets',
+    neighbors: 'sourceNeighbors',
+    weights: 'sourceWeights',
+    status: {overflow: 'inputOverflow', candidateOverflow: 'inputCandidate'}
+  };
+  for (const scenario of [
+    {
+      operation: 'subgraph' as const,
+      capacity: 8,
+      inputOverflow: 1,
+      workCapacity: 8,
+      order: 1,
+      required: 0,
+      overflow: 0,
+      candidate: 1
+    },
+    {
+      operation: 'higherOrder' as const,
+      capacity: 8,
+      inputOverflow: 0,
+      workCapacity: 1,
+      order: 2,
+      required: 1,
+      overflow: 0,
+      candidate: 1
+    },
+    {
+      operation: 'higherOrder' as const,
+      capacity: 1,
+      inputOverflow: 0,
+      workCapacity: 8,
+      order: 1,
+      required: 6,
+      overflow: 1,
+      candidate: 0
+    },
+    {
+      operation: 'higherOrder' as const,
+      capacity: 8,
+      inputOverflow: 0,
+      workCapacity: 8,
+      order: 1,
+      required: 6,
+      overflow: 0,
+      candidate: 0
+    }
+  ]) {
+    const props: SpatialWeightsAlgebraOperationProps =
+      scenario.operation === 'subgraph'
+        ? {
+            operation: 'subgraph',
+            mask: 'mask',
+            rowCount: 4,
+            capacity: scenario.capacity,
+            weights,
+            output: OUTPUT
+          }
+        : {
+            operation: 'higherOrder',
+            order: scenario.order,
+            workCapacity: scenario.workCapacity,
+            rowCount: 4,
+            capacity: scenario.capacity,
+            weights,
+            output: OUTPUT
+          };
+    for (const Backend of [GPUSpatialWeightsAlgebraOperation, CPUSpatialWeightsAlgebraOperation]) {
+      const result = await runOperationGraph(device, {
+        inputs: {
+          sourceOffsets: {format: 'uint32', values: Uint32Array.of(0, 1, 3, 5, 6)},
+          sourceNeighbors: {format: 'uint32', values: Uint32Array.of(1, 0, 2, 1, 3, 2)},
+          sourceWeights: {format: 'float32', values: Float32Array.of(1, 1, 1, 1, 1, 1)},
+          inputOverflow: {format: 'uint32', values: Uint32Array.of(scenario.inputOverflow)},
+          inputCandidate: {format: 'uint32', values: Uint32Array.of(0)},
+          mask: {format: 'uint32', values: Uint32Array.of(0, 0, 0, 0)}
+        },
+        operations: [new Backend(props)],
+        outputs: ['requiredCount', 'overflow', 'candidateOverflow']
+      });
+      expect(Array.from(result['requiredCount'])).toEqual([scenario.required]);
+      expect(Array.from(result['overflow'])).toEqual([scenario.overflow]);
+      expect(Array.from(result['candidateOverflow'])).toEqual([scenario.candidate]);
+    }
+  }
+});
+
+it('final1 operation CPU and GPU preserve inherited loss and explicit higher-order work loss', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const cumulative of [false, true])
+    for (const flag of [0, 1]) {
+      const inputs = {
+        sourceOffsets: {format: 'uint32' as const, values: Uint32Array.of(0, 1, 3, 4)},
+        sourceNeighbors: {format: 'uint32' as const, values: Uint32Array.of(1, 0, 2, 1)},
+        sourceWeights: {format: 'float32' as const, values: Float32Array.of(1, 1, 1, 1)},
+        candidateLoss: {format: 'uint32' as const, values: Uint32Array.of(flag)}
+      };
+      const props: SpatialWeightsAlgebraOperationProps = {
+        operation: 'higherOrder',
+        order: 2,
+        cumulative,
+        workCapacity: flag ? 8 : 1,
+        rowCount: 3,
+        capacity: 8,
+        weights: {
+          offsets: 'sourceOffsets',
+          neighbors: 'sourceNeighbors',
+          weights: 'sourceWeights',
+          status: {candidateOverflow: 'candidateLoss'}
+        },
+        output: {...OUTPUT, status: {...OUTPUT.status, candidateOverflow: 'candidateOverflow'}}
+      };
+      for (const operation of [
+        new GPUSpatialWeightsAlgebraOperation(props),
+        new CPUSpatialWeightsAlgebraOperation(props)
+      ]) {
+        const result = await runOperationGraph(device, {
+          inputs,
+          operations: [operation],
+          outputs: ['offsets', 'neighbors', 'overflow', 'candidateOverflow']
+        });
+        expect(Array.from(result['overflow'])).toEqual([0]);
+        expect(Array.from(result['candidateOverflow'])).toEqual([1]);
+        if (!flag) {
+          expect(Array.from(result['offsets'])).toEqual(cumulative ? [0, 2, 2, 2] : [0, 1, 1, 1]);
+          expect(Array.from(result['neighbors']).slice(0, cumulative ? 2 : 1)).toEqual(
+            cumulative ? [1, 2] : [2]
+          );
+        }
+      }
+    }
+});
+
 const CASES: SpatialWeightsAlgebraOperationProps[] = [
   ...(['union', 'intersection', 'difference', 'symmetricDifference'] as const).map(operation => ({
     ...BASE,

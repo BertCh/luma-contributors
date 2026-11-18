@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import {validateClassBreaksInput} from './class-breaks-input';
+import {snapshotClassBreaksOperationProps} from './class-breaks-operation-snapshot';
 import {
   validateCapacity,
   validateRequirement
@@ -307,30 +309,12 @@ export function computeClassBreaksOnCPU(
 
 /** CPU class-break twin: all natural-break modes use the full float64 global optimum. */
 export class CPUClassBreaksOperation extends GPUCPUOperation {
-  constructor(props: ClassBreaksOperationProps) {
+  constructor(inputProps: ClassBreaksOperationProps) {
+    const props = snapshotClassBreaksOperationProps(inputProps);
     const id = props.id ?? 'class-breaks';
     validateClassOptions(id, props);
-    validateCapacity(id, 'rowCount', props.rowCount, 1);
-    validateRequirement(
-      id,
-      props.valuesFormat === undefined ||
-        ['float32', 'uint32', 'sint32'].includes(props.valuesFormat),
-      'valuesFormat must be float32, uint32 or sint32'
-    );
     if (props.naturalBreaksBinCount !== undefined)
       validateCapacity(id, 'naturalBreaksBinCount', props.naturalBreaksBinCount, 2);
-    validateRequirement(
-      id,
-      props.naturalBreaksMode === undefined ||
-        ['approximate', 'exact', 'monotone'].includes(props.naturalBreaksMode),
-      'naturalBreaksMode must be approximate, exact or monotone'
-    );
-    validateRequirement(
-      id,
-      props.naturalBreaksExactStorage === undefined ||
-        ['auto', 'materialized', 'recompute'].includes(props.naturalBreaksExactStorage),
-      'naturalBreaksExactStorage must be auto, materialized or recompute'
-    );
     const operation = new GPUClassBreaksOperation(props);
     super({
       id,
@@ -342,14 +326,16 @@ export class CPUClassBreaksOperation extends GPUCPUOperation {
         ])
       ),
       execute({inputs}) {
+        const input = inputs['values'];
+        if (input === undefined || typeof input === 'number')
+          throw new Error(`${id} values must be a vector`);
+        validateClassBreaksInput(id, props, input);
         const values =
-          props.valuesFormat === 'uint32'
+          input.format === 'uint32'
             ? getCPUOperationUint32Rows(id, inputs, 'values')
-            : props.valuesFormat === 'sint32'
+            : input.format === 'sint32'
               ? getCPUOperationInt32Rows(id, inputs, 'values')
               : getCPUOperationFloat32Rows(id, inputs, 'values');
-        if (values.length !== props.rowCount)
-          throw new Error(`${id} values length must equal rowCount`);
         const result = computeClassBreaksOnCPU(
           values,
           getCPUOperationFloat32Rows(id, inputs, 'parameters'),

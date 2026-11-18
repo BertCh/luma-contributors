@@ -110,8 +110,8 @@ for (const kind of ['selection', 'prepared', 'candidates'] as const) {
                 distance,
                 leafCapacity: defect === 'scratch' ? 16 : undefined,
                 output: {
-                  leftIds: createTransientView(graph, 'left-ids', 'uint32', 1),
-                  rightIds: createTransientView(graph, 'right-ids', 'uint32', 1),
+                  leftRows: createTransientView(graph, 'left-ids', 'uint32', 1),
+                  rightRows: createTransientView(graph, 'right-ids', 'uint32', 1),
                   status: {
                     count: createTransientView(graph, 'pair-count', 'uint32', 1),
                     overflow: createTransientView(graph, 'pair-overflow', 'uint32', 1)
@@ -233,9 +233,15 @@ for (const defect of ['owner parameters', 'persistent entries'] as const) {
 
 it('prepared accepts a zero optional slab-entry budget using the shared exact fallback', () => {
   const {device, graph} = createFixture();
-  const prepared = new GPUSpatialJoinPrepared({geometry: createPolygon(graph), edgeSlabs: true});
+  const geometry = {
+    ...createPolygon(graph),
+    positions: createTransientView(graph, 'six-vertices', 'float32x2', 6)
+  };
+  const prepared = new GPUSpatialJoinPrepared({geometry, edgeSlabs: true});
   Object.defineProperty(device, 'limits', {
-    value: {...device.limits, maxStorageBufferBindingSize: 32}
+    // Four nonempty snapshot views need 48 dispatch bytes; six vertices use all six 8-byte
+    // slab slots, leaving zero optional entries without invalidating the snapshot binding.
+    value: {...device.limits, maxStorageBufferBindingSize: 48}
   });
   try {
     const sources = getParsedKernelSources(prepared.getCommandNodes(graph));
@@ -250,7 +256,7 @@ it('prepared accepts a zero optional slab-entry budget using the shared exact fa
 it('selection rejects physical read-only/write aliasing even for disjoint aligned subviews', () => {
   const {device, graph, props} = createFixture();
   const backing = createTransientView(graph, 'shared-outputs', 'uint32', 128);
-  const nearestFeatureIds = graph.createDataView(backing.buffer, {format: 'uint32', length: 1});
+  const nearestFeatureRows = graph.createDataView(backing.buffer, {format: 'uint32', length: 1});
   const outputMask = graph.createDataView(backing.buffer, {
     format: 'uint32',
     length: 1,
@@ -258,7 +264,7 @@ it('selection rejects physical read-only/write aliasing even for disjoint aligne
   });
   try {
     expect(
-      () => new GPUBufferSelection({...props, output: {nearestFeatureIds, outputMask}})
+      () => new GPUBufferSelection({...props, output: {nearestFeatureRows, outputMask}})
     ).toThrow(/physical buffer.*read-only and writable/);
   } finally {
     device.destroy();

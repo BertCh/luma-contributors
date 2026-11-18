@@ -41,6 +41,21 @@ export function isRasterAlgebraBand(input: RasterAlgebraInput): input is GPURast
 }
 
 /** Returns the original input views for aliasing and graph-ownership checks. @internal */
+export function getNamedRasterAlgebraInputViews(
+  input: RasterAlgebraInput | undefined,
+  name: string
+): Record<string, GraphDataView | undefined> {
+  if (!input) return {};
+  return isRasterAlgebraBand(input)
+    ? {
+        [`${name}.storage.values`]:
+          input.storage.kind === 'buffer' ? input.storage.values : undefined,
+        [`${name}.validity`]: input.validity
+      }
+    : {[name]: input};
+}
+
+/** Returns the original input views for aliasing and graph-ownership checks. @internal */
 export function getRasterAlgebraInputViews(input: RasterAlgebraInput | undefined): GraphDataView[] {
   return input ? (isRasterAlgebraBand(input) ? getRasterBandViews(input) : [input]) : [];
 }

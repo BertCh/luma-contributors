@@ -29,7 +29,7 @@ export type {
 export type {
   GPUNetworkAdjacency,
   GPUNetworkTopology
-} from '../../analysis-core/network-topology';
+} from '../../analysis-core/contracts/network-topology';
 
 // GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
 export {

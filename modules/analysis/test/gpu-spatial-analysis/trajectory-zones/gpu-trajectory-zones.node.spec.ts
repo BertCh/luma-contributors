@@ -74,8 +74,9 @@ it('GPUZoneEvents validates props and declares nodes inside the storage binding 
   expect(zoneEvents.zoneCount).toBe(2);
   expect(zoneEvents.edgeCount).toBe(8);
   const sources = getParsedKernelSources(nodes);
-  expect(getStorageBindingCount(sources.get('zone-events-edges') ?? '')).toBe(7);
-  for (const [kernelId, source] of sources) {
+  for (const {source} of sources.getConfigurations('zone-events-edges'))
+    expect(getStorageBindingCount(source)).toBe(7);
+  for (const {id: kernelId, source} of sources.configurations) {
     expect(getStorageBindingCount(source), kernelId).toBeLessThanOrEqual(8);
   }
   expect(

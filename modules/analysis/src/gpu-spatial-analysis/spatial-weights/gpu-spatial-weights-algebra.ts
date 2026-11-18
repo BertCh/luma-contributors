@@ -3,6 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateSpatialStatisticsBindings} from './spatial-statistics-bindings';
+import {snapshotWeightsAlgebraProps, snapshotWeightsPort} from './weights-construction-snapshot';
+import {
+  createWeightsLossNodes,
+  getWeightsLossSources,
+  validateWeightsLossSources
+} from './spatial-weights-loss';
 import {
   assertCompatibleGPUSpatialContexts,
   type GPUSpatialContext
@@ -136,8 +142,8 @@ export type GPUSpatialWeightsHigherOrderProps = GPUSpatialWeightsAlgebraBaseProp
   cumulative?: boolean;
   /**
    * Slot capacity of the intermediate frontier and visited sets. Defaults to the output capacity.
-   * Exact lower-order sets can be larger than an exact-`order` output, so raise it when `overflow`
-   * is set although the final result would fit. `overflow` also reports intermediate overflow.
+   * Exact lower-order sets can be larger than an exact-`order` output. Intermediate truncation
+   * sets candidateOverflow; raise this budget for that cause, not the final destination capacity.
    */
   workCapacity?: number;
 };
@@ -360,8 +366,9 @@ function getAlgebraOutputInformation(
  * attached. `symmetric` is `true` only when it is guaranteed by the operands' `information.symmetric`
  * (union, intersection, difference and symmetric difference of two symmetric operands, a symmetric
  * `higherOrder`, `selfWeight` or `subgraph` input, and `block`), else `'unknown'`. The
- * status of `outputWeights` is this operation's own `overflow`; it does not repeat the operands'
- * status, so check an overflowing operand before trusting a result built from it.
+ * outputWeights preserves all operand loss in candidateOverflow. Destination overflow reports
+ * only this operation's final capacity; candidateOverflow also carries higher-order work loss.
+ * Both flags are overwritten on every submission; requiredCount is a lower bound after loss.
  *
  * Capacity grow loop: pass `output.status.requiredCount`, read it and `overflow` after a frame;
  * when `overflow` is 1 reallocate the output with
@@ -380,11 +387,13 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
   readonly outputWeights: GPUSpatialWeights;
 
   constructor(props: GPUSpatialWeightsAlgebraProps) {
+    props = snapshotWeightsAlgebraProps(props);
     const id = props.id ?? 'spatial-weights-algebra';
     this.id = id;
     this.props = props;
     const outputRows = validateGPUSpatialWeightsOutput(id, props.output);
     const inputs = this.getInputWeights();
+    const inputLossViews = validateWeightsLossSources(id, inputs);
     let spatialContext: GPUSpatialContext | undefined;
     for (const input of inputs) {
       if (spatialContext && input.spatialContext) {
@@ -508,12 +517,34 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
     ];
     validateGraphOutputsDisjointFromInputs(id, outputViews, [
       ...inputs.flatMap(getGPUSpatialWeightsViews),
+      ...inputLossViews,
       props.operation === 'subgraph' ? props.mask : undefined,
       props.operation === 'block' ? props.groupIds : undefined,
       props.operation === 'selfWeight' && typeof props.selfWeight !== 'number'
         ? props.selfWeight
         : undefined
     ]);
+    if (
+      props.output.status.candidateOverflow ||
+      inputLossViews.length ||
+      props.operation === 'higherOrder'
+    ) {
+      this.outputWeights = {
+        ...this.outputWeights,
+        status: {
+          ...this.outputWeights.status,
+          candidateOverflow:
+            props.output.status.candidateOverflow ??
+            createTransientView(
+              props.output.offsets.buffer.graph as GPUCommandGraph,
+              `${id}-${props.output.offsets.buffer.id}-${props.output.offsets.byteOffset}-candidate-overflow`,
+              'uint32',
+              1
+            )
+        }
+      };
+    }
+    this.outputWeights = snapshotWeightsPort(this.outputWeights);
   }
 
   /** Returns every input weights structure. */
@@ -546,9 +577,20 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
           ? (this.props.workCapacity ?? this.props.output.neighbors.length)
           : this.props.output.neighbors.length) * 4
     });
-    const {props, id} = this;
+    const {id} = this;
+    const props = {
+      ...this.props,
+      output: {
+        ...this.props.output,
+        status: {
+          ...this.props.output.status,
+          candidateOverflow: this.outputWeights.status?.candidateOverflow
+        }
+      }
+    } as GPUSpatialWeightsAlgebraProps;
     validateGraphViewsBelongToGraph(id, graph, [
       ...this.getInputWeights().flatMap(getGPUSpatialWeightsViews),
+      ...validateWeightsLossSources(id, this.getInputWeights()),
       ...getGPUSpatialWeightsViews(props.output),
       ...getGPUSpatialWeightsStatusViews(props.output),
       props.operation === 'subgraph' ? props.mask : undefined,
@@ -557,23 +599,40 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
         ? props.selfWeight
         : undefined
     ]);
-    switch (props.operation) {
-      case 'higherOrder':
-        return this.getHigherOrderNodes(graph, props);
-      case 'selfWeight':
-        return this.getSelfWeightNodes(graph, props);
-      case 'subgraph':
-        return this.getSubgraphNodes(graph, props);
-      case 'spaceTime':
-        return getSpaceTimeStages(graph, this.getStageBase(props.output), {
-          ...props,
-          cellCount: props.weights.offsets.length - 1
-        });
-      case 'block':
-        return this.getBlockNodes(graph, props);
-      default:
-        return this.getBinaryNodes(graph, props);
-    }
+    const nodes = (() => {
+      switch (props.operation) {
+        case 'higherOrder':
+          return this.getHigherOrderNodes(graph, props);
+        case 'selfWeight':
+          return this.getSelfWeightNodes(graph, props);
+        case 'subgraph':
+          return this.getSubgraphNodes(graph, props);
+        case 'spaceTime':
+          return getSpaceTimeStages(graph, this.getStageBase(props.output), {
+            ...props,
+            cellCount: props.weights.offsets.length - 1
+          });
+        case 'block':
+          return this.getBlockNodes(graph, props);
+        default:
+          return this.getBinaryNodes(graph, props);
+      }
+    })();
+    const sources = getWeightsLossSources(this.getInputWeights());
+    const candidate = props.output.status.candidateOverflow;
+    return [
+      ...(candidate ? createWeightsLossNodes(graph, `${id}-candidate-clear`, [], candidate) : []),
+      ...nodes,
+      ...(candidate
+        ? createWeightsLossNodes(
+            graph,
+            `${id}-inherited-candidate`,
+            [...sources.overflow, ...sources.candidateOverflow],
+            candidate,
+            true
+          )
+        : [])
+    ];
   }
 
   private getBinaryNodes<Parameters>(
@@ -630,8 +689,8 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
         rows,
         targetOffsets: target.offsets,
         capacity: target.neighbors.length,
-        overflow: props.output.status.overflow,
-        initializesOverflow,
+        overflow: last ? props.output.status.overflow : props.output.status.candidateOverflow!,
+        initializesOverflow: last ? true : initializesOverflow,
         totalNeighbors: last ? props.output.status.requiredCount : undefined,
         attributes: [
           {name: 'neighbors', output: target.neighbors, type: 'u32' as const, value: 'id'}

@@ -11,6 +11,7 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {GPUKeyJoin} from '../../dataframe-analysis/key-join/gpu-key-join';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 import {
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
@@ -21,16 +22,41 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createRecipeKernelNode} from '../recipes/recipe-utils';
 
+/** Per-target diagnostic codes; these are not row-selection flags. */
+export const POPULATION_SUPPORT_ALIGNMENT_CODES = {
+  MATCHED: 0,
+  MISSING: 1,
+  AMBIGUOUS: 2
+} as const;
+
+/** Decodes a per-target alignment diagnostic, preserving unknown codes explicitly. */
+export function decodePopulationSupportAlignmentCode(
+  code: number
+): 'matched' | 'missing' | 'ambiguous' | 'unknown' {
+  switch (code) {
+    case POPULATION_SUPPORT_ALIGNMENT_CODES.MATCHED:
+      return 'matched';
+    case POPULATION_SUPPORT_ALIGNMENT_CODES.MISSING:
+      return 'missing';
+    case POPULATION_SUPPORT_ALIGNMENT_CODES.AMBIGUOUS:
+      return 'ambiguous';
+    default:
+      return 'unknown';
+  }
+}
+
 export type GPUPopulationSupportAlignmentOutput = {
   /** float32x2, target-aligned populations; unmatched or ambiguous rows contain NaN. */
   populations: GraphDataView<'float32x2'>;
-  /** Legacy codes: 0 matched, 1 no source, 2 duplicate source or target. Missing takes precedence. */
-  validity: GraphDataView<'uint32'>;
+  /** 0 matched, 1 no source, 2 duplicate source or target. Missing takes precedence. */
+  alignmentCode: GraphDataView<'uint32'>;
+  /** 1 for a unique source and target match, otherwise 0; usable as a downstream mask. */
+  matchedMask: GraphDataView<'uint32'>;
   /** uint32x4: [aligned, missingTargetRows, ambiguousTargetRows, excludedSourceRows]. */
   status: GraphDataView<'uint32x4'>;
 };
 
-/** Input and optional caller-owned recipe outputs; the contributor requires all three outputs. */
+/** Input and optional caller-owned recipe outputs; the contributor requires all four outputs. */
 export type GPUPopulationSupportAlignmentProps = {
   id?: string;
   populations: GraphDataView<'float32x2'>;
@@ -38,6 +64,77 @@ export type GPUPopulationSupportAlignmentProps = {
   targetIds: GraphDataView<'uint32'>;
   output?: Partial<GPUPopulationSupportAlignmentOutput>;
 };
+
+const POPULATION_SUPPORT_ALIGNMENT_OUTPUT_NAMES = [
+  'populations',
+  'alignmentCode',
+  'matchedMask',
+  'status'
+] as const;
+
+/** Validate supplied views without reserving graph resources; absent recipe outputs are allowed. @internal */
+export function validatePopulationSupportAlignmentViews<Parameters>(
+  id: string,
+  props: GPUPopulationSupportAlignmentProps,
+  graph?: GPUCommandGraph<Parameters>
+): void {
+  validateRequirement(id, props.populations.length > 0, 'populations must have at least 1 row');
+  validateViewLength(id, 'sourceIds', props.sourceIds, props.populations.length);
+  validateRequirement(id, props.targetIds.length > 0, 'targetIds must have at least 1 row');
+  validateSinglePackedView(props.populations, ['float32x2'], `${id} populations`);
+  validateSinglePackedView(props.sourceIds, ['uint32'], `${id} sourceIds`);
+  validateSinglePackedView(props.targetIds, ['uint32'], `${id} targetIds`);
+  for (const [name, format, length] of [
+    ['populations', 'float32x2', props.targetIds.length],
+    ['alignmentCode', 'uint32', props.targetIds.length],
+    ['matchedMask', 'uint32', props.targetIds.length],
+    ['status', 'uint32x4', 1]
+  ] as const) {
+    const view = props.output?.[name];
+    if (!view) continue;
+    validateSinglePackedView(view, [format], `${id} output.${name}`);
+    validateViewLength(id, `output.${name}`, view, length);
+  }
+  const entries = POPULATION_SUPPORT_ALIGNMENT_OUTPUT_NAMES.flatMap<[string, GraphDataView]>(
+    name => {
+      const view = props.output?.[name];
+      return view === undefined ? [] : [[name, view]];
+    }
+  );
+  const outputs = entries.map(([, view]) => view);
+  validateGraphOutputsDisjointFromInputs(id, outputs, [
+    props.populations,
+    props.sourceIds,
+    props.targetIds
+  ]);
+  const outputNamesByBuffer = new Map<object, string>();
+  for (const [name, view] of entries) {
+    const buffer = view.buffer.defaultBuffer
+      ? getCoreDefaultBuffer(view.buffer.defaultBuffer)
+      : view.buffer;
+    const previousName = outputNamesByBuffer.get(buffer);
+    validateRequirement(
+      id,
+      previousName === undefined,
+      `output.${previousName} and output.${name} must not share a buffer`
+    );
+    outputNamesByBuffer.set(buffer, name);
+  }
+  validateRequirement(
+    id,
+    [props.sourceIds, props.targetIds, ...outputs].every(
+      view => view.buffer.graph === props.populations.buffer.graph
+    ),
+    'views must belong to one graph'
+  );
+  if (graph)
+    validateGraphViewsBelongToGraph(id, graph, [
+      props.populations,
+      props.sourceIds,
+      props.targetIds,
+      ...outputs
+    ]);
+}
 
 /**
  * Exact support-ID alignment using two sort/index joins and parallel status reductions.
@@ -60,38 +157,10 @@ export class GPUPopulationSupportAlignment implements GPUCommandNodeProducer {
     this.id = props.id ?? 'population-support-alignment';
     this.props = props;
     const {id} = this;
-    validateRequirement(id, props.populations.length > 0, 'populations must have at least 1 row');
-    validateViewLength(id, 'sourceIds', props.sourceIds, props.populations.length);
-    validateRequirement(id, props.targetIds.length > 0, 'targetIds must have at least 1 row');
-    validateSinglePackedView(props.populations, ['float32x2'], `${id} populations`);
-    validateSinglePackedView(props.sourceIds, ['uint32'], `${id} sourceIds`);
-    validateSinglePackedView(props.targetIds, ['uint32'], `${id} targetIds`);
-    for (const [name, format, length] of [
-      ['populations', 'float32x2', props.targetIds.length],
-      ['validity', 'uint32', props.targetIds.length],
-      ['status', 'uint32x4', 1]
-    ] as const) {
-      validateSinglePackedView(props.output[name], [format], `${id} output.${name}`);
-      validateViewLength(id, `output.${name}`, props.output[name], length);
+    for (const name of POPULATION_SUPPORT_ALIGNMENT_OUTPUT_NAMES) {
+      validateRequirement(id, Boolean(props.output?.[name]), `output.${name} is required`);
     }
-    const outputs = Object.values(props.output);
-    validateGraphOutputsDisjointFromInputs(id, outputs, [
-      props.populations,
-      props.sourceIds,
-      props.targetIds
-    ]);
-    validateRequirement(
-      id,
-      new Set(outputs.map(view => view.buffer)).size === outputs.length,
-      'outputs must not share a buffer'
-    );
-    validateRequirement(
-      id,
-      [props.sourceIds, props.targetIds, ...outputs].every(
-        view => view.buffer.graph === props.populations.buffer.graph
-      ),
-      'views must belong to one graph'
-    );
+    validatePopulationSupportAlignmentViews(id, props);
   }
 
   getCommandNodes<Parameters>(
@@ -104,7 +173,7 @@ export class GPUPopulationSupportAlignment implements GPUCommandNodeProducer {
       props.populations,
       props.sourceIds,
       props.targetIds,
-      ...Object.values(props.output)
+      ...POPULATION_SUPPORT_ALIGNMENT_OUTPUT_NAMES.map(name => props.output[name])
     ]);
     // The key join uses uint32x2 sort keys and scratch pairs: eight bytes per row.
     validateGPUStorageBindingByteLength(
@@ -181,13 +250,17 @@ output[outputOffset + 2u * index + 1u] = 0u;`
           {name: 'sourceMatches', view: sourceMatches, type: 'u32', access: 'read'},
           {name: 'targetMatches', view: targetMatches, type: 'u32', access: 'read'},
           {name: 'output', view: props.output.populations, type: 'f32', access: 'read_write'},
-          {name: 'validity', view: props.output.validity, type: 'u32', access: 'read_write'},
-          {name: 'missingFlags', view: missingFlags, type: 'u32', access: 'read_write'},
-          {name: 'duplicateFlags', view: duplicateFlags, type: 'u32', access: 'read_write'}
+          {
+            name: 'alignmentCode',
+            view: props.output.alignmentCode,
+            type: 'u32',
+            access: 'read_write'
+          },
+          {name: 'matchedMask', view: props.output.matchedMask, type: 'u32', access: 'read_write'}
         ],
         body: `let matches = sourceMatches[sourceMatchesOffset + index];
 let valid = matches == 1u && targetMatches[targetMatchesOffset + index] == 1u;
-let code = select(select(2u, 1u, matches == 0u), 0u, valid);
+let code = select(select(${POPULATION_SUPPORT_ALIGNMENT_CODES.AMBIGUOUS}u, ${POPULATION_SUPPORT_ALIGNMENT_CODES.MISSING}u, matches == 0u), ${POPULATION_SUPPORT_ALIGNMENT_CODES.MATCHED}u, valid);
 let missing = bitcast<f32>(0x7fc00000u | (index & 0u));
 var population = vec2<f32>(missing);
 if (valid) {
@@ -196,9 +269,21 @@ if (valid) {
 }
 output[outputOffset + 2u * index] = population.x;
 output[outputOffset + 2u * index + 1u] = population.y;
-validity[validityOffset + index] = code;
-missingFlags[missingFlagsOffset + index] = u32(code == 1u);
-duplicateFlags[duplicateFlagsOffset + index] = u32(code == 2u);`
+alignmentCode[alignmentCodeOffset + index] = code;
+matchedMask[matchedMaskOffset + index] = u32(valid);`
+      }),
+      createRecipeKernelNode(graph, {
+        id: `${id}-alignment-flags`,
+        operation: 'GPUPopulationSupportAlignment',
+        invocationCount: targetCount,
+        bindings: [
+          {name: 'alignmentCode', view: props.output.alignmentCode, type: 'u32', access: 'read'},
+          {name: 'missingFlags', view: missingFlags, type: 'u32', access: 'read_write'},
+          {name: 'duplicateFlags', view: duplicateFlags, type: 'u32', access: 'read_write'}
+        ],
+        body: `let code = alignmentCode[alignmentCodeOffset + index];
+missingFlags[missingFlagsOffset + index] = u32(code == ${POPULATION_SUPPORT_ALIGNMENT_CODES.MISSING}u);
+duplicateFlags[duplicateFlagsOffset + index] = u32(code == ${POPULATION_SUPPORT_ALIGNMENT_CODES.AMBIGUOUS}u);`
       })
     );
     const excludedFlags = createTransientView(graph, `${id}-excluded-flags`, 'uint32', sourceCount);

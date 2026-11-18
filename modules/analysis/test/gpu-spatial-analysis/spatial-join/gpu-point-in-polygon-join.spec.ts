@@ -51,6 +51,7 @@ type JoinBufferName =
   | 'matchIds'
   | 'matchCount'
   | 'matchOverflow'
+  | 'matchCandidateOverflow'
   | 'matchTotal';
 
 type JoinFixture = {
@@ -90,6 +91,7 @@ function createJoinFixture(
     matchIds: createOutputBuffer(device, matchCapacity ?? pointCount),
     matchCount: createOutputBuffer(device, 1),
     matchOverflow: createOutputBuffer(device, 1),
+    matchCandidateOverflow: createOutputBuffer(device, 1),
     matchTotal: createOutputBuffer(device, 1)
   };
   const props: GPUPointInPolygonJoinProps<GPUUint32Rows> = {
@@ -159,6 +161,13 @@ function createJoinFixture(
         status: {
           count: importGraphBuffer(graph, 'match-count', buffers.matchCount, 'uint32', 1),
           overflow: importGraphBuffer(graph, 'match-overflow', buffers.matchOverflow, 'uint32', 1),
+          candidateOverflow: importGraphBuffer(
+            graph,
+            'match-candidate',
+            buffers.matchCandidateOverflow,
+            'uint32',
+            1
+          ),
           requiredCount: importGraphBuffer(graph, 'match-total', buffers.matchTotal, 'uint32', 1)
         }
       },
@@ -302,8 +311,8 @@ it('GPUPointInPolygonJoin reports candidate, leaf, and match overflow', async ()
   let compiled = candidateFixture.graph.compile();
   submitGraph(device, compiled, undefined);
   expect(await readUint32(candidateFixture.buffers.overflow, 1)).toEqual([1]);
-  // Aggregate compact completeness includes intermediate loss even with ample match capacity.
-  expect(await readUint32(candidateFixture.buffers.matchOverflow, 1)).toEqual([1]);
+  expect(await readUint32(candidateFixture.buffers.matchOverflow, 1)).toEqual([0]);
+  expect(await readUint32(candidateFixture.buffers.matchCandidateOverflow, 1)).toEqual([1]);
   expect(await readUint32(candidateFixture.buffers.candidateCount, 1)).toEqual([9]);
   const featureIds = await readUint32(candidateFixture.buffers.pointFeatureIds, 10);
   for (const [row, featureId] of featureIds.entries()) {
@@ -317,7 +326,8 @@ it('GPUPointInPolygonJoin reports candidate, leaf, and match overflow', async ()
   compiled = leafFixture.graph.compile();
   submitGraph(device, compiled, undefined);
   expect(await readUint32(leafFixture.buffers.overflow, 1)).toEqual([1]);
-  expect(await readUint32(leafFixture.buffers.matchOverflow, 1)).toEqual([1]);
+  expect(await readUint32(leafFixture.buffers.matchOverflow, 1)).toEqual([0]);
+  expect(await readUint32(leafFixture.buffers.matchCandidateOverflow, 1)).toEqual([1]);
   expect((await readUint32(leafFixture.buffers.pointFeatureIds, 10)).slice(0, 7)).toEqual([
     100,
     N,
@@ -340,6 +350,7 @@ it('GPUPointInPolygonJoin reports candidate, leaf, and match overflow', async ()
   expect(matchIds.every(id => [1000, 1002, 1003, 1004, 1005, 1006].includes(id))).toBe(true);
   expect(await readUint32(buffers.matchTotal, 1)).toEqual([6]);
   expect(await readUint32(buffers.matchOverflow, 1)).toEqual([1]);
+  expect(await readUint32(buffers.matchCandidateOverflow, 1)).toEqual([0]);
   expect(await readUint32(buffers.overflow, 1)).toEqual([1]);
   compiled.destroy();
   destroyFixture(matchFixture);
@@ -607,7 +618,10 @@ for (const edgeSlabs of [false, true]) {
         expect(await readCompactIds(fixture.buffers.matchIds, fixture.buffers.matchCount)).toEqual(
           matches.slice(0, 3)
         );
-        expect(await readUint32(fixture.buffers.matchOverflow, 1)).toEqual([1]);
+        expect(await readUint32(fixture.buffers.matchOverflow, 1)).toEqual([
+          Number(matches.length > 3)
+        ]);
+        expect(await readUint32(fixture.buffers.matchCandidateOverflow, 1)).toEqual([1]);
       } finally {
         compiled.destroy();
         destroyFixture(fixture);

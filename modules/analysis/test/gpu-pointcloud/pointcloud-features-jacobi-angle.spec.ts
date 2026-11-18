@@ -85,11 +85,13 @@ it('GPUPointCloudFeatures matches binary64 where the Jacobi atan2 second argumen
         positions: positions.view,
         indices: indices.view,
         counts: counts.view,
-        normals: normals.view,
-        eigenvalues: eigenvalues.view,
-        shapes: shapes.view,
-        status: status.view,
-        capacity: CAPACITY
+        capacity: CAPACITY,
+        output: {
+          normals: normals.view,
+          eigenvalues: eigenvalues.view,
+          shapes: shapes.view,
+          status: status.view
+        }
       })
     );
     await fixture.run();

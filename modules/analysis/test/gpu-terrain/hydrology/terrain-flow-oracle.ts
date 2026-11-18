@@ -19,7 +19,7 @@ import {accumulateRoutingOnCPU} from './terrain-flow-routing-oracle';
 import {
   getRasterGroundCellSize,
   type GPURasterCellSizeMode
-} from '../../../src/analysis-core/raster-grid';
+} from '../../../src/analysis-core/contracts/raster-grid';
 import {createSeededRandom} from '../terrain-oracle-utils';
 
 const fround = Math.fround;

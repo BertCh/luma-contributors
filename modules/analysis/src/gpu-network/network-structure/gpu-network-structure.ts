@@ -14,7 +14,7 @@ import {
   type GPUNetworkAdjacency,
   validateGPUNetworkTopology,
   getGPUNetworkTopologyViews
-} from '../../analysis-core/network-topology';
+} from '../../analysis-core/contracts/network-topology';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateSinglePackedView,

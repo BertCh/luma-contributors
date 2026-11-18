@@ -151,7 +151,10 @@ for (const [name, build] of Object.entries(BUILDERS)) {
         expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
       }
       graph.device.destroy();
-      return {chunkCount, nodes: nodes.length, kernels: kernels.length};
+      const lossNodes = kernels.filter(node => node.id.includes('-aggregate-')).length;
+      // Scalar publication is batched in groups of seven flags and is itself O(chunks).
+      expect(lossNodes).toBeLessThanOrEqual(2 * Math.max(1, Math.ceil(chunkCount / 7)));
+      return {chunkCount, nodes: nodes.length - lossNodes, kernels: kernels.length};
     });
     // nodes(N) = base + perChunk * N: constant first difference per added chunk.
     const base = counts[0];

@@ -6,6 +6,7 @@ import {validateRasterStorageBindings} from '../raster-grid/raster-storage-prefl
 import {
   createTransientView,
   GPUScan,
+  doGraphDataViewsOverlap,
   validatePackedUint32View,
   validatePackedView,
   type GPUCommandGraph,
@@ -19,6 +20,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateCompactOutput,
+  validateRequirement,
   getGraphOutputViews as getRasterPreflightOutputViews
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -32,7 +34,6 @@ import {getFieldSamplingWGSL} from '../vector-field-common/vector-field-sampling
 import {PHILOX_WGSL} from '../../analysis-core/kernels/philox-random';
 import {
   STREAMLINES_SEED_PURPOSE,
-  GPU_STREAMLINES_OVERFLOW_UNCONVERGED,
   GPU_STREAMLINES_PARAMETER_LENGTH,
   GPU_STREAMLINES_UINT32_PARAMETER_LENGTH
 } from './streamlines-parameters';
@@ -47,11 +48,10 @@ const REJECTED = 2;
 export type GPUStreamlinesOutput = {
   /**
    * Published lines in ascending seed index: `ids` holds the seed index of each line, `count` the
-   * number of published lines, `overflow` is a bit set (0 only for a complete result): bit 0
-   * (value 1) when accepted lines were dropped because the line or point capacity was full, and
-   * {@link GPU_STREAMLINES_OVERFLOW_UNCONVERGED} (value 2) when `maximumIterations` rounds did not decide
-   * every seed so undecided lines are missing, and `requiredCount` the number of accepted lines
-   * before capacity.
+   * number of published lines, and `overflow` is 1 when accepted lines were dropped because line
+   * or point capacity was full. Optional `candidateOverflow` is 1 when the iteration budget left
+   * undecided seeds. `requiredCount` counts accepted lines before final capacity, a lower bound
+   * when candidate loss is set.
    */
   lines: GPUCompactOutput;
   /**
@@ -85,8 +85,8 @@ export type GPUStreamlinesOutput = {
 export type GPUStreamlinesStatus = {
   /**
    * One-row flag: 1 when `maximumIterations` rounds did not decide every seed (undecided seeds are
-   * dropped). The same condition always sets {@link GPU_STREAMLINES_OVERFLOW_UNCONVERGED} in
-   * `lines.overflow`, so this output is optional.
+   * dropped). The same condition sets optional `lines.status.candidateOverflow`; final overflow
+   * reports capacity alone.
    */
   iterationLimitReached?: GraphDataView<'uint32'>;
 };
@@ -150,8 +150,8 @@ export type GPUStreamlinesProps = {
  *    lower-key lines cannot have been accepted into them, so this reproduces the greedy pass. Two
  *    lines accepted in the same round touch disjoint cells, so marking accepted cells with plain
  *    stores is race-free. The highest undecided line is always decided, so every round makes
- *    progress; lines still undecided after `maximumIterations` rounds are dropped and `lines.overflow` gets
- *    {@link GPU_STREAMLINES_OVERFLOW_UNCONVERGED} (and `status.iterationLimitReached` is set).
+ *    progress; lines still undecided after `maximumIterations` rounds are dropped and optional
+ *    `lines.status.candidateOverflow` and `status.iterationLimitReached` are set.
  * 3. Publish: prefix scans place the accepted lines in ascending seed order as CSR polylines,
  *    bounded by the line and point capacities.
  *
@@ -219,6 +219,24 @@ export class GPUStreamlines implements GPUCommandNodeProducer {
     }
     const {output} = props;
     validateCompactOutput(id, output.lines);
+    const candidate = output.lines.status.candidateOverflow;
+    validateRequirement(
+      id,
+      !candidate ||
+        ![
+          output.lines.ids,
+          output.lines.status.count,
+          output.lines.status.overflow,
+          output.lines.status.requiredCount,
+          output.lineOffsets,
+          output.positions,
+          output.positionCount,
+          output.status?.iterationLimitReached,
+          output.candidates?.positions,
+          output.candidates?.spans
+        ].some(view => view && doGraphDataViewsOverlap(view, candidate)),
+      'output.lines.status.candidateOverflow must not overlap other outputs'
+    );
     if (output.lines.ids.length < 1) {
       throw new Error(`${id} output.lines.ids must hold at least one line`);
     }
@@ -259,6 +277,7 @@ export class GPUStreamlines implements GPUCommandNodeProducer {
         output.lines.ids,
         output.lines.status.count,
         output.lines.status.overflow,
+        output.lines.status.candidateOverflow,
         output.lines.status.requiredCount,
         output.lineOffsets,
         output.positions,
@@ -311,6 +330,7 @@ export class GPUStreamlines implements GPUCommandNodeProducer {
       output.lines.ids,
       output.lines.status.count,
       output.lines.status.overflow,
+      output.lines.status.candidateOverflow,
       output.lines.status.requiredCount,
       output.lineOffsets,
       output.positions,
@@ -930,12 +950,30 @@ ${fitsDeclaration}`,
   let count = state[stateOffset];
   pathOffsets[pathOffsetsOffset] = 0u;
   countOut[countOutOffset] = count;
-  overflowOut[overflowOutOffset] = select(0u, 1u, count < total) | select(0u, ${GPU_STREAMLINES_OVERFLOW_UNCONVERGED}u, state[stateOffset + 1u] != 0u);
+  overflowOut[overflowOutOffset] = select(0u, 1u, count < total);
   pointCountOut[pointCountOutOffset] = select(0u, pathOffsets[pathOffsetsOffset + count], count > 0u);
   ${output.lines.status.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}
   ${output.status?.iterationLimitReached ? 'unconvergedOut[unconvergedOutOffset] = state[stateOffset + 1u];' : ''}`
       })
     );
+    if (output.lines.status.candidateOverflow)
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-candidate-status`,
+          operation: OPERATION,
+          invocationCount: 1,
+          bindings: [
+            {name: 'state', view: state, type: 'u32', access: 'read'},
+            {
+              name: 'candidateOverflowOut',
+              view: output.lines.status.candidateOverflow,
+              type: 'u32',
+              access: 'read_write'
+            }
+          ],
+          body: 'candidateOverflowOut[candidateOverflowOutOffset] = select(0u, 1u, state[stateOffset + 1u] != 0u);'
+        })
+      );
     return nodes;
   }
 }

@@ -2120,6 +2120,7 @@ function timeWindowFilter(
     trackIds: view('uint32', rows),
     output: {
       ...compactOutput(view, rows),
+      rows: view('uint32', rows),
       outputMask: view('uint32', rows),
       fadeWeights: view('float32', rows),
       ...(interval ? {clipFractions: view('float32x2', rows)} : {}),
@@ -2160,6 +2161,7 @@ const TIME_WINDOW_FILTER_CASES: KernelAuditCase[] = [
             sourceIds: view('uint32', rows),
             output: {
               ...compactOutput(view, rows),
+              rows: view('uint32', rows),
               outputMask: view('uint32', rows),
               fadeWeights: view('float32', rows),
               drawInstanceCount: view('uint32', 1),
@@ -2188,6 +2190,7 @@ const TIME_WINDOW_FILTER_CASES: KernelAuditCase[] = [
             sourceIds: view('uint32', rows),
             output: {
               ...compactOutput(view, rows),
+              rows: view('uint32', rows),
               rowRange: view('uint32', 2)
             }
           } as never)
@@ -2197,14 +2200,14 @@ const TIME_WINDOW_FILTER_CASES: KernelAuditCase[] = [
   ),
   {
     exportName: 'GPUTimeWindowFilter',
-    name: 'float instants, ids only',
+    name: 'float instants, rows only',
     build: ({graph, view}) =>
       graph.add(
         new GPUTimeWindowFilter({
           timestamps: view('float32', ROWS),
           window: view('float32', GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH),
           output: {
-            ids: view('uint32', ROWS),
+            rows: view('uint32', ROWS),
             status: {count: view('uint32', 1), overflow: view('uint32', 1)}
           }
         })

@@ -87,8 +87,9 @@ type GPUEdgeAssociationProps = {
 export type GPULocalGearyOutput = {
   /**
    * Optional input diagnostics, overwritten on every encoding. invalidCount counts unmasked
-   * nonfinite values, excluding islands and undefined tests. overflow forwards input weights'
-   * capacity overflow as 0 or 1 (0 when the input has no overflow port).
+   * nonfinite values, excluding islands and undefined tests. overflow and candidateOverflow
+   * separately forward input weights' producer-specific flags as 0 or 1
+   * (0 when the corresponding input port is absent).
    */
   status?: GPUSpatialAutocorrelationStatusPort;
   /** One local Geary value per weights row. */
@@ -105,7 +106,9 @@ export type GPULocalGearyProps = {
   /**
    * Square self-join weights. Used as given, except that when `weights.information.transform` is `'row'`
    * each row is re-standardized over the neighbors that remain after masking. A neighbor is a slot
-   * with a positive weight that points at another included row.
+   * with a positive weight that points at another included row. Either nonzero weights status
+   * flag (overflow or candidateOverflow) suppresses the statistic with NaN for every row.
+   * Chunk-local loss flags are rejected; aggregate them on the outer weights.status port.
    */
   weights: GPUSpatialWeights | GPUChunkedSpatialWeights;
   /** Analysis values, one per row, `float32` or `uint32` (converted to f32, exact below 2^24). */
@@ -236,6 +239,7 @@ export class GPULocalGeary implements GPUCommandNodeProducer {
       [
         ...getGPUSpatialWeightsOrChunksViews(props.weights),
         props.weights.status?.overflow,
+        props.weights.status?.candidateOverflow,
         props.values,
         props.parameters,
         props.mask
@@ -258,6 +262,7 @@ export class GPULocalGeary implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [
       ...getGPUSpatialWeightsOrChunksViews(props.weights),
       props.weights.status?.overflow,
+      props.weights.status?.candidateOverflow,
       props.values,
       props.parameters,
       props.mask,

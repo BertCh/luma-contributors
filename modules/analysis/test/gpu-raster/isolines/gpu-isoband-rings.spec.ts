@@ -21,6 +21,67 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {buildIsobandTrianglesOnCPU, type IsobandsScene} from './isobands-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {AnalysisRig} from '../../gpu-spatial-analysis/catchment-accessibility/rig';
+
+it('distinguishes truncated boundary edges from final ring capacity and recovers with enough edges', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const grid = makeGPURasterMetadata({width: 2, height: 2});
+  for (const padded of [false, true])
+    for (const edgeCapacity of [1, 8]) {
+      const rig = new AnalysisRig(device);
+      const sentinel = 0x1234abcd;
+      const initial = new Uint32Array(padded ? 66 : 1);
+      if (padded) initial[65] = sentinel;
+      const evidence = new GPUParameterBuffer(device, {
+        id: 'edge-evidence',
+        format: 'uint32',
+        length: initial.length,
+        values: initial
+      });
+      try {
+        const count = rig.output('uint32', 1);
+        const overflow = rig.output('uint32', 1);
+        const storage = evidence.importToGraph(rig.graph);
+        const edgeOverflow = rig.graph.createDataView(storage.buffer, {
+          format: 'uint32',
+          byteOffset: padded ? 256 : 0,
+          length: padded ? 2 : 1
+        });
+        const areas = rig.output('float32', 4);
+        rig.run(
+          new GPUIsobandRings({
+            grid,
+            edgeCapacity,
+            values: rig.input(new Float32Array([1, 1, 1, 1]), 'float32'),
+            breaks: rig.input(new Float32Array([0.5]), 'float32'),
+            parameters: rig.input(
+              getGPUIsobandsParameterValues(
+                {breakCount: 1, firstBand: 1, lastBand: 1, extent: [0, 0, 2, 2]},
+                grid
+              ),
+              'float32'
+            ),
+            output: {
+              ringOffsets: rig.output('uint32', 5),
+              positions: rig.output('float32x2', 16),
+              ringAreas: areas,
+              status: {count, overflow, edgeOverflow}
+            }
+          })
+        );
+        expect((await readUint32(evidence.buffer)).slice(padded ? 64 : 0)).toEqual(
+          padded ? [edgeCapacity === 1 ? 1 : 0, sentinel] : [edgeCapacity === 1 ? 1 : 0]
+        );
+        expect(await rig.readUint(overflow)).toEqual([0]);
+        expect(await rig.readUint(count)).toEqual([edgeCapacity === 1 ? 0 : 1]);
+        if (edgeCapacity > 1) expect((await rig.readFloat(areas))[0]).toBeCloseTo(1, 6);
+      } finally {
+        rig.destroy();
+        evidence.destroy();
+      }
+    }
+});
 
 const WIDTH = 24;
 const HEIGHT = 20;

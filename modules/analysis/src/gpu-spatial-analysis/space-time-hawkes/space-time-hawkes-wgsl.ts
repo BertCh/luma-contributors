@@ -5,6 +5,17 @@
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 
+/** Hawkes background compensator in arbitrary area/time units, without overflowing an intermediate. @internal */
+export const SPACE_TIME_HAWKES_COMPENSATOR_WGSL = /* wgsl */ `
+fn getHawkesBackgroundCompensator(background: f32, area: f32, duration: f32) -> f32 {
+  let rate = frexp(background);
+  let windowArea = frexp(area);
+  let windowDuration = frexp(duration);
+  let product = frexp(rate.fract * windowArea.fract * windowDuration.fract);
+  return ldexp(product.fract, rate.exp + windowArea.exp + windowDuration.exp + product.exp);
+}
+`;
+
 /**
  * Floor of the background rate before it enters a logarithm: the smallest normal float32, because
  * WGSL implementations may flush denormals. It plays the part of the floor on tiny sums of Ko,

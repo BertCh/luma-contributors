@@ -88,7 +88,7 @@ it('packs exactly 32 bits into one pass and restores the raw primary key', () =>
     expect(identifiers[0]).toBe('packed-pass-0-gather');
     expect(identifiers.some(identifier => identifier.startsWith('packed-pass-1-sort'))).toBe(false);
     expect(identifiers.at(-1)).toBe('packed-primary-gather');
-    for (const [identifier, source] of getParsedKernelSources(sorted.nodes)) {
+    for (const {id: identifier, source} of getParsedKernelSources(sorted.nodes).configurations) {
       expect(getStorageBindingCount(source), identifier).toBeLessThanOrEqual(8);
     }
   } finally {

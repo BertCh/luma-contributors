@@ -29,6 +29,130 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {createSeededRandom} from '../permutation-inference/permutation-oracle';
+import {WeightsRig} from './spatial-weights-harness';
+import {
+  GPUGlobalSpatialStatistics,
+  GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT
+} from '../../../src/gpu-spatial-analysis/global-spatial-statistics/index';
+
+it('final2 rejects shared per-chunk loss words and preserves an earlier overflow with disjoint words', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new WeightsRig(device);
+  try {
+    const input = {
+      rowCount: 4,
+      chunks: [0, 2].map((rowStart, index) => ({
+        rowStart,
+        rowCount: 2,
+        weights: rig.uploadWeights({
+          offsets: [0, 2, 4],
+          neighbors: index ? [0, 1, 0, 1] : [2, 3, 2, 3],
+          weights: [1, 1, 1, 1],
+          distances: []
+        })
+      }))
+    };
+    const firstLoss = rig.output('uint32', 1);
+    const secondLoss = rig.output('uint32', 1);
+    const chunks = [1, 4].map((capacity, index) => ({
+      rowStart: index * 2,
+      rowCount: 2,
+      weights: {
+        ...rig.weightsOutput(2, capacity).spatialWeights,
+        status: {overflow: firstLoss.view}
+      }
+    }));
+    const props = {
+      operation: 'subgraph' as const,
+      mask: rig.input(Uint32Array.of(1, 1, 1, 1), 'uint32', 4),
+      weights: input,
+      output: {chunks}
+    };
+    expect(() => new GPUChunkedSpatialWeightsAlgebra(props)).toThrow(/overlap|share/);
+    chunks[1].weights.status.overflow = secondLoss.view;
+    const algebra = new GPUChunkedSpatialWeightsAlgebra(props);
+    const aggregate = rig.output('uint32', 1);
+    const summary = rig.output('float32', GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length);
+    rig.run(
+      algebra,
+      new GPUGlobalSpatialStatistics({
+        weights: algebra.outputWeights,
+        values: rig.input(Float32Array.of(1, 2, 4, 8), 'float32', 4),
+        statistics: ['moran'],
+        output: {summary: summary.view, status: {overflow: aggregate.view}}
+      })
+    );
+    expect(await readUint32(firstLoss.buffer, 1)).toEqual([1]);
+    expect(await readUint32(secondLoss.buffer, 1)).toEqual([0]);
+    expect(await readUint32(aggregate.buffer, 1)).toEqual([1]);
+    expect(
+      Number.isNaN(
+        (await readFloat32(summary.buffer, GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length))[
+          GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.moran
+        ]
+      )
+    ).toBe(true);
+  } finally {
+    rig.destroy();
+  }
+});
+
+it('final1 chunked algebra feeds aggregate completeness directly to global Moran for fitting and overflowing chunks', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const capacity of [6, 1]) {
+    const rig = new WeightsRig(device);
+    try {
+      const input = rig.uploadWeights({
+        offsets: [0, 1, 3, 5, 6],
+        neighbors: [1, 0, 2, 1, 3, 2],
+        weights: [1, 1, 1, 1, 1, 1],
+        distances: []
+      });
+      const overflow = rig.output('uint32', 1);
+      const algebra = new GPUChunkedSpatialWeightsAlgebra({
+        operation: 'subgraph',
+        mask: rig.input(new Uint32Array([1, 1, 1, 1]), 'uint32', 4),
+        weights: {rowCount: 4, chunks: [{rowStart: 0, rowCount: 4, weights: input}]},
+        output: {
+          chunks: [
+            {
+              rowStart: 0,
+              rowCount: 4,
+              weights: {
+                ...rig.weightsOutput(4, capacity).spatialWeights,
+                status: {overflow: overflow.view}
+              }
+            }
+          ]
+        }
+      });
+      rig.graph.add(algebra);
+      const summary = rig.output('float32', GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length);
+      const matrixOverflow = rig.output('uint32', 1);
+      rig.run(
+        new GPUGlobalSpatialStatistics({
+          weights: algebra.outputWeights,
+          values: rig.input(new Float32Array([1, 2, 4, 8]), 'float32', 4),
+          statistics: ['moran'],
+          output: {summary: summary.view, status: {overflow: matrixOverflow.view}}
+        })
+      );
+      expect(await readUint32(overflow.buffer, 1)).toEqual([Number(capacity < 6)]);
+      expect(await readUint32(matrixOverflow.buffer, 1)).toEqual([Number(capacity < 6)]);
+      const result = await readFloat32(summary.buffer, GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length);
+      if (capacity < 6)
+        expect(Number.isNaN(result[GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.moran])).toBe(true);
+      else {
+        expect(Number.isFinite(result[GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.moran])).toBe(true);
+        expect(result[GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.moran]).toBeCloseTo(29 / 115, 5);
+      }
+    } finally {
+      rig.destroy();
+    }
+  }
+});
 
 /**
  * WEIGHTS7: chunk-aware transpose, algebra, transform and validation produce the same CSR as the

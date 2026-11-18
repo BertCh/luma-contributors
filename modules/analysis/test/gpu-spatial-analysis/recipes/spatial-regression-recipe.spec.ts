@@ -103,6 +103,7 @@ it.each([
     const diagnosticsStatus = fixture.output('diagnostics-status', 'uint32', 1);
     const decision = fixture.output('decision', 'uint32', 1);
     const moranZ = fixture.output('moran-z', 'float32', rowCount);
+    const weightsLoss = fixture.output('weights-loss', 'uint32', 1);
     const localCoefficients = fixture.output('local-coefficients', 'float32', rowCount * (k + 1));
     const selectedBandwidth = fixture.output('selected-bandwidth', 'float32', 2);
     const localSummary = fixture.output(
@@ -115,6 +116,7 @@ it.each([
       response: fixture.input('response', scene.response, 'float32', rowCount),
       predictorCount: k,
       weights: {
+        status: {candidateOverflow: weightsLoss.view},
         offsets: fixture.input('offsets', scene.weights.offsets, 'uint32', rowCount + 1),
         neighbors: fixture.input(
           'neighbors',
@@ -217,6 +219,26 @@ it.each([
       }
     }
     expect(finite).toBeGreaterThan(rowCount / 2);
+
+    // Either kind of incomplete CSR must suppress model selection and residual inference.
+    weightsLoss.buffer.write(Uint32Array.of(1));
+    fixture.run();
+    expect(await fixture.readUint32(diagnosticsStatus, 1)).toEqual([3]);
+    expect(await fixture.readUint32(decision, 1)).toEqual([4]);
+    const lostTests = await fixture.readFloat32(
+      tests,
+      GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH
+    );
+    for (let test = 0; test < 6; test++) {
+      expect(lostTests[3 * test]).toBeNaN();
+      expect(lostTests[3 * test + 2]).toBeNaN();
+    }
+    expect((await fixture.readFloat32(moranZ, rowCount)).every(Number.isNaN)).toBe(true);
+    weightsLoss.buffer.write(Uint32Array.of(0));
+    fixture.run();
+    expect(await fixture.readUint32(diagnosticsStatus, 1)).toEqual([0]);
+    expect(await fixture.readUint32(decision, 1)).toEqual([gpuDecision]);
+    expect(await fixture.readFloat32(moranZ, rowCount)).toEqual(z);
 
     // Local fits at the selected bandwidth.
     const selected = await fixture.readFloat32(selectedBandwidth, 2);

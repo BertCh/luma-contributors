@@ -7,7 +7,7 @@
  * deliberately coarse radius grid that exercises cell-level candidate pruning. Queries run in
  * grid-cell order, so the two input orders must cost about the same.
  *
- * Run with `LUMA_TEST_BROWSER_BENCHMARKS=true npx vitest run --project headless --no-file-parallelism --silent=false <this file>`.
+ * Run with `yarn test-benchmarks modules/analysis/test/gpu-spatial-analysis/neighbor-search/neighbor-search-benchmark.spec.ts`.
  */
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';

@@ -23,10 +23,17 @@ def loadModule(name):
     specification.loader.exec_module(module)
     return module
 
+def record_entry_generator(path):
+    """Attribute helper-produced output to the runnable entry that recreates it."""
+    fixture=json.loads(path.read_text())
+    fixture['generator']=Path(__file__).name
+    path.write_text(json.dumps(fixture,separators=(',',':'),allow_nan=False)+'\n')
+
 def main():
     noding=loadModule('noding')
     coordinates=[[[0,0],[4,0]],[[4.25,.25],[8,0]],[[8.75,0],[12,0]],[[12,.75],[16,2]],[[16.25,2.25],[20,2]],[[20.125,3],[24,3]]]
     noding.generate(HERE/'fixtures','showcase-large-snap',coordinates,60,dict(description=__doc__))
+    record_entry_generator(HERE/'fixtures/parity-wp3-noding-showcase-large-snap.json')
     reference=loadModule('graph-communities')
     source=json.loads((HERE/'fixtures/parity-wp3-graph-communities-undirected.json').read_text())
     graph=networkx.MultiGraph()
@@ -39,6 +46,7 @@ def main():
             resolution=float(numpy.float32(resolution))
             scoring.append(dict(name=partitionName,resolution=resolution,labels=labels,**reference.evaluate(graph,labels,resolution)))
     reference.write('showcase',dict(source,scoring=scoring,source=dict(description=__doc__)))
+    record_entry_generator(HERE/'fixtures/parity-wp3-graph-communities-showcase.json')
     neighborhood=json.loads((HERE/'fixtures/parity-wp3-network-analysis-synthetic-directed-outgoing.json').read_text())
     original=json.loads((HERE/'fixtures/parity-wp3-network-analysis-synthetic-directed-input.json').read_text())
     graph=networkx.MultiDiGraph()
@@ -52,7 +60,7 @@ def main():
         edgeMask=[int(induced.has_edge(source,target)) for source,target in edges]
         selectedNodes=[node for node in graph if node in distances]
         selectedEdges=[edge for edge,keep in enumerate(edgeMask) if keep]
-        cases.append(dict(neighborhood,case=f'synthetic-directed/showcase-hops-{hops}',starts=[0,0,0],startCount=1,hops=hops,maximumHops=24,
+        cases.append(dict(neighborhood,generator=Path(__file__).name,case=f'synthetic-directed/showcase-hops-{hops}',starts=[0,0,0],startCount=1,hops=hops,maximumHops=24,
             hopDistances=[distances.get(node,2**32-1) for node in graph],nodeMask=[int(node in distances) for node in graph],edgeMask=edgeMask,
             nodeIds=selectedNodes,edgeIds=selectedEdges,nodeCount=len(selectedNodes),edgeCount=len(selectedEdges),nodeOverflow=0,edgeOverflow=0))
     path=HERE/'fixtures/parity-wp3-neighborhood-showcase.json'

@@ -8,6 +8,7 @@ import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/index
 import {createNeighborSearchHarness, type NeighborSearchReadback} from './neighbor-search-harness';
 import {NEIGHBOR_SEARCH_U5_ORACLE, type GreatCircleFixture} from './neighbor-search-u5-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {expectNumericArrayClose} from '../../../src/testing/expect-numeric-array-close';
 
 // Oracle: test/oracles/statistics-neighbor-search.py (numpy float64 haversine with R = 6371008.8 m on
 // float32-exact [lon, lat] fixtures; libpysal 4.15 Kernel(fixed=False) for the planar kernels).
@@ -35,14 +36,11 @@ function expectRowsMatch(
   expect(result.offsets, `${label} offsets`).toEqual(expectedOffsets);
   expect(result.neighbors, `${label} neighbors`).toEqual(rows.flatMap(row => row.map(e => e[0])));
   const expectedDistances = rows.flatMap(row => row.map(e => e[1] * scale));
-  for (let slot = 0; slot < expectedDistances.length; slot++) {
-    const tolerance = 1 * scale + 2e-5 * expectedDistances[slot];
-    if (Math.abs(result.distances[slot] - expectedDistances[slot]) > tolerance) {
-      throw new Error(
-        `${label}: slot ${slot} distance ${result.distances[slot]} != ${expectedDistances[slot]}`
-      );
-    }
-  }
+  expectNumericArrayClose(result.distances, expectedDistances, {
+    absoluteTolerance: scale,
+    relativeTolerance: 2e-5,
+    label: `${label} distances`
+  });
 }
 
 async function runFixture(
@@ -136,14 +134,11 @@ it('GPUNeighborSearch kNN adaptive kernels match libpysal Kernel(fixed=False) on
     const expectedIds = oracle.rows.flatMap(row => row.map(e => e[0]));
     expect(result.neighbors, `${kernel} neighbors`).toEqual(expectedIds);
     const expectedWeights = oracle.rows.flatMap(row => row.map(e => e[2]));
-    for (let slot = 0; slot < expectedWeights.length; slot++) {
-      const tolerance = 1e-6 + 2e-5 * Math.abs(expectedWeights[slot]);
-      if (Math.abs(result.weights[slot] - expectedWeights[slot]) > tolerance) {
-        throw new Error(
-          `${kernel} slot ${slot}: weight ${result.weights[slot]} != libpysal ${expectedWeights[slot]}`
-        );
-      }
-    }
+    expectNumericArrayClose(result.weights, expectedWeights, {
+      absoluteTolerance: 1e-6,
+      relativeTolerance: 2e-5,
+      label: `${kernel} weights vs libpysal`
+    });
     harness.destroy();
   }
 });

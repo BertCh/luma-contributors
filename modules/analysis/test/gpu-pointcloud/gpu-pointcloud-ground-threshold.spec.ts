@@ -49,15 +49,17 @@ it('the ground stage threshold is initial + slope * cellSize * radius increment 
         positions: fixture.view('float32x3', positions).view,
         classifications: fixture.view('uint32', new Uint32Array(WIDTH * WIDTH).fill(1)).view,
         grid: {origin: [0, 0], cellSize: 1, width: WIDTH, height: WIDTH},
-        minimumSurface: fixture.view('float32', surface).view,
-        coverage: fixture.view('uint32', new Uint32Array(WIDTH * WIDTH).fill(1)).view,
         radii: [1, 2],
         initialThreshold: 0.2,
         slope: 0.1,
         maximumThreshold: 1,
-        groundMask: ground.view,
-        outputClassifications: fixture.view('uint32', new Uint32Array(WIDTH * WIDTH)).view,
-        status: fixture.view('uint32', new Uint32Array(WIDTH * WIDTH)).view
+        minimumSurface: fixture.view('float32', surface).view,
+        coverage: fixture.view('uint32', new Uint32Array(WIDTH * WIDTH).fill(1)).view,
+        output: {
+          groundMask: ground.view,
+          outputClassifications: fixture.view('uint32', new Uint32Array(WIDTH * WIDTH)).view,
+          status: fixture.view('uint32', new Uint32Array(WIDTH * WIDTH)).view
+        }
       })
     );
     await fixture.run();

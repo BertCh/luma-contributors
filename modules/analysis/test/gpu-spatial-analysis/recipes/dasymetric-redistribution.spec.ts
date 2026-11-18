@@ -30,6 +30,65 @@ async function createFixture(name: string) {
   return new RecipeTestFixture(device, name);
 }
 
+it('F1/G5 prepared one-cell dasymetric input reads padded statuses and restores total 7', async () => {
+  const fixture = await createFixture('final1-dasymetric-completeness');
+  const count = fixture.output('count', 'uint32', 2);
+  count.buffer.write(Uint32Array.of(1, 0xffffffff));
+  const required = fixture.output('required', 'uint32', 2);
+  const candidate = fixture.output('candidate', 'uint32', 4);
+  const candidateView = fixture.graph.createDataView(candidate.view.buffer, {
+    format: 'uint32',
+    length: 2,
+    byteOffset: 4
+  });
+  const result = addDasymetricRedistributionRecipe(fixture.graph, {
+    grid: {...GRID, width: 1},
+    sourceTotals: fixture.input('totals', Float32Array.of(7), 'float32', 1),
+    targetZones: fixture.input('target-zones', Uint32Array.of(0), 'uint32', 1),
+    targetZoneCount: 1,
+    pairCapacity: 1,
+    ancillary: {
+      id: 'ancillary',
+      format: 'float32',
+      storage: {
+        kind: 'buffer',
+        values: fixture.input('ancillary', Float32Array.of(1), 'float32', 1)
+      }
+    },
+    source: {
+      kind: 'coverage',
+      coverage: {
+        zoneIds: fixture.input('zones', Uint32Array.of(0), 'uint32', 1),
+        cellIds: fixture.input('cells', Uint32Array.of(0), 'uint32', 1),
+        fractions: fixture.input('fractions', Float32Array.of(1), 'float32', 1),
+        zoneValidity: fixture.input('zones-valid', Uint32Array.of(1), 'uint32', 1),
+        status: {
+          count: count.view,
+          requiredCount: required.view,
+          overflow: fixture.input('overflow', Uint32Array.of(0, 1), 'uint32', 2),
+          candidateOverflow: candidateView
+        }
+      }
+    }
+  });
+  const target = publish(fixture, 'published-target', result.outputs.targetTotals);
+  const complete = publish(fixture, 'published-complete', result.status.complete);
+  const compiled = fixture.graph.compile();
+  try {
+    for (const phase of ['clean', 'mismatch', 'clean', 'candidate', 'clean']) {
+      required.buffer.write(Uint32Array.of(phase === 'mismatch' ? 2 : 1, 0xffffffff));
+      const loss = Number(phase === 'candidate');
+      candidate.buffer.write(Uint32Array.of(99, loss, 1 - loss, 99));
+      submitGraph(fixture.device, compiled, undefined);
+      expect(await fixture.readUint32(complete, 1)).toEqual([Number(phase === 'clean')]);
+      await expectClose(fixture, target, [phase === 'clean' ? 7 : NaN]);
+    }
+  } finally {
+    compiled.destroy();
+    fixture.destroy();
+  }
+});
+
 function publish<Format extends 'float32' | 'uint32'>(
   fixture: RecipeTestFixture,
   name: string,
@@ -72,6 +131,7 @@ function createInputs(
   const count = createMutable('input-count', 'uint32', [indices.length]);
   const requiredCount = createMutable('input-required', 'uint32', [indices.length]);
   const overflow = createMutable('input-overflow', 'uint32', [0]);
+  const candidateOverflow = createMutable('input-candidate-overflow', 'uint32', [0]);
   const zoneValidity = createMutable('input-source-validity', 'uint32', [1, 1, 1]);
   const fractions = createMutable(
     'input-fractions',
@@ -93,7 +153,12 @@ function createInputs(
     ),
     fractions: fractions.view,
     zoneValidity: zoneValidity.view,
-    status: {count: count.view, requiredCount: requiredCount.view, overflow: overflow.view}
+    status: {
+      count: count.view,
+      requiredCount: requiredCount.view,
+      overflow: overflow.view,
+      candidateOverflow: candidateOverflow.view
+    }
   };
   const ancillary = createMutable('input-ancillary', 'float32', fixtureCase.ancillary);
   const sourceTotals = createMutable('input-totals', 'float32', reference.sourceTotals);
@@ -104,6 +169,7 @@ function createInputs(
     count,
     requiredCount,
     overflow,
+    candidateOverflow,
     zoneValidity,
     fractions,
     ancillary,
@@ -330,11 +396,13 @@ it('dasymetric incomplete coverage and malformed rows suppress totals and recove
     for (const failure of [
       'overflow',
       'required',
+      'candidate-only',
       'invalid geometry',
       'invalid fraction',
       'invalid source'
     ]) {
       inputs.overflow.buffer.write(new Uint32Array([failure === 'overflow' ? 1 : 0]));
+      inputs.candidateOverflow.buffer.write(Uint32Array.of(Number(failure === 'candidate-only')));
       inputs.requiredCount.buffer.write(new Uint32Array([failure === 'required' ? 7 : 6]));
       inputs.zoneValidity.buffer.write(
         new Uint32Array([1, failure === 'invalid geometry' ? 0 : 1, 1])

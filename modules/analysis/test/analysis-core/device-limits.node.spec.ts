@@ -8,7 +8,7 @@ import {
   ANALYSIS_DEFAULT_STORAGE_BUFFER_BINDING_SIZE,
   getAnalysisMaximumRowCount,
   getAnalysisRequiredLimits
-} from '../../src/analysis-core/device-limits';
+} from '../../src/analysis-core/graph-support/device-limits';
 import {
   getHostRequiredLimits,
   resolveHostRequiredLimits

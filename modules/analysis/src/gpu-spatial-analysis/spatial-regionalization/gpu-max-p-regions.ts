@@ -19,6 +19,7 @@ import {
 import {
   getStorageBindingElementLimit,
   validateCapacity,
+  validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
@@ -48,6 +49,7 @@ import {
   validateRegionalizationSlotCount,
   validateSymmetricAdjacencyScratch
 } from './regionalization-inputs';
+import {estimateMaxPCommandNodeCount} from './regionalization-command-budget';
 
 export const GPU_MAX_P_MAXIMUM_COLUMNS = 8;
 /** Number of independent constructions run when `startCount` is not given. */
@@ -181,8 +183,8 @@ export const GPU_MAX_P_STATUS = {
   invalidCount: 3,
   /** Index of the start whose construction was returned. */
   selectedStart: 4,
-  /** Moves made by the local-improvement phase (0 when `maximumIterations` is 0). */
-  improvementMoveCount: 5,
+  /** Rounds applying at least one local-improvement move (0 when `maximumIterations` is 0). */
+  improvementIterationCount: 5,
   length: 6
 } as const;
 
@@ -237,10 +239,10 @@ export type GPUMaxPRegionsProps = {
    */
   maximumGrowthSteps?: number;
   /**
-   * Compile-time maximum moves of the optional local-improvement phase (0, the default, skips it;
+   * Compile-time maximum rounds of the optional local-improvement phase (0, the default, skips it;
    * at most 256). It runs `GPUAZPRegions` on the selected construction with the extensive
    * threshold as a move constraint, so the region count never changes, and it needs at least
-   * 2 rows.
+   * 2 rows. One round can move several independent rows; status counts successful improvement rounds.
    */
   maximumIterations?: number;
   /**
@@ -317,8 +319,10 @@ export class GPUMaxPRegions implements GPUCommandNodeProducer {
   readonly startCount: number;
   /** Number of unrolled construction rounds. */
   readonly maximumGrowthSteps: number;
-  /** Maximum moves of the local-improvement phase. */
+  /** Maximum rounds of the local-improvement phase. */
   readonly maximumIterations: number;
+  /** Upper bound including adjacency, scan and nested AZP refinement or partition evaluation. */
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUMaxPRegionsProps) {
     this.id = props.id ?? 'max-p-regions';
@@ -340,6 +344,14 @@ export class GPUMaxPRegions implements GPUCommandNodeProducer {
       GPU_MAX_P_MAXIMUM_ROUNDS
     );
     validateCapacity(id, 'maximumIterations', maximumIterations, 0, GPU_AZP_MAXIMUM_ITERATIONS);
+    const {growthRounds, enclaveRounds} = getGPUMaxPRoundCounts(rowCount, this.maximumGrowthSteps);
+    this.estimatedCommandNodeCount = estimateMaxPCommandNodeCount(
+      rowCount,
+      growthRounds,
+      enclaveRounds,
+      maximumIterations
+    );
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     if (maximumIterations > 0 && rowCount < 2) {
       throw new Error(`${id} maximumIterations needs at least 2 rows`);
     }
@@ -1325,9 +1337,9 @@ fn reduceCount(lane: u32, value: u32) -> u32 {
     improving
       ? `// Only an improvement-phase rejection (not already a max-p invalid input) adds to the count.
   invalid = max(invalid, improvementStatus[improvementStatusOffset + 3u]);
-  let moveCount = improvementStatus[improvementStatusOffset];
+  let improvementIterationCount = improvementStatus[improvementStatusOffset];
   let withinSquares = improvementObjective[improvementObjectiveOffset];`
-      : `let moveCount = 0u;
+      : `let improvementIterationCount = 0u;
   let withinSquares = evaluationSummary[evaluationSummaryOffset + ${GPU_REGION_PARTITION_EVALUATION_LAYOUT.withinSumOfSquares}u];`
   }
   let infeasible = startState[base + 1u];
@@ -1337,7 +1349,7 @@ fn reduceCount(lane: u32, value: u32) -> u32 {
   status[statusOffset + 2u] = infeasible;
   status[statusOffset + 3u] = invalid;
   status[statusOffset + 4u] = best;
-  status[statusOffset + 5u] = moveCount;`
+  status[statusOffset + ${GPU_MAX_P_STATUS.improvementIterationCount}u] = improvementIterationCount;`
       })
     );
     return nodes;

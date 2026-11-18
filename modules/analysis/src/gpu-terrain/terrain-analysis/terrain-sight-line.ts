@@ -8,7 +8,7 @@ import {RASTER_WGSL_HELPERS} from '../../raster-analysis/raster-band-utils';
 import {
   getRasterGroundScaleWGSL,
   type GPURasterCellSizeMode
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 
 /**
  * Returns the WGS84 ground cell helper for a continuous row coordinate (pixel row + 0.5).

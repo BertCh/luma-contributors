@@ -8,6 +8,7 @@ import {expect, it} from 'vitest';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {GPUPointHorizonProfile} from '../../src/gpu-terrain/point-horizon/gpu-point-horizon-profile';
 import {GPUPointHorizonVisibility} from '../../src/gpu-terrain/point-horizon/gpu-point-horizon-visibility';
+import {resolvePointHorizonModel} from '../../src/gpu-terrain/point-horizon/point-horizon-march';
 import {GPUTerrainDerivatives} from '../../src/gpu-terrain/terrain-analysis/gpu-terrain-derivatives';
 import {GPUTerrainCurvature} from '../../src/gpu-terrain/terrain-curvature/gpu-terrain-curvature';
 import {resolveTerrainRowDirection} from '../../src/gpu-terrain/terrain-curvature/terrain-geomorphometry-utils';
@@ -110,8 +111,10 @@ it('eight terrain contributors default rowDirection from the grid and reject a c
   const rows = (length: number) =>
     createTransientView(graph, `rows-${++instance}`, 'float32x4', length);
   const pointHorizonModel = {maximumDistance: 100, cellSize: 10} as const;
-  factories['GPUPointHorizonProfile'] = options => ({
-    rowDirection: new GPUPointHorizonProfile({
+  // The contributors keep their resolved model private: construct one (it validates the prop against
+  // the grid), then resolve the same options with the function its constructor calls.
+  factories['GPUPointHorizonProfile'] = options => {
+    const contributor = new GPUPointHorizonProfile({
       ...options,
       ...pointHorizonModel,
       azimuthCount: 8,
@@ -119,10 +122,11 @@ it('eight terrain contributors default rowDirection from the grid and reject a c
       observers: rows(1),
       parameters: view(8),
       output: {tangent: view(8)}
-    }).model.rowDirection
-  });
-  factories['GPUPointHorizonVisibility'] = options => ({
-    rowDirection: new GPUPointHorizonVisibility({
+    });
+    return resolvePointHorizonModel(contributor.id, options.grid, contributor.props);
+  };
+  factories['GPUPointHorizonVisibility'] = options => {
+    const contributor = new GPUPointHorizonVisibility({
       ...options,
       ...pointHorizonModel,
       elevation: band(),
@@ -130,8 +134,9 @@ it('eight terrain contributors default rowDirection from the grid and reject a c
       targets: rows(2),
       parameters: view(12),
       output: {visibility: createTransientView(graph, `codes-${++instance}`, 'uint32', 2)}
-    }).model.rowDirection
-  });
+    });
+    return resolvePointHorizonModel(contributor.id, options.grid, contributor.props);
+  };
   for (const [name, create] of Object.entries(factories)) {
     expect(create({grid: SOUTH_GRID}).rowDirection, name).toBe('south');
     expect(create({grid: NORTH_GRID}).rowDirection, name).toBe('north');

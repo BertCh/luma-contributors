@@ -65,7 +65,7 @@ it('GPUNetworkReachability counters add a reached-edges node and keep kernels wi
   }
   // The relax kernel keeps its eight storage bindings; the counters live in the control buffer.
   const sources = getParsedKernelSources(nodes);
-  for (const [id, source] of sources) {
+  for (const {id, source} of sources.configurations) {
     const bindingCount = (source.match(/@binding\(/g) ?? []).length;
     expect(bindingCount, id).toBeLessThanOrEqual(8);
   }

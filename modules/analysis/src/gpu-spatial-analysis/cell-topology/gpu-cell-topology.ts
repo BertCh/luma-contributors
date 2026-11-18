@@ -40,7 +40,7 @@ import {dggs} from '@luma.gl/shaders';
 import {CELL_KEY_WGSL} from '../cell-aggregation/cell-keys';
 import {
   validateCellIndexResolution,
-  type GPUCellFamily
+  type GPUCellTopologyFamily
 } from '../cell-indexing/cell-index-families';
 import type {GPUCellWordOrder} from '../cell-aggregation/gpu-cell-aggregation';
 import {H3_NEIGHBOR_WGSL} from './h3-neighbor-wgsl';
@@ -113,7 +113,7 @@ export type GPUCellTopologyProps = {
   /** Prefix for generated node IDs. Defaults to `'cell-topology'`. */
   id?: string;
   /** Cell family. */
-  family: GPUCellFamily;
+  family: GPUCellTopologyFamily;
   /** Operation, fixing the output stride. */
   operation: GPUCellTopologyOperation;
   /** Input `uint32x2` cell keys. Zero or invalid keys produce zero rows. */
@@ -137,7 +137,7 @@ function getH3DiskSize(k: number): number {
  * @throws if `k`, resolutions or the stride are out of range.
  */
 export function getCellTopologyStride(
-  family: GPUCellFamily,
+  family: GPUCellTopologyFamily,
   operation: GPUCellTopologyOperation
 ): number {
   validateRequirement(

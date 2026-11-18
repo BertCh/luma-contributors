@@ -229,7 +229,7 @@ const factories: Record<string, Factory> = {
       views,
       producer: new GPUPairGather({
         neighbors: {
-          ids: view('uint32', scratch ? 129 : 4, true),
+          rows: view('uint32', scratch ? 129 : 4, true),
           counts: view('uint32', 1, true),
           capacity: scratch ? 129 : 4
         },

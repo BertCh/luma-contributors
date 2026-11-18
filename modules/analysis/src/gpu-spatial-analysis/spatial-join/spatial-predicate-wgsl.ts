@@ -17,6 +17,8 @@ export type SpatialPredicateSide = {
   kind: GPUSpatialJoinGeometry['kind'];
   /** Number of vertices in `positions`, used to clamp malformed offsets. */
   vertexCount: number;
+  /** Present when featureOffsets maps a feature to point or line parts. */
+  partCount?: number;
 };
 
 /**
@@ -350,9 +352,18 @@ export function getSideWGSL(side: SpatialPredicateSide): string {
   const p = side.prefix;
   const P = p.toUpperCase();
   const {kind} = side;
-  const ringStart = kind === 'polygons' ? `${p}FeatureRings[${p}FeatureRingsOffset + f * 2u]` : 'f';
+  const ringStart =
+    side.partCount !== undefined
+      ? `${p}FeatureOffsets[${p}FeatureOffsetsOffset + f]`
+      : kind === 'polygons'
+        ? `${p}FeatureRings[${p}FeatureRingsOffset + f * 2u]`
+        : 'f';
   const ringEnd =
-    kind === 'polygons' ? `${p}FeatureRings[${p}FeatureRingsOffset + f * 2u + 1u]` : 'f + 1u';
+    side.partCount !== undefined
+      ? `${p}FeatureOffsets[${p}FeatureOffsetsOffset + f + 1u]`
+      : kind === 'polygons'
+        ? `${p}FeatureRings[${p}FeatureRingsOffset + f * 2u + 1u]`
+        : 'f + 1u';
   const vertexStart = kind === 'points' ? 'r' : `${p}RingOffsets[${p}RingOffsetsOffset + r]`;
   const vertexEnd =
     kind === 'points'
@@ -361,25 +372,27 @@ export function getSideWGSL(side: SpatialPredicateSide): string {
 
   let locateBody: string;
   if (kind === 'points') {
-    locateBody = `let v = ${p}Vertex(f);
-  return select(0u, 1u, v.x == q.x && v.y == q.y);`;
-  } else if (kind === 'lines') {
-    locateBody = `${forEachEdge(
-      side,
-      'f',
-      'a',
-      'b',
-      `if (onSegment(a, b, q)) {
-        let first = ${p}Vertex(${p}vs);
-        let last = ${p}Vertex(${p}ve - 1u);
-        let closed = first.x == last.x && first.y == last.y;
-        if (!closed && ((q.x == first.x && q.y == first.y) || (q.x == last.x && q.y == last.y))) {
-          return 2u;
-        }
-        return 1u;
-      }`
-    )}
+    locateBody = `for (var part = ${p}RingStart(f); part < ${p}RingEnd(f); part++) {
+    let v = ${p}Vertex(part);
+    if (v.x == q.x && v.y == q.y) { return 1u; }
+  }
   return 0u;`;
+  } else if (kind === 'lines') {
+    locateBody = `var found = false;
+  ${forEachEdge(side, 'f', 'a', 'b', 'if (onSegment(a, b, q)) { found = true; }')}
+  if (!found) { return 0u; }
+  var endpointCount = 0u;
+  for (var part = ${p}RingStart(f); part < ${p}RingEnd(f); part++) {
+    let start = ${p}RingVertexStart(part);
+    let end = ${p}RingVertexEnd(part);
+    if (end <= start || end - start < 2u) { continue; }
+    let first = ${p}Vertex(start);
+    let last = ${p}Vertex(end - 1u);
+    if (first.x == last.x && first.y == last.y) { continue; }
+    if (q.x == first.x && q.y == first.y) { endpointCount++; }
+    if (q.x == last.x && q.y == last.y) { endpointCount++; }
+  }
+  return select(1u, 2u, (endpointCount & 1u) != 0u);`;
   } else {
     locateBody = `var inside = false;
   ${forEachEdge(
@@ -401,16 +414,18 @@ export function getSideWGSL(side: SpatialPredicateSide): string {
     segmentWithin = `
 // Bit 0: segment a-b lies entirely on the linestring. Bit 1: it overlaps the linestring interior.
 fn ${p}SegmentWithin(a: vec2f, b: vec2f, f: u32) -> u32 {
-  let ab = b - a;
-  let lengthSq = dot(ab, ab);
-  if (lengthSq == 0.0) {
+  if (a.x == b.x && a.y == b.y) {
     let location = ${p}Locate(a, f);
     return select(0u, select(1u, 3u, location == 1u), location != 0u);
   }
-  var reach = 0.0;
+  let useX = abs(b.x - a.x) >= abs(b.y - a.y);
+  let first = select(a.y, a.x, useX);
+  let last = select(b.y, b.x, useX);
+  let limit = max(first, last);
+  var reach = min(first, last);
   var passes = 0u;
   loop {
-    if (reach >= 1.0 || passes > ${P}_VERTEX_COUNT) { break; }
+    if (reach >= limit || passes > ${P}_VERTEX_COUNT) { break; }
     passes = passes + 1u;
     var progressed = false;
     ${forEachEdge(
@@ -419,16 +434,16 @@ fn ${p}SegmentWithin(a: vec2f, b: vec2f, f: u32) -> u32 {
       'c',
       'd',
       `if (orient(a, b, c) == 0.0 && orient(a, b, d) == 0.0) {
-        let tc = dot(c - a, ab) / lengthSq;
-        let td = dot(d - a, ab) / lengthSq;
+        let tc = select(c.y, c.x, useX);
+        let td = select(d.y, d.x, useX);
         let low = min(tc, td);
         let high = max(tc, td);
-        if (low <= reach && high > reach) { reach = min(high, 1.0); progressed = true; }
+        if (low <= reach && high > reach) { reach = min(high, limit); progressed = true; }
       }`
     )}
     if (!progressed) { break; }
   }
-  return select(0u, 3u, reach >= 1.0);
+  return select(0u, 3u, reach >= limit);
 }`;
   } else if (kind === 'polygons') {
     segmentWithin = `
@@ -504,8 +519,8 @@ fn ${p}SegmentWithin(a: vec2f, b: vec2f, f: u32) -> u32 {
 
   return `
 const ${P}_VERTEX_COUNT: u32 = ${side.vertexCount}u;
-fn ${p}RingStart(f: u32) -> u32 { return ${ringStart}; }
-fn ${p}RingEnd(f: u32) -> u32 { return ${ringEnd}; }
+fn ${p}RingStart(f: u32) -> u32 { ${side.partCount === undefined ? '' : `if (${ringStart} > ${ringEnd} || ${ringEnd} > ${side.partCount}u) { return 0u; }`} return ${ringStart}; }
+fn ${p}RingEnd(f: u32) -> u32 { ${side.partCount === undefined ? '' : `if (${ringStart} > ${ringEnd} || ${ringEnd} > ${side.partCount}u) { return 0u; }`} return ${ringEnd}; }
 fn ${p}RingVertexStart(r: u32) -> u32 { return ${vertexStart}; }
 fn ${p}RingVertexEnd(r: u32) -> u32 { return ${vertexEnd}; }
 fn ${p}Vertex(i: u32) -> vec2f {
@@ -632,13 +647,27 @@ fn ${p}ProbeInside(origin: vec2f, ahead: vec2f, leftSide: bool, f: u32) -> bool 
  * Declares `pairContains(outer, inner)` for the given kinds (OGC `ST_Contains`:
  * `inner` lies in the closure of `outer` and the interiors intersect).
  */
-function getContainsWGSL(outer: SpatialPredicateSide, inner: SpatialPredicateSide): string {
+function getContainsWGSL(
+  outer: SpatialPredicateSide,
+  inner: SpatialPredicateSide,
+  includeBoundary = false
+): string {
   const o = outer.prefix;
   const i = inner.prefix;
   let body: string;
   let probes = '';
   if (inner.kind === 'points') {
-    body = `return ${o}Locate(${i}First(inner).xy, outer) == 1u;`;
+    body = `var interior = false;
+  ${forEachEdge(
+    inner,
+    'inner',
+    'a',
+    'b',
+    `let location = ${o}Locate(a, outer);
+    if (location == 0u) { return false; }
+    interior = interior || location == 1u;`
+  )}
+  return ${includeBoundary ? 'true' : 'interior'};`;
   } else if (outer.kind === 'points' || (outer.kind === 'lines' && inner.kind === 'polygons')) {
     body = 'return false;';
   } else if (outer.kind === 'lines') {
@@ -661,7 +690,7 @@ function getContainsWGSL(outer: SpatialPredicateSide, inner: SpatialPredicateSid
     if ((within & 1u) == 0u) { return false; }
     interior = interior || (within & 2u) != 0u;`
   )}
-  return interior;`;
+  return ${includeBoundary ? 'true' : 'interior'};`;
   } else {
     // Polygon contains polygon. Every inner edge must lie in the closed outer polygon, and no part
     // of the outer exterior (a hole) may lie inside the inner polygon. With the first test passed,
@@ -781,6 +810,10 @@ fn pairMatches(l: u32, r: u32) -> bool { return pairContains(l, r); }`;
       break;
     case 'within':
       predicateWGSL = `${getContainsWGSL(right, left)}
+fn pairMatches(l: u32, r: u32) -> bool { return pairContains(r, l); }`;
+      break;
+    case 'coveredBy':
+      predicateWGSL = `${getContainsWGSL(right, left, true)}
 fn pairMatches(l: u32, r: u32) -> bool { return pairContains(r, l); }`;
       break;
     case 'dwithin': {

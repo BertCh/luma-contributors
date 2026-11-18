@@ -134,39 +134,46 @@ it('every spill kernel parses and respects the core limits and the kernel audit'
     const {nodes} = buildSpillFill(width, height, {outputs: true});
     const sources = getParsedKernelSources(nodes);
     expect(sources.size).toBeGreaterThan(15);
-    for (const [id, source] of sources) {
+    for (const {id, source: source, constants} of sources.configurations) {
       expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
-      expect(getPrivateMemoryBytes(source), id).toBeLessThanOrEqual(
+      expect(getPrivateMemoryBytes(source, constants), id).toBeLessThanOrEqual(
         CORE_PRIVATE_MEMORY_LIMIT_BYTES
       );
-      expect(getWorkgroupMemoryBytes(source), id).toBeLessThanOrEqual(
+      expect(getWorkgroupMemoryBytes(source, constants), id).toBeLessThanOrEqual(
         CORE_WORKGROUP_STORAGE_LIMIT_BYTES
       );
-      expect(auditWGSLModule(source), id).toEqual([]);
+      expect(auditWGSLModule(source, constants), id).toEqual([]);
       // A loop or round index never reaches the WGSL text.
       expect(source, id).not.toMatch(/-round-\d+|boruvka-\d+|jump-\d+/);
     }
   }
 });
 
-it('the tile kernel uses 12 KiB of workgroup memory, or 16 x 16 tiles on a small device', () => {
-  const kernelSource = (device?: Device) => {
-    const {nodes} = buildSpillFill(70, 70, {device});
-    const tile = [...getParsedKernelSources(nodes)].find(([id]) => /spill-tile-fill$/.test(id));
-    expect(tile).toBeTruthy();
-    return (tile as [string, string])[1];
-  };
-  const large = kernelSource();
-  expect(large).toMatch(/const TILE: u32 = 32u;/);
-  expect(getWorkgroupMemoryBytes(large)).toBeLessThanOrEqual(12296);
-
-  const small = createNullWebGPUDevice();
-  Object.defineProperty(small, 'limits', {
-    value: {...small.limits, maxComputeWorkgroupStorageSize: 8192}
+it.each([
+  [16384, 32, 12320],
+  [12320, 32, 12320],
+  [12319, 16, 3104],
+  [12296, 16, 3104],
+  [8192, 16, 3104]
+])('the tile kernel fits a %i-byte device with tile size %i and %i rounded bytes', (limit, tileSize, bytes) => {
+  const device = createNullWebGPUDevice();
+  Object.defineProperty(device, 'limits', {
+    value: {...device.limits, maxComputeWorkgroupStorageSize: limit}
   });
-  const smallSource = kernelSource(small);
-  expect(smallSource).toMatch(/const TILE: u32 = 16u;/);
-  expect(getWorkgroupMemoryBytes(smallSource)).toBeLessThanOrEqual(8192);
+  try {
+    const {nodes} = buildSpillFill(70, 70, {device});
+    const sources = getParsedKernelSources(nodes);
+    const tile = [...sources].find(([id]) => /spill-tile-fill$/.test(id));
+    expect(tile).toBeTruthy();
+    // Three arrays plus two scalar flags; WebGPU rounds each flag to 16 bytes.
+    for (const kernel of sources.getConfigurations(tile![0])) {
+      expect(kernel.source).toContain(`const TILE: u32 = ${tileSize}u;`);
+      expect(getWorkgroupMemoryBytes(kernel.source, kernel.constants)).toBe(bytes);
+      expect(getWorkgroupMemoryBytes(kernel.source, kernel.constants)).toBeLessThanOrEqual(limit);
+    }
+  } finally {
+    device.destroy();
+  }
 });
 
 it('grids whose tour arrays exceed one binding use the relaxation alone', () => {

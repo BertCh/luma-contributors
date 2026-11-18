@@ -27,11 +27,15 @@ export type {
 } from './gpu-utilization-volume-isopleths';
 export {
   estimateBrownianMotionVariance,
-  estimateWindowedBrownianMotionVariance
+  estimateBrownianMotionVarianceWithStatus,
+  estimateWindowedBrownianMotionVariance,
+  estimateWindowedBrownianMotionVarianceWithStatus
 } from './brownian-bridge-variance-estimation';
 export type {
   BrownianBridgeTrack,
+  BrownianMotionVarianceEstimate,
   BrownianMotionVarianceOptions,
+  WindowedBrownianMotionVarianceEstimate,
   WindowedBrownianMotionVarianceOptions
 } from './brownian-bridge-variance-estimation';
 

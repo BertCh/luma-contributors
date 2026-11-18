@@ -147,3 +147,38 @@ it('excess risk counts only mask-included rows with an undefined rate as invalid
     fixture.destroy();
   }
 });
+
+it.each([
+  'excess-risk',
+  'spatial-rate'
+] as const)('%s can correct an invalid recipe and execute using the same IDs', async recipe => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new RecipeTestFixture(device, `retry-${recipe}`);
+  try {
+    const events = fixture.input('events', new Uint32Array([2, 6]), 'uint32', 2);
+    const populations = fixture.input('populations', new Uint32Array([10, 10]), 'uint32', 2);
+    const shortPopulations = fixture.input('short-populations', new Uint32Array([10]), 'uint32', 1);
+    const output = fixture.output('output', 'float32', 2);
+    const weights = {
+      offsets: fixture.input('offsets', new Uint32Array([0, 1, 2]), 'uint32', 3),
+      neighbors: fixture.input('neighbors', new Uint32Array([1, 0]), 'uint32', 2),
+      weights: fixture.input('weights', new Float32Array([1, 1]), 'float32', 2)
+    };
+    const add = recipe === 'excess-risk' ? addExcessRiskRecipe : addSpatialRateRecipe;
+    const props = {id: 'retry', events, populations, weights, output: output.view, scale: 100};
+    expect(() => add(fixture.graph, {...props, populations: shortPopulations})).toThrow(
+      /populations length/
+    );
+    add(fixture.graph, props);
+    fixture.run();
+    const actual = await fixture.readFloat32(output, 2);
+    const expected = recipe === 'excess-risk' ? [0.5, 1.5] : [40, 40];
+    for (let row = 0; row < 2; row++) {
+      expect(Number.isFinite(actual[row])).toBe(true);
+      expect(actual[row]).toBeCloseTo(expected[row], 5);
+    }
+  } finally {
+    fixture.destroy();
+  }
+});

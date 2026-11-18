@@ -105,8 +105,8 @@ function createHarness(
   const neighbors = output('neighbors', 'uint32', capacity);
   const weights = output('weights', 'float32', capacity);
   const distances = output('distances', 'float32', capacity);
-  const leftIds = output('left-ids', 'uint32', capacity);
-  const rightIds = output('right-ids', 'uint32', capacity);
+  const leftRows = output('left-ids', 'uint32', capacity);
+  const rightRows = output('right-ids', 'uint32', capacity);
   const count = output('count', 'uint32', 1);
   const overflow = output('overflow', 'uint32', 1);
   const overallOverflow = output('overall-overflow', 'uint32', 1);
@@ -133,8 +133,8 @@ function createHarness(
         pairs: options.weightsOnly
           ? undefined
           : {
-              leftIds: leftIds.view,
-              rightIds: rightIds.view,
+              leftRows: leftRows.view,
+              rightRows: rightRows.view,
               status: {
                 count: count.view,
                 overflow: overflow.view,
@@ -194,10 +194,10 @@ function createHarness(
           await readUint32(candidateOverflow.buffer, 1)
         );
         expect((await readUint32(count.buffer, 1))[0]).toBe(pairs.length);
-        const leftRows = await readUint32(leftIds.buffer, pairs.length);
-        const rightRows = await readUint32(rightIds.buffer, pairs.length);
+        const leftRowValues = await readUint32(leftRows.buffer, pairs.length);
+        const rightRowValues = await readUint32(rightRows.buffer, pairs.length);
         expect(pairs.map(pair => pair.slice(0, 2))).toEqual(
-          leftRows.map((row, slot) => [row, rightRows[slot]])
+          leftRowValues.map((row, slot) => [row, rightRowValues[slot]])
         );
       }
       return {

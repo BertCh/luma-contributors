@@ -37,7 +37,12 @@ import {
   getSeparationWGSL,
   type InterpolationSeparation
 } from '../spatial-interpolation/separation-wgsl';
-import {createScanNearestZonesKernelNode} from './scan-statistic-nearest-zones';
+import {
+  createScanNearestZoneNodes,
+  getScanNearestZoneSearchPlan,
+  SCAN_INDEX_BUILD_COMMAND_NODE_ALLOWANCE,
+  type GPUScanNearestZoneSearch
+} from './scan-statistic-nearest-index';
 import {EXPECTATION_BASED_SCAN_POISSON_WGSL} from './expectation-based-scan-poisson-wgsl';
 
 const OPERATION = 'GPUExpectationBasedSpaceTimeScan';
@@ -152,8 +157,10 @@ export type GPUExpectationBasedSpaceTimeScanProps = {
   baseline: GraphDataView<'float32'>;
   /** Compile-time time buckets per zone. */
   timeBuckets: number;
-  /** Compile-time size of the neighborhood of each center (the center and its nearest zones), at most 64. */
+  /** Compile-time neighborhood capacity, at most 64. Zero-distance ties are ordered by zone row and may displace the center. */
   maximumNeighbors: number;
+  /** Exact discovery route. Auto indexes truncated lists and uses full-scan when every zone is requested. Compile-time. */
+  nearestZoneSearch?: GPUScanNearestZoneSearch;
   /** Compile-time longest window in buckets, ending at the last bucket, at most `min(timeBuckets, 32)`. */
   maximumWindowLength: number;
   /** Compile-time upper bound of the per-frame replicate count, at most 99999. */
@@ -162,11 +169,6 @@ export type GPUExpectationBasedSpaceTimeScanProps = {
   parameters: GraphDataView<'uint32'>;
   /** Caller-owned outputs. */
   output: GPUExpectationBasedSpaceTimeScanOutput;
-  /**
-   * Lowers the replicates per batch, for tests of batch independence.
-   * @internal
-   */
-  batchReplicates?: number;
 };
 
 /**
@@ -180,8 +182,8 @@ export type GPUExpectationBasedSpaceTimeScanProps = {
  * every zone is a cluster. The permutation model of `GPUSpatialScanStatistic` conditions on the zone
  * and bucket margins and cannot see that.
  *
- * Search: for each center and window length `w`, the neighborhood is the center and its
- * `maximumNeighbors - 1` nearest zones (the kNN table of the scan, separation-key order). By the
+ * Search: each center's neighborhood contains the `maximumNeighbors` closest zones in
+ * (separation key, zone row) order. A coincident lower row can displace the center. By the
  * linear-time subset scanning property the best subset of a neighborhood is a prefix of the zones
  * sorted by `C_i / B_i`, so an exact search over all subsets of the neighborhood is one fixed
  * sorting network and one prefix scan. The subset need not contain the center. A zone with a
@@ -194,7 +196,7 @@ export type GPUExpectationBasedSpaceTimeScanProps = {
  * convert with `getGPUScanRecurrenceInterval`. Secondary clusters are not computed.
  *
  * Compile-time: the zone count, `timeBuckets`, `maximumNeighbors`, `maximumWindowLength`,
- * `maximumReplicates` and `spatialContext`. Per-frame: the contents of `positions`, `cases`,
+ * `maximumReplicates`, `nearestZoneSearch` and `spatialContext`. Per-frame: the contents of `positions`, `cases`,
  * `baseline` and `parameters`.
  */
 export class GPUExpectationBasedSpaceTimeScan implements GPUCommandNodeProducer {
@@ -206,14 +208,19 @@ export class GPUExpectationBasedSpaceTimeScan implements GPUCommandNodeProducer 
   readonly spatialContext: GPUSpatialContext;
   /** Number of zones. */
   readonly zones: number;
+  /** Resolved exact neighbor discovery route. */
+  readonly nearestZoneSearch: 'indexed' | 'full-scan';
+  /** Upper bound on separation evaluations of full-scan discovery per frame, excluding radix sorting. */
+  readonly estimatedFullScanSeparationCount: number;
   /** Replicates per batch, derived from the count table budget. */
   readonly batchReplicates: number;
   /** Unrolled batches. */
   readonly batchCount: number;
-  /** Command nodes: three per batch plus the fixed prologue and epilogue. */
+  /** Conservative command-node bound: three per batch, fixed passes and the published index sorts. */
   readonly estimatedCommandNodeCount: number;
 
-  constructor(props: GPUExpectationBasedSpaceTimeScanProps) {
+  constructor(props: GPUExpectationBasedSpaceTimeScanProps);
+  constructor(props: GPUExpectationBasedSpaceTimeScanProps, batchReplicates?: number) {
     const id = props.id ?? 'expectation-based-scan';
     this.id = id;
     this.props = props;
@@ -236,6 +243,14 @@ export class GPUExpectationBasedSpaceTimeScan implements GPUCommandNodeProducer 
       1,
       Math.min(GPU_EXPECTATION_BASED_SCAN_MAXIMUM_NEIGHBORS, this.zones)
     );
+    const searchPlan = getScanNearestZoneSearchPlan(
+      id,
+      this.zones,
+      maximumNeighbors,
+      props.nearestZoneSearch
+    );
+    this.nearestZoneSearch = searchPlan.nearestZoneSearch;
+    this.estimatedFullScanSeparationCount = searchPlan.estimatedFullScanSeparationCount;
     validateCapacity(
       id,
       'maximumWindowLength',
@@ -272,7 +287,7 @@ export class GPUExpectationBasedSpaceTimeScan implements GPUCommandNodeProducer 
       maximumReplicates,
       MAXIMUM_BATCH_REPLICATES,
       budgetReplicates,
-      props.batchReplicates ?? Infinity
+      batchReplicates ?? Infinity
     );
     this.batchCount = Math.ceil(maximumReplicates / this.batchReplicates);
     validateRequirement(
@@ -280,7 +295,11 @@ export class GPUExpectationBasedSpaceTimeScan implements GPUCommandNodeProducer 
       this.batchCount <= MAXIMUM_BATCHES,
       `maximumReplicates needs ${this.batchCount} batches, more than ${MAXIMUM_BATCHES}`
     );
-    this.estimatedCommandNodeCount = 3 * this.batchCount + 7;
+    // Two published radix sorts: a conservative allowance including their scans and scratch stages.
+    this.estimatedCommandNodeCount =
+      3 * this.batchCount +
+      7 +
+      (this.nearestZoneSearch === 'indexed' ? SCAN_INDEX_BUILD_COMMAND_NODE_ALLOWANCE : 0);
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateSinglePackedView(output.clusterZones, ['uint32'], `${id} clusterZones`);
     validateViewLength(id, 'clusterZones', output.clusterZones, maximumNeighbors);
@@ -386,8 +405,6 @@ export class GPUExpectationBasedSpaceTimeScan implements GPUCommandNodeProducer 
       'float32',
       zones * maximumNeighbors
     );
-    const sortKeys = u32('sort-keys', zones * maximumNeighbors);
-    const sortZones = u32('sort-zones', zones * maximumNeighbors);
     const counts = u32('counts', tableSlots * windowCells);
     const centerBest = u32('center-best', zones * 3);
     const state = u32('state', STATE_WORDS);
@@ -493,17 +510,17 @@ var<workgroup> maxima: array<f32, ${EVALUATE_WORKGROUP_SIZE}>;`,
       });
 
     const nodes: GPUCommandNode<Parameters>[] = [
-      createScanNearestZonesKernelNode<Parameters>(graph, {
+      ...createScanNearestZoneNodes<Parameters>(graph, {
         id: `${id}-nearest`,
         operation: OPERATION,
         positions,
         neighbors,
         distances,
-        sortKeys,
-        sortZones,
         zones,
         listLength: maximumNeighbors,
-        separationWGSL: getSeparationWGSL(separation)
+        separationWGSL: getSeparationWGSL(separation),
+        geographic: separation.geographic,
+        nearestZoneSearch: this.nearestZoneSearch
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-init`,
@@ -712,6 +729,17 @@ ${search}`,
     }
     return nodes;
   }
+}
+
+/** Overrides batch size for deterministic batch-independence tests. @internal */
+export function createExpectationBasedSpaceTimeScanForTesting(
+  props: GPUExpectationBasedSpaceTimeScanProps & {batchReplicates?: number}
+): GPUExpectationBasedSpaceTimeScan {
+  const {batchReplicates, ...publicProps} = props;
+  return Reflect.construct(GPUExpectationBasedSpaceTimeScan, [
+    publicProps,
+    batchReplicates
+  ]) as GPUExpectationBasedSpaceTimeScan;
 }
 
 /**

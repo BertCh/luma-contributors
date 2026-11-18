@@ -23,6 +23,33 @@ import {
 
 const NONE = GPU_MAP_MATCHING_NONE;
 
+it('matches the remote antimeridian edge at its nearest endpoint within the search radius', () => {
+  const result = computeMapMatchingOnCPU(
+    {
+      positions: Float32Array.of(0, 0),
+      trackOffsets: Uint32Array.of(0, 1),
+      parameters: getGPUMapMatchingParameterValues({sigma: 100, beta: 1, searchRadius: 120}),
+      topology: {
+        nodePositions: Float32Array.of(100, 0, -100, 0),
+        offsets: Uint32Array.of(0, 1, 1),
+        neighbors: Uint32Array.of(1)
+      }
+    },
+    {
+      cellSize: 100,
+      candidateCount: 1,
+      spatialContext: {
+        coordinateSpace: 'longitude-latitude',
+        metric: 'great-circle',
+        sphereRadius: 180 / Math.PI
+      }
+    }
+  );
+  expect(Array.from(result.matchedEdges)).toEqual([0]);
+  expect(Array.from(result.matchedFractions)).toEqual([0]);
+  expect(Array.from(result.snapDistances)).toEqual([100]);
+});
+
 it('forwards the canonical intermediate-capacity port through both operation forms', () => {
   const {input, props} = createMatchingFixture();
   const changed = {
@@ -309,7 +336,7 @@ it('the CPU graph callback maps every optional port and validates supplied accel
     targets: new Uint32Array(1),
     costs: new Float32Array(1),
     costLimit: new Float32Array([100]),
-    overflow: new Uint32Array([1])
+    complete: new Uint32Array([0])
   };
   props.routeTable = {
     entryCount: 1,
@@ -317,7 +344,7 @@ it('the CPU graph callback maps every optional port and validates supplied accel
     targets: 'tableTargets',
     costs: 'tableCosts',
     costLimit: 'tableCostLimit',
-    status: {overflow: 'tableOverflow'}
+    status: {complete: 'tableComplete'}
   };
   const operation = new CPUMapMatchingOperation(props);
   const graphInputs = getMatchingGraphInputs(input);

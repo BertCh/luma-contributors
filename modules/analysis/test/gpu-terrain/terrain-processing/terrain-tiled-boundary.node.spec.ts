@@ -169,9 +169,9 @@ for (const height of [1, 3])
         expect(publications.map(node => node.workload?.maximumWorkgroupCount)).toEqual(
           widths.map(width => Math.ceil((width * height) / 256))
         );
-        for (const [name, source] of getParsedKernelSources(nodes)) {
+        for (const {id: name, source, constants} of getParsedKernelSources(nodes).configurations) {
           expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
-          expect(auditWGSLModule(source), name).toEqual([]);
+          expect(auditWGSLModule(source, constants), name).toEqual([]);
         }
       } finally {
         device.destroy();

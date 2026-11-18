@@ -317,20 +317,22 @@ export const RTS_01_03_EMBEDDING_FDR_AUDIT_CASES: readonly KernelAuditCase[] = [
     build: context => {
       const {graph, view} = context;
       const pixelCount = pixelsAtBindingLimit(context);
-      new GPURasterEmbeddingNearestPixels({
-        pixelCount,
-        dimensions: DIMENSIONS,
-        vectors: view('float32', pixelCount * DIMENSIONS),
-        mask: view('uint32', pixelCount),
-        queryCount: 64,
-        queries: view('float32', 64 * DIMENSIONS),
-        resultCount: 16,
-        output: {
-          pixelIds: view('uint32', 64 * 16),
-          scores: view('float32', 64 * 16),
-          resultCounts: view('uint32', 64)
-        }
-      }).addToGraph(graph);
+      graph.add(
+        new GPURasterEmbeddingNearestPixels({
+          pixelCount,
+          dimensions: DIMENSIONS,
+          vectors: view('float32', pixelCount * DIMENSIONS),
+          mask: view('uint32', pixelCount),
+          queryCount: 64,
+          queries: view('float32', 64 * DIMENSIONS),
+          resultCount: 16,
+          output: {
+            pixelRows: view('uint32', 64 * 16),
+            scores: view('float32', 64 * 16),
+            resultCounts: view('uint32', 64)
+          }
+        })
+      );
     }
   },
   {
@@ -364,20 +366,22 @@ export const RTS_01_03_EMBEDDING_FDR_AUDIT_CASES: readonly KernelAuditCase[] = [
     build: context => {
       const {graph, view} = context;
       const pixelCount = pixelsAtBindingLimit(context);
-      new GPURasterEmbeddingKMeans({
-        pixelCount,
-        dimensions: DIMENSIONS,
-        vectors: view('float32', pixelCount * DIMENSIONS),
-        mask: view('uint32', pixelCount),
-        clusterCount: 64,
-        maximumIterations: 64,
-        output: {
-          labels: view('uint32', pixelCount),
-          centroids: view('float32', 64 * DIMENSIONS),
-          counts: view('uint32', 64),
-          status: view('uint32', 3)
-        }
-      }).addToGraph(graph);
+      graph.add(
+        new GPURasterEmbeddingKMeans({
+          pixelCount,
+          dimensions: DIMENSIONS,
+          vectors: view('float32', pixelCount * DIMENSIONS),
+          mask: view('uint32', pixelCount),
+          clusterCount: 64,
+          maximumIterations: 64,
+          output: {
+            labels: view('uint32', pixelCount),
+            centroids: view('float32', 64 * DIMENSIONS),
+            counts: view('uint32', 64),
+            status: view('uint32', 3)
+          }
+        })
+      );
     }
   },
   {

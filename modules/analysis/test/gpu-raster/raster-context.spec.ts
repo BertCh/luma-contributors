@@ -7,7 +7,7 @@ import {compileProjectionProgram} from '@luma.gl/graph/gpu-project';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer} from '../../src/analysis-core/kernels/gpu-contributor-utils';
-import {getRasterGroundScale} from '../../src/analysis-core/raster-grid';
+import {getRasterGroundScale} from '../../src/analysis-core/contracts/raster-grid';
 import {
   getGPURasterReprojectionParameterValues,
   GPURasterReprojection

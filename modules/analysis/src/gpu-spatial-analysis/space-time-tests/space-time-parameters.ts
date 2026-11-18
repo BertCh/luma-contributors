@@ -86,12 +86,14 @@ export function getGPUSpaceTimeParameterValues(settings: GPUSpaceTimeSettings): 
 /**
  * Upper-tail p-value `P(X >= observed)` of a Poisson distribution with mean `expected`, the
  * classic Knox (1964) test. CPU helper for the `observed` and `expected` of `GPUKnoxTest`'s
- * `summary`. Sums the probability mass function in double precision.
+ * `summary`. Sums the probability mass function in double precision. Returns NaN when either
+ * input is nonfinite, including a suppressed GPU summary.
  *
  * @param observed Observed Knox count.
  * @param expected Expected count under no interaction.
  */
 export function getKnoxPoissonPValue(observed: number, expected: number): number {
+  if (!Number.isFinite(observed) || !Number.isFinite(expected)) return NaN;
   if (observed <= 0) {
     return 1;
   }
@@ -167,6 +169,42 @@ export function getGPUSpaceTimeRelativeTimes(
   return {times: relative, origin: resolvedOrigin, resolution};
 }
 
+/** Settings-derived inference description; no GPU result is read to construct it. */
+export type GPUSpaceTimeInferenceMetadata = Omit<GPUInferenceMetadata, 'permutationCount'> & {
+  /** Requested draw count after clamping to `maximumPermutations`, before early stopping. */
+  requestedPermutationCount: number;
+  stoppingRule: {method: 'fixed-count'} | {method: 'besag-clifford'; stopAfterExceedances: number};
+  /**
+   * Present only for fixed-count inference. For final records use
+   * {@link decodeGPUSpaceTimeInferenceMetadata} with the published draw count.
+   */
+  permutationCount?: number;
+};
+
+/**
+ * Decodes a final inference record using a caller-read `output.permutationCount` scalar.
+ * `permutationCount` always means draws actually used; no implicit GPU readback occurs.
+ * Zero represents suppressed inference (`available: false`). Positive counts retain the
+ * fixed-count/stopping lower bound and return `available: true`.
+ * Availability records execution; a statistic can still be undefined for a degenerate population.
+ */
+export function decodeGPUSpaceTimeInferenceMetadata(
+  metadata: GPUSpaceTimeInferenceMetadata,
+  permutationCount: number
+): GPUSpaceTimeInferenceMetadata & GPUInferenceMetadata & {available: boolean} {
+  if (permutationCount === 0) return {...metadata, permutationCount: 0, available: false};
+  validateCapacity(
+    'space-time',
+    'permutationCount',
+    permutationCount,
+    metadata.stoppingRule.method === 'fixed-count'
+      ? metadata.requestedPermutationCount
+      : Math.min(metadata.requestedPermutationCount, metadata.stoppingRule.stopAfterExceedances),
+    metadata.requestedPermutationCount
+  );
+  return {...metadata, permutationCount, available: true};
+}
+
 /**
  * CPU-side inference metadata of the space-time tests: Monte Carlo over swap-or-not shuffle
  * permutations of the times, alternative `'greater'` for both tests (Knox: excess close pairs;
@@ -180,11 +218,31 @@ export function getGPUSpaceTimeInferenceMetadata(
   test: 'knox' | 'mantel',
   settings: GPUSpaceTimeSettings,
   maximumPermutations: number
-): GPUInferenceMetadata {
+): GPUSpaceTimeInferenceMetadata & GPUInferenceMetadata;
+/** @internal */
+export function getGPUSpaceTimeInferenceMetadata(
+  test: 'knox' | 'mantel',
+  settings: GPUSpaceTimeSettings,
+  maximumPermutations: number,
+  stopAfterExceedances: number | undefined
+): GPUSpaceTimeInferenceMetadata;
+export function getGPUSpaceTimeInferenceMetadata(
+  test: 'knox' | 'mantel',
+  settings: GPUSpaceTimeSettings,
+  maximumPermutations: number,
+  stopAfterExceedances?: number
+): GPUSpaceTimeInferenceMetadata {
   getGPUSpaceTimeParameterValues(settings);
+  const requestedPermutationCount = Math.min(settings.permutationCount, maximumPermutations);
   return {
     alternative: 'greater',
-    permutationCount: Math.min(settings.permutationCount, maximumPermutations),
+    requestedPermutationCount,
+    ...(stopAfterExceedances === undefined
+      ? {
+          permutationCount: requestedPermutationCount,
+          stoppingRule: {method: 'fixed-count' as const}
+        }
+      : {stoppingRule: {method: 'besag-clifford' as const, stopAfterExceedances}}),
     seed: settings.seed,
     multipleTesting: 'none',
     testedRowsDefinition:

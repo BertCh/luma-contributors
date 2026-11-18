@@ -18,7 +18,11 @@ import {
   validateCatchmentStorage
 } from './catchment-accessibility-validation';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import {IS_FINITE_BITS_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  GET_NAN_WGSL,
+  IS_FINITE_BITS_WGSL,
+  IS_FINITE_VALUE_WGSL
+} from '../../analysis-core/kernels/wgsl-common';
 import {SPATIAL_ANALYSIS_QUOTIENT_WGSL} from '../geographic-distribution/spatial-analysis-quotient';
 import {
   validateGraphViewsBelongToGraph,
@@ -38,16 +42,18 @@ export type GPUCatchmentMethod = '2sfca' | '3sfca';
 
 /** Caller-owned outputs of {@link GPUCatchmentAccessibility}. */
 export type GPUCatchmentAccessibilityOutput = {
-  /** Accessibility `A_i` per demand location. */
+  /** Accessibility `A_i` per demand location; NaN throughout after supplied loss on either weights table. */
   accessibility: GraphDataView<'float32'>;
   /**
    * Optional supply-to-demand ratio per facility: `R_j = S_j / sum_i P_i w_ji` for `'2sfca'`, with
    * `P_i / T_i` in place of `P_i` for `'3sfca'`. 0 when no demand is in range.
+   * NaN after facility-weights loss, or after demand-weights loss for 3SFCA.
    */
   ratios?: GraphDataView<'float32'>;
   /**
    * Optional count of facilities each demand location reaches: the slots of its demand-weights row
-   * whose neighbor is a facility, whatever their weight.
+   * whose neighbor is a facility, whatever their weight. 0xffffffff means unknown after supplied
+   * demand-weights loss; facility-weights loss alone does not invalidate this forward count.
    */
   reachableFacilities?: GraphDataView<'uint32'>;
   /**
@@ -123,6 +129,10 @@ export type GPUCatchmentAccessibilityProps = {
  * their transpose, which is how the `catchment` option of `GPUNetworkAccessibility` runs.
  *
  * When both weights declare spatial contexts, they must be compatible.
+ * Pass each producer's described outputWeights to retain its loss flags. Supplied nonzero
+ * overflow/candidateOverflow suppresses dependent float results with NaN and forward counts
+ * with 0xffffffff. Demand validity still describes finite demand only. Clearing loss flags
+ * restores ordinary results on the next submission of the same compiled graph.
  *
  * Spatial context: this operator reads no positions, only the weights, so it has no
  * `spatialContext` prop. Distance units and the coordinate space (planar, or great-circle meters)
@@ -419,6 +429,42 @@ ${SPATIAL_ANALYSIS_QUOTIENT_WGSL}`,
         })
       );
     }
+    const forwardLoss = getCatchmentWeightLossFlags(demandWeights);
+    const reverseLoss = getCatchmentWeightLossFlags(facilityWeights);
+    for (const [name, view, flags, type, value] of [
+      ['accessibility', output.accessibility, [...forwardLoss, ...reverseLoss], 'f32', 'getNaN()'],
+      [
+        'ratios',
+        output.ratios,
+        [...reverseLoss, ...(isThreeStep ? forwardLoss : [])],
+        'f32',
+        'getNaN()'
+      ],
+      ['reachableFacilities', output.reachableFacilities, forwardLoss, 'u32', '0xffffffffu']
+    ] as const) {
+      if (!view || flags.length === 0) continue;
+      nodes.push(
+        getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
+          id: `${id}-suppress-${name}`,
+          operation: OPERATION,
+          variant: 'incomplete-input',
+          bindings: [
+            ...flags.map((flag, index) => ({
+              name: `loss${index}`,
+              view: flag,
+              type: 'u32' as const,
+              access: 'read' as const
+            })),
+            {name: 'result', view, type, access: 'read_write'}
+          ],
+          invocationCount: view.length,
+          declarations: type === 'f32' ? GET_NAN_WGSL : undefined,
+          body: `if (${flags.map((_, index) => `loss${index}[loss${index}Offset] != 0u`).join(' || ')}) {
+  result[resultOffset + index] = ${value};
+}`
+        })
+      );
+    }
     return nodes.flat();
   }
 }
@@ -428,8 +474,20 @@ function getWeightViews(props: GPUCatchmentAccessibilityProps): GraphDataView[] 
   const views: GraphDataView[] = [];
   for (const weights of [props.facilityWeights, props.demandWeights]) {
     if (weights) {
-      views.push(weights.offsets, weights.neighbors, weights.weights);
+      views.push(
+        weights.offsets,
+        weights.neighbors,
+        weights.weights,
+        ...getCatchmentWeightLossFlags(weights)
+      );
     }
   }
   return views;
+}
+
+/** Supplied loss flags must be declared as graph inputs and checked on every submission. */
+function getCatchmentWeightLossFlags(weights: GPUSpatialWeights): GraphDataView<'uint32'>[] {
+  return [weights.status?.overflow, weights.status?.candidateOverflow].filter(
+    (view): view is GraphDataView<'uint32'> => view !== undefined
+  );
 }

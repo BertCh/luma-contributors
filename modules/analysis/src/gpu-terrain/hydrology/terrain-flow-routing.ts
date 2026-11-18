@@ -329,7 +329,11 @@ ${getFlowFractionWGSL(props.routing, includeCompute)}`;
     createFillNode<Parameters>(graph, {
       id: `${props.id}-accumulate-init`,
       operation: OPERATION,
-      view: props.accumulation,
+      view: graph.createDataView(props.accumulation.buffer, {
+        format: 'uint32',
+        byteOffset: props.accumulation.byteOffset,
+        length: props.accumulation.length
+      }),
       type: 'u32',
       value: '0xffffffffu'
     }),

@@ -31,6 +31,11 @@ import {
 import {getCholeskyWGSL, getPivotLimitedCholeskyWGSL} from './spatial-regression-solve';
 import {getRegimeMomentNodes, getRegimeMomentStride} from './regime-moments';
 import {REGRESSION_TILE_MAXIMUM_ROW_COUNT} from './regression-row-tiles';
+import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
+import {
+  CENTERED_REGRESSION_PREDICTION_WGSL,
+  getCenteredRegressionContributionWGSL
+} from './centered-regression-prediction';
 
 /** Largest predictor count: the per-regime solve keeps an 11 x 11 Cholesky factor per thread. */
 const MAXIMUM_PREDICTOR_COUNT = 11;
@@ -58,7 +63,8 @@ export type GPUSpatialRegimeRegressionProps = {
 /**
  * Fully varying spatial-regime OLS: separate intercept and slopes for each supplied region.
  * Complete cases are selected jointly. Fits center predictors within each regime before Cholesky,
- * then recover the intercept; this avoids cancellation from large coordinate-like predictor means.
+ * then recover the intercept. Moments and fitted values retain the mean correction, and prediction
+ * uses centered predictors; this avoids cancellation from large coordinate-like predictor means.
  * Equivalent to fully varying spreg.OLS_Regimes point estimates (no spatial lag/error term,
  * covariance estimates, pooled restrictions or Chow test). Empty/singular regimes return NaNs.
  * A regime is singular (status 2) when a centered predictor has no variance or a Cholesky pivot,
@@ -184,10 +190,16 @@ fn included(row: u32) -> bool {
         ],
         declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}\n${IS_FINITE_VALUE_WGSL}\n${getCholeskyWGSL(columns)}\n${getPivotLimitedCholeskyWGSL(columns)}
 const D: u32 = ${dimension}u;
-fn momentAt(base: u32, first: u32, second: u32) -> f32 {
+${ROUNDED_DIFFERENCE_WGSL}
+fn momentAt(base: u32, first: u32, second: u32, count: u32) -> f32 {
   let low = min(first, second);
   let high = max(first, second);
-  return moments[base + D + low * (2u * D - low + 1u) / 2u + (high - low)];
+  let deviations = base + ${dimension + (dimension * (dimension + 1)) / 2}u;
+  // Fix the quotient before multiplying: the product of two deviation sums can overflow
+  // even when the corrected moment fits in f32. The first segment offset is a runtime zero.
+  let secondCorrection = getRoundedDifference(moments[deviations + second] / max(f32(count), 1.0), 0.0, segmentOffsets[segmentOffsetsOffset]);
+  return moments[base + D + low * (2u * D - low + 1u) / 2u + (high - low)]
+    - moments[deviations + first] * secondCorrection;
 }`,
         body: `let count = segmentOffsets[segmentOffsetsOffset + index + 1u] - segmentOffsets[segmentOffsetsOffset + index];
 let base = momentsOffset + index * ${stride}u;
@@ -196,13 +208,22 @@ for (var column = 0u; column < ${columns + 1}u; column++) { coefficients[coeffic
 status[statusOffset + index] = 1u; if (count <= ${columns}u) { return; }
 var matrix: array<f32, ${columns * columns}>; var right: array<f32, ${columns}>;
 for (var column = 0u; column < ${columns}u; column++) {
-  right[column] = momentAt(base, column, ${columns}u);
-  for (var other = 0u; other <= column; other++) { matrix[column * ${columns}u + other] = momentAt(base, column, other); }
+  right[column] = momentAt(base, column, ${columns}u, count);
+  for (var other = 0u; other <= column; other++) { matrix[column * ${columns}u + other] = momentAt(base, column, other, count); }
 }
 let responseMean = moments[base + ${columns}u];
 status[statusOffset + index] = 2u; if (!choleskyFactorLimited_${columns}(&matrix)) { return; }
-choleskySolve_${columns}(&matrix, &right); var intercept = responseMean;
-for (var column = 0u; column < ${columns}u; column++) { if (!isFiniteBits(right[column])) { return; } intercept -= moments[base + column] * right[column]; }
+choleskySolve_${columns}(&matrix, &right);
+let deviations = base + ${dimension + (dimension * (dimension + 1)) / 2}u;
+var intercept = responseMean;
+var correction = moments[deviations + ${columns}u] / f32(count);
+let runtimeZero = segmentOffsets[segmentOffsetsOffset];
+for (var column = 0u; column < ${columns}u; column++) {
+  if (!isFiniteBits(right[column])) { return; }
+  intercept = getRoundedDifference(intercept, moments[base + column] * right[column], runtimeZero);
+  correction -= right[column] * (moments[deviations + column] / f32(count));
+}
+intercept += correction;
 if (!isFiniteBits(intercept)) { return; }
 coefficients[coefficientsOffset + index * ${columns + 1}u] = intercept;
 for (var column = 0u; column < ${columns}u; column++) { coefficients[coefficientsOffset + index * ${columns + 1}u + column + 1u] = right[column]; }
@@ -216,12 +237,26 @@ status[statusOffset + index] = 0u;`
         bindings: [
           ...bindings,
           {name: 'coefficients', view: props.output.coefficients, type: 'f32', access: 'read'},
+          {name: 'moments', view: views.moments, type: 'f32', access: 'read'},
+          {name: 'segmentOffsets', view: views.segmentOffsets, type: 'u32', access: 'read'},
           {name: 'fitted', view: props.output.fitted, type: 'f32', access: 'read_write'}
         ],
-        declarations: common,
+        declarations: `${common}\n${ROUNDED_DIFFERENCE_WGSL}\n${CENTERED_REGRESSION_PREDICTION_WGSL}`,
         body: `var value = getNaN();
-if (included(index)) { let base = coefficientsOffset + regimes[regimesOffset + index] * ${columns + 1}u; value = coefficients[base];
-  for (var column = 0u; column < ${columns}u; column++) { value += predictors[predictorsOffset + index * ${columns}u + column] * coefficients[base + column + 1u]; }
+if (included(index)) {
+  let regime = regimes[regimesOffset + index];
+  let base = coefficientsOffset + regime * ${columns + 1}u;
+  if (!isFiniteBits(coefficients[base])) { fitted[fittedOffset + index] = value; return; }
+  let momentBase = momentsOffset + regime * ${stride}u;
+  let deviations = momentBase + ${dimension + (dimension * (dimension + 1)) / 2}u;
+  let count = f32(segmentOffsets[segmentOffsetsOffset + regime + 1u] - segmentOffsets[segmentOffsetsOffset + regime]);
+  var correction = moments[deviations + ${columns}u] / count;
+  for (var column = 0u; column < ${columns}u; column++) {
+    correction -= coefficients[base + column + 1u] * moments[deviations + column] / count;
+  }
+  // The first sorted segment starts at zero; reading it keeps differences rounded on Metal.
+  ${getCenteredRegressionContributionWGSL({predictorCount: columns, predictor: 'predictors[predictorsOffset + index * ' + columns + 'u + column]', mean: 'moments[momentBase + column]', slope: 'coefficients[base + column + 1u]', runtimeZero: 'segmentOffsets[segmentOffsetsOffset]'})}
+  value = getCenteredRegressionPrediction(moments[momentBase + ${columns}u], centeredContribution, correction, segmentOffsets[segmentOffsetsOffset]);
 }
 fitted[fittedOffset + index] = value;`
       })

@@ -26,6 +26,48 @@ import {requireTestDevice} from '../../utils/require-test-device';
 // float64 with sampling and shapely self-checks); tolerances are in the fixture.
 const {tolerances} = CLOSEST_APPROACH_FIXTURE;
 
+it('keeps closest-approach durations in the declared second or millisecond unit', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const [unit, scale] of [
+    ['second', 1],
+    ['millisecond', 1000]
+  ] as const) {
+    const result = await runClosestApproach(
+      device,
+      [
+        {
+          positions: [
+            [0, 0],
+            [1, 0]
+          ],
+          times: [0, scale]
+        },
+        {
+          positions: [
+            [0, 0.5],
+            [1, 0.5]
+          ],
+          times: [0, scale]
+        }
+      ],
+      {
+        distance: 1,
+        cellSize: 4,
+        timeCellSize: scale / 2,
+        entryCapacity: 256,
+        hitCapacity: 256,
+        pairCapacity: 1,
+        temporalContext: {unit, encoding: 'float32-relative', epoch: 0n, axis: {kind: 'irregular'}}
+      }
+    );
+    expect(result.count).toBe(1);
+    expect(result.durations[0]).toBeCloseTo(scale, 3);
+    expect(result.firstTimes[0]).toBe(0);
+    expect(result.minimumDistances[0]).toBeCloseTo(0.5, 5);
+  }
+});
+
 function expectPairs(
   actual: ClosestApproachGPUResult,
   expected: readonly ClosestApproachPair[],
@@ -34,6 +76,7 @@ function expectPairs(
   expect(actual.entryOverflow, `${label} entry overflow`).toBe(0);
   expect(actual.hitOverflow, `${label} hit overflow`).toBe(0);
   expect(actual.overflow, `${label} pair overflow`).toBe(0);
+  expect(actual.candidateOverflow, `${label} candidate overflow`).toBe(0);
   const found = new Map<string, number>();
   for (let index = 0; index < actual.count; index++) {
     found.set(`${actual.ids[index]}-${actual.partners[index]}`, index);
@@ -218,12 +261,16 @@ it('GPUTrajectoryClosestApproach reports entry, hit and pair overflow', async ()
     hitCapacity: 1 << 16,
     pairCapacity: 512
   };
-  expect(
-    (await runClosestApproach(device, scene.tracks, {...base, entryCapacity: 16})).entryOverflow
-  ).toBe(1);
-  expect(
-    (await runClosestApproach(device, scene.tracks, {...base, hitCapacity: 2})).hitOverflow
-  ).toBe(1);
+  const entryLimited = await runClosestApproach(device, scene.tracks, {...base, entryCapacity: 16});
+  expect([
+    entryLimited.entryOverflow,
+    entryLimited.candidateOverflow,
+    entryLimited.overflow
+  ]).toEqual([1, 1, 0]);
+  const hitLimited = await runClosestApproach(device, scene.tracks, {...base, hitCapacity: 2});
+  expect([hitLimited.hitOverflow, hitLimited.candidateOverflow, hitLimited.overflow]).toEqual([
+    1, 1, 0
+  ]);
   const pairs = await runClosestApproach(device, scene.tracks, {...base, pairCapacity: 2});
   expect(pairs.overflow).toBe(1);
   expect(pairs.count).toBe(2);

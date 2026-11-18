@@ -358,7 +358,7 @@ function getPairBlockCount(weights: GPUSpatialWeights | GPUChunkedSpatialWeights
  *   exceedance count `M` and `p = min(m (M + 1), P + 1) / (P + 1)`.
  * - The permutation count is never clamped: a count outside `[1, maximumPermutations]` writes NaN
  *   for `permutations`, every p-value and every simulated summary (use `getParameterValues` to
- *   validate on the CPU). Truncated weights (`weights.status.overflow`) analyze no row, so the
+ *   validate on the CPU). Incomplete weights (`weights.status.overflow` or `candidateOverflow`) analyze no row, so the
  *   results are NaN.
  * - Pair sums are reduced in a fixed shape (one workgroup per permutation and row block, a
  *   shared-memory tree, then a fixed sequential sum over blocks). No float atomics: results are

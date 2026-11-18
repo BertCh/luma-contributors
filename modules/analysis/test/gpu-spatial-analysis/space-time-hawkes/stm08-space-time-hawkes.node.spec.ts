@@ -10,7 +10,11 @@ import {
   GPUSpaceTimeHawkes,
   type GPUSpaceTimeHawkesProps
 } from '../../../src/gpu-spatial-analysis/space-time-hawkes/index';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
+import {computeSpaceTimeHawkesOnCPU} from '../../../src/gpu-spatial-analysis/space-time-hawkes/cpu-space-time-hawkes-operation';
 import {
   fitHawkesReference,
   simulateHawkes,
@@ -19,6 +23,29 @@ import {
 } from './stm08-hawkes-reference';
 
 let viewCount = 0;
+
+it('scales the fitted Hawkes compensator before multiplying extreme window units', () => {
+  const background = 2 ** 28;
+  const area = 2 ** 100;
+  const duration = 2 ** -126;
+  expect(Math.fround(Math.fround(background * area) * duration)).toBe(Infinity);
+  expect(background * area * duration).toBe(4);
+  const result = computeSpaceTimeHawkesOnCPU(
+    {
+      positions: new Float32Array(8),
+      times: new Float32Array(4),
+      parameters: Float32Array.of(area, duration, 10, 10, 1e-8, 1, 0.5, 2 ** 126, 1)
+    },
+    {maximumIterations: 1}
+  );
+  expect(Number.isFinite(result.fittedLogLikelihood[0])).toBe(true);
+  expect(result.fittedLogLikelihood[0]).toBeCloseTo(73.6324844, 4);
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const contributor = createContributor(graph, 4, {maximumIterations: 1});
+  const sources = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph));
+  const publication = sources.find(kernel => kernel.id.endsWith('-publish-estimates'))!.source;
+  expect(/getHawkesBackgroundCompensator\(state\[/.test(publication)).toBe(true);
+});
 
 function createContributor(
   graph: GPUCommandGraph,
@@ -39,6 +66,7 @@ function createContributor(
         : {
             estimates: view('float32', 4),
             logLikelihood: view('float32', 1),
+            fittedLogLikelihood: view('float32', 1),
             backgroundProbability: view('float32', rowCount),
             status: {
               converged: view('uint32', 1),

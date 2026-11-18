@@ -4,7 +4,7 @@
 
 import {SCAN_TOTAL_WGSL} from '../../analysis-core/kernels/scan-total';
 import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
-import {LON_LAT_RING_WGSL} from '../../analysis-core/lon-lat-ring-wgsl';
+import {LON_LAT_RING_WGSL} from '../../analysis-core/kernels/lon-lat-ring-wgsl';
 import type {GPUStatusScalar} from '../../analysis-core/contracts/index';
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {

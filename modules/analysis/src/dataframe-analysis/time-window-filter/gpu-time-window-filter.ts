@@ -5,6 +5,7 @@
 import {
   createTransientView,
   GPUGroupAggregation,
+  GPUGather,
   GraphVectorView,
   GPUVisibilityWorkflow,
   validatePackedUint32View,
@@ -19,6 +20,7 @@ import type {
   GPUUint32Rows
 } from '../../analysis-core/kernels/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   createFillNode,
   createPublishNode,
@@ -31,7 +33,8 @@ import {
   validateCompactOutput,
   validateGPUStorageBindingByteLength,
   validateMaximumCount,
-  validateCapacity
+  validateCapacity,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getTimeWindowClassifyNodes} from './time-window-classify-node';
 import {
@@ -52,15 +55,19 @@ import {
   validateDisjointWritableViews
 } from '../../analysis-core/kernels/graph-chunk-dispatch';
 
-/** Global compacted IDs and counts are uint32; reject unaddressable totals before declaration. */
+/** Global compacted rows and counts are uint32; reject unaddressable totals before declaration. */
 const MAXIMUM_ROW_COUNT = 0xffffffff;
 
 /**
  * Caller-owned outputs of {@link GPUTimeWindowFilter}: the bounded compact list of accepted rows
- * (`ids`, `count`, `overflow`, optional `requiredCount`; `ids.length` is the capacity) plus
+ * (`rows`, `count`, `overflow`, optional `requiredCount`; `rows.length` is the capacity) plus
  * optional per-row and per-track views. Writable views must not alias each other or any input.
  */
-export type GPUTimeWindowFilterOutput = GPUCompactOutput & {
+export type GPUTimeWindowFilterOutput = Omit<GPUCompactOutput, 'ids'> & {
+  /** Accepted zero-based source-row indices in stable input order. Use these for gathers/draws. */
+  rows: GraphDataView<'uint32'>;
+  /** Optional mapped caller identities, aligned with rows; requires sourceIds and equal capacity. */
+  ids?: GraphDataView<'uint32'>;
   /** Optional canonical 0/1 mask of accepted rows (time AND additional predicates). */
   outputMask?: GPUUint32Rows;
   /** Optional per-row fade weight in `[0, 1]`, 0 for rejected rows. Reflects the time test only. */
@@ -80,9 +87,9 @@ export type GPUTimeWindowFilterOutput = GPUCompactOutput & {
   /**
    * Sorted mode only. Optional packed two-word view `[firstRow, rowCount]` of the accepted
    * contiguous row range. `rowCount` is the unclamped number of accepted rows, so it can exceed
-   * `ids.length`; the rows are `firstRow .. firstRow + rowCount - 1`. A caller that reads the range
-   * alone passes a small `ids` view and skips the O(capacity) ID write; `drawInstanceCount` and
-   * `status.count` stay clamped to `ids.length`, so keep `ids` large enough when they drive a draw.
+   * `rows.length`; the rows are `firstRow .. firstRow + rowCount - 1`. A caller that reads the range
+   * alone passes a small `rows` view; `drawInstanceCount` and `status.count` stay clamped to its
+   * length, so keep rows large enough when they drive a draw.
    */
   rowRange?: GraphDataView<'uint32'>;
   /**
@@ -103,7 +110,7 @@ export type GPUTimeWindowFilterOutput = GPUCompactOutput & {
  * Properties for {@link GPUTimeWindowFilter}.
  *
  * Per-frame (no recompile): the contents of `window` and of every input buffer. Topology (needs a
- * new graph): view lengths and chunking, `output.ids.length`, `output.trackVisibleCounts.length`, which
+ * new graph): view lengths and chunking, `output.rows.length`, `output.trackVisibleCounts.length`, which
  * optional views are present, and the number of `additionalPredicates`.
  */
 export type GPUTimeWindowFilterProps = {
@@ -134,17 +141,17 @@ export type GPUTimeWindowFilterProps = {
   window: GraphDataView<'float32'> | GraphDataView<'uint32'>;
   /** Optional extra source-aligned predicate masks (bounds, LOD, selection) ANDed with time. */
   additionalPredicates?: readonly GPUVisibilityPredicate[];
-  /** Optional stable IDs aligned with rows. Zero-based row indices are emitted when omitted. */
+  /** Caller identities aligned with input rows. Must be supplied together with output.ids. */
   sourceIds?: GPUUint32Rows;
   /** Optional dense track IDs per row, for example the track that owns each segment. */
   trackIds?: GPUUint32Rows;
-  /** Caller-owned outputs. `output.ids.length` is the capacity. */
+  /** Caller-owned outputs. `output.rows.length` is the capacity; ids never stand for source rows. */
   output: GPUTimeWindowFilterOutput;
   /**
    * Compile-time, default false. Declares that `timestamps` (with `timestampsLow`) is non-decreasing
    * in row order and has no NaN. The accepted rows are then one contiguous range found by two binary
    * searches in a single small kernel, O(log n) per frame and no compaction, written to
-   * `output.rowRange`, `output.drawFirstInstance` and the status words; `output.ids` receives only
+   * `output.rowRange`, `output.drawFirstInstance` and the status words; `output.rows` receives only
    * its first `min(count, capacity)` entries. Acceptance is identical to the mask path, which uses the
    * same comparison helpers.
    *
@@ -168,12 +175,12 @@ export type GPUTimeWindowFilterProps = {
 /**
  * Filters timestamped rows or time intervals against a per-frame time window.
  *
- * Publishes stable compacted IDs, a clamped count with overflow, and optional mask, fade-weight,
- * trail-clip, per-track-count, and indirect-draw outputs, without recompiling the graph when the
+ * Publishes stable compacted source rows, optional caller IDs, a clamped count with overflow, and
+ * optional mask, fade-weight, trail-clip, per-track-count, and indirect-draw outputs, without recompiling the graph when the
  * window moves. Composition: one classify kernel, `GPUVisibilityWorkflow`, optional
  * `GPUGroupAggregation`, and one publish kernel that clamps the count. With `sorted: true` the
- * composition is instead one binary-search kernel, an IDs kernel over the capacity and the publish
- * kernel (see {@link GPUTimeWindowFilterProps.sorted}).
+ * composition is instead one binary-search kernel, a row kernel over the capacity and the publish
+ * kernel (see {@link GPUTimeWindowFilterProps.sorted}). Caller IDs add a gather after row publication.
  *
  * Time input modes:
  * - float32 (cheap path): relative times, optionally with `timestampsLow` for double-single
@@ -191,6 +198,58 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
   readonly props: GPUTimeWindowFilterProps;
 
   constructor(props: GPUTimeWindowFilterProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'timestamps',
+      'timestampsLow',
+      'endTimestamps',
+      'endTimestampsLow',
+      'window',
+      'additionalPredicates',
+      'sourceIds',
+      'trackIds',
+      'output',
+      'sorted',
+      'validateOrder'
+    ]);
+    const declaredOutput = snapshotConstructionFields(props.output, [
+      'rows',
+      'ids',
+      'status',
+      'outputMask',
+      'fadeWeights',
+      'clipFractions',
+      'trackVisibleCounts',
+      'drawInstanceCount',
+      'rowRange',
+      'drawFirstInstance',
+      'orderViolations'
+    ]);
+    props = Object.freeze({
+      ...props,
+      additionalPredicates: props.additionalPredicates
+        ? Object.freeze(
+            props.additionalPredicates.map(predicate => {
+              const captured = snapshotConstructionFields(predicate, ['kind', 'mask']);
+              return Object.freeze({
+                ...captured,
+                kind: Array.isArray(captured.kind)
+                  ? Object.freeze([...captured.kind])
+                  : captured.kind
+              });
+            })
+          )
+        : undefined,
+      output: Object.freeze({
+        ...declaredOutput,
+        status: snapshotConstructionFields(declaredOutput.status, [
+          'count',
+          'overflow',
+          'candidateOverflow',
+          'requiredCount'
+        ])
+      })
+    });
     this.id = props.id ?? 'time-window-filter';
     this.props = props;
     const id = this.id;
@@ -278,7 +337,26 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
         throw new Error(`${id} output.trackVisibleCounts must contain at least one track`);
       }
     }
-    validateCompactOutput(id, props.output);
+    validateRequirement(
+      id,
+      Boolean(output.rows),
+      'output.rows is required for accepted source-row indices'
+    );
+    validateCompactOutput(id, {ids: output.rows, status: output.status});
+    validateRequirement(
+      id,
+      Boolean(props.sourceIds) === Boolean(output.ids),
+      'sourceIds and output.ids must be supplied together; use output.rows for row indices'
+    );
+    if (output.ids) {
+      validatePackedUint32View(output.ids, `${id} output.ids`);
+      validateRequirement(
+        id,
+        output.ids.length === output.rows.length,
+        'output.ids length must equal output.rows length'
+      );
+      validateGraphOutputsDisjointFromInputs(id, [output.ids], [output.rows]);
+    }
     this.validateSorted();
     if (output.drawInstanceCount) {
       validatePackedUint32View(output.drawInstanceCount, `${id} output.drawInstanceCount`);
@@ -286,11 +364,11 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
         throw new Error(`${id} output.drawInstanceCount must contain one uint32 row`);
       }
     }
-    const directIds = rows > 0 && output.ids.length >= rows;
+    const directIds = rows > 0 && output.rows.length >= rows;
     // Published compaction and group aggregation bind masks as read-only storage.
     // A physical buffer cannot also carry their writable output, even at disjoint offsets.
     if (!props.sorted) {
-      if (directIds) validateGraphOutputsDisjointFromInputs(id, [output.ids], [output.outputMask]);
+      if (directIds) validateGraphOutputsDisjointFromInputs(id, [output.rows], [output.outputMask]);
       if (output.trackVisibleCounts)
         validateGraphOutputsDisjointFromInputs(
           id,
@@ -303,9 +381,11 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
     {
       const writableOutputs: Readonly<Record<string, GraphDataView | GraphVectorView | undefined>> =
         {
+          rows: output.rows,
           ids: output.ids,
           count: output.status.count,
           overflow: output.status.overflow,
+          candidateOverflow: output.status.candidateOverflow,
           requiredCount: output.status.requiredCount,
           outputMask: output.outputMask,
           fadeWeights: output.fadeWeights,
@@ -329,15 +409,16 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
         [
           output.status.count,
           output.status.overflow,
+          output.status.candidateOverflow,
           output.status.requiredCount,
           output.drawInstanceCount,
-          ...(!props.sorted && !directIds ? [output.ids] : [])
+          ...(!props.sorted && !directIds ? [output.rows] : [])
         ],
         [output.rowRange, output.drawFirstInstance],
         ...(props.sorted
-          ? [[output.ids, output.rowRange]]
+          ? [[output.rows, output.rowRange]]
           : directIds
-            ? [[output.ids, output.outputMask]]
+            ? [[output.rows, output.outputMask]]
             : []),
         ...(output.trackVisibleCounts ? [[output.trackVisibleCounts, output.outputMask]] : [])
       ];
@@ -382,8 +463,10 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
       id,
       [
         props.output.ids,
+        props.output.rows,
         props.output.status.count,
         props.output.status.overflow,
+        props.output.status.candidateOverflow,
         props.output.status.requiredCount,
         output.outputMask,
         output.fadeWeights,
@@ -494,8 +577,10 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
           output.drawFirstInstance,
           output.orderViolations,
           output.ids,
+          output.rows,
           output.status.count,
           output.status.overflow,
+          output.status.candidateOverflow,
           output.status.requiredCount,
           ...additionalPredicates.map(predicate => predicate.mask)
         ].map((view, index) => [`view[${index}]`, view])
@@ -549,12 +634,12 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
           : undefined);
     }
 
-    // Compact straight into the caller's IDs when they can hold every row; otherwise compact into
+    // Compact straight into the caller's rows when they can hold every row; otherwise compact into
     // full-size scratch and let the publish kernel copy the bounded prefix.
-    const direct = rows > 0 && output.ids.length >= rows;
+    const direct = rows > 0 && output.rows.length >= rows;
     const total = createTransientView(graph, `${id}-total`, 'uint32', 1);
     const compactIds = direct
-      ? output.ids
+      ? output.rows
       : createTransientView(graph, `${id}-compact-ids`, 'uint32', rows);
     nodes.push(
       ...new GPUVisibilityWorkflow({
@@ -563,8 +648,7 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
         output: compactIds,
         count: total,
         // Passing the time mask itself as the output mask skips the redundant compose pass.
-        outputMask: finalMask,
-        sourceIds: props.sourceIds
+        outputMask: finalMask
       }).getCommandNodes(graph)
     );
 
@@ -585,16 +669,16 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
         operation: 'GPUTimeWindowFilter',
         requiredCount: total,
         compactIds: direct ? undefined : compactIds,
-        output,
+        output: {ids: output.rows, status: output.status},
         extraCounts: drawInstanceCount ? [drawInstanceCount] : []
       })
     );
-    return nodes;
+    return [...nodes, ...this.getIdentityNodes(graph)];
   }
 
   /**
    * Sorted mode: optional order check, the range search, optional mask and fade classify, the
-   * IDs kernel over the capacity, and the publish kernel (clamped count, overflow, draw count).
+   * row kernel over the capacity, and the publish kernel (clamped count, overflow, draw count).
    */
   private getSortedCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -657,13 +741,12 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
     }
 
     // With no rows the count is always 0 and there is nothing to write.
-    if (output.ids.length > 0 && timestamps.length > 0) {
+    if (output.rows.length > 0 && timestamps.length > 0) {
       nodes.push(
         createSortedTimeWindowIdsNode<Parameters>(graph, {
           id: `${id}-ids`,
           range,
-          ids: output.ids,
-          sourceIds: props.sourceIds as GraphDataView<'uint32'> | undefined
+          rows: output.rows
         })
       );
     }
@@ -673,10 +756,24 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
         id: `${id}-publish`,
         operation: 'GPUTimeWindowFilter',
         requiredCount: total,
-        output,
+        output: {ids: output.rows, status: output.status},
         extraCounts: output.drawInstanceCount ? [output.drawInstanceCount] : []
       })
     );
-    return nodes;
+    return [...nodes, ...this.getIdentityNodes(graph)];
+  }
+
+  /** Map stable row indices to opaque caller identities after row publication. */
+  private getIdentityNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    const {output, sourceIds, timestamps} = this.props;
+    if (!output.ids || output.rows.length === 0 || timestamps.length === 0) return [];
+    return new GPUGather({
+      id: `${this.id}-identities`,
+      source: sourceIds!,
+      indices: output.rows,
+      output: output.ids
+    }).getCommandNodes(graph);
   }
 }

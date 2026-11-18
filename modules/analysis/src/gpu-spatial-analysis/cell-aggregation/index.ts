@@ -17,7 +17,10 @@ export type {
   GPUCellLevelSelectionProps
 } from './gpu-cell-level-selection';
 export {getCellTableFirstRow, GPU_CELL_EMPTY_KEY_WORD} from './cell-table';
-export {GPU_CELL_DEFAULT_SUM_SCALE, getGPUCellSumScale} from '../../analysis-core/cell-key-wgsl';
+export {
+  GPU_CELL_DEFAULT_SUM_SCALE,
+  getGPUCellSumScale
+} from '../../analysis-core/kernels/cell-key-wgsl';
 export type {GPUCellTable} from './cell-table';
 export {GPU_CELL_MAXIMUM_RESOLUTION} from './cell-keys';
-export type {GPUCellFamily} from './cell-keys';
+export type {GPUCellAggregationFamily} from './cell-keys';

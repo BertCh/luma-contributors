@@ -114,7 +114,9 @@ it('preparation validates every fixed topology length with the contract messages
     ).toBe(maximumPieceCount);
   }
   const props = createProps(graph);
-  expect(() => new GPULonLatPolygonPreparation({...props, spatialContext: undefined})).toThrow(
+  // @ts-expect-error Explicit context is required even though JavaScript callers can omit it.
+  const missingContext: GPULonLatPolygonPreparationProps = {...props, spatialContext: undefined};
+  expect(() => new GPULonLatPolygonPreparation(missingContext)).toThrow(
     'prepare does not support planar coordinates'
   );
   expect(

@@ -5,7 +5,10 @@
 import {validateNetworkOptimizationInputOutputBuffers} from './network-optimization-bindings';
 
 import {validateNetworkLouvainBindings} from './network-louvain-bindings';
-import {getCoreDefaultBuffer, type GPUNetworkTopology} from '../../analysis-core/network-topology';
+import {
+  getCoreDefaultBuffer,
+  type GPUNetworkTopology
+} from '../../analysis-core/contracts/network-topology';
 import type {
   GPUApproximationStatusPort,
   GPUInvalidStatusPort,

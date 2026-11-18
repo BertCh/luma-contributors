@@ -296,7 +296,8 @@ it('uses atomic shared overflow flags and runtime hash initialization in audited
     output: {...props.output, traversedEdges: {edges, counts}}
   }).getCommandNodes(graph);
   const sources = getParsedKernelSources(nodes);
-  for (const [name, source] of sources) expect(auditWGSLModule(source), name).toEqual([]);
+  for (const {id: name, source, constants} of sources.configurations)
+    expect(auditWGSLModule(source, constants), name).toEqual([]);
   for (const name of ['cell-fill', 'route-status', 'route-edges']) {
     expect(sources.get(`map-matching-${name}`)).toContain('atomicStore(');
   }
@@ -414,7 +415,8 @@ it('GPUMapMatching fix filter and traversed route kernels parse and stay within 
               offsets: view('uint32', 5),
               targets: view('uint32', 16),
               costs: view('float32', 16),
-              costLimit: view('float32', 1)
+              costLimit: view('float32', 1),
+              status: {complete: view('uint32', 1)}
             }
           }
         : {}),
@@ -430,7 +432,7 @@ it('GPUMapMatching fix filter and traversed route kernels parse and stay within 
     expect(ids).not.toContain('map-matching-starts');
     expect(ids.indexOf('map-matching-hops')).toBeLessThan(ids.indexOf('map-matching-route-edges'));
     const sources = getParsedKernelSources(nodes);
-    for (const [id, source] of sources) {
+    for (const {id, source} of sources.configurations) {
       expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
     }
     expect(sources.get('map-matching-routes')).toContain(
@@ -440,9 +442,13 @@ it('GPUMapMatching fix filter and traversed route kernels parse and stay within 
     expect(sources.get('map-matching-forward')).toContain('DROPPED_FIX');
     expect(sources.get('map-matching-route-edges')).toContain('tableParent');
     for (const id of ['map-matching-route-edges', 'map-matching-routes']) {
-      expect(getPrivateMemoryBytes(sources.get(id) ?? ''), id).toBeLessThanOrEqual(
-        CORE_PRIVATE_MEMORY_LIMIT_BYTES
-      );
+      const source = sources.get(id);
+      expect(source, id).toBeDefined();
+      for (const kernel of sources.getConfigurations(id)) {
+        expect(getPrivateMemoryBytes(kernel.source, kernel.constants), id).toBeLessThanOrEqual(
+          CORE_PRIVATE_MEMORY_LIMIT_BYTES
+        );
+      }
     }
   }
 });

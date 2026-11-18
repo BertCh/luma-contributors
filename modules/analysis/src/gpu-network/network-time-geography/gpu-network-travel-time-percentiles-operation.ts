@@ -8,6 +8,7 @@ import {
 } from '../../analysis-core/operations/gpu-contributor-operation';
 import type {NetworkTimeRoutingOperationProps} from '../network-optimization/gpu-network-time-routing-operation';
 import {GPUNetworkTravelTimePercentiles} from './gpu-network-travel-time-percentiles';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 /** Shared graph-value names and compile-time shape for travel-time percentile twins. */
 export type NetworkTravelTimePercentilesOperationProps = Omit<
@@ -26,7 +27,34 @@ export type NetworkTravelTimePercentilesOperationProps = Omit<
 
 /** GPU operation form. Graph contents are per-frame; all properties are compile-time. */
 export class GPUNetworkTravelTimePercentilesOperation extends GPUContributorOperation {
-  constructor(props: NetworkTravelTimePercentilesOperationProps) {
+  constructor(originalProps: NetworkTravelTimePercentilesOperationProps) {
+    const settings = snapshotConstructionFields(originalProps, [
+      'id',
+      'stateCount',
+      'transitionCount',
+      'stateVertices',
+      'transitions',
+      'costs',
+      'initialState',
+      'window',
+      'vertexCount',
+      'departureCount',
+      'percentiles',
+      'costModel',
+      'maximumRelaxations',
+      'samplesPerTransition',
+      'waitingPolicy',
+      'output'
+    ]);
+    const props = {
+      ...settings,
+      percentiles: Object.freeze(Array.from(settings.percentiles)),
+      output: snapshotConstructionFields(settings.output, [
+        'travelTimes',
+        'reachedCounts',
+        'status'
+      ])
+    };
     const outputs: Record<string, GPUContributorOperationOutput> = {
       travelTimes: {
         value: props.output.travelTimes,

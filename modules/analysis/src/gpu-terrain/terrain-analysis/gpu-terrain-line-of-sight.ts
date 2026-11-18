@@ -50,7 +50,7 @@ import {
   getRasterGridGeoreference,
   type GPURasterCellSizeMode,
   validateRasterCellSizeMode
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 import {
   getTerrainSightLineGroundCellWGSL,
   getTerrainSightLineWGSL,

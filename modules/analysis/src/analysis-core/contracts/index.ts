@@ -33,6 +33,9 @@ export type {
   GPUGeneratedGeometryPort,
   GPULineGeometryFields,
   GPULineGeometryPort,
+  GPUMultipartGeometryPort,
+  GPUMultipartLineGeometryPort,
+  GPUMultipartPointGeometryPort,
   GPUPackedGeometryPort,
   GPUPointGeometryPort,
   GPUPolygonGeometryFields,
@@ -44,7 +47,13 @@ export type {
   GPUTrajectoryTimestampFormat,
   GPUUint32Rows
 } from './ports';
-export {validateGPUCompactPairPort, validateGPUFeatureGeometryPort} from './ports';
+export {
+  createGPUMultipartRowOwnersNode,
+  GPU_MULTIPART_NO_FEATURE_ROW,
+  validateGPUCompactPairPort,
+  validateGPUFeatureGeometryPort,
+  validateGPUMultipartGeometryPort
+} from './ports';
 
 export type {
   GPUSpatialContext,

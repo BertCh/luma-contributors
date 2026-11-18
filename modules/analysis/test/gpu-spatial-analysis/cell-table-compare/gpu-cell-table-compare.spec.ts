@@ -77,6 +77,7 @@ type InputTable = {
   sums: Buffer;
   count: Buffer;
   overflow: Buffer;
+  candidateOverflow: Buffer;
 };
 
 function createInputTable(fixture: Fixture, capacity: number): InputTable {
@@ -86,11 +87,17 @@ function createInputTable(fixture: Fixture, capacity: number): InputTable {
     counts: fixture.input(new Uint32Array(capacity)),
     sums: fixture.input(new Uint32Array(2 * capacity)),
     count: fixture.input(new Uint32Array(1)),
-    overflow: fixture.input(new Uint32Array(1))
+    overflow: fixture.input(new Uint32Array(1)),
+    candidateOverflow: fixture.input(new Uint32Array(1))
   };
 }
 
-function writeInputTable(table: InputTable, rows: readonly CompareInputCell[], overflow = 0): void {
+function writeInputTable(
+  table: InputTable,
+  rows: readonly CompareInputCell[],
+  overflow = 0,
+  candidateOverflow = 0
+): void {
   const cells = new Uint32Array(2 * table.capacity);
   const counts = new Uint32Array(table.capacity);
   const sums = new Uint32Array(2 * table.capacity);
@@ -111,6 +118,7 @@ function writeInputTable(table: InputTable, rows: readonly CompareInputCell[], o
   table.sums.write(sums);
   table.count.write(new Uint32Array([rows.length]));
   table.overflow.write(new Uint32Array([overflow]));
+  table.candidateOverflow.write(new Uint32Array([candidateOverflow]));
 }
 
 function importInputTable(graph: GPUCommandGraph, name: string, table: InputTable): GPUCellTable {
@@ -121,7 +129,14 @@ function importInputTable(graph: GPUCommandGraph, name: string, table: InputTabl
     sums: importGraphBuffer(graph, `${name}-sums`, table.sums, 'uint32x2', capacity),
     status: {
       count: importGraphBuffer(graph, `${name}-count`, table.count, 'uint32', 1),
-      overflow: importGraphBuffer(graph, `${name}-overflow`, table.overflow, 'uint32', 1)
+      overflow: importGraphBuffer(graph, `${name}-overflow`, table.overflow, 'uint32', 1),
+      candidateOverflow: importGraphBuffer(
+        graph,
+        `${name}-candidate-overflow`,
+        table.candidateOverflow,
+        'uint32',
+        1
+      )
     }
   };
 }
@@ -138,11 +153,17 @@ type CompareBuffers = Record<
   | 'zScore'
   | 'count'
   | 'overflow'
+  | 'candidateOverflow'
   | 'total',
   Buffer
 >;
 
-function createCompareBuffers(fixture: Fixture, capacity: number): CompareBuffers {
+function createCompareBuffers(
+  fixture: Fixture,
+  capacity: number,
+  adjacentLossFlags = false
+): CompareBuffers {
+  const flags = adjacentLossFlags ? fixture.output(2) : undefined;
   return {
     cells: fixture.output(2 * capacity),
     presence: fixture.output(capacity),
@@ -154,7 +175,8 @@ function createCompareBuffers(fixture: Fixture, capacity: number): CompareBuffer
     percentChange: fixture.output(capacity),
     zScore: fixture.output(capacity),
     count: fixture.output(1),
-    overflow: fixture.output(1),
+    overflow: flags ?? fixture.output(1),
+    candidateOverflow: flags ?? fixture.output(1),
     total: fixture.output(1)
   };
 }
@@ -165,6 +187,7 @@ function importCompareOutput(graph: GPUCommandGraph, buffers: CompareBuffers, ca
     format: Format,
     length = capacity
   ) => importGraphBuffer(graph, `out-${name}`, buffers[name], format, length);
+  const overflow = view('overflow', 'uint32', 1);
   return {
     cells: importGraphBuffer(graph, 'out-cells', buffers.cells, 'uint32x2', capacity),
     presence: view('presence', 'uint32'),
@@ -177,7 +200,11 @@ function importCompareOutput(graph: GPUCommandGraph, buffers: CompareBuffers, ca
     zScore: view('zScore', 'float32'),
     status: {
       count: view('count', 'uint32', 1),
-      overflow: view('overflow', 'uint32', 1),
+      overflow,
+      candidateOverflow:
+        buffers.overflow === buffers.candidateOverflow
+          ? graph.createDataView(overflow.buffer, {format: 'uint32', length: 1, byteOffset: 4})
+          : view('candidateOverflow', 'uint32', 1),
       requiredCount: view('total', 'uint32', 1)
     }
   };
@@ -186,6 +213,7 @@ function importCompareOutput(graph: GPUCommandGraph, buffers: CompareBuffers, ca
 type ActualCompare = {
   count: number;
   overflow: number;
+  candidateOverflow: number;
   total: number;
   keys: bigint[];
   columns: Record<
@@ -198,6 +226,9 @@ type ActualCompare = {
 async function readCompare(buffers: CompareBuffers, capacity: number): Promise<ActualCompare> {
   const [count] = await readUint32(buffers.count, 1);
   const [overflow] = await readUint32(buffers.overflow, 1);
+  const adjacentLossFlags = buffers.overflow === buffers.candidateOverflow;
+  const candidateWords = await readUint32(buffers.candidateOverflow, adjacentLossFlags ? 2 : 1);
+  const candidateOverflow = candidateWords[adjacentLossFlags ? 1 : 0];
   const [total] = await readUint32(buffers.total, 1);
   const cells = await readUint32(buffers.cells, 2 * capacity);
   const presence = await readUint32(buffers.presence, capacity);
@@ -234,6 +265,7 @@ async function readCompare(buffers: CompareBuffers, capacity: number): Promise<A
   return {
     count,
     overflow,
+    candidateOverflow,
     total,
     keys: Array.from({length: count}, (_, row) => joinCellKey(cells[2 * row], cells[2 * row + 1])),
     columns,
@@ -260,6 +292,9 @@ function expectMatchesOracle(
   expect(actual.total, `${label} total`).toBe(expected.total);
   expect(actual.count, `${label} count`).toBe(expected.rows.length);
   expect(actual.overflow, `${label} overflow`).toBe(expected.overflow ? 1 : 0);
+  expect(actual.candidateOverflow, `${label} candidate overflow`).toBe(
+    expected.candidateOverflow ? 1 : 0
+  );
   expect(actual.tailIsEmpty, `${label} empty tail`).toBe(true);
   expect(actual.keys.map(String), `${label} keys`).toEqual(
     expected.rows.map(row => String(row.key))
@@ -292,7 +327,8 @@ type CompareFixture = {
   run(
     before: readonly CompareInputCell[],
     after: readonly CompareInputCell[],
-    overflow?: [number, number]
+    overflow?: [number, number],
+    candidateOverflow?: [number, number]
   ): Promise<ActualCompare>;
 };
 
@@ -303,7 +339,9 @@ function createCompareFixture(
     afterCapacity: number;
     capacity: number;
     measure: Measure;
-    zScore: ZScore;
+    zScore?: ZScore;
+    sumScale?: number;
+    adjacentLossFlags?: boolean;
   }
 ): CompareFixture {
   const graph = new GPUCommandGraph(fixture.device, {
@@ -311,13 +349,13 @@ function createCompareFixture(
   });
   const before = createInputTable(fixture, props.beforeCapacity);
   const after = createInputTable(fixture, props.afterCapacity);
-  const buffers = createCompareBuffers(fixture, props.capacity);
+  const buffers = createCompareBuffers(fixture, props.capacity, props.adjacentLossFlags);
   graph.add(
     new GPUCellTableCompare({
       before: importInputTable(graph, 'before', before),
       after: importInputTable(graph, 'after', after),
       measure: props.measure,
-      sumScale: SUM_SCALE,
+      sumScale: props.sumScale ?? SUM_SCALE,
       zScore: props.zScore,
       output: importCompareOutput(graph, buffers, props.capacity)
     })
@@ -329,9 +367,9 @@ function createCompareFixture(
     buffers,
     compiled,
     graph,
-    async run(beforeRows, afterRows, overflow = [0, 0]) {
-      writeInputTable(before, beforeRows, overflow[0]);
-      writeInputTable(after, afterRows, overflow[1]);
+    async run(beforeRows, afterRows, overflow = [0, 0], candidateOverflow = [0, 0]) {
+      writeInputTable(before, beforeRows, overflow[0], candidateOverflow[0]);
+      writeInputTable(after, afterRows, overflow[1], candidateOverflow[1]);
       submitGraph(fixture.device, compiled, undefined);
       return readCompare(buffers, props.capacity);
     }
@@ -342,6 +380,91 @@ const cell = (key: bigint, count: number, sum = 0n): CompareInputCell => ({
   key,
   count,
   sum
+});
+
+it('GPUCellTableCompare preserves full-width signed differences and near cancellation', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new Fixture(device);
+  const cases = [
+    {before: -(1n << 62n), after: 1n << 62n, delta: 2 ** 63},
+    {before: 1n << 62n, after: -(1n << 62n), delta: -(2 ** 63)},
+    {before: (1n << 63n) - 1n, after: -(1n << 63n), delta: -(2 ** 64)},
+    {before: -(1n << 63n), after: (1n << 63n) - 1n, delta: 2 ** 64},
+    {before: (1n << 62n) + 17n, after: (1n << 62n) + 20n, delta: 3},
+    {before: -(1n << 62n) - 17n, after: -(1n << 62n) - 20n, delta: -3},
+    {
+      before: -(1n << 62n),
+      after: (1n << 62n) + (1n << 39n) + (1n << 31n),
+      delta: 2 ** 63 + 2 ** 40
+    },
+    {
+      before: (1n << 62n) + (1n << 39n) + (1n << 31n),
+      after: -(1n << 62n),
+      delta: -(2 ** 63 + 2 ** 40)
+    }
+  ];
+  for (const sumScale of [1, SUM_SCALE, 2 ** -60]) {
+    const compare = createCompareFixture(fixture, {
+      beforeCapacity: cases.length,
+      afterCapacity: cases.length,
+      capacity: cases.length,
+      measure: 'sum',
+      zScore: 'poisson',
+      sumScale
+    });
+    try {
+      const actual = await compare.run(
+        cases.map(({before}, row) => cell(BigInt(row + 1), 1, before)),
+        cases.map(({after}, row) => cell(BigInt(row + 1), 1, after))
+      );
+      expect(actual.overflow).toBe(0);
+      expect(actual.count).toBe(cases.length);
+      expect(actual.columns.delta).toEqual(cases.map(entry => entry.delta / sumScale));
+      // The derived percentage must use the corrected delta as well.
+      expect(actual.columns.percentChange[0]).toBeCloseTo(-200, 3);
+      expect(actual.columns.percentChange[1]).toBeCloseTo(-200, 3);
+    } finally {
+      compare.compiled.destroy();
+    }
+  }
+  fixture.destroy();
+});
+
+it('GPUCellTableCompare default sum scores remain finite for full-width opposite changes', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new Fixture(device);
+  const minimum = -(1n << 63n);
+  const maximum = (1n << 63n) - 1n;
+  try {
+    for (const sumScale of [1, SUM_SCALE]) {
+      const compare = createCompareFixture(fixture, {
+        beforeCapacity: 2,
+        afterCapacity: 2,
+        capacity: 3,
+        measure: 'sum',
+        sumScale
+      });
+      try {
+        const actual = await compare.run(
+          [cell(1n, 1, minimum), cell(2n, 1, maximum)],
+          [cell(1n, 1, maximum), cell(2n, 1, minimum)]
+        );
+        expect(actual.columns.zScore.slice(0, 2)).toEqual([1, -1]);
+        expect(actual.columns.zScore[2]).toBeNaN();
+        const rewritten = await compare.run(
+          [cell(1n, 1, 0n), cell(2n, 1, 0n)],
+          [cell(1n, 1, 1n), cell(2n, 1, -1n)]
+        );
+        expect(rewritten.columns.zScore.slice(0, 2)).toEqual([1, -1]);
+      } finally {
+        compare.compiled.destroy();
+      }
+    }
+  } finally {
+    fixture.destroy();
+  }
 });
 
 /** Ascending distinct random cells; keys span both words, some differ only in the high word. */
@@ -502,7 +625,7 @@ it('GPUCellTableCompare Poisson z-score of sums is NaN where before + after is n
   fixture.destroy();
 });
 
-it('GPUCellTableCompare bounds the union, keeps the smallest keys, and ORs input overflow', async () => {
+it('GPUCellTableCompare bounds the union and keeps input loss separate', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const fixture = new Fixture(device);
@@ -530,7 +653,7 @@ it('GPUCellTableCompare bounds the union, keeps the smallest keys, and ORs input
       compare.compiled.destroy();
     }
   }
-  // An overflowed input table raises overflow even when the union fits.
+  // An overflowed input table raises candidateOverflow, while final capacity still fits.
   const compare = createCompareFixture(fixture, {
     beforeCapacity: 4,
     afterCapacity: 4,
@@ -544,12 +667,48 @@ it('GPUCellTableCompare bounds the union, keeps the smallest keys, and ORs input
     [0, 0]
   ] as [number, number][]) {
     const actual = await compare.run([cell(1n, 1)], [cell(2n, 2)], flags);
-    expect(actual.overflow).toBe(flags[0] | flags[1]);
+    expect(actual.overflow).toBe(0);
+    expect(actual.candidateOverflow).toBe(flags[0] | flags[1]);
     expect(actual.count).toBe(2);
     expect(actual.total).toBe(2);
   }
   compare.compiled.destroy();
   fixture.destroy();
+});
+
+it.each([
+  false,
+  true
+])('GPUCellTableCompare keeps source loss separate with one retained cell and four union slots (adjacent flags=%s)', async adjacentLossFlags => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new Fixture(device);
+  const compare = createCompareFixture(fixture, {
+    beforeCapacity: 1,
+    afterCapacity: 1,
+    capacity: 4,
+    measure: 'count',
+    adjacentLossFlags
+  });
+  try {
+    for (const [overflow, candidateOverflow] of [
+      [1, 0],
+      [0, 1],
+      [0, 0]
+    ]) {
+      const actual = await compare.run([cell(1n, 1)], [], [overflow, 0], [candidateOverflow, 0]);
+      expect([actual.count, actual.total, actual.overflow, actual.candidateOverflow]).toEqual([
+        1,
+        1,
+        0,
+        overflow | candidateOverflow
+      ]);
+    }
+  } finally {
+    compare.compiled.destroy();
+    fixture.destroy();
+    device.destroy();
+  }
 });
 
 it('GPUCellTableCompare follows rewritten tables without recompiling and is deterministic', async () => {
@@ -647,7 +806,8 @@ it('GPUCellTableCompare compares two real GPUCellAggregation periods in one grap
         sums: view('sums', 'uint32x2', tableCapacity),
         status: {
           count: view('count', 'uint32', 1),
-          overflow: view('overflow', 'uint32', 1)
+          overflow: view('overflow', 'uint32', 1),
+          candidateOverflow: view('candidate-overflow', 'uint32', 1)
         }
       };
     };

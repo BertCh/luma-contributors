@@ -62,7 +62,7 @@ for (const entry of fixture.cases) {
                 }
               },
               distances: distances.view,
-              nearestFeatureIds: nearest.view,
+              nearestFeatureRows: nearest.view,
               drawInstanceCount: drawCount.view,
               status: {overflow: joinOverflow.view}
             }
@@ -128,9 +128,9 @@ for (const entry of fixture.cases) {
                 expectedIds.slice(0, kept)
               );
               compare(
-                'every nearest feature source ID and sentinel',
+                'every nearest feature row and sentinel',
                 await readUint32(nearest.buffer, queryCount),
-                neighbors.map(neighbor => neighbor?.id ?? 0xffffffff)
+                neighbors.map(neighbor => neighbor?.row ?? 0xffffffff)
               );
               compare(
                 'every distance and unmatched sentinel',

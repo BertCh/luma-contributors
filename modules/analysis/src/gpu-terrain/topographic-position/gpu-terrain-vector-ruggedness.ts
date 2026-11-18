@@ -48,7 +48,7 @@ import {
   type GPURasterCellSizeMode,
   type GPURasterRowDirection,
   validateRasterCellSizeMode
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 
 /** Window radius from which the window sum runs as two separable passes instead of one square loop. */
 const SEPARABLE_RADIUS = 3;

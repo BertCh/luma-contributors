@@ -21,8 +21,10 @@ import {
 import {type CPURegressionWeights, validateCPURegressionWeights} from './cpu-regression-weights';
 import {getCPUErrorDot, getCPUErrorMean} from './cpu-spatial-error-regression';
 import {getChiSquareSurvival} from './ordinary-least-squares-statistics';
+import {getSpatialExactLogDeterminant} from './spatial-exact-log-determinant';
 import {
   GPUSpatialPanelLagMaximumLikelihoodOperation,
+  snapshotSpatialPanelLagOperationProps,
   type SpatialPanelLagMaximumLikelihoodOperationProps
 } from './gpu-spatial-panel-lag-maximum-likelihood-operation';
 
@@ -53,13 +55,16 @@ export type CPUSpatialPanelLagMaximumLikelihoodInput = {
   overflow?: Uint32Array;
   predictors: Float32Array;
   response: Float32Array;
+  /** Entity spectrum for tiled unit effects: one finite value per entity, |value| <= float32(1.00001). */
+  eigenvalues?: Float32Array;
 };
-/** Estimator settings. GPU iteration budgets are accepted but not used. */
+/** Estimator settings. Explicit iteration/search budgets also bind the CPU fit. */
 export type CPUSpatialPanelLagMaximumLikelihoodOptions = Pick<
   SpatialPanelLagMaximumLikelihoodOperationProps,
   | 'periodCount'
   | 'predictorCount'
   | 'effects'
+  | 'fitMode'
   | 'maximumIterations'
   | 'maximumSearchIterations'
   | 'tolerance'
@@ -126,6 +131,25 @@ function validateWeightsInformation(
     [true, false, 'unknown'].includes(information.symmetric),
     "weights.information.symmetric must be a boolean or 'unknown'"
   );
+}
+
+function validateFitMode(
+  id: string,
+  options: Pick<CPUSpatialPanelLagMaximumLikelihoodOptions, 'fitMode' | 'effects'>,
+  hasEigenvalues: boolean
+): void {
+  validateRequirement(
+    id,
+    options.fitMode === undefined || ['auto', 'reference', 'tiled'].includes(options.fitMode),
+    "fitMode must be 'auto', 'reference' or 'tiled'"
+  );
+  const tiled = options.fitMode !== 'reference' && (options.fitMode === 'tiled' || hasEigenvalues);
+  validateRequirement(
+    id,
+    !tiled || (options.effects === 'unit' && hasEigenvalues),
+    "tiled fitMode requires effects 'unit' and entity eigenvalues"
+  );
+  validateRequirement(id, tiled || !hasEigenvalues, 'eigenvalues require tiled fitMode');
 }
 
 function invertPositiveMatrix(matrix: number[][]): number[][] | undefined {
@@ -199,7 +223,10 @@ function hasExactPanelFit(design: number[][], target: number[], estimate: number
   });
 }
 
-function minimizeProfile(objective: (parameter: number) => number): {
+function minimizeProfile(
+  objective: (parameter: number) => number,
+  maximumSearchIterations?: number
+): {
   parameter: number;
   width: number;
 } {
@@ -209,7 +236,11 @@ function minimizeProfile(objective: (parameter: number) => number): {
   let right = lower + GOLDEN_RATIO * (upper - lower);
   let leftScore = objective(left);
   let rightScore = objective(right);
-  while (upper - lower > 16 * Number.EPSILON) {
+  let completed = 0;
+  while (
+    upper - lower > 16 * Number.EPSILON &&
+    (maximumSearchIterations === undefined || completed < maximumSearchIterations)
+  ) {
     if (leftScore <= rightScore) {
       upper = right;
       right = left;
@@ -223,30 +254,35 @@ function minimizeProfile(objective: (parameter: number) => number): {
       right = lower + GOLDEN_RATIO * (upper - lower);
       rightScore = objective(right);
     }
+    completed++;
   }
   let parameter = leftScore <= rightScore ? left : right;
   // A true constrained boundary maximum is included, unlike the GPU's interior golden points.
-  for (const endpoint of [-RHO_BOUND, RHO_BOUND]) {
-    if (objective(endpoint) < objective(parameter)) parameter = endpoint;
-  }
+  if (maximumSearchIterations === undefined)
+    for (const endpoint of [-RHO_BOUND, RHO_BOUND]) {
+      if (objective(endpoint) < objective(parameter)) parameter = endpoint;
+    }
   return {parameter, width: upper - lower};
 }
 
 /**
  * Balanced random/unit-effects lag ML with centered float64 QR, direct residual squares and
- * dense log determinants. Conditional covariance and spreg's reported likelihood convention
+ * dense log determinants, or the supplied entity spectrum for tiled unit effects.
+ * Conditional covariance and spreg's reported likelihood convention
  * (without N log(phi), and with the extra FE constant) follow the current contributor.
  *
  * What differs from the GPU contributor:
  * - Float64 centering, entity means, QR, lags and residuals replace float32 packed moments and
- *   Cholesky. Outputs round once. Ordinary comparisons use 5e-3 relative error, covariance
+ *   Cholesky. Residual-square totals use compensated float64 accumulation. Outputs round once.
+ *   Ordinary comparisons use 5e-3 relative error, covariance
  *   scaled by diagonal geometric means; near-zero fitted/residual rows use a response-scale floor.
  * - Entity, period and predictor shader caps are dropped. Numerical rank uses the shared
  *   norm-scaled QR / correlation Cholesky float64 floors instead of the GPU's 1e-3 pivot floor.
- * - maximumIterations and maximumSearchIterations are ignored. Golden section continues to
- *   binary64 resolution, including interval endpoints; alternation continues to the same relative
- *   phi tolerance or a repeated complete state (status 3). Sweep counts, phi change and bracket
- *   width describe this CPU search and can differ. This retains the GPU's bounded golden-section
+ * - Explicit maximumIterations and maximumSearchIterations bind the CPU fit. Exhaustion returns
+ *   status 3 with its iterate and bracket width, withholding covariance. When budgets are omitted,
+ *   golden section continues to binary64 resolution including interval endpoints, and alternation
+ *   continues to the same relative phi tolerance or a repeated complete state (status 3).
+ *   Sweep counts, phi change and bracket width can differ. This retains the GPU's golden-section
  *   profiling method, not a guarantee of a global maximum on a multimodal profile.
  * - The rho interval, phi floor 1e-8, boundary bits, and status-3 publication at that floor are
  *   retained. Covariance is withheld for status 3. Variance that rounds to nonpositive or
@@ -265,10 +301,13 @@ function minimizeProfile(objective: (parameter: number) => number): {
  *   also return status 1, as on the GPU. Array shape mismatches throw. Empty CSR slot arrays
  *   are accepted by the pure function and produce status 1. Subnormals are retained.
  * - Optional weights distances and status arrays retain shape validation; information metadata
- *   retains contributor validation. Only the first overflow row affects fitting. Other status
- *   values and distances have no numerical effect, matching the contributor.
+ *   retains contributor validation. The first overflow or candidateOverflow word invalidates
+ *   the fit. Other status values and distances have no numerical effect, matching the contributor.
+ * - A supplied spectrum follows the GPU mode selection and validation: one finite value per
+ *   entity with absolute value at most float32(1.00001). Invalid values return status 1;
+ *   a wrong length throws. The caller is responsible for matching the spectrum to W.
  *
- * @throws If predictors, response, weights array lengths or overflow are inconsistent.
+ * @throws If predictors, response, weights, eigenvalue lengths, overflow or fitMode are inconsistent.
  */
 export function computeSpatialPanelLagMaximumLikelihoodOnCPU(
   input: CPUSpatialPanelLagMaximumLikelihoodInput,
@@ -276,12 +315,15 @@ export function computeSpatialPanelLagMaximumLikelihoodOnCPU(
 ): CPUSpatialPanelLagMaximumLikelihoodResult {
   const id = 'computeSpatialPanelLagMaximumLikelihoodOnCPU';
   validateOptions(id, options);
+  validateFitMode(id, options, input.eigenvalues !== undefined);
   const {periodCount, predictorCount} = options;
   const entityCount = input.weights.offsets.length - 1;
   validateCapacity(id, 'weights.offsets entityCount', entityCount, 2);
   const rowCount = entityCount * periodCount;
   const columnCount = predictorCount + 1;
   const covarianceWidth = columnCount + 1;
+  if (input.eigenvalues && input.eigenvalues.length !== entityCount)
+    throw new Error(`${id} eigenvalues must hold one value per entity`);
   if (input.response.length !== rowCount)
     throw new Error(`${id} response length must equal entityCount * periodCount`);
   if (input.predictors.length !== rowCount * predictorCount)
@@ -351,8 +393,13 @@ export function computeSpatialPanelLagMaximumLikelihoodOnCPU(
   };
   if (
     (input.weights.status?.overflow ?? input.overflow)?.[0] ||
+    input.weights.status?.candidateOverflow?.[0] ||
     !input.response.every(Number.isFinite) ||
-    !input.predictors.every(Number.isFinite)
+    !input.predictors.every(Number.isFinite) ||
+    (input.eigenvalues &&
+      !input.eigenvalues.every(
+        value => Number.isFinite(value) && Math.abs(value) <= Math.fround(1.00001)
+      ))
   )
     return finish(emptyFit());
   const dense = Array.from({length: entityCount}, () => new Array<number>(entityCount).fill(0));
@@ -380,7 +427,8 @@ export function computeSpatialPanelLagMaximumLikelihoodOnCPU(
     if (Math.abs(Math.fround(total - 1)) > Math.fround(1e-5)) return finish(emptyFit());
   }
   // The GPU reads each row's explicit begin/end; a nonzero first offset skips capacity.
-  if (offsets[0] === 0) validateCPURegressionWeights(id, input.weights);
+  // Both weights loss flags have already been checked before reaching this structural check.
+  if (offsets[0] === 0) validateCPURegressionWeights(id, input.weights, 'handled-by-caller');
   const response = Array.from(input.response);
   const centers = [
     getCPUErrorMean(response),
@@ -418,6 +466,10 @@ export function computeSpatialPanelLagMaximumLikelihoodOnCPU(
     dense.map((row, entity) =>
       row.map((value, neighbor) => Number(entity === neighbor) - rho * value)
     );
+  const getPanelLogDeterminant = (rho: number) =>
+    input.eigenvalues
+      ? getSpatialExactLogDeterminant(rho, input.eigenvalues)
+      : getLogDeterminant(spatialMatrix(rho));
   const fitModel = (unit: boolean): PanelFit => {
     const fit = emptyFit();
     fit.status = 2;
@@ -445,7 +497,7 @@ export function computeSpatialPanelLagMaximumLikelihoodOnCPU(
     let variance = 0;
     let objective = (_parameter: number) => INVALID_OBJECTIVE;
     const states = new Set<string>();
-    while (true) {
+    while (options.maximumIterations === undefined || completed < options.maximumIterations) {
       if (!unit) {
         let within = 0;
         let between = 0;
@@ -481,19 +533,27 @@ export function computeSpatialPanelLagMaximumLikelihoodOnCPU(
         (value, row) => value - getCPUErrorDot(design[row], firstFit.estimate)
       );
       lagResidual = lag.map((value, row) => value - getCPUErrorDot(design[row], lagFit.estimate));
-      const getVariance = (parameter: number) =>
-        firstResidual.reduce(
-          (sum, value, row) => sum + (value - parameter * lagResidual[row]) ** 2,
-          0
-        ) / rowCount;
+      const getVariance = (parameter: number) => {
+        // A plain reduction makes repeated panels' objective noise exceed the score tolerance.
+        // JavaScript retains this float64 correction; this is not a shader fast-math identity.
+        let sum = 0;
+        let correction = 0;
+        for (let row = 0; row < rowCount; row++) {
+          const squared = (firstResidual[row] - parameter * lagResidual[row]) ** 2;
+          const corrected = squared - correction;
+          const next = sum + corrected;
+          correction = next - sum - corrected;
+          sum = next;
+        }
+        return sum / rowCount;
+      };
       objective = parameter => {
         const value = getVariance(parameter);
         return value > 0
-          ? (rowCount / 2) * Math.log(value) -
-              periodCount * getLogDeterminant(spatialMatrix(parameter))
+          ? (rowCount / 2) * Math.log(value) - periodCount * getPanelLogDeterminant(parameter)
           : INVALID_OBJECTIVE;
       };
-      const search = minimizeProfile(objective);
+      const search = minimizeProfile(objective, options.maximumSearchIterations);
       rho = search.parameter;
       width = search.width;
       beta = firstFit.estimate.map((value, column) => value - rho * lagFit.estimate[column]);
@@ -529,7 +589,7 @@ export function computeSpatialPanelLagMaximumLikelihoodOnCPU(
       const state = [phi, rho, ...beta].join(',');
       const converged =
         unit || change <= (options.tolerance ?? 1e-5) * Math.min(1, phi / RELATIVE_PHI);
-      fit.status = converged && !belowLimit ? 0 : 3;
+      fit.status = converged && !belowLimit && width <= (options.tolerance ?? 1e-5) ? 0 : 3;
       if (converged || states.has(state)) break;
       states.add(state);
     }
@@ -588,7 +648,16 @@ export function computeSpatialPanelLagMaximumLikelihoodOnCPU(
     );
     const lagSquares = getCPUErrorDot(lagResidual, lagResidual);
     const ratio = residualLagProduct / residualSquares;
-    const trace = product.reduce((sum, row, index) => sum + row[index], 0);
+    let trace = product.reduce((sum, row, index) => sum + row[index], 0);
+    if (input.eigenvalues) {
+      trace = 0;
+      traceSquare = 0;
+      for (const eigenvalue of input.eigenvalues) {
+        const ratio = eigenvalue / (1 - rho * eigenvalue);
+        trace += ratio;
+        traceSquare += ratio * ratio;
+      }
+    }
     const score = rowCount * ratio - periodCount * trace;
     const curvature =
       rowCount * (lagSquares / residualSquares - 2 * ratio ** 2) + periodCount * traceSquare;
@@ -644,11 +713,13 @@ export function computeSpatialPanelLagMaximumLikelihoodOnCPU(
   return finish(fitModel(options.effects === 'unit'), options.hausman ? fitModel(true) : undefined);
 }
 
-/** CPU twin; shader size/search caps are dropped. Prefer float64 for these small dense fits. */
+/** CPU twin; shader size caps are dropped and explicit search/iteration budgets are retained. */
 export class CPUSpatialPanelLagMaximumLikelihoodOperation extends GPUCPUOperation {
   constructor(props: SpatialPanelLagMaximumLikelihoodOperationProps) {
+    props = snapshotSpatialPanelLagOperationProps(props);
     const id = props.id ?? 'spatial-panel-lag-maximum-likelihood';
     validateOptions(id, {...props, hausman: Boolean(props.hausman)});
+    validateFitMode(id, props, props.eigenvalues !== undefined);
     validateCapacity(id, 'entityCount', props.entityCount, 2);
     validateWeightsInformation(id, props.weights, props.entityCount);
     const operation = new GPUSpatialPanelLagMaximumLikelihoodOperation(props);
@@ -665,6 +736,12 @@ export class CPUSpatialPanelLagMaximumLikelihoodOperation extends GPUCPUOperatio
         const offsets = getCPUOperationUint32Rows(id, inputs, 'offsets');
         if (offsets.length !== props.entityCount + 1)
           throw new Error(`${id} weights.offsets length must equal entityCount + 1`);
+        const eigenvalues =
+          props.eigenvalues !== undefined
+            ? getCPUOperationFloat32Rows(id, inputs, 'eigenvalues')
+            : undefined;
+        if (eigenvalues && eigenvalues.length !== props.entityCount)
+          throw new Error(`${id} eigenvalues must hold one value per entity`);
         const result = computeSpatialPanelLagMaximumLikelihoodOnCPU(
           {
             weights: {
@@ -693,7 +770,8 @@ export class CPUSpatialPanelLagMaximumLikelihoodOperation extends GPUCPUOperatio
                 ? getCPUOperationUint32Rows(id, inputs, 'overflow')
                 : undefined,
             predictors: getCPUOperationFloat32Rows(id, inputs, 'predictors'),
-            response: getCPUOperationFloat32Rows(id, inputs, 'response')
+            response: getCPUOperationFloat32Rows(id, inputs, 'response'),
+            eigenvalues
           },
           {...props, hausman: Boolean(props.hausman)}
         );

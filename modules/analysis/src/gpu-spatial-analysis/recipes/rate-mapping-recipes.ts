@@ -28,6 +28,7 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {addPreparedRecipe} from './prepared-recipe';
 import {
   addRecipeCountNodes,
   getOrCreateView,
@@ -75,6 +76,13 @@ export function addExcessRiskRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUExcessRiskRecipeProps
 ): GPURecipeResult<{excessRisk: GraphDataView<'float32'>}> {
+  return addPreparedRecipe(graph, props, declareExcessRiskRecipe);
+}
+
+function declareExcessRiskRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUExcessRiskRecipeProps
+): GPURecipeResult<{excessRisk: GraphDataView<'float32'>}> {
   const id = props.id ?? 'excess-risk';
   const excessRisk = getOrCreateView(
     graph,
@@ -83,7 +91,7 @@ export function addExcessRiskRecipe<Parameters>(
     props.events.length,
     props.output
   );
-  const builder = new RecipeBuilder(graph);
+  const builder = new RecipeBuilder(graph, true);
   builder.add(new GPUEmpiricalBayesRates({...props, id, output: {excessRisk}}));
   // The contributor has no status port. It writes NaN to every excluded row, including rows the
   // mask deselects on purpose, so only rows the mask includes can be invalid here: those with an
@@ -108,6 +116,7 @@ export function addExcessRiskRecipe<Parameters>(
       }
     ]
   });
+  builder.addDeferredStages();
   return {
     contributors: builder.contributors,
     outputs: {excessRisk},
@@ -124,6 +133,13 @@ export function addExcessRiskRecipe<Parameters>(
  * The underlying spatial EB contributor retains its own-rate island behavior unchanged.
  */
 export function addSpatialRateRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUSpatialRateRecipeProps
+): GPURecipeResult<{spatialRates: GraphDataView<'float32'>}> {
+  return addPreparedRecipe(graph, props, declareSpatialRateRecipe);
+}
+
+function declareSpatialRateRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUSpatialRateRecipeProps
 ): GPURecipeResult<{spatialRates: GraphDataView<'float32'>}> {
@@ -148,7 +164,7 @@ export function addSpatialRateRecipe<Parameters>(
   );
   validateGraphViewsBelongToGraph(id, graph, [spatialRates]);
   const pooledRates = createTransientView(graph, `${id}-pooled`, 'float32', rows);
-  const builder = new RecipeBuilder(graph);
+  const builder = new RecipeBuilder(graph, true);
   builder.add(
     new GPUSpatialEmpiricalBayesRates({...props, id, output: {spatialRates: pooledRates}})
   );
@@ -197,6 +213,7 @@ export function addSpatialRateRecipe<Parameters>(
     })
   );
   builder.addGlue('island-scaling', nodes);
+  builder.addDeferredStages();
   return {
     contributors: builder.contributors,
     outputs: {spatialRates},

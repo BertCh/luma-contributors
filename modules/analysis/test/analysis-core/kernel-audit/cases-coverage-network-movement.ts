@@ -246,11 +246,12 @@ export const COVERAGE_NETWORK_MOVEMENT_CASES: readonly KernelAuditCase[] = [
   },
   {
     exportName: 'GPUNetworkPointRouting',
-    name: '128 edges,4096 turns,binding-limited queries,65536 relaxations',
+    name: 'reference 128 edges,4096 turns,binding-limited queries,65536 relaxations',
     build: ({graph, view, maximumRows}) => {
       const queryCount = maximumRows(128 * 4);
       graph.add(
         new GPUNetworkPointRouting({
+          mode: 'reference',
           maximumRelaxations: 65536,
           costs: view('float32', 128),
           turns: view('uint32x2', 4096),
@@ -264,6 +265,26 @@ export const COVERAGE_NETWORK_MOVEMENT_CASES: readonly KernelAuditCase[] = [
         })
       );
     }
+  },
+  {
+    exportName: 'GPUNetworkPointRouting',
+    name: 'scalable 128 edges,4096 turns,one query,1024 relaxations',
+    build: ({graph, view}) =>
+      graph.add(
+        new GPUNetworkPointRouting({
+          mode: 'scalable',
+          maximumRelaxations: 1024,
+          costs: view('float32', 128),
+          turns: view('uint32x2', 4096),
+          queries: view('uint32x2', 1),
+          fractions: view('float32x2', 1),
+          output: {
+            costs: view('float32', 1),
+            status: view('uint32', 1),
+            predecessorEdges: view('uint32', 128)
+          }
+        })
+      )
   },
   {
     exportName: 'GPUNetworkTimeRouting',

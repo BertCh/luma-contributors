@@ -92,7 +92,13 @@ export class GPURasterTexture implements GPUCommandNodeProducer, GPURasterHaloSt
     validateRasterViews(
       this.id,
       [props.values, ...(props.mask ? [props.mask] : [])],
-      [props.features, props.pairCount]
+      [props.features, props.pairCount],
+      [
+        {
+          inputs: [props.values, ...(props.mask ? [props.mask] : [])],
+          outputs: [props.features, props.pairCount]
+        }
+      ]
     );
   }
   getCommandNodes<Parameters>(

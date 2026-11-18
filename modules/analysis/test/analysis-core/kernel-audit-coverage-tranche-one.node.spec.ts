@@ -17,6 +17,51 @@ import {
 import {GPURasterFocalPairs} from '../../src/raster-analysis/focal-pairs/index';
 import {GPURasterSAVI} from '../../src/raster-analysis/gpu-raster-spectral-indices';
 import {addDasymetricRedistributionRecipe} from '../../src/gpu-spatial-analysis/recipes/dasymetric-redistribution-recipe';
+import {getWGSLModuleUsage} from '../../src/testing/wgsl-memory-usage';
+import {auditWGSLModule} from './kernel-audit/kernel-audit-wgsl';
+
+it('accounts texture and sampler handles as bindings instead of private data memory', () => {
+  const source = `
+@group(0) @binding(0) var inputTexture: texture_2d<f32>;
+@group(0) @binding(1) var outputTexture: texture_storage_2d<r32float, write>;
+@group(0) @binding(2) var linearSampler: sampler;
+@compute @workgroup_size(1) fn main() {
+  let color = textureSampleLevel(inputTexture, linearSampler, vec2<f32>(0.0), 0.0);
+  textureStore(outputTexture, vec2<i32>(0), color);
+}`;
+  const usage = getWGSLModuleUsage(source);
+  expect(usage.unresolvedTypes).toEqual([]);
+  expect(usage.privateBytes).toBe(0);
+  expect(usage.functionBytes).toBe(0);
+  expect(usage.workgroupBytes).toBe(0);
+  expect(usage.sampledTextures).toBe(1);
+  expect(usage.storageTextures).toBe(1);
+  expect(usage.samplers).toBe(1);
+  expect(auditWGSLModule(source)).toEqual([]);
+
+  const aliased =
+    source.replace(
+      'var outputTexture: texture_storage_2d<r32float, write>;',
+      'var outputTexture: ColorTarget;'
+    ) + '\nalias ColorTarget = texture_storage_2d<r32float, write>;';
+  expect(getWGSLModuleUsage(aliased).storageTextures).toBe(1);
+  expect(auditWGSLModule(aliased)).toEqual([]);
+
+  // Recognizing handles must not hide a real data allocation or an unknown data type.
+  const oversized = `var<workgroup> scratch: array<u32, 8192>;\n${source}`;
+  expect(auditWGSLModule(oversized).map(finding => finding.check)).toContain('workgroup bytes');
+  expect(
+    auditWGSLModule(`var<private> scratch: UnknownData;\n${source}`).map(finding => finding.check)
+  ).toContain('unresolved memory layout');
+
+  const extraTextures = Array.from(
+    {length: 4},
+    (_unused, index) => `@group(0) @binding(${index + 3}) var extraTexture${index}: ColorTarget;`
+  ).join('\n');
+  expect(auditWGSLModule(`${extraTextures}\n${aliased}`).map(finding => finding.check)).toContain(
+    'storage textures per stage'
+  );
+});
 
 it('coverage tranche one refuses documented scalar and capacity bounds one step above maximum', () => {
   const context = createKernelAuditContext('coverage-boundaries');

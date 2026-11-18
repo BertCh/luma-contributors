@@ -29,7 +29,7 @@ import {
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology,
   type GPUNetworkAdjacency
-} from '../../analysis-core/network-topology';
+} from '../../analysis-core/contracts/network-topology';
 import {
   getWorkgroupCounterKernelSource,
   WORKGROUP_COUNTER_WORKGROUP_SIZE

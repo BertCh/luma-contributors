@@ -24,6 +24,134 @@ const RECTANGLES = [
   [30, -300.37, -0.41, 300.37, 300.41]
 ] as const;
 
+it.each([
+  'no-stops',
+  'double-single-stop',
+  'double-single-shared-output',
+  'int64-zone-visit'
+] as const)('fleet dwell preserves one tick and ignores padding: %s', async mode => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new RecipeTestFixture(device, `fleet-time-${mode}`);
+  try {
+    const count = fixture.output('count', 'uint32', 1);
+    const joinOverflow = fixture.output('join-overflow', 'uint32', 1);
+    const zoneCounts = fixture.output('zone-counts', 'uint32', 1);
+    const zoneDwell = fixture.output('zone-dwell', 'float32', 1);
+    const sharedOutput =
+      mode === 'double-single-shared-output'
+        ? fixture.output('shared-output', 'uint32', 6)
+        : undefined;
+    const positions = fixture.input('positions', Float32Array.of(0, 0, 0, 0), 'float32x2', 2);
+    const trackOffsets = fixture.input('track-offsets', Uint32Array.of(0, 2), 'uint32', 2);
+    const zones = {
+      kind: 'polygons' as const,
+      positions: fixture.input(
+        'zone-positions',
+        Float32Array.of(-1, -1, 1, -1, 1, 1, -1, 1),
+        'float32x2',
+        4
+      ),
+      featureOffsets: fixture.input('features', Uint32Array.of(0, 1), 'uint32', 2),
+      polygonOffsets: fixture.input('polygons', Uint32Array.of(0, 1), 'uint32', 2),
+      ringOffsets: fixture.input('rings', Uint32Array.of(0, 4), 'uint32', 2),
+      candidateCapacity: 1
+    };
+    if (mode === 'int64-zone-visit') {
+      addFleetDwellZoneEventsRecipe(fixture.graph, {
+        trajectories: {
+          kind: 'trajectories',
+          positions,
+          trackOffsets,
+          timestamps: fixture.input(
+            'timestamps',
+            Uint32Array.of(2 ** 24, 0, 2 ** 24 + 1, 0),
+            'uint32x2',
+            2
+          ),
+          temporalContext: {
+            encoding: 'int64-words',
+            unit: 'second',
+            epoch: 0n,
+            axis: {kind: 'irregular'}
+          }
+        },
+        zones,
+        candidateCapacity: 8,
+        trackEventCapacity: 4,
+        outputs: {table: {counts: zoneCounts.view, sumValues: zoneDwell.view}}
+      });
+    } else {
+      addFleetDwellRecipe(fixture.graph, {
+        trajectories: {
+          kind: 'trajectories',
+          positions,
+          trackOffsets,
+          timestamps: fixture.input('timestamps', Float32Array.of(2 ** 24, 2 ** 24), 'float32', 2),
+          timestampsLow: fixture.input('timestamps-low', Float32Array.of(0, 1), 'float32', 2),
+          temporalContext: {
+            encoding: 'double-single',
+            unit: 'second',
+            epoch: 0n,
+            axis: {kind: 'irregular'}
+          }
+        },
+        parameters: fixture.parameters(
+          'parameters',
+          'float32',
+          getGPUTrajectoryMetricsParameterValues({
+            stopSpeedThreshold: 1,
+            stopMinimumDuration: mode === 'no-stops' ? 2 : 0.5
+          })
+        ),
+        stopCapacity: sharedOutput ? 2 : 64,
+        zones,
+        outputs: {
+          stops: {
+            status: {count: count.view},
+            ...(sharedOutput
+              ? {
+                  centroids: fixture.graph.createDataView(sharedOutput.view.buffer, {
+                    format: 'float32x2',
+                    length: 2,
+                    byteOffset: 0
+                  })
+                }
+              : {})
+          },
+          status: {joinOverflow: joinOverflow.view},
+          table: {counts: zoneCounts.view, sumValues: zoneDwell.view}
+        },
+        scratch: sharedOutput
+          ? {
+              stopMask: fixture.graph.createDataView(sharedOutput.view.buffer, {
+                format: 'uint32',
+                length: 2,
+                byteOffset: 16
+              })
+            }
+          : undefined
+      });
+    }
+    // Require the GPU to overwrite every checked output, including the empty all-zero case.
+    count.buffer.write(Uint32Array.of(0xffffffff));
+    joinOverflow.buffer.write(Uint32Array.of(0xffffffff));
+    zoneCounts.buffer.write(Uint32Array.of(0xffffffff));
+    zoneDwell.buffer.write(Float32Array.of(-1));
+    fixture.run();
+    const expectedCount = mode === 'no-stops' ? 0 : 1;
+    expect(await fixture.readUint32(zoneCounts, 1)).toEqual([expectedCount]);
+    expect((await fixture.readFloat32(zoneDwell, 1))[0]).toBeCloseTo(expectedCount, 6);
+    if (mode !== 'int64-zone-visit') {
+      expect(await fixture.readUint32(count, 1)).toEqual([expectedCount]);
+      expect(await fixture.readUint32(joinOverflow, 1)).toEqual([0]);
+    }
+    if (sharedOutput) expect(await fixture.readUint32(sharedOutput, 6)).toEqual([0, 0, 0, 0, 1, 0]);
+  } finally {
+    fixture.destroy();
+  }
+});
+
 function rectangleRing(x0: number, y0: number, x1: number, y1: number): number[] {
   return [x0, y0, x1, y0, x1, y1, x0, y1];
 }

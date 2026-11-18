@@ -3,9 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GraphDataView, GraphVectorView} from '@luma.gl/graph/gpu-core';
-import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 import {
   getGraphViewChunks,
+  validateGraphOutputsDisjointFromInputs,
   validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -34,17 +35,7 @@ export function validateInterpolationOutputsDisjointFromInputs(
   outputs: readonly (GraphDataView | GraphVectorView | undefined)[],
   inputs: readonly (GraphDataView | GraphVectorView | undefined)[]
 ): void {
-  const inputBuffers = new Set(
-    inputs.flatMap(view => (view ? getGraphViewChunks(view).map(getInterpolationBuffer) : []))
-  );
-  for (const output of outputs) {
-    validateRequirement(
-      id,
-      !output ||
-        getGraphViewChunks(output).every(view => !inputBuffers.has(getInterpolationBuffer(view))),
-      'outputs must not share buffers with inputs'
-    );
-  }
+  validateGraphOutputsDisjointFromInputs(id, outputs, inputs);
 }
 
 /** Retained outputs cannot overlap; one dispatch cannot read and write one physical storage buffer. */

@@ -20,8 +20,9 @@ import type {
 } from '../../analysis-core/contracts/status';
 import {
   getGPUNetworkTopologyViews,
+  validateGPUNetworkTopology,
   type GPUNetworkAdjacency
-} from '../../analysis-core/network-topology';
+} from '../../analysis-core/contracts/network-topology';
 import {
   estimateParallelNetworkFlowNodes,
   getParallelNetworkFlowNodes,
@@ -39,11 +40,21 @@ import {
   validateRequirement,
   validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {
+  createNetworkFlowPathNodes,
+  getNetworkFlowPathViews,
+  snapshotNetworkFlowPaths,
+  validateNetworkFlowPaths,
+  type GPUNetworkFlowPathOutput
+} from './network-flow-paths';
 
-/** Largest vertex count: the kernel keeps per-vertex distances in private arrays. */
-const MAXIMUM_NODE_COUNT = 128;
-/** Largest edge count: each augmentation relaxes every arc in the single invocation (O(V * E)). */
-const MAXIMUM_EDGE_COUNT = 1024;
+import {
+  NETWORK_FLOW_REFERENCE_MAXIMUM_NODE_COUNT as MAXIMUM_NODE_COUNT,
+  NETWORK_FLOW_REFERENCE_MAXIMUM_EDGE_COUNT as MAXIMUM_EDGE_COUNT,
+  NETWORK_FLOW_REFERENCE_MAXIMUM_TOTAL_CAPACITY,
+  NETWORK_FLOW_MAXIMUM_UNIT_COST
+} from './network-flow-limits';
 /** Largest `maximumAugmentations`: bounds the single invocation's augmenting-path loop. */
 const MAXIMUM_AUGMENTATIONS = 65536;
 /** Default `maximumAugmentations`. */
@@ -79,6 +90,10 @@ export type GPUNetworkFlowOutput = {
   summary: GraphDataView<'uint32'>;
   /** Optional exact unsigned integer objective [low32,high32]. Summary cost remains f32. */
   exactCost?: GraphDataView<'uint32x2'>;
+  /** Optional reference-tier decomposition of final source-to-sink flow. Requires nodeCount <=
+   * 128 and edgeCount <= 1024, including super arcs, with either solver. BFS uses input-edge-row
+   * order for ties. Paths include super arcs from prepareGPUNetworkFlowDemands. */
+  paths?: GPUNetworkFlowPathOutput;
   /** invalidCount is 1 for a rejected problem; iterationCount counts feasible batches (one path for successive-shortest-path/reference routes).
    * Convergence includes a fully solved infeasible finite request; inspect summary.unserved.
    * Invalid problems set neither converged nor iterationLimitReached.
@@ -93,8 +108,8 @@ export type GPUNetworkFlowProps = {
   capacities: GraphDataView<'uint32'>;
   /** Nonnegative integer original-edge costs. Omit for maximum flow. */
   costs?: GraphDataView<'uint32'>;
-  /** Optional shared CSR in original-edge order. The parallel route validates its connectivity
-   * against edges on the GPU, then builds a residual CSR containing both arc directions.
+  /** Optional shared CSR in original-edge order. Both routes validate its connectivity
+   * against edges on the GPU; the parallel route builds a residual CSR with both arc directions.
    * Omit to build the residual CSR directly from the existing edge list. Weights are ignored.
    */
   topology?: GPUNetworkAdjacency;
@@ -132,6 +147,86 @@ export type GPUNetworkFlowProps = {
   output: GPUNetworkFlowOutput;
 };
 
+/** Shared host selection of the flow solver; phase and augmentation budgets depend on it. @internal */
+export function resolveNetworkFlowSolver(
+  props: Pick<GPUNetworkFlowProps, 'nodeCount' | 'solver' | 'mode' | 'maximumCostPhases'> & {
+    topology?: unknown;
+  },
+  edgeCount: number
+): 'reference' | 'parallel' {
+  return props.solver === 'parallel' ||
+    ((props.solver ?? 'auto') === 'auto' &&
+      (props.mode !== undefined ||
+        props.maximumCostPhases !== undefined ||
+        props.topology !== undefined ||
+        props.nodeCount > MAXIMUM_NODE_COUNT ||
+        edgeCount > MAXIMUM_EDGE_COUNT))
+    ? 'parallel'
+    : 'reference';
+}
+
+/** Shared option compatibility for contributors, operation forms and the pure CPU solve. @internal */
+export function validateNetworkFlowOptions(
+  id: string,
+  props: Pick<
+    GPUNetworkFlowProps,
+    | 'nodeCount'
+    | 'solver'
+    | 'mode'
+    | 'maximumCostPhases'
+    | 'maximumRelabels'
+    | 'maximumRelaxationRounds'
+  > & {topology?: unknown},
+  edgeCount: number,
+  hasCosts: boolean
+): 'reference' | 'parallel' {
+  validateRequirement(
+    id,
+    props.solver === undefined || ['auto', 'reference', 'parallel'].includes(props.solver),
+    'solver must be auto, reference or parallel'
+  );
+  const solver = resolveNetworkFlowSolver(props, edgeCount);
+  if (solver === 'reference') validateNetworkFlowReferenceOptions(id, props);
+  validateRequirement(
+    id,
+    props.mode === undefined || ['primal-dual', 'successive-shortest-path'].includes(props.mode),
+    'mode must be primal-dual or successive-shortest-path'
+  );
+  validateRequirement(id, props.mode === undefined || hasCosts, 'mode requires costs');
+  if (solver === 'parallel') {
+    validateRequirement(
+      id,
+      !hasCosts || props.maximumRelabels === undefined,
+      'maximumRelabels requires uncosted parallel flow'
+    );
+    validateRequirement(
+      id,
+      props.maximumCostPhases === undefined ||
+        (hasCosts && props.mode !== 'successive-shortest-path'),
+      'maximumCostPhases requires costed primal-dual mode'
+    );
+  }
+  return solver;
+}
+
+/** Reject parallel-only settings after resolving auto/reference selection. @internal */
+export function validateNetworkFlowReferenceOptions(
+  id: string,
+  props: Pick<
+    GPUNetworkFlowProps,
+    'maximumRelaxationRounds' | 'maximumRelabels' | 'mode' | 'maximumCostPhases'
+  >
+): void {
+  validateRequirement(
+    id,
+    props.maximumRelaxationRounds === undefined &&
+      props.maximumRelabels === undefined &&
+      props.mode === undefined &&
+      props.maximumCostPhases === undefined,
+    'maximumRelaxationRounds, maximumRelabels, mode and maximumCostPhases require solver parallel'
+  );
+}
+
 /**
  * Integral flow with explicit reverse arcs. Computation stays on the graph; no submission/readback.
  * Each committed batch preserves feasibility, including on budget
@@ -162,7 +257,11 @@ export type GPUNetworkFlowProps = {
  * contents set valid=0. Costs and total capacities remain integral; objective arithmetic is exact
  * in exactCost; summary.cost uses the shared uint64-to-f32 conversion (within two f32 spacings).
  * Per-edge flows can differ among equal-cost optima between routes.
- * Compile-time: node/edge counts, topology, solver, optional cost/exact-cost/status views,
+ * Optional path decomposition is a reference pass capped at 128 expanded vertices and 1024
+ * expanded edges for either solver. It emits final-flow paths using FIFO BFS and input-edge-row
+ * ties, with solver completeness propagated and capacity loss reported separately.
+ * Compile-time: node/edge counts, topology, solver, optional cost/exact-cost/status/path views
+ * and path capacity,
  * mode, maximumCostPhases, maximumAugmentations, maximumRelabels and maximumRelaxationRounds.
  * Per-frame: edge, capacity, cost and parameter contents. Every encoding rewrites the outputs.
  */
@@ -172,34 +271,11 @@ export class GPUNetworkFlow implements GPUCommandNodeProducer {
   readonly solver: 'reference' | 'parallel';
   readonly estimatedCommandNodeCount: number;
   constructor(props: GPUNetworkFlowProps) {
+    props = snapshotNetworkFlowProps(props);
     this.props = props;
     this.id = props.id ?? 'network-flow';
     const {id} = this;
-    validateRequirement(
-      id,
-      props.solver === undefined || ['auto', 'reference', 'parallel'].includes(props.solver),
-      'solver must be auto, reference or parallel'
-    );
-    validateRequirement(
-      id,
-      props.mode === undefined || ['primal-dual', 'successive-shortest-path'].includes(props.mode),
-      'mode must be primal-dual or successive-shortest-path'
-    );
-    validateRequirement(
-      id,
-      props.mode === undefined || Boolean(props.costs),
-      'mode requires costs'
-    );
-    this.solver =
-      props.solver === 'parallel' ||
-      ((props.solver ?? 'auto') === 'auto' &&
-        (props.mode !== undefined ||
-          props.maximumCostPhases !== undefined ||
-          props.topology !== undefined ||
-          props.nodeCount > MAXIMUM_NODE_COUNT ||
-          props.edges.length > MAXIMUM_EDGE_COUNT))
-        ? 'parallel'
-        : 'reference';
+    this.solver = validateNetworkFlowOptions(id, props, props.edges.length, Boolean(props.costs));
     validateCapacity(
       id,
       'maximumAugmentations',
@@ -208,22 +284,25 @@ export class GPUNetworkFlow implements GPUCommandNodeProducer {
       MAXIMUM_AUGMENTATIONS
     );
     this.estimatedCommandNodeCount =
-      this.solver === 'parallel'
+      (this.solver === 'parallel'
         ? estimateParallelNetworkFlowNodes(props)
-        : 1 + Number(getNetworkOptimizationStatusViews(props.output.status).length > 0);
+        : 1 +
+          Number(Boolean(props.topology)) +
+          Number(getNetworkOptimizationStatusViews(props.output.status).length > 0)) +
+      (props.output.paths ? 2 : 0);
     if (this.solver === 'parallel') {
       validateParallelNetworkFlow(id, props, this.estimatedCommandNodeCount);
     } else {
       validateCapacity(id, 'nodeCount', props.nodeCount, 2, MAXIMUM_NODE_COUNT);
       validateCapacity(id, 'edges rows', props.edges.length, 0, MAXIMUM_EDGE_COUNT);
-      validateRequirement(
-        id,
-        props.maximumRelaxationRounds === undefined &&
-          props.maximumRelabels === undefined &&
-          props.mode === undefined &&
-          props.maximumCostPhases === undefined,
-        'maximumRelaxationRounds, maximumRelabels, mode and maximumCostPhases require solver parallel'
-      );
+      if (props.topology) {
+        const shape = validateGPUNetworkTopology(id, props.topology);
+        validateRequirement(
+          id,
+          shape.nodeCount === props.nodeCount && shape.edgeCount === props.edges.length,
+          'topology must hold nodeCount vertices and one neighbor per original edge'
+        );
+      }
     }
     validateSinglePackedView(props.edges, ['uint32x2'], this.id);
     for (const view of [
@@ -274,13 +353,15 @@ export class GPUNetworkFlow implements GPUCommandNodeProducer {
         'output.exactCost must hold one row'
       );
     }
+    validateNetworkFlowPaths(id, props.nodeCount, props.edges.length, props.output.paths);
     validateNetworkOptimizationStatus(
       id,
       [
         props.output.flow,
         props.output.cut,
         props.output.summary,
-        ...(props.output.exactCost ? [props.output.exactCost] : [])
+        ...(props.output.exactCost ? [props.output.exactCost] : []),
+        ...getNetworkFlowPathViews(props.output.paths)
       ],
       props.output.status
     );
@@ -336,6 +417,7 @@ export class GPUNetworkFlow implements GPUCommandNodeProducer {
               id,
               operation: 'GPUNetworkFlow',
               variant: props.costs ? 'minimum-cost' : 'maximum-flow',
+              // contract-allow: single-invocation -- reference only: construction caps 128 nodes, 1024 edges and 65536 augmentations; serial axes are vertices, edges and augmenting paths.
               invocationCount: 1,
               workgroupSize: 2,
               bindings: [
@@ -382,7 +464,7 @@ var totalCapacity = 0u;
 for (var edge = 0u; edge < EDGE_COUNT; edge++) {
   let endpoints = vec2<u32>(edges[edgesOffset + 2u * edge], edges[edgesOffset + 2u * edge + 1u]);
   let capacity = capacities[capacitiesOffset + edge];
-  if (any(endpoints >= vec2<u32>(NODE_COUNT)) || capacity > 0x00ffffffu - totalCapacity || edgeCost(edge) < 0 || edgeCost(edge) > 32767) { return; }
+  if (any(endpoints >= vec2<u32>(NODE_COUNT)) || capacity > ${NETWORK_FLOW_REFERENCE_MAXIMUM_TOTAL_CAPACITY}u - totalCapacity || edgeCost(edge) < 0 || edgeCost(edge) > ${NETWORK_FLOW_MAXIMUM_UNIT_COST}) { return; }
   totalCapacity += capacity;
 }
 summary[summaryOffset] = 1u;
@@ -423,7 +505,7 @@ loop {
   exhausted = distances[destination] == 0x3fffffff;
   if (exhausted || value == required) { complete = true; break; }
   if (augmentations == MAXIMUM_AUGMENTATIONS) { break; }
-  var increment = min(0x00ffffffu, required - value);
+  var increment = min(${NETWORK_FLOW_REFERENCE_MAXIMUM_TOTAL_CAPACITY}u, required - value);
   var cursor = destination;
   var hops = 0u;
   loop {
@@ -470,6 +552,52 @@ summary[summaryOffset + 6u] = cutCapacity;
 summary[summaryOffset + 7u] = select(0u, 1u, exhausted && cutCapacity == value);`
             })
           ];
+    if (this.solver === 'reference' && props.topology) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-validate-reference-topology`,
+          operation: 'GPUNetworkFlow',
+          variant: 'validate-reference-topology',
+          // contract-allow: single-invocation -- reference is capped at 128 vertices and 1024 edges.
+          invocationCount: 1,
+          workgroupSize: 2,
+          bindings: [
+            {name: 'edges', view: props.edges, type: 'u32', access: 'read'},
+            {name: 'offsets', view: props.topology.offsets, type: 'u32', access: 'read'},
+            {name: 'neighbors', view: props.topology.neighbors, type: 'u32', access: 'read'},
+            {name: 'flow', view: props.output.flow, type: 'u32', access: 'read_write'},
+            {name: 'cut', view: props.output.cut, type: 'u32', access: 'read_write'},
+            {name: 'summary', view: props.output.summary, type: 'u32', access: 'read_write'},
+            ...(props.output.exactCost
+              ? [
+                  {
+                    name: 'exactCost',
+                    view: props.output.exactCost,
+                    type: 'u32',
+                    access: 'read_write'
+                  } as const
+                ]
+              : [])
+          ],
+          declarations: `const NODE_COUNT: u32 = ${props.nodeCount}u; const EDGE_COUNT: u32 = ${props.edges.length}u;`,
+          body: `var valid = offsets[offsetsOffset] == 0u && offsets[offsetsOffset + NODE_COUNT] == EDGE_COUNT;
+for (var vertex = 0u; vertex < NODE_COUNT; vertex++) {
+  valid = valid && offsets[offsetsOffset + vertex] <= offsets[offsetsOffset + vertex + 1u] && offsets[offsetsOffset + vertex + 1u] <= EDGE_COUNT;
+}
+for (var edge = 0u; edge < EDGE_COUNT; edge++) {
+  let source = edges[edgesOffset + 2u * edge];
+  let destination = edges[edgesOffset + 2u * edge + 1u];
+  if (source >= NODE_COUNT || destination >= NODE_COUNT) { valid = false; }
+  else { valid = valid && edge >= offsets[offsetsOffset + source] && edge < offsets[offsetsOffset + source + 1u] && neighbors[neighborsOffset + edge] == destination; }
+}
+if (valid) { return; }
+for (var edge = 0u; edge < EDGE_COUNT; edge++) { flow[flowOffset + edge] = 0u; }
+for (var vertex = 0u; vertex < NODE_COUNT; vertex++) { cut[cutOffset + vertex] = 0u; }
+for (var word = 0u; word < 8u; word++) { summary[summaryOffset + word] = 0u; }
+${props.output.exactCost ? 'exactCost[exactCostOffset] = 0u; exactCost[exactCostOffset + 1u] = 0u;' : ''}`
+        })
+      );
+    }
     nodes.push(
       ...createNetworkOptimizationStatusNodes(
         graph,
@@ -485,8 +613,78 @@ summary[summaryOffset + 7u] = select(0u, 1u, exhausted && cutCapacity == value);
         }
       )
     );
+    if (props.output.paths) {
+      nodes.push(
+        ...createNetworkFlowPathNodes(
+          graph,
+          id,
+          props.nodeCount,
+          props.edges,
+          props.output.flow,
+          props.parameters,
+          props.output.summary,
+          props.output.paths
+        )
+      );
+    }
     return nodes;
   }
+}
+
+function snapshotNetworkFlowProps(props: GPUNetworkFlowProps): GPUNetworkFlowProps {
+  const snapshot = snapshotConstructionFields(props, [
+    'id',
+    'nodeCount',
+    'edges',
+    'capacities',
+    'costs',
+    'parameters',
+    'topology',
+    'solver',
+    'mode',
+    'maximumCostPhases',
+    'maximumAugmentations',
+    'maximumRelaxationRounds',
+    'maximumRelabels',
+    'output'
+  ]);
+  const output = snapshotConstructionFields(snapshot.output, [
+    'flow',
+    'cut',
+    'summary',
+    'exactCost',
+    'paths',
+    'status'
+  ]);
+  return Object.freeze({
+    ...snapshot,
+    topology:
+      snapshot.topology &&
+      snapshotConstructionFields(snapshot.topology, [
+        'offsets',
+        'neighbors',
+        'weights',
+        'nodePositions'
+      ]),
+    output: Object.freeze({
+      ...output,
+      paths: snapshotNetworkFlowPaths(output.paths, snapshot.id ?? 'network-flow'),
+      status:
+        output.status &&
+        snapshotConstructionFields(
+          output.status,
+          Array.from(
+            new Set([
+              ...Object.keys(output.status),
+              'invalidCount',
+              'iterationCount',
+              'converged',
+              'iterationLimitReached'
+            ])
+          ) as (keyof NonNullable<GPUNetworkFlowProps['output']['status']>)[]
+        )
+    })
+  });
 }
 
 function getFlowOutputViews(output: GPUNetworkFlowProps['output']): GraphDataView[] {
@@ -495,6 +693,7 @@ function getFlowOutputViews(output: GPUNetworkFlowProps['output']): GraphDataVie
     output.cut,
     output.summary,
     ...(output.exactCost ? [output.exactCost] : []),
+    ...getNetworkFlowPathViews(output.paths),
     ...getNetworkOptimizationStatusViews(output.status)
   ];
 }

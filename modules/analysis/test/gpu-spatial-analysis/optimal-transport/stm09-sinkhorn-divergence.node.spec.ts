@@ -61,6 +61,24 @@ function createContributor(
   });
 }
 
+it('reduces per-field mass maxima before the normalization sums', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const contributor = createContributor(graph, 2, 1, {id: 'scaled-masses', maximumIterations: 1});
+    const nodes = contributor.getCommandNodes(graph);
+    expect(nodes.slice(0, 4).map(node => node.id)).toEqual([
+      'scaled-masses-mass-maxima-tiles',
+      'scaled-masses-mass-maxima-merge',
+      'scaled-masses-masses-tiles',
+      'scaled-masses-masses-merge'
+    ]);
+    expect(contributor.estimatedCommandNodeCount).toBe(10 + 7);
+  } finally {
+    device.destroy();
+  }
+});
+
 it('GPUSinkhornDivergence estimates its command node count as an upper bound, exactly per iteration', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'sinkhorn-nodes'});
   for (const [width, height, maximumIterations, outputs] of [

@@ -148,8 +148,9 @@ it('stays inside the WGSL private memory limit at the largest k', () => {
       }
     })
   ).getCommandNodes(graph);
-  for (const [kernelId, source] of getParsedKernelSources(nodes)) {
-    expect(getPrivateMemoryBytes(source), kernelId).toBeLessThanOrEqual(8192);
+  const recordedKernelSources1 = getParsedKernelSources(nodes);
+  for (const {id: kernelId, source: source, constants} of recordedKernelSources1.configurations) {
+    expect(getPrivateMemoryBytes(source, constants), kernelId).toBeLessThanOrEqual(8192);
   }
   expect(getGPUCommandNodePipelineKeys(nodes).size).toBeGreaterThan(0);
 });

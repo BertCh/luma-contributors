@@ -1,6 +1,7 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
 
 import {
   createTransientView,
@@ -26,6 +27,7 @@ import {
 } from '../../analysis-core/ring-assembly/index';
 import {GPULineNoding, validateLineNodingBounds} from './gpu-line-noding';
 import {GPUSnapRoundedNoding} from './gpu-snap-rounded-noding';
+import {validatePolygonizeStatus} from './topology-status';
 import {
   GPU_POLYGONIZE_EDGE_CLASS,
   GPU_TOPOLOGY_NONE,
@@ -89,9 +91,10 @@ export type GPUPolygonizeProps = {
  *
  * Every bounded face is emitted (shapely `polygonize` semantics), including a face that fills the
  * hole of a holed ring; no fill rule is applied. Use {@link GPUMakeValid} to keep faces by source
- * parity. Status: `count` is the number of polygons written, `requiredCount` the unclamped
- * ring-assembly requirement (the polygon ring capacity needed), `overflow` any capacity loss and
- * `candidateOverflow` only an incomplete noding candidate list.
+ * parity. Status: `count` is the number of features written, `requiredRingCount` the unclamped
+ * ring-assembly requirement (the polygon ring capacity needed), `overflow` final ring/vertex
+ * capacity loss and `candidateOverflow` any upstream noding loss. Each supplied `uncertainCount`
+ * (top-level, noded or directed) receives the same count on every submission.
  */
 export class GPUPolygonize implements GPUCommandNodeProducer {
   readonly id: string;
@@ -102,6 +105,7 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
   constructor(props: GPUPolygonizeProps) {
     this.id = props.id ?? 'polygonize';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    props = {...props, lines: snapshotSinglePartGeometryPort(this.id, 'lines', props.lines)};
     this.props = props;
     const {id} = this;
     const {output, precision} = props;
@@ -168,9 +172,10 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
     if (output.polygons.kind !== 'polygons') {
       throw new Error(`${id} output.polygons.kind must be polygons`);
     }
-    if (!output.status.requiredCount || !output.status.candidateOverflow) {
-      throw new Error(`${id} output.status requires requiredCount and candidateOverflow`);
+    if (!output.status.requiredRingCount || !output.status.candidateOverflow) {
+      throw new Error(`${id} output.status requires requiredRingCount and candidateOverflow`);
     }
+    validatePolygonizeStatus(id, output.status);
   }
 
   getCommandNodes<Parameters>(
@@ -214,6 +219,18 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
       props.intersectionCapacity
     );
     const nodes: GPUCommandNode<Parameters>[] = [];
+    const uncertaintyOutputs = [
+      ...new Set(
+        [
+          output.status.uncertainCount,
+          output.nodedSegments.status.uncertainCount,
+          output.directedEdges.status.uncertainCount
+        ].filter((view): view is GraphDataView<'uint32'> => Boolean(view))
+      )
+    ];
+    const uncertainCount = uncertaintyOutputs.length
+      ? createTransientView(graph, `${id}-uncertain-count`, 'uint32', 1)
+      : undefined;
     const nodingProps = {
       id: `${id}-noding`,
       spatialContext: this.spatialContext,
@@ -221,7 +238,7 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
       intersectionCapacity: props.intersectionCapacity,
       output: {
         ...output.nodedSegments,
-        status: {...output.nodedSegments.status, uncertainCount: output.status.uncertainCount}
+        status: {...output.nodedSegments.status, uncertainCount}
       },
       spatialSort: props.spatialSort,
       leafCapacity: props.leafCapacity
@@ -381,7 +398,7 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
         invocationCount: 1,
         body: `directedCount[directedCountOffset] = 2u * count[countOffset];
   directedRequired[directedRequiredOffset] = 2u * requiredCount[requiredCountOffset];
-  directedOverflow[directedOverflowOffset] = candidateOverflow[candidateOverflowOffset];
+  directedOverflow[directedOverflowOffset] = select(0u, 1u, 2u * requiredCount[requiredCountOffset] > ${directedCapacity}u);
   directedCandidateOverflow[directedCandidateOverflowOffset] = candidateOverflow[candidateOverflowOffset];`
       })
     );
@@ -560,12 +577,6 @@ const FLAG_DANGLING: u32 = ${GPU_SEGMENT_RING_ASSEMBLY_FLAG_DANGLING}u;`,
           {name: 'ringOverflow', view: ringOverflow, type: 'u32', access: 'read'},
           {name: 'ringRequiredCount', view: ringRequiredCount, type: 'u32', access: 'read'},
           {
-            name: 'nodingOverflow',
-            view: output.nodedSegments.status.overflow,
-            type: 'u32',
-            access: 'read'
-          },
-          {
             name: 'featureOffsets',
             view: output.polygons.featureOffsets,
             type: 'u32',
@@ -573,8 +584,8 @@ const FLAG_DANGLING: u32 = ${GPU_SEGMENT_RING_ASSEMBLY_FLAG_DANGLING}u;`,
           },
           {name: 'count', view: output.status.count, type: 'u32', access: 'read_write'},
           {
-            name: 'requiredCount',
-            view: output.status.requiredCount,
+            name: 'requiredRingCount',
+            view: output.status.requiredRingCount,
             type: 'u32',
             access: 'read_write'
           },
@@ -582,17 +593,23 @@ const FLAG_DANGLING: u32 = ${GPU_SEGMENT_RING_ASSEMBLY_FLAG_DANGLING}u;`,
         ],
         invocationCount: 1,
         declarations: `const RING_CAPACITY: u32 = ${ringCapacity}u;`,
-        // requiredCount is the unclamped ring-assembly requirement (every face ring, including
+        // requiredRingCount is the unclamped ring-assembly requirement (every face ring, including
         // holes), the number to size the polygon ring capacity with.
         body: `count[countOffset] = featureOffsets[featureOffsetsOffset + RING_CAPACITY];
-  requiredCount[requiredCountOffset] = ringRequiredCount[ringRequiredCountOffset];
-  overflow[overflowOffset] = ringOverflow[ringOverflowOffset] | nodingOverflow[nodingOverflowOffset];`
+  requiredRingCount[requiredRingCountOffset] = ringRequiredCount[ringRequiredCountOffset];
+  overflow[overflowOffset] = ringOverflow[ringOverflowOffset];`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-publish-candidate-overflow`,
         operation: OPERATION,
         variant: 'publish-candidate-overflow',
         bindings: [
+          {
+            name: 'nodingOverflow',
+            view: output.nodedSegments.status.overflow,
+            type: 'u32',
+            access: 'read'
+          },
           {
             name: 'nodingCandidateOverflow',
             view: output.nodedSegments.status.candidateOverflow,
@@ -607,11 +624,25 @@ const FLAG_DANGLING: u32 = ${GPU_SEGMENT_RING_ASSEMBLY_FLAG_DANGLING}u;`,
           }
         ],
         invocationCount: 1,
-        // The noding flag only: it says the candidate substrate was incomplete, which is distinct
-        // from ring capacity overflow.
-        body: 'candidateOverflow[candidateOverflowOffset] = nodingCandidateOverflow[nodingCandidateOverflowOffset];'
+        // Noded capacity loss is intermediate loss for the polygon consumer.
+        body: 'candidateOverflow[candidateOverflowOffset] = nodingCandidateOverflow[nodingCandidateOverflowOffset] | nodingOverflow[nodingOverflowOffset];'
       })
     );
+    uncertaintyOutputs.forEach((view, index) => {
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-publish-uncertain-${index}`,
+          operation: OPERATION,
+          variant: 'publish-uncertain',
+          invocationCount: 1,
+          bindings: [
+            {name: 'uncertainCount', view: uncertainCount!, type: 'u32', access: 'read'},
+            {name: 'destination', view, type: 'u32', access: 'read_write'}
+          ],
+          body: 'destination[destinationOffset] = uncertainCount[uncertainCountOffset];'
+        })
+      );
+    });
     return nodes;
   }
 }

@@ -11,7 +11,7 @@ import {
   type GPUNetworkCostWeightsProps
 } from '../../../src/gpu-network/network-cost-weights/index';
 import type {GPUSpatialWeights} from '../../../src/gpu-spatial-analysis/spatial-weights/spatial-weights';
-import type {GPUNetworkTopology} from '../../../src/analysis-core/network-topology';
+import type {GPUNetworkTopology} from '../../../src/analysis-core/contracts/network-topology';
 import {
   createNullWebGPUDevice,
   getParsedKernelSources,
@@ -169,9 +169,11 @@ it('GPUNetworkCostWeights schedules count, scan, fill and finalize kernels withi
     const source = sources.get(id);
     expect(source, id).toBeDefined();
     expect(getStorageBindingCount(source!)).toBeLessThanOrEqual(8);
-    expect(getWorkgroupMemoryBytes(source!)).toBeLessThanOrEqual(
-      CORE_WORKGROUP_STORAGE_LIMIT_BYTES
-    );
+    for (const kernel of sources.getConfigurations(id)) {
+      expect(getWorkgroupMemoryBytes(kernel.source, kernel.constants)).toBeLessThanOrEqual(
+        CORE_WORKGROUP_STORAGE_LIMIT_BYTES
+      );
+    }
   }
   // The fill kernel reads the column map and writes distances; the finalize writes both status words.
   expect(sources.get('cost-weights-fill')).toContain('columns[columnsOffset + neighbor]');

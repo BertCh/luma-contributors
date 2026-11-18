@@ -8,6 +8,14 @@ import type {
   GPUCommandNodeProducer,
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {createTransientView} from '@luma.gl/graph/gpu-core';
+import {snapshotWeightsAlgebraProps, snapshotWeightsPort} from './weights-construction-snapshot';
+import {validateSpatialStatisticsWritableDispatches} from './spatial-statistics-writable-dispatches';
+import {
+  createWeightsLossNodes,
+  getWeightsLossSources,
+  validateWeightsLossSources
+} from './spatial-weights-loss';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -92,10 +100,11 @@ export type GPUChunkedSpatialWeightsAlgebraProps =
 export class GPUChunkedSpatialWeightsAlgebra implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUChunkedSpatialWeightsAlgebraProps;
-  /** The output chunks with `information` attached. */
+  /** Output chunks with metadata and aggregate matrix loss; per-chunk flags remain in props.output. */
   readonly outputWeights: GPUChunkedSpatialWeights;
 
   constructor(props: GPUChunkedSpatialWeightsAlgebraProps) {
+    props = snapshotWeightsAlgebraProps(props);
     const id = props.id ?? 'chunked-spatial-weights-algebra';
     this.id = id;
     this.props = props;
@@ -142,11 +151,27 @@ export class GPUChunkedSpatialWeightsAlgebra implements GPUCommandNodeProducer {
     }
     const inputViews = [
       ...operands.flatMap(getGPUSpatialWeightsOrChunksViews),
+      ...validateWeightsLossSources(id, operands),
       props.operation === 'subgraph' ? props.mask : undefined,
       props.operation === 'selfWeight' && typeof props.selfWeight !== 'number'
         ? props.selfWeight
         : undefined
     ];
+    validateSpatialStatisticsWritableDispatches(
+      id,
+      Object.fromEntries(
+        props.output.chunks.flatMap((chunk, index) => [
+          ...Object.entries(chunk.weights)
+            .filter(([, value]) => value && typeof value === 'object' && 'buffer' in value)
+            .map(([name, value]) => [`chunk${index}.${name}`, value]),
+          ...Object.entries(chunk.weights.status).map(([name, value]) => [
+            `chunk${index}.status.${name}`,
+            value
+          ])
+        ])
+      ),
+      []
+    );
     validateGraphOutputsDisjointFromInputs(
       id,
       props.output.chunks.flatMap(chunk => [
@@ -160,16 +185,31 @@ export class GPUChunkedSpatialWeightsAlgebra implements GPUCommandNodeProducer {
       rowCount: rows,
       spatialContext: operands[0].spatialContext,
       information,
+      status: {
+        overflow: createTransientView(
+          props.output.chunks[0].weights.offsets.buffer.graph as GPUCommandGraph,
+          `${id}-${props.output.chunks[0].weights.offsets.buffer.id}-${props.output.chunks[0].weights.offsets.byteOffset}-overflow`,
+          'uint32',
+          1
+        ),
+        candidateOverflow: createTransientView(
+          props.output.chunks[0].weights.offsets.buffer.graph as GPUCommandGraph,
+          `${id}-${props.output.chunks[0].weights.offsets.buffer.id}-${props.output.chunks[0].weights.offsets.byteOffset}-candidate-overflow`,
+          'uint32',
+          1
+        )
+      },
       chunks: props.output.chunks.map(chunk => ({
         rowStart: chunk.rowStart,
         rowCount: chunk.rowCount,
         weights: {
           ...chunk.weights,
           information: {...information, rowCount: chunk.rowCount},
-          status: chunk.weights.status
+          status: {...chunk.weights.status, overflow: undefined, candidateOverflow: undefined}
         }
       }))
     };
+    this.outputWeights = snapshotWeightsPort(this.outputWeights);
   }
 
   private getOperands(): GPUChunkedSpatialWeights[] {
@@ -228,6 +268,8 @@ export class GPUChunkedSpatialWeightsAlgebra implements GPUCommandNodeProducer {
     const {id, props} = this;
     validateGraphViewsBelongToGraph(id, graph, [
       ...this.getOperands().flatMap(getGPUSpatialWeightsOrChunksViews),
+      ...validateWeightsLossSources(id, this.getOperands()),
+      ...Object.values(this.outputWeights.status ?? {}),
       ...props.output.chunks.flatMap(chunk => [
         ...getGPUSpatialWeightsViews(chunk.weights),
         ...getGPUSpatialWeightsStatusViews(chunk.weights)
@@ -237,7 +279,7 @@ export class GPUChunkedSpatialWeightsAlgebra implements GPUCommandNodeProducer {
         ? props.selfWeight
         : undefined
     ]);
-    return props.output.chunks.flatMap((outputChunk, chunkIndex) => {
+    const nodes = props.output.chunks.flatMap((outputChunk, chunkIndex) => {
       const chunkId = `${id}-chunk${chunkIndex}`;
       const chunk = {rowStart: outputChunk.rowStart, totalRows: this.outputWeights.rowCount};
       const output = outputChunk.weights;
@@ -266,6 +308,34 @@ export class GPUChunkedSpatialWeightsAlgebra implements GPUCommandNodeProducer {
         output
       );
     });
+    const clear = props.output.chunks.flatMap((chunk, index) =>
+      chunk.weights.status.candidateOverflow
+        ? createWeightsLossNodes(
+            graph,
+            `${id}-chunk${index}-candidate-clear`,
+            [],
+            chunk.weights.status.candidateOverflow
+          )
+        : []
+    );
+    const inherited = getWeightsLossSources(this.getOperands());
+    const sources = getWeightsLossSources(props.output.chunks.map(chunk => chunk.weights));
+    return [
+      ...clear,
+      ...nodes,
+      ...createWeightsLossNodes(
+        graph,
+        `${id}-aggregate-overflow`,
+        sources.overflow,
+        this.outputWeights.status!.overflow!
+      ),
+      ...createWeightsLossNodes(
+        graph,
+        `${id}-aggregate-candidate`,
+        [...sources.candidateOverflow, ...inherited.overflow, ...inherited.candidateOverflow],
+        this.outputWeights.status!.candidateOverflow!
+      )
+    ];
   }
 
   private getBinaryNodes<Parameters>(

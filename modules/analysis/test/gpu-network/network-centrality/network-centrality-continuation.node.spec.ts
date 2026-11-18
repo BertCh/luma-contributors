@@ -5,11 +5,16 @@
 import {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph, createTransientView, type GPUCommandNode} from '@luma.gl/graph/gpu-core';
 import {expect, it, vi} from 'vitest';
-import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
+import {
+  GPUParameterBuffer,
+  importGraphBuffer
+} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   createCentralityContinuationGraphs,
+  createNetworkCentralityContinuation,
   runCentralityContinuationPhases
 } from '../../../src/gpu-network/network-centrality/network-centrality-continuation';
+import {planNetworkCentralitySchedule} from '../../../src/gpu-network/network-centrality/gpu-network-centrality-schedule-step';
 import {
   createNullWebGPUDevice,
   createInputBuffer,
@@ -85,6 +90,37 @@ function build(maximumIterations: number, roundsPerStep = 7) {
     }
   };
 }
+
+it('forwards planner reset words to continuation publication without replacing earlier batches', async () => {
+  const configuration = build(4, 1);
+  // Exercise the real host runner and parameter writes; shader execution is unavailable here.
+  const compile = vi.spyOn(GPUCommandGraph.prototype, 'compile').mockReturnValue({
+    encode() {},
+    destroy() {}
+  } as unknown as ReturnType<GPUCommandGraph['compile']>);
+  const writes = vi.spyOn(GPUParameterBuffer.prototype, 'write');
+  const runner = createNetworkCentralityContinuation(configuration.graph, configuration.props);
+  try {
+    for (const step of planNetworkCentralitySchedule({pivotCount: 3, laneCount: 1})) {
+      await runner.runBatch(step);
+    }
+    await runner.runBatch({reset: false});
+    await runner.runBatch({reset: true});
+    await runner.runBatch();
+    const step = {reset: 1 as 0 | 1};
+    const pending = runner.runBatch(step);
+    step.reset = 0;
+    await pending;
+    expect(
+      writes.mock.calls.filter(([, offset]) => offset === 1).map(([values]) => values[3])
+    ).toEqual([1, 0, 0, 0, 1, 1, 1]);
+  } finally {
+    runner.destroy();
+    compile.mockRestore();
+    writes.mockRestore();
+    configuration.destroy();
+  }
+});
 
 for (const separateHandles of [false, true]) {
   it(`encodes packed continuation fields with ${separateHandles ? 'separate' : 'shared'} caller import handles`, () => {

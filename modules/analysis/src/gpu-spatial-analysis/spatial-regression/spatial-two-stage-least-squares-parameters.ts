@@ -106,5 +106,5 @@ export const GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_STATUS_OK = 0;
 export const GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_STATUS_SINGULAR = 1;
 /** `status` value: too few rows, `n <= predictorCount + 2`. */
 export const GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_STATUS_TOO_FEW_ROWS = 2;
-/** `status` value: a non-finite input or moment. */
+/** `status` value: a non-finite input or moment, or results suppressed for incomplete weights. */
 export const GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_STATUS_NON_FINITE = 3;

@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateSpatialStatisticsBindings} from './spatial-statistics-bindings';
+import {
+  snapshotContiguityOperationProps,
+  snapshotWeightsPort
+} from './weights-construction-snapshot';
 import {createSaturatedScanTotalNodes} from '../../analysis-core/kernels/scan-total';
 import {
   createTransientView,
@@ -125,7 +129,7 @@ export type GPUContiguityWeightsProps = {
   /**
    * Caller-owned output CSR: `offsets` has `featureCount + 1` entries; the slot capacity is
    * `neighbors.length`. Binary weights (1) and ascending neighbor IDs; `distances` is not written.
-   * `status.overflow` (required) is 1 when the pairs or the neighbors did not fit their capacity.
+   * `status.overflow` (required) is 1 only when final neighbors did not fit their capacity.
    * `status.requiredCount` (optional) is the unclamped distinct neighbor-slot total: exact unless
    * the intermediate pair list overflowed, which `status.candidateOverflow` (optional) reports;
    * it is then a lower bound.
@@ -174,8 +178,8 @@ export type GPUContiguityWeightsCapacityPlan = GPUContributorCapacityPlan & {
  *   MultiPolygon geometries, so points -> counts -> W -> Moran chain on one feature table.
  * - Capacity: slots past `output.neighbors.length` are dropped, offsets are clamped to the
  *   capacity so rows stay consistent, and `output.status.overflow` is set. Exceeding
- *   `pairCapacity` also sets `overflow` (and `candidateOverflow`) and drops pairs, so some rows
- *   can miss neighbors.
+ *   `pairCapacity` sets `candidateOverflow` and drops pairs, so some rows can miss neighbors.
+ *   outputWeights always carries both loss signals, with graph-owned candidate status if omitted.
  *
  * Algorithm: vertices get a 64-bit key `(q_x, q_y)` and are sorted with two stable radix sorts, so
  * the grouping is exact (no hash collisions). Queen groups the vertices by key; rook assigns each
@@ -207,6 +211,7 @@ export class GPUContiguityWeights implements GPUCommandNodeProducer {
   readonly outputWeights: GPUSpatialWeights;
 
   constructor(props: GPUContiguityWeightsProps) {
+    props = snapshotContiguityOperationProps(props);
     const id = props.id ?? 'contiguity-weights';
     this.id = id;
     this.props = props;
@@ -275,6 +280,21 @@ export class GPUContiguityWeights implements GPUCommandNodeProducer {
       ],
       [polygons.positions, polygons.ringOffsets, polygons.polygonOffsets, polygons.featureOffsets]
     );
+    this.outputWeights = {
+      ...this.outputWeights,
+      status: {
+        ...props.output.status,
+        candidateOverflow:
+          props.output.status.candidateOverflow ??
+          createTransientView(
+            props.output.offsets.buffer.graph as GPUCommandGraph,
+            `${id}-${props.output.offsets.buffer.id}-${props.output.offsets.byteOffset}-candidate-overflow`,
+            'uint32',
+            1
+          )
+      }
+    };
+    this.outputWeights = snapshotWeightsPort(this.outputWeights);
   }
 
   /** Number of features (output rows). */
@@ -349,7 +369,8 @@ export class GPUContiguityWeights implements GPUCommandNodeProducer {
     const {ringOffsets, polygonOffsets, featureOffsets} = props.polygons;
     // The constructor validated `positions` as one packed float32x2 view.
     const positions = props.polygons.positions as GraphDataView<'float32x2'>;
-    const {overflow, requiredCount, candidateOverflow} = output.status;
+    const {overflow, requiredCount} = output.status;
+    const candidateOverflow = this.outputWeights.status?.candidateOverflow;
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       ringOffsets,
@@ -758,7 +779,7 @@ const PAIR_CAPACITY: u32 = ${pairCapacity}u;
 const VERTEX_COUNT: u32 = ${vertexCount}u;`,
         body: `let total = uniqueRank[uniqueRankOffset + PAIR_CAPACITY - 1u] + isUnique[isUniqueOffset + PAIR_CAPACITY - 1u];
   let pairTotal = scanTotal[scanTotalOffset];
-  overflow[overflowOffset] = select(0u, 1u, total > CAPACITY || pairTotal > PAIR_CAPACITY);
+  overflow[overflowOffset] = select(0u, 1u, total > CAPACITY);
   ${requiredCount ? 'requiredCount[requiredCountOffset] = total;' : ''}
   ${candidateOverflow ? 'candidateOverflow[candidateOverflowOffset] = select(0u, 1u, pairTotal > PAIR_CAPACITY);' : ''}`
       }),

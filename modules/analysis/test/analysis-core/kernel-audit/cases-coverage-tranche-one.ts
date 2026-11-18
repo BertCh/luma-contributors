@@ -243,11 +243,13 @@ for (const maximum of [false, true]) {
           scale: 0.0001,
           offset: 0.02
         };
-        new GPURasterNDWI(
-          method === 'gao'
-            ? {...common, method, shortwaveInfrared: other}
-            : {...common, method, green: other}
-        ).addToGraph(context.graph);
+        context.graph.add(
+          new GPURasterNDWI(
+            method === 'gao'
+              ? {...common, method, shortwaveInfrared: other}
+              : {...common, method, green: other}
+          )
+        );
       }
     );
   }
@@ -267,21 +269,25 @@ for (const maximum of [false, true]) {
           clamp: [-1, 1] as const
         };
         if (element === 'GPURasterNBR')
-          new GPURasterNBR({...common, shortwaveInfrared2: signedBand(context, count)}).addToGraph(
-            context.graph
+          context.graph.add(
+            new GPURasterNBR({...common, shortwaveInfrared2: signedBand(context, count)})
           );
         if (element === 'GPURasterEVI')
-          new GPURasterEVI({
-            ...common,
-            red: signedBand(context, count),
-            blue: signedBand(context, count)
-          }).addToGraph(context.graph);
+          context.graph.add(
+            new GPURasterEVI({
+              ...common,
+              red: signedBand(context, count),
+              blue: signedBand(context, count)
+            })
+          );
         if (element === 'GPURasterSAVI')
-          new GPURasterSAVI({
-            ...common,
-            red: signedBand(context, count),
-            soilAdjustment: 1
-          }).addToGraph(context.graph);
+          context.graph.add(
+            new GPURasterSAVI({
+              ...common,
+              red: signedBand(context, count),
+              soilAdjustment: 1
+            })
+          );
       }
     );
   }

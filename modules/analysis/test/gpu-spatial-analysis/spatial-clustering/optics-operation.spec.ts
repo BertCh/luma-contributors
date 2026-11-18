@@ -12,6 +12,75 @@ import {
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 
+for (const extractionMethod of ['dbscan', 'xi'] as const) {
+  for (const maximumIterations of [1, 4]) {
+    it(`X7 GPU and CPU OPTICS ${extractionMethod} preserve the ${maximumIterations}-visit budget`, async () => {
+      const device = await getWebGPUTestDevice();
+      requireTestDevice(device);
+      const complete = maximumIterations === 4;
+      const props: OPTICSOperationProps = {
+        positions: 'positions',
+        rowCount: 4,
+        minimumSamples: 2,
+        maximumDistance: 2,
+        extractionDistance: 1.5,
+        extractionMethod,
+        maximumIterations,
+        output: {
+          ordering: 'ordering',
+          coreDistances: 'coreDistances',
+          reachability: 'reachability',
+          predecessors: 'predecessors',
+          labels: 'labels',
+          status: 'status',
+          ...(extractionMethod === 'xi'
+            ? {clusterIntervals: 'clusterIntervals', clusterSummary: 'clusterSummary'}
+            : {}),
+          ports: {
+            status: {
+              iterationCount: 'iterationCount',
+              converged: 'converged',
+              iterationLimitReached: 'iterationLimitReached'
+            }
+          }
+        }
+      };
+      const outputs = [
+        'ordering',
+        'labels',
+        'status',
+        'iterationCount',
+        'converged',
+        'iterationLimitReached',
+        ...(extractionMethod === 'xi' ? ['clusterIntervals', 'clusterSummary'] : [])
+      ];
+      for (const Operation of [GPUOPTICSOperation, CPUOPTICSOperation]) {
+        const result = await runOperationGraph(device, {
+          inputs: {
+            positions: {format: 'float32x2', values: Float32Array.of(0, 0, 1, 0, 4, 0, 5, 0)}
+          },
+          operations: [new Operation(props)],
+          outputs
+        });
+        expect(Array.from(result['ordering'])).toEqual(
+          complete ? [0, 1, 2, 3] : [0, 0xffffffff, 0xffffffff, 0xffffffff]
+        );
+        expect(Array.from(result['labels'])).toEqual(
+          complete ? [0, 0, 1, 1] : [0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff]
+        );
+        expect(Array.from(result['status'])).toEqual([maximumIterations, Number(complete), 0]);
+        expect(Array.from(result['iterationCount'])).toEqual([maximumIterations]);
+        expect(Array.from(result['converged'])).toEqual([Number(complete)]);
+        expect(Array.from(result['iterationLimitReached'])).toEqual([Number(!complete)]);
+        if (!complete && extractionMethod === 'xi') {
+          expect(Array.from(result['clusterSummary'])).toEqual([0, 0]);
+          expect(Array.from(result['clusterIntervals'])).toEqual(new Array(8).fill(0xffffffff));
+        }
+      }
+    });
+  }
+}
+
 for (const {neighborIndex, orderingMethod} of [
   {neighborIndex: 'brute-force', orderingMethod: 'sequential'},
   {neighborIndex: 'grid', orderingMethod: 'sequential'},

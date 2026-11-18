@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createClassificationKernelNode as createWGSLKernelNode} from './classification-kernel-node';
+import {validateClassBreaksNaturalOptions} from './class-breaks-input';
 import {Buffer} from '@luma.gl/core';
 import {
   createTransientView,
@@ -296,21 +297,7 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
     }
     validateClassificationRows(id, 'values', props.values, ['float32', 'uint32', 'sint32']);
     const rowCount = props.values.length;
-    if (
-      props.naturalBreaksMode !== undefined &&
-      !['approximate', 'exact', 'monotone'].includes(props.naturalBreaksMode)
-    ) {
-      throw new Error(`${id} unknown naturalBreaksMode`);
-    }
-    if (
-      props.naturalBreaksExactStorage !== undefined &&
-      !['auto', 'materialized', 'recompute'].includes(props.naturalBreaksExactStorage)
-    ) {
-      throw new Error(`${id} unknown naturalBreaksExactStorage`);
-    }
-    if (props.naturalBreaksExactStorage !== undefined && props.naturalBreaksMode !== 'exact') {
-      throw new Error(`${id} naturalBreaksExactStorage requires exact mode`);
-    }
+    validateClassBreaksNaturalOptions(id, props);
     if (props.naturalBreaksMode === 'exact') {
       validateCapacity(
         id,

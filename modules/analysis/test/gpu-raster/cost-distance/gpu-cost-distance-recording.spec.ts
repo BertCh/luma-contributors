@@ -6,6 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {
   GPUCostDistance,
   getGPUCostDistanceParameterValues
@@ -60,7 +61,7 @@ function createFixture(device: Device, recording: boolean) {
 
 it('cost recording and settledAt preserve cost bits and convergence on a partial-tile raster', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const width = 40;
   const height = 37;
   const cellCount = width * height;
@@ -136,7 +137,7 @@ it('cost recording and settledAt preserve cost bits and convergence on a partial
 
 it('terrain D8 fill, flats and accumulation keep the same fixpoint and status with recording', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const width = 9;
   const height = 9;
   const cellCount = width * height;

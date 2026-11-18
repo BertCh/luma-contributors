@@ -51,9 +51,10 @@ it('builds global-memory CSR routing at 100k edges and bounds the real command c
     const nodes = contributor.getCommandNodes(graph);
     expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
     expect(nodes.some(node => node.workload?.operation === 'GPUNetworkReachability')).toBe(true);
-    for (const [name, source] of getParsedKernelSources(nodes)) {
+    const sources = getParsedKernelSources(nodes);
+    for (const {id: name, source: source, constants} of sources.configurations) {
       expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
-      expect(getPrivateMemoryBytes(source), name).toBeLessThanOrEqual(8192);
+      expect(getPrivateMemoryBytes(source, constants), name).toBeLessThanOrEqual(8192);
     }
   }
 });

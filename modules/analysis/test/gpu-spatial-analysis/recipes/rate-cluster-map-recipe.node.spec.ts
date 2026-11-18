@@ -20,8 +20,60 @@ import {
 import {GPUEmpiricalBayesRates} from '../../../src/gpu-spatial-analysis/rate-smoothing/index';
 import {GPUParameterBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {computeContiguityWeightsOnCPU} from '../../../src/gpu-spatial-analysis/spatial-weights/cpu-contiguity-weights-operation';
+import {flattenPolygons, type OraclePolygons} from '../spatial-weights/spatial-weights-oracle';
 
 const ROWS = 4;
+
+test('F13 pair-only loss is separate from final neighbor capacity on three squares', () => {
+  const layout = flattenPolygons(
+    [0, 1, 2].map(x => [
+      [
+        [x, 0],
+        [x + 1, 0],
+        [x + 1, 1],
+        [x, 1]
+      ]
+    ]) as OraclePolygons
+  );
+  const input = {...layout, featureOffsets: Uint32Array.of(0, 1, 2, 3)};
+  const runs = [1, 32].map(pairCapacity =>
+    computeContiguityWeightsOnCPU(input, {criterion: 'queen', capacity: 16, pairCapacity})
+  );
+  expect(Array.from(runs[0].overflow)).toEqual([0]);
+  expect(Array.from(runs[0].candidateOverflow)).toEqual([1]);
+  expect(runs[0].requiredCount[0]).toBeLessThanOrEqual(4);
+  expect(Array.from(runs[1].overflow)).toEqual([0]);
+  expect(Array.from(runs[1].candidateOverflow)).toEqual([0]);
+  expect(Array.from(runs[1].requiredCount)).toEqual([4]);
+  const finalLoss = computeContiguityWeightsOnCPU(input, {
+    criterion: 'queen',
+    capacity: 3,
+    pairCapacity: 32
+  });
+  expect(Array.from(finalLoss.overflow)).toEqual([1]);
+  expect(Array.from(finalLoss.candidateOverflow)).toEqual([0]);
+  expect(Array.from(finalLoss.requiredCount)).toEqual([4]);
+});
+
+test('F13 preserves caller candidate loss and publishes it in the weights stage', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const candidateOverflow = createTransientView(graph, 'candidate-overflow', 'uint32', 1);
+  const props = createProps(graph);
+  try {
+    const result = addRateClusterMapRecipe(graph, {
+      ...props,
+      scratch: {weights: {status: {candidateOverflow}}}
+    });
+    expect(result.weights.status.candidateOverflow).toBe(candidateOverflow);
+    expect(
+      result.status.stages.find(stage => stage.stage === 'weights')?.status.candidateOverflow
+    ).toBe(candidateOverflow);
+  } finally {
+    props.parameters.destroy();
+    graph.device.destroy();
+  }
+});
 
 function createParameterBuffer<Format extends 'float32' | 'uint32'>(
   graph: GPUCommandGraph,
@@ -219,7 +271,8 @@ describe('addRateClusterMapRecipe settings (one source of truth, rule 19)', () =
       target
     ) {
       const nodes = getCommandNodes.call(this, target);
-      added.push(...nodes.map(node => node.id));
+      // Preparation repeats host expansion; only the caller graph executes these conversions.
+      if (target === graph) added.push(...nodes.map(node => node.id));
       return nodes;
     });
     addRateClusterMapRecipe(

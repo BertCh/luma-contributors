@@ -10,6 +10,8 @@ import {GPUParameterBuffer} from '../../../src/analysis-core/kernels/gpu-contrib
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {computeHotSpotOracle} from '../spatial-autocorrelation/spatial-autocorrelation-oracle';
 import {ESDA_GI_STAR_LATTICE} from './hot-spot-esda-fixture';
+import {computeLocalPermutationOracle} from '../permutation-inference/permutation-oracle';
+import {GPU_PERMUTATION_PARAMETER_LENGTH} from '../../../src/gpu-spatial-analysis/permutation-inference/index';
 
 it('the Gi* oracle reproduces esda G_Local(star=True) including a cold spot of zeros', () => {
   const fixture = ESDA_GI_STAR_LATTICE;
@@ -85,7 +87,8 @@ it('addHotSpotAnalysisRecipe states its inference and exposes the guard and stud
     alternative: 'two-sided',
     permutationCount: 0,
     multipleTesting: 'benjamini-hochberg',
-    testedRowsDefinition: 'study-area cells with at least 8 neighbors'
+    testedRowsDefinition:
+      'included rows with at least 8 active neighbors (islands excluded) and a defined z-score'
   });
   const stages = result.status.stages.map(stage => stage.stage);
   expect(stages).toEqual([
@@ -182,4 +185,142 @@ it('the hot-spot distance band rejects a Lambert planar frame for geographic cel
       }) as never
     )
   ).toThrow(/distanceBand does not support planar coordinates/);
+});
+
+it('reports the distinct analytic and permutation testing families on a 5 by 5 queen lattice', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const offsets = [0];
+  const neighbors: number[] = [];
+  for (let row = 0; row < 25; row++) {
+    for (let neighbor = 0; neighbor < 25; neighbor++) {
+      if (
+        neighbor !== row &&
+        Math.abs((neighbor % 5) - (row % 5)) <= 1 &&
+        Math.abs(Math.floor(neighbor / 5) - Math.floor(row / 5)) <= 1
+      ) {
+        neighbors.push(neighbor);
+      }
+    }
+    offsets.push(neighbors.length);
+  }
+  const values = Float32Array.from({length: 25}, (_, row) => row + 1);
+  const weights = {
+    offsets: Uint32Array.from(offsets),
+    neighbors: Uint32Array.from(neighbors),
+    weights: new Float32Array(neighbors.length).fill(1)
+  };
+  const analytic = computeHotSpotOracle({weights, values, minimumNeighbors: 8});
+  const permutation = computeLocalPermutationOracle({
+    weights,
+    values,
+    statistic: 'localGStar',
+    seed: 4,
+    permutationCount: 199,
+    significanceLevel: 0.05,
+    maximumNeighbors: 32,
+    multipleTesting: 'benjamini-hochberg'
+  });
+  expect(analytic.zScores.filter(Number.isFinite)).toHaveLength(9);
+  expect(permutation.pseudoPValues.filter(Number.isFinite)).toHaveLength(25);
+  expect(permutation.pseudoPValues[6]).toBeCloseTo(0.01, 6);
+  expect(permutation.adjustedPValues[6]).toBeCloseTo(1 / 18, 6);
+  expect(permutation.significant[6]).toBe(0);
+  const parameters = new GPUParameterBuffer(device, {
+    id: 'analytic-parameters',
+    format: 'float32',
+    length: GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
+  });
+  const permutationParameters = new GPUParameterBuffer(device, {
+    id: 'permutation-parameters',
+    format: 'uint32',
+    length: GPU_PERMUTATION_PARAMETER_LENGTH
+  });
+  try {
+    const result = addHotSpotAnalysisRecipe(graph, {
+      source: {
+        kind: 'lattice',
+        values: createTransientView(graph, 'values', 'float32', 25),
+        width: 5,
+        height: 5,
+        neighborCapacity: neighbors.length
+      },
+      parameters,
+      settings: {seed: 4, permutationCount: 199},
+      permutation: {
+        parameters: permutationParameters,
+        maximumPermutations: 199,
+        multipleTesting: 'benjamini-hochberg'
+      }
+    });
+    expect(result.inference.testedRowsDefinition).toBe(
+      'included rows with at least 8 active neighbors (islands excluded) and a defined z-score'
+    );
+    expect(result.permutationInference?.testedRowsDefinition).toContain('1 to 32');
+    result.setSettings({seed: 5, permutationCount: 19});
+    expect(result.permutationInference?.testedRowsDefinition).toContain('1 to 32');
+  } finally {
+    parameters.destroy();
+    permutationParameters.destroy();
+    device.destroy();
+  }
+});
+
+it('R6 describes the effective analytic minimum and excluded islands when minimumNeighbors is zero', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const parameters = new GPUParameterBuffer(device, {
+    id: 'parameters',
+    format: 'float32',
+    length: GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
+  });
+  const offsets = [0];
+  const neighbors: number[] = [];
+  for (let row = 0; row < 25; row++) {
+    for (let neighbor = 0; neighbor < 25; neighbor++) {
+      if (
+        neighbor !== row &&
+        Math.abs((neighbor % 5) - (row % 5)) <= 1 &&
+        Math.abs(Math.floor(neighbor / 5) - Math.floor(row / 5)) <= 1
+      )
+        neighbors.push(neighbor);
+    }
+    offsets.push(neighbors.length);
+  }
+  const mask = new Uint32Array(25).fill(1);
+  for (const row of [1, 5, 6]) mask[row] = 0;
+  const oracle = computeHotSpotOracle({
+    weights: {
+      offsets: Uint32Array.from(offsets),
+      neighbors: Uint32Array.from(neighbors),
+      weights: new Float32Array(neighbors.length).fill(1)
+    },
+    values: Float32Array.from({length: 25}, (_, row) => row + 1),
+    mask,
+    minimumNeighbors: 1
+  });
+  expect(oracle.zScores[0]).toBeNaN();
+  expect(oracle.zScores.filter(Number.isFinite)).toHaveLength(21);
+  try {
+    const result = addHotSpotAnalysisRecipe(graph, {
+      source: {
+        kind: 'lattice',
+        values: createTransientView(graph, 'values', 'float32', 25),
+        mask: createTransientView(graph, 'mask', 'uint32', 25),
+        width: 5,
+        height: 5,
+        neighborCapacity: 200
+      },
+      parameters,
+      minimumNeighbors: 0
+    });
+    expect(result.inference.testedRowsDefinition).toBe(
+      'included rows with at least 1 active neighbor (islands excluded) and a defined z-score'
+    );
+    result.setSettings({significanceLevel: 0.1});
+    expect(result.inference.testedRowsDefinition).toContain('at least 1 active neighbor');
+  } finally {
+    parameters.destroy();
+    device.destroy();
+  }
 });

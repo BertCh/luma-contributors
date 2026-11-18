@@ -2,93 +2,63 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {existsSync, readFileSync} from 'node:fs';
+import {existsSync, readdirSync, readFileSync} from 'node:fs';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import typescript from 'typescript';
 
-// Shared by the docs specs (A-7, A-22): the analysis doc pages, the entry barrels they import,
-// and a TypeScript program over the repo's own compiler options (the root `tsconfig.json` paths
-// map `@luma.gl/*` package names to `modules/*/src`) with optional in-memory files.
+// Shared API-page discovery for navigation, snippet checks and generated Parameters blocks,
+// plus a TypeScript program using the repository's compiler options and optional in-memory files.
 
 export const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 export const DOCS_ROOT = join(REPOSITORY_ROOT, 'docs/api');
 
-/**
- * The analysis doc pages, relative to `DOCS_ROOT`. Docs describe only this library's entries;
- * luma.gl-owned APIs are linked to the luma.gl docs, not documented here.
- */
-export const ANALYSIS_DOC_PAGES = [
-  'operation-forms-and-cpu-twins.md',
-  'gpu-spatial-analysis/gaussian-random-field.md',
-  'gpu-spatial-analysis/README.md',
-  'gpu-spatial-analysis/concepts.md',
-  'gpu-spatial-analysis/analysis-experience.md',
-  'gpu-spatial-analysis/temporal-context.md',
-  'gpu-spatial-analysis/vecchia-likelihood.md',
-  'gpu-spatial-analysis/change-points-and-expectation-based-scan.md',
-  'gpu-spatial-analysis/movement-semantics.md',
-  'gpu-spatial-analysis/home-range-and-recursion-mob07.md',
-  'gpu-spatial-analysis/space-time-density-and-k-function.md',
-  'gpu-spatial-analysis/space-time-hawkes.md',
-  'gpu-spatial-analysis/sinkhorn-divergence.md',
-  'gpu-spatial-analysis/operators.md',
-  'gpu-spatial-analysis/operators-weights.md',
-  'gpu-spatial-analysis/operators-statistics.md',
-  'gpu-spatial-analysis/operators-dynamics.md',
-  'gpu-spatial-analysis/operators-accessibility.md',
-  'gpu-spatial-analysis/operators-joins.md',
-  'gpu-spatial-analysis/operators-validity.md',
-  'gpu-spatial-analysis/operators-density.md',
-  'gpu-spatial-analysis/operators-cells.md',
-  'gpu-spatial-analysis/operators-lines.md',
-  'gpu-spatial-analysis/operators-geometry.md',
-  'gpu-spatial-analysis/operators-regression.md',
-  'gpu-spatial-analysis/spatial-validation-advanced.md',
-  'gpu-spatial-analysis/geographical-detector-redcap-entropy.md',
-  'gpu-spatial-analysis/colocation-category-dependence-adaptive-density.md',
-  'gpu-spatial-analysis/recipes.md',
-  'gpu-spatial-analysis-cross-reference.md',
-  'gpu-network/README.md',
-  'gpu-network/concepts.md',
-  'gpu-network/operators.md',
-  'gpu-network/flow-models-mob10.md',
-  'gpu-network/network-movement-coverage.md',
-  'gpu-network/map-matched-edge-volumes-mob05.md',
-  'gpu-network/network-time-geography-mob09.md',
-  'gpu-terrain/README.md',
-  'gpu-terrain/concepts.md',
-  'gpu-terrain/operators.md',
-  'gpu-dataframe-analysis.md',
-  'forest-inference.md',
-  'geospatial.md',
-  'gpu-raster/README.md',
-  'gpu-raster/operations.md',
-  'gpu-raster/operations-analysis.md',
-  'gpu-raster/raster-patches.md',
-  'gpu-raster/contrast-equalization.md',
-  'gpu-raster/expansion.md',
-  'gpu-raster/fill-nodata.md',
-  'gpu-raster/focal-pairs.md',
-  'gpu-raster/fractional-categorical-statistics.md',
-  'gpu-raster/fractional-zonal-distribution.md',
-  'gpu-raster/remote-sensing.md',
-  'gpu-raster/spectral-filter.md',
-  'gpu-raster/raster-change-monitoring.md',
-  'gpu-raster/raster-eof-analysis.md',
-  'gpu-raster/lagrangian-diagnostics-mob06.md',
-  'gpu-raster/raster-time-series.md',
-  'gpu-raster/raster-embeddings.md',
-  'gpu-raster/spectral-indices.md',
-  'gpu-raster/tile-reprojection.md',
-  'pointcloud-analysis.md',
-  'variable-standardization.md',
-  'computation-record.md',
-  'gpu-geometry-refinement.md'
-] as const;
+/** Discovers every API Markdown page, relative to the root, in deterministic path order. */
+export function discoverApiDocPages(root = DOCS_ROOT): string[] {
+  const visit = (directory: string, prefix: string): string[] =>
+    readdirSync(directory, {withFileTypes: true}).flatMap(entry => {
+      const page = `${prefix}${entry.name}`;
+      return entry.isDirectory()
+        ? visit(join(directory, entry.name), `${page}/`)
+        : entry.isFile() && entry.name.endsWith('.md')
+          ? [page]
+          : [];
+    });
+  return visit(root, '').sort();
+}
+
+export const ANALYSIS_DOC_PAGES = discoverApiDocPages();
+
+type ContentsItem = string | {items: ContentsItem[]};
+
+/** Every discovered API page must have exactly one sidebar entry, and every target must exist. */
+export function getSidebarPageIssues(
+  pages: readonly string[] = ANALYSIS_DOC_PAGES,
+  contents: ContentsItem[] = JSON.parse(
+    readFileSync(join(REPOSITORY_ROOT, 'docs/table-of-contents.json'), 'utf8')
+  )
+): string[] {
+  const getPages = (items: ContentsItem[]): string[] =>
+    items.flatMap(item =>
+      typeof item === 'string'
+        ? item.startsWith('api/')
+          ? [`${item.slice(4)}.md`]
+          : []
+        : getPages(item.items)
+    );
+  const sidebarPages = getPages(contents);
+  return [
+    ...pages.flatMap(page => {
+      const count = sidebarPages.filter(target => target === page).length;
+      return count === 1 ? [] : [`${page}: expected one sidebar entry, found ${count}`];
+    }),
+    ...sidebarPages.filter(page => !pages.includes(page)).map(page => `${page}: missing API page`)
+  ];
+}
 
 /** Package entries an analysis page may import, in the order free names are resolved. */
 export const ANALYSIS_ENTRIES = [
+  '@luma-contributors/analysis/analysis-core',
   '@luma-contributors/analysis/gpu-spatial-analysis',
   '@luma-contributors/analysis/gpu-network',
   '@luma-contributors/analysis/gpu-terrain',

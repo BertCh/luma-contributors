@@ -33,10 +33,12 @@ it('sorted 3D grid neighborhoods equal all-pairs across cell boundaries, duplica
           radius: 1,
           capacity: 4,
           grid: indexed ? {origin: [0, 0, 0], cellSize: 0.5, dimensions: [16, 16, 16]} : undefined,
-          indices: indices.view,
-          squaredDistances: distances.view,
-          counts: counts.view,
-          status: status.view
+          output: {
+            indices: indices.view,
+            squaredDistances: distances.view,
+            counts: counts.view,
+            status: status.view
+          }
         })
       );
       return {indices, distances, counts, status};

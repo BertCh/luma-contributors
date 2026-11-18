@@ -6,15 +6,18 @@ Input corpus is the independently projected/snapped Chicago and synthetic corpus
 from parity-wp2-prepared-nearest.py (regenerate that first). Split every complete
 polyline into adjacent segments; repeat its source ID. No vertices are dropped.
 GEOS STRtree.query_nearest computes ALL segment ties, then lowest segment row is
-selected per API, before source-ID mapping. The same complete nearest set gives
+selected per API. Retain both the winning segment row and its mapped source ID.
+The same complete nearest set gives
 selection at radius 128/3 and radius zero. GEOS dwithin independently verifies
 selection for both radii. Expanded segment boxes supply exact scratch demand.
 All input/output arrays retained, float32, planar AEQD meters; G tolerance as in
-source corpus (16 coordinate ulps). Empty matches use ID 0xffffffff/distance -1.
+source corpus (16 coordinate ulps). Empty oracle lists correspond to GPU row
+0xffffffff/distance -1.
 """
 import hashlib
 import json
 import platform
+import sys
 from pathlib import Path
 import numpy as np
 import shapely
@@ -39,7 +42,7 @@ for case in corpus['cases']:
             rows,distances=tree.query_nearest(point,all_matches=True,return_distance=True)
             ordered=sorted(zip(rows,distances),key=lambda pair:(pair[1],pair[0]))
             row,distance=ordered[0]
-            neighbors.append([dict(id=source_ids[row],distance=float(distance))] if distance<=case['radius'] else [])
+            neighbors.append([dict(row=int(row),id=source_ids[row],distance=float(distance))] if distance<=case['radius'] else [])
         for radius in [0,case['radius']]:
             pairs=tree.query(points,predicate='dwithin',distance=radius)
             selected=set(map(int,pairs[0]))
@@ -56,6 +59,10 @@ fixture=dict(generator=Path(__file__).name,reference='shapely.STRtree.query_near
              conventions=corpus['conventions']|dict(features='every adjacent segment of complete source polylines; repeated source IDs'),
              tolerance=corpus['tolerance'],cases=cases)
 output=HERE/'fixtures/parity-wp2-buffer-selection.json'
-output.write_text(json.dumps(fixture,separators=(',',':'),allow_nan=False)+'\n')
-assert output.stat().st_size<=1500000
-print(output.name,output.stat().st_size,[(case['name'],len(case['sourceIds']),[frame['candidateCount'] for frame in case['frames']]) for case in cases])
+serialized=json.dumps(fixture,separators=(',',':'),allow_nan=False)+'\n'
+assert len(serialized.encode())<=1500000
+if '--stdout' in sys.argv:
+    sys.stdout.write(serialized)
+else:
+    output.write_text(serialized)
+    print(output.name,output.stat().st_size,[(case['name'],len(case['sourceIds']),[frame['candidateCount'] for frame in case['frames']]) for case in cases])

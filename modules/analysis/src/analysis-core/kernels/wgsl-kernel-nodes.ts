@@ -31,7 +31,12 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {validateWGSLIdentifier} from './wgsl-identifiers';
 import type {GPUCompactOutput} from './gpu-contributor-types';
-import {validateMaximumCount, validateRequirement} from './gpu-contributor-utils';
+import {
+  validateCapacity,
+  validateMaximumCount,
+  validateRequirement,
+  validateSinglePackedView
+} from './gpu-contributor-utils';
 
 const DEFAULT_WORKGROUP_SIZE = 256;
 
@@ -724,11 +729,30 @@ type WGSLKernelNodeRecordEntry = {
  * Graphs whose kernel facts are kept, keyed weakly by graph. The compiled graph publishes node ids,
  * not node objects, and `graph.add` copies nodes, so entries are keyed by node id within a graph.
  */
-const WGSL_KERNEL_NODE_RECORDS = new WeakMap<object, Map<string, WGSLKernelNodeRecordEntry>>();
+const WGSL_KERNEL_NODE_RECORDS = new WeakMap<
+  object,
+  Map<string, WGSLKernelNodeRecordEntry | WGSLKernelNodeRecord>
+>();
+
+/** Register the actual module and graph bindings of a custom analysis kernel. No-op unless recording is enabled. */
+export function registerWGSLKernelNodeRecord<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  record: WGSLKernelNodeRecord
+): void {
+  WGSL_KERNEL_NODE_RECORDS.get(graph)?.set(record.id, {
+    ...record,
+    constants: {...record.constants},
+    bindings: record.bindings.map(binding => ({...binding})),
+    textures: record.textures.map(texture => ({...texture})),
+    workgroupSize: [...record.workgroupSize],
+    workgroups: [...record.workgroups]
+  });
+}
 
 /**
  * Keeps the kernel facts (WGSL source, entry point, workgroup size, dispatch, bindings with their
- * access, operation name) of every node that {@link createWGSLKernelNode} creates on `graph` from
+ * access, operation name) of nodes that {@link createWGSLKernelNode} creates or a custom analysis
+ * factory registers with {@link registerWGSLKernelNodeRecord} on `graph` from
  * now on, for {@link getWGSLKernelNodeRecord} and `describeGPUCommandGraph`. Call it right after
  * creating a graph that will be described, before any contributor adds nodes. Graphs that never
  * call it keep nothing. The table is held weakly by the graph and retains no string or binding that
@@ -746,8 +770,9 @@ export function isRecordingWGSLKernelNodes(graph: GPUCommandGraph<any>): boolean
 /**
  * Returns the kernel facts of node `nodeId` on a graph passed to {@link recordWGSLKernelNodes}, or
  * `undefined` when the graph records nothing or the node was not built by
- * {@link createWGSLKernelNode} (copy nodes, published `@luma.gl/graph` primitives, hand-built
- * nodes). When two kernels were created with the same id, the last one is returned.
+ * {@link createWGSLKernelNode} or a registering custom factory (copy nodes, published
+ * `@luma.gl/graph` primitives, unregistered hand-built nodes). When two kernels were created with
+ * the same id, the last one is returned.
  */
 export function getWGSLKernelNodeRecord(
   graph: GPUCommandGraph<any>,
@@ -755,6 +780,7 @@ export function getWGSLKernelNodeRecord(
 ): WGSLKernelNodeRecord | undefined {
   const entry = WGSL_KERNEL_NODE_RECORDS.get(graph)?.get(nodeId);
   if (!entry) return undefined;
+  if (!('props' in entry)) return entry;
   const {props, source, workgroupSize, layout} = entry;
   return {
     id: props.id,
@@ -804,7 +830,8 @@ export function getAutomaticWGSLKernelWorkgroupSize(invocationCount: number): nu
 
 /**
  * Builds one storage binding record with the WGSL element type taken from the view's format
- * (`uint32*` gives `u32`, `sint32*` gives `i32`, everything else `f32`).
+ * (`uint32*` gives `u32`, `sint32*` gives `i32`, `float32*` gives `f32`). Only packed 32-bit
+ * scalars and vectors of two to four components are supported. Arrays index scalar components.
  *
  * @param name WGSL variable name.
  * @param view Bound packed view.
@@ -816,11 +843,7 @@ export function getWGSLKernelBinding(
   view: GraphDataView,
   access: 'read' | 'read_write' | 'atomic' = 'read'
 ): WGSLKernelBinding {
-  const scalarType = view.format.startsWith('uint32')
-    ? 'u32'
-    : view.format.startsWith('sint32')
-      ? 'i32'
-      : 'f32';
+  const scalarType = validateWGSLKernelWordView(`WGSL kernel binding ${name}`, view);
   if (access !== 'atomic') {
     return {name, view, type: scalarType, access};
   }
@@ -828,6 +851,21 @@ export function getWGSLKernelBinding(
     throw new Error(`WGSL kernel binding ${name} must be an integer view to be atomic`);
   }
   return {name, view, type: `atomic<${scalarType}>`, access: 'read_write'};
+}
+
+/** Checks layouts that the scalar-component binding and fill helpers can address. */
+function validateWGSLKernelWordView(id: string, view: GraphDataView): 'u32' | 'i32' | 'f32' {
+  validateRequirement(
+    id,
+    /^(?:float32|uint32|sint32)(?:x[234])?$/.test(view.format),
+    'view format must be a 32-bit scalar or vector of two to four components'
+  );
+  validateSinglePackedView(view, [view.format], `${id} view`);
+  return view.format.startsWith('uint32')
+    ? 'u32'
+    : view.format.startsWith('sint32')
+      ? 'i32'
+      : 'f32';
 }
 
 /** Formats a JS number as a WGSL `f32` literal. */
@@ -885,7 +923,7 @@ export type PublishNodeProps = {
   id: string;
   /** Operation name reported in the workload estimate. */
   operation: string;
-  /** One-row unclamped accepted count written by an earlier compaction. */
+  /** Final-stage accepted count before output truncation; a lower bound after candidate loss or saturation. */
   requiredCount: GraphDataView<'uint32'>;
   /**
    * Full-size compacted IDs to copy into `output.ids`. Omit when the compaction already wrote
@@ -894,8 +932,13 @@ export type PublishNodeProps = {
   compactIds?: GraphDataView<'uint32'>;
   /** Caller-owned bounded output. */
   output: GPUCompactOutput;
-  /** Optional one-row flags ORed into `output.status.overflow`, for example index overflow. */
+  /** Final-output capacity flags ORed into `output.status.overflow`. Never pass candidate loss here. */
   overflowSources?: readonly GraphDataView<'uint32'>[];
+  /**
+   * Intermediate-loss flags ORed into `output.status.candidateOverflow`. A nonempty source list
+   * requires that destination, so supplied completeness information cannot be discarded.
+   */
+  candidateOverflowSources?: readonly GraphDataView<'uint32'>[];
   /** Additional packed one-row destinations that receive the clamped count. */
   extraCounts?: readonly GraphDataView<'uint32'>[];
   /**
@@ -908,7 +951,8 @@ export type PublishNodeProps = {
 /**
  * Clamps an unclamped compaction count to the capacity of a {@link GPUCompactOutput}.
  *
- * Writes `count = min(total, capacity)`, `overflow = total > capacity || any overflow source`,
+ * Writes `count = min(total, capacity)`, `overflow = total > capacity || any final overflow source`,
+ * and optional `candidateOverflow = any candidate overflow source` (zero with no sources),
  * optional `requiredCount` and extra count words, and copies the bounded prefix when compaction used
  * a full-size scratch buffer. Every word is rewritten on every encoding.
  */
@@ -920,6 +964,12 @@ export function createPublishNode<Parameters>(
   const capacity = output.ids.length;
   const copyRowCount = compactIds ? Math.min(capacity, compactIds.length) : 0;
   const overflowSources = props.overflowSources ?? [];
+  const candidateOverflowSources = props.candidateOverflowSources ?? [];
+  validateRequirement(
+    props.id,
+    candidateOverflowSources.length === 0 || Boolean(output.status.candidateOverflow),
+    'output.status.candidateOverflow is required with candidateOverflowSources'
+  );
   const extraCounts = props.extraCounts ?? [];
   const bindings: WGSLKernelBinding[] = [
     {name: 'totalIn', view: props.requiredCount, type: 'u32', access: 'read'}
@@ -931,6 +981,14 @@ export function createPublishNode<Parameters>(
   for (const [sourceIndex, source] of overflowSources.entries()) {
     bindings.push({name: `overflowIn${sourceIndex}`, view: source, type: 'u32', access: 'read'});
   }
+  for (const [sourceIndex, source] of candidateOverflowSources.entries()) {
+    bindings.push({
+      name: `candidateOverflowIn${sourceIndex}`,
+      view: source,
+      type: 'u32',
+      access: 'read'
+    });
+  }
   bindings.push({name: 'countOut', view: output.status.count, type: 'u32', access: 'read_write'});
   bindings.push({
     name: 'overflowOut',
@@ -938,6 +996,14 @@ export function createPublishNode<Parameters>(
     type: 'u32',
     access: 'read_write'
   });
+  if (output.status.candidateOverflow) {
+    bindings.push({
+      name: 'candidateOverflowOut',
+      view: output.status.candidateOverflow,
+      type: 'u32',
+      access: 'read_write'
+    });
+  }
   if (output.status.requiredCount) {
     bindings.push({
       name: 'totalOut',
@@ -964,6 +1030,13 @@ export function createPublishNode<Parameters>(
       (_, sourceIndex) => `overflowIn${sourceIndex}[overflowIn${sourceIndex}Offset] != 0u`
     )
   ].join(' || ');
+  const candidateOverflowExpression =
+    candidateOverflowSources
+      .map(
+        (_, sourceIndex) =>
+          `candidateOverflowIn${sourceIndex}[candidateOverflowIn${sourceIndex}Offset] != 0u`
+      )
+      .join(' || ') || 'false';
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
@@ -990,6 +1063,7 @@ export function createPublishNode<Parameters>(
   if (index == 0u) {
     countOut[countOutOffset] = count;
     overflowOut[overflowOutOffset] = select(0u, 1u, ${overflowExpression});
+    ${output.status.candidateOverflow ? `candidateOverflowOut[candidateOverflowOutOffset] = select(0u, 1u, ${candidateOverflowExpression});` : ''}
     ${output.status.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}
     ${extraCounts.map((_, extraIndex) => `extraOut${extraIndex}[extraOut${extraIndex}Offset] = count;`).join('\n    ')}
   }`
@@ -997,7 +1071,10 @@ export function createPublishNode<Parameters>(
 }
 
 /**
- * Builds one node that fills `view` with a constant `u32`, `i32`, or `f32` value.
+ * Builds one node that fills every scalar component of a packed 32-bit scalar/vector `view`
+ * with a constant `u32`, `i32`, or `f32` value. `componentCount` selects a prefix of components
+ * (not rows) and must be an integer from zero through the full component count. `type` must match
+ * the view's scalar format. A zero-component fill records no commands and binds no target.
  */
 export function createFillNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -1010,12 +1087,36 @@ export function createFillNode<Parameters>(
     componentCount?: number;
   }
 ): GPUCommandNode<Parameters> {
-  const componentCount = props.componentCount ?? props.view.length;
+  const scalarType = validateWGSLKernelWordView(props.id, props.view);
+  validateRequirement(
+    props.id,
+    props.type === scalarType,
+    `type must match view format ${props.view.format} (${scalarType})`
+  );
+  const fullComponentCount = props.view.length * (props.view.rowByteLength / 4);
+  const componentCount = props.componentCount ?? fullComponentCount;
+  validateCapacity(props.id, 'componentCount', componentCount, 0, fullComponentCount);
+  if (componentCount === 0) {
+    return createGPUComputeCommandNode<Parameters>({
+      id: props.id,
+      resources: [],
+      workload: {
+        operation: props.operation,
+        variant: 'fill',
+        commandCount: 0,
+        maximumWorkgroupCount: 0,
+        maximumInvocationCount: 0,
+        readByteLength: 0,
+        writeByteLength: 0
+      },
+      compile: () => ({encode: () => {}})
+    });
+  }
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
     variant: 'fill',
-    bindings: [{name: 'fillTarget', view: props.view, type: props.type, access: 'read_write'}],
+    bindings: [{name: 'fillTarget', view: props.view, type: scalarType, access: 'read_write'}],
     invocationCount: componentCount,
     body: `fillTarget[fillTargetOffset + index] = ${props.value};`
   });

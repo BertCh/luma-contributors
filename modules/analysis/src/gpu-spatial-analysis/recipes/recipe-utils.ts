@@ -4,6 +4,12 @@
 
 import type {VertexFormat} from '@luma.gl/core';
 import {
+  registerRecipeContributor,
+  isRecipeDeclaration,
+  scheduleRecipeStage
+} from './prepared-recipe';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
+import {
   createTransientView,
   GPUReduction,
   GPUScan,
@@ -18,13 +24,14 @@ import {
   type WGSLKernelProps
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  captureGraphCommandNodes,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import type {GPUCellFamily, GPUCellTable} from '../cell-aggregation/index';
+import type {GPUCellAggregationFamily, GPUCellTable} from '../cell-aggregation/index';
 import {GPUCellTopology, getCellTopologyStride} from '../cell-topology/index';
 import type {GPURecipeStatusPort} from '../../analysis-core/contracts/index';
 import {
@@ -66,8 +73,8 @@ export type GPURecipeResult<
 };
 
 /**
- * Collects contributors, adds each to `graph` in call order and returns them.
- * Recipes use this so the order of `graph.add` calls is the order of the chain.
+ * Collects contributors and schedules them in chain order. The deferred mode constructs and
+ * expands every stage before `addDeferredStages` schedules the recipe's command nodes.
  * @internal
  */
 export class RecipeBuilder<Parameters> {
@@ -75,20 +82,27 @@ export class RecipeBuilder<Parameters> {
   /** Names of the glue stages added with {@link RecipeBuilder.addGlue}, in declaration order. */
   readonly glueStages: {stage: string; nodes: readonly GPUCommandNode<Parameters>[]}[] = [];
 
-  constructor(readonly graph: GPUCommandGraph<Parameters>) {}
+  constructor(
+    readonly graph: GPUCommandGraph<Parameters>,
+    /** Hold stages until `addDeferredStages`, so every constructor can validate first. */
+    private readonly deferGraphAddition = isRecipeDeclaration(graph)
+  ) {}
 
-  /** Adds `contributor` (its `getCommandNodes(graph)` runs now) and returns it. */
+  /** Records and returns `contributor`; schedules it now unless graph addition is deferred. */
   add<Contributor extends GPUCommandNodeProducer<Parameters>>(
     contributor: Contributor
   ): Contributor {
-    this.graph.add(contributor);
+    registerRecipeContributor(this.graph, contributor);
+    if (isRecipeDeclaration(this.graph))
+      scheduleRecipeStage(this.graph, () => this.graph.add(contributor));
+    else if (!this.deferGraphAddition) this.graph.add(contributor);
     this.contributors.push(contributor);
     return contributor;
   }
 
   /**
    * Adds raw glue nodes (adapter kernels that are not a contributor) under a stage name. The
-   * nodes join the graph now, in call order, and appear in {@link RecipeBuilder.contributors} as
+   * nodes join the graph in call order (on flush in deferred mode), and appear in {@link RecipeBuilder.contributors} as
    * one producer, so a recipe result lists every stage it added, and in
    * {@link RecipeBuilder.glueStages} under `stage`.
    */
@@ -97,9 +111,31 @@ export class RecipeBuilder<Parameters> {
     nodes: GPUCommandNode<Parameters> | readonly GPUCommandNode<Parameters>[]
   ): void {
     const stageNodes = 'type' in nodes ? [nodes] : nodes;
-    this.graph.add(stageNodes);
+    if (isRecipeDeclaration(this.graph))
+      scheduleRecipeStage(this.graph, () => this.graph.add(stageNodes));
+    else if (!this.deferGraphAddition) this.graph.add(stageNodes);
     this.glueStages.push({stage, nodes: stageNodes});
     this.contributors.push({getCommandNodes: () => stageNodes});
+  }
+
+  /** Records a published addToGraph stage or raw adapter as one ordered contributor. */
+  addAdapter(addNodes: (graph: GPUCommandGraph<Parameters>) => void): void {
+    this.add({getCommandNodes: graph => captureGraphCommandNodes(graph, () => addNodes(graph))});
+  }
+
+  /** Expands all deferred stages before scheduling any, preserving declaration order. */
+  addDeferredStages(): void {
+    // The enclosing recipe owns the ordered ledger, including interleaved raw stages.
+    if (isRecipeDeclaration(this.graph)) return;
+    validateRequirement(
+      'RecipeBuilder',
+      this.deferGraphAddition,
+      'deferred graph addition must be enabled'
+    );
+    const nodes = this.contributors.flatMap(contributor => [
+      ...contributor.getCommandNodes(this.graph)
+    ]);
+    this.graph.add(nodes);
   }
 }
 
@@ -246,7 +282,10 @@ export function createTransientSpatialWeights<Parameters>(
         'uint32',
         1,
         provided?.status?.requiredCount
-      )
+      ),
+      ...(provided?.status?.candidateOverflow
+        ? {candidateOverflow: provided.status.candidateOverflow}
+        : {})
     }
   };
 }
@@ -358,7 +397,7 @@ export function getCellKeySearchWGSL(
 
 /** Properties of {@link addCellDiskWeightsNodes}. @internal */
 export type CellDiskWeightsProps = {
-  family: GPUCellFamily;
+  family: GPUCellAggregationFamily;
   /** Sorted, unique study cell keys (`uint32x2` little-endian rows); occupied rows lead. */
   cells: GraphDataView<'uint32x2'>;
   /** One-row scalar with the number of occupied leading rows of `cells`. */
@@ -582,7 +621,11 @@ export function validateRecipeBoundary<Parameters>(
 ): void {
   validateGraphViewsBelongToGraph(id, graph, [...inputs, ...outputs]);
   validateGraphOutputsDisjointFromInputs(id, outputs, inputs);
-  const buffers = outputs.filter(view => view !== undefined).map(view => view.buffer);
+  const buffers = outputs
+    .filter(view => view !== undefined)
+    .map(view =>
+      view.buffer.defaultBuffer ? getCoreDefaultBuffer(view.buffer.defaultBuffer) : view.buffer
+    );
   // Independent named outputs must not share a buffer, even through disjoint views.
   validateRequirement(
     id,

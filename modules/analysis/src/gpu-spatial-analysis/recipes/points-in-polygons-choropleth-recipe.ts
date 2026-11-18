@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {addPreparedRecipe} from './prepared-recipe';
+import {validateSpatialJoinMultipartGeometry} from '../spatial-join/spatial-join-geometry';
+
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {GPUGroupStatistics} from '../../dataframe-analysis/group-statistics/index';
 import type {GPUGroupStatisticsColumnOutput} from '../../dataframe-analysis/group-statistics/index';
@@ -142,7 +145,19 @@ export type GPUPointsInPolygonsChoroplethRecipeProps = GPURecipeOverrides<
 };
 
 /** Named outputs of {@link addPointsInPolygonsChoroplethRecipe}. */
-export type GPUPointsInPolygonsChoroplethRecipeResult = GPURecipeResult & {
+export type GPUPointsInPolygonsChoroplethRecipeOutputs = Pick<
+  GPUPointsInPolygonsChoroplethRecipeViews,
+  'counts' | 'featureValues' | 'color'
+>;
+
+/** Points-in-polygons outputs and top-level convenience fields; no intermediate ports. */
+export type GPUPointsInPolygonsChoroplethRecipeResult = GPURecipeResult<
+  GPUPointsInPolygonsChoroplethRecipeOutputs,
+  Record<never, never>
+> &
+  GPUPointsInPolygonsChoroplethRecipeViews;
+
+type GPUPointsInPolygonsChoroplethRecipeViews = {
   /** Resolved coordinate context; prepared polygon edges are linear. */
   spatialContext: GPUSpatialContext;
   /** Number of polygon features, the row count of every per-feature output. */
@@ -193,6 +208,13 @@ export function addPointsInPolygonsChoroplethRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUPointsInPolygonsChoroplethRecipeProps
 ): GPUPointsInPolygonsChoroplethRecipeResult {
+  return addPreparedRecipe(graph, props, declarePointsInPolygonsChoroplethRecipe);
+}
+
+function declarePointsInPolygonsChoroplethRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUPointsInPolygonsChoroplethRecipeProps
+): GPUPointsInPolygonsChoroplethRecipeResult {
   const id = props.id ?? 'choropleth-recipe';
   let spatialContext = resolveGPUSpatialContext(id, props.spatialContext, SUPPORT);
   if (!props.prepare) {
@@ -223,6 +245,7 @@ export function addPointsInPolygonsChoroplethRecipe<Parameters>(
   const backend = props.backend ?? 'zonal';
   const providedOutputs = props.outputs ?? {};
   const {polygons, points} = props;
+  validateSpatialJoinMultipartGeometry(id, 'points', points);
   // Rows are features: feature source IDs never index the outputs.
   let polygonRows = {...polygons, sourceIds: undefined};
   const featureCount = polygons.featureOffsets.length - 1;

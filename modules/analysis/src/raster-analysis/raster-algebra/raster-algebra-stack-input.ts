@@ -19,7 +19,11 @@ import {
   validateRasterBandBelongsToGraph,
   validateRasterGrid
 } from '../raster-band-utils';
-import {getRasterAlgebraInputNodes, validateRasterAlgebraInput} from './raster-algebra-input';
+import {
+  getRasterAlgebraInputNodes,
+  getNamedRasterAlgebraInputViews,
+  validateRasterAlgebraInput
+} from './raster-algebra-input';
 import {validateRasterAlgebraView} from './raster-algebra-utils';
 
 /** A legacy band-sequential float view or an ordered collection of published bands. @internal */
@@ -30,6 +34,18 @@ export function isRasterAlgebraBandStack(
   input: RasterAlgebraStackInput
 ): input is readonly GPURasterBand[] {
   return Array.isArray(input);
+}
+
+/** Original views, including every band's validity, for alias and graph ownership checks. @internal */
+export function getNamedRasterAlgebraStackViews(
+  input: RasterAlgebraStackInput
+): Record<string, GraphDataView | undefined> {
+  return isRasterAlgebraBandStack(input)
+    ? Object.assign(
+        {},
+        ...input.map((band, index) => getNamedRasterAlgebraInputViews(band, `stack[${index}]`))
+      )
+    : {stack: input};
 }
 
 /** Original views, including every band's validity, for alias and graph ownership checks. @internal */

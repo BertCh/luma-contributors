@@ -68,9 +68,9 @@ it('GPULinearReferencing great-circle kernels parse and fit the core limits', ()
   // The traversal replaced the two full scans over every row.
   expect(project?.[1]).not.toMatch(/for \(var row = 0u; row \+ 1u < ROW_COUNT/);
   expect(project?.[1]).toMatch(/boxLowerAngle/);
-  for (const [kernelId, source] of sources) {
+  for (const {id: kernelId, source: source, constants} of sources.configurations) {
     expect(getStorageBindingCount(source), kernelId).toBeLessThanOrEqual(8);
-    expect(getPrivateMemoryBytes(source), kernelId).toBeLessThanOrEqual(8192);
+    expect(getPrivateMemoryBytes(source, constants), kernelId).toBeLessThanOrEqual(8192);
   }
   // Sizes may be baked, but no kernel family repeats with a size-dependent variant (rule 12). Both
   // sizes use 512 BVH leaves, so the upstream GPUBVH picks the same build strategy.

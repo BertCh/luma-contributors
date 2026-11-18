@@ -25,7 +25,7 @@ import {
 } from '../cell-aggregation/cell-aggregation-oracle';
 import {H3_GRID_PATH_FIXTURES} from './h3-grid-path-fixtures';
 import {getS2TopologyCell, getS2TopologyRowOnCPU} from './s2-topology-oracle';
-import type {GPUCellFamily} from '../../../src/gpu-spatial-analysis/cell-indexing/cell-index-families';
+import type {GPUCellTopologyFamily} from '../../../src/gpu-spatial-analysis/cell-indexing/cell-index-families';
 import {requireTestDevice} from '../../utils/require-test-device';
 
 /** Pairs H3 rejects or the kernel must reject: resolution mismatch, zero cell, masked row. */
@@ -48,7 +48,7 @@ async function runGridPath(
   pairs: {origin: bigint; destination: bigint; isMasked?: boolean}[],
   maximumPathLength: number,
   wordOrder: 'little-endian' | 'high-low' = 'little-endian',
-  family: GPUCellFamily = 'h3',
+  family: GPUCellTopologyFamily = 'h3',
   maximumSearchRadius?: number,
   packedSubviews = false
 ): Promise<Run> {

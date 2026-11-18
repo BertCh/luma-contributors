@@ -16,6 +16,7 @@ import {
 import {
   validateCapacity,
   validateMaximumCount,
+  validateGraphOutputsDisjointFromInputs,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -25,6 +26,7 @@ import {
 import {SEGMENT_PREDICATES_WGSL} from '../segment-intersection/segment-intersection-wgsl';
 import {
   GPU_GEOMETRY_VALIDITY_BIT,
+  GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK,
   type GPUGeometryValidityOrientation,
   type GPUGeometryValidityRingClosure
 } from './geometry-validity-types';
@@ -44,6 +46,8 @@ import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph
 import {validateGeometryScratchByteLengths} from '../geometry-edit/geometry-storage-validation';
 
 import {validateSegmentIntersectionScratch} from '../segment-intersection/segment-storage-validation';
+import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
+import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
 
 const OPERATION = 'GPUGeometryValidity';
 
@@ -61,7 +65,13 @@ const RING_LANES = 64;
 /** Caller-owned outputs of {@link GPUGeometryValidity}. */
 export type GPUGeometryValidityOutput = {
   /** Bitmask per feature, `featureCount` rows. See {@link GPU_GEOMETRY_VALIDITY_BIT}. */
-  mask: GraphDataView<'uint32'>;
+  issueCode: GraphDataView<'uint32'>;
+  /**
+   * Optional nonzero-usable flag for the implemented structural checks. Advisory orientation
+   * and repeated-vertex bits remain usable. Incomplete polygon checks suppress every row.
+   * This does not certify the unsupported topology checks listed on the class.
+   */
+  validity?: GraphDataView<'uint32'>;
   /** Completeness scalars; `overflow` is required for polygons. */
   status?: {
     /**
@@ -104,7 +114,7 @@ export type GPUGeometryValidityProps = {
   /** Point features. Valid means finite coordinates (Shapely `is_valid` for a `Point`). */
   points?: GPUPackedGeometryPort<GPUPointGeometryPort>;
   /**
-   * Caller-owned outputs: the validity `mask`, one bitmask per feature (`featureCount` rows, see
+   * Caller-owned outputs: `issueCode`, one bitmask per feature (`featureCount` rows, see
    * {@link GPU_GEOMETRY_VALIDITY_BIT}; lines and points use only `nonFinite` and `tooFewPoints`)
    * and the completeness `status`.
    */
@@ -126,15 +136,15 @@ export type GPUGeometryValidityProps = {
 
 /**
  * Computes a per-feature validity bitmask for polygons, multipolygons, linestrings and points: the GPU analog of the
- * checks behind PostGIS `ST_IsValidDetail`, Shapely `explain_validity` and turf `kinks`, as a mask
- * users can filter on. Repair stays on the CPU.
+ * checks behind PostGIS `ST_IsValidDetail`, Shapely `explain_validity` and turf `kinks`.
+ * `issueCode` is diagnostic; optional `validity` can be used as the next operation's mask.
  *
  * The checks are listed in {@link GPU_GEOMETRY_VALIDITY_BIT}. Per-ring checks (non-finite
  * coordinates, closure, short rings, repeated vertices, orientation, holes outside their shell) run
  * one thread per ring. Self-intersection and crossing rings come from a same-feature
  * {@link GPUSegmentIntersection} in self mode, so they are exact. Nothing is read back.
  *
- * Use `mask & GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK` to ignore the orientation convention.
+ * Use `issueCode & GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK` to ignore advisory bits.
  *
  * **Lines and points.** One thread per feature checks finite coordinates and, for lines, that a
  * non-empty linestring has two distinct vertices, which is all Shapely `is_valid` and
@@ -163,6 +173,11 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
   constructor(props: GPUGeometryValidityProps) {
     this.id = props.id ?? 'geometry-validity';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    props = {
+      ...props,
+      points: props.points && snapshotSinglePartGeometryPort(this.id, 'points', props.points),
+      lines: props.lines && snapshotSinglePartGeometryPort(this.id, 'lines', props.lines)
+    };
     this.props = props;
     const {id} = this;
     const {polygons, lines, points} = props;
@@ -207,10 +222,16 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
     if (this.featureCount < 1) {
       throw new Error(`${id} geometry must contain at least one feature`);
     }
-    const {mask, status} = props.output;
-    validateSinglePackedView(mask, ['uint32'], `${id} output.mask`);
-    if (mask.length !== this.featureCount) {
-      throw new Error(`${id} output.mask length must equal the feature count`);
+    const {issueCode, validity, status} = props.output;
+    for (const [name, view] of [
+      ['issueCode', issueCode],
+      ['validity', validity]
+    ] as const) {
+      if (!view && name === 'validity') continue;
+      validateSinglePackedView(view!, ['uint32'], `${id} output.${name}`);
+      if (view!.length !== this.featureCount) {
+        throw new Error(`${id} output.${name} length must equal the feature count`);
+      }
     }
     for (const [name, view] of [
       ['overflow', status?.overflow],
@@ -223,6 +244,45 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
         }
       }
     }
+    validateGraphOutputsDisjointFromInputs(
+      `${id} output.validity`,
+      [validity],
+      [
+        issueCode,
+        status?.overflow,
+        status?.intersectionCount,
+        props.polygons?.positions,
+        props.polygons?.featureOffsets,
+        props.polygons?.polygonOffsets,
+        props.polygons?.ringOffsets,
+        props.lines?.positions,
+        props.lines?.lineOffsets,
+        props.points?.positions
+      ]
+    );
+    validateOutlineOutputPasses(
+      id,
+      {
+        issueCode,
+        validity,
+        'status.overflow': status?.overflow,
+        'status.intersectionCount': status?.intersectionCount
+      },
+      []
+    );
+    validateGraphOutputsDisjointFromInputs(
+      `${id} diagnostic/status outputs`,
+      [issueCode, status?.overflow, status?.intersectionCount],
+      [
+        props.polygons?.positions,
+        props.polygons?.featureOffsets,
+        props.polygons?.polygonOffsets,
+        props.polygons?.ringOffsets,
+        props.lines?.positions,
+        props.lines?.lineOffsets,
+        props.points?.positions
+      ]
+    );
     if (polygons) {
       validateCapacity(id, 'intersectionCapacity', props.intersectionCapacity ?? 0);
     }
@@ -246,12 +306,8 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
       : props.lines
         ? [props.lines.positions, props.lines.lineOffsets]
         : [(props.points as GPUPackedGeometryPort<GPUPointGeometryPort>).positions];
-    const {mask, status} = props.output;
-    return [
-      ...geometryViews,
-      mask,
-      ...(polygons ? [status?.overflow, status?.intersectionCount] : [])
-    ];
+    const {issueCode, validity, status} = props.output;
+    return [...geometryViews, issueCode, validity, status?.overflow, status?.intersectionCount];
   }
 
   /** One thread per line or point feature: finite coordinates and, for lines, two distinct vertices. */
@@ -269,7 +325,7 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
     if (lines) {
       bindings.push({name: 'lineOffsets', view: lines.lineOffsets, type: 'u32', access: 'read'});
     }
-    bindings.push({name: 'mask', view: props.output.mask, type: 'u32', access: 'read_write'});
+    bindings.push({name: 'mask', view: props.output.issueCode, type: 'u32', access: 'read_write'});
     return createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-simple-kinds`,
       operation: OPERATION,
@@ -332,9 +388,27 @@ ${getReadPointWGSL('vertexAt', 'positions')}`,
       validateGeometryScratchByteLengths(graph, id, {ringBounds: ringCount * 16});
     }
     if (!polygons) {
-      return [this.getLineOrPointNode(graph)];
+      return [
+        this.getLineOrPointNode(graph),
+        ...(['overflow', 'intersectionCount'] as const).flatMap(name => {
+          const view = props.output.status?.[name];
+          return view
+            ? [
+                createWGSLKernelNode(graph, {
+                  id: `${id}-clear-${name}`,
+                  operation: OPERATION,
+                  variant: 'clear-simple-status',
+                  bindings: [{name: 'status', view, type: 'u32', access: 'read_write'}],
+                  invocationCount: 1,
+                  body: 'status[statusOffset] = 0u;'
+                })
+              ]
+            : [];
+        }),
+        ...this.getValidityNodes(graph)
+      ];
     }
-    const {mask, status} = props.output;
+    const {issueCode: mask, status} = props.output;
     const intersectionCapacity = props.intersectionCapacity as number;
     const orientation = props.orientation ?? 'counter-clockwise-shell';
     const explicitClosure = props.ringClosure === 'explicit';
@@ -846,8 +920,8 @@ fn locateInShell(point: vec2f, shellStart: u32, count: u32, shellRing: u32, lane
       leafCapacity: props.leafCapacity,
       output: {
         pairs: {
-          leftIds: pairLeft,
-          rightIds: pairRight,
+          leftRows: pairLeft,
+          rightRows: pairRight,
           status: {
             count: pairCount,
             // The constructor requires status.overflow for polygons.
@@ -894,6 +968,31 @@ const BIT_UNCERTAIN: u32 = ${bit.uncertain}u;`,
   if (bits != 0u) { atomicOr(&mask[maskOffset + leftFeatures[leftFeaturesOffset + index]], bits); }`
       })
     );
-    return nodes;
+    return [...nodes, ...this.getValidityNodes(graph)];
+  }
+
+  private getValidityNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): GPUCommandNode<Parameters>[] {
+    const {issueCode, validity, status} = this.props.output;
+    if (!validity) return [];
+    const overflow = this.polygons ? status?.overflow : undefined;
+    return [
+      createWGSLKernelNode(graph, {
+        id: `${this.id}-validity`,
+        operation: OPERATION,
+        variant: 'validity',
+        bindings: [
+          {name: 'issueCode', view: issueCode, type: 'u32', access: 'read'},
+          {name: 'validity', view: validity, type: 'u32', access: 'read_write'},
+          ...(overflow
+            ? [{name: 'overflow', view: overflow, type: 'u32' as const, access: 'read' as const}]
+            : [])
+        ],
+        invocationCount: this.featureCount,
+        body: `validity[validityOffset + index] = select(0u, 1u,
+        (issueCode[issueCodeOffset + index] & ${GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK}u) == 0u${overflow ? ' && overflow[overflowOffset] == 0u' : ''});`
+      })
+    ];
   }
 }

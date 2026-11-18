@@ -21,6 +21,7 @@ import {
   GPUKShortestPathsOperation,
   type KShortestPathsOperationProps
 } from './gpu-k-shortest-paths-operation';
+import {getGPUKShortestPathsOutputLayout} from './k-shortest-paths-output';
 
 export type CPUKShortestPathsInput = {
   topology: CPUNetworkRoutingInput['topology'];
@@ -31,6 +32,7 @@ export type CPUKShortestPathsOptions = {
   routeCount: number;
   maximumPathLength?: number;
   candidateCapacity?: number;
+  maximumIterations?: number;
 };
 /** Same padded layouts, per-query counts and batch status scalars as GPUKShortestPaths. */
 export type CPUKShortestPathsResult = {
@@ -56,12 +58,13 @@ function compareRoutes(first: Route, second: Route): number {
 }
 
 /**
- * Yen's algorithm using the shared float64 Dijkstra and acyclic predecessor helpers.
+ * Yen's algorithm using the shared float64 routing and acyclic predecessor helpers.
  *
  * What differs from the GPU contributor:
  * - Float64 costs, rounded once on output, can change near-tie membership and overflow behavior.
- * - GPU node, route, command, device and shortest-search round limits are dropped. Every shortest
- *   search runs to convergence. Path length and candidate budgets retain the same output/status meaning.
+ * - GPU node, route, command and device limits are dropped. An explicit maximumIterations binds
+ *   each shortest search and tie phase to 64 hops per round on a synchronous CPU frontier.
+ *   Without an explicit budget, shortest searches run to convergence.
  * - Equal-cost paths use the same predecessor policy but float64 tightness, so ties may differ.
  *
  * @throws Error naming topology, sources or targets for malformed packed arrays.
@@ -81,34 +84,46 @@ export function computeKShortestPathsOnCPU(
   validateCapacity(id, 'sources.length', input.sources.length);
   validateViewLength(id, 'targets', input.targets, input.sources.length);
   const pathLength = options.maximumPathLength ?? 64;
+  const routeCount = options.routeCount;
   const candidateCapacity = options.candidateCapacity ?? 256;
-  validateCapacity(id, 'routeCount', options.routeCount);
-  validateCapacity(id, 'maximumPathLength', pathLength);
+  const maximumIterations = options.maximumIterations;
+  if (maximumIterations !== undefined) validateCapacity(id, 'maximumIterations', maximumIterations);
   validateCapacity(id, 'candidateCapacity', candidateCapacity);
-  const routeRows = input.sources.length * options.routeCount;
-  validateCapacity(id, 'queryCount * routeCount * maximumPathLength', routeRows * pathLength);
+  const layout = getGPUKShortestPathsOutputLayout({
+    id,
+    queryCount: input.sources.length,
+    routeCount,
+    maximumPathLength: pathLength
+  });
   const result: CPUKShortestPathsResult = {
-    vertices: new Uint32Array(routeRows * pathLength).fill(0xffffffff),
-    edges: new Uint32Array(routeRows * pathLength).fill(0xffffffff),
-    lengths: new Uint32Array(routeRows),
-    costs: new Float32Array(routeRows).fill(Infinity),
-    counts: new Uint32Array(input.sources.length),
+    vertices: new Uint32Array(layout.vertices.length).fill(0xffffffff),
+    edges: new Uint32Array(layout.edges.length).fill(0xffffffff),
+    lengths: new Uint32Array(layout.lengths.length),
+    costs: new Float32Array(layout.costs.length).fill(Infinity),
+    counts: new Uint32Array(layout.counts.length),
     converged: Uint32Array.of(1),
     iterationLimitReached: Uint32Array.of(0),
     candidateOverflow: Uint32Array.of(0),
     iterationCount: Uint32Array.of(0)
   };
-  for (let query = 0; query < input.sources.length; query++) {
+  type QueryRound = {
+    route?: Route;
+    searchInterrupted?: boolean;
+    iterationLimitReached?: boolean;
+    candidateOverflow?: boolean;
+  };
+  function* iterateQuery(query: number): Generator<QueryRound> {
     const source = input.sources[query];
     const destination = input.targets[query];
-    if (source >= nodeCount || destination >= nodeCount) continue;
+    if (source >= nodeCount || destination >= nodeCount) return;
     const accepted: Route[] = [];
     const candidates: Route[] = [];
-    for (let round = 0; round < options.routeCount; round++) {
+    for (let round = 0; round < routeCount; round++) {
       result.iterationCount[0] = Math.max(result.iterationCount[0], round + 1);
       const previous = accepted[round - 1];
       const spurCount = previous ? previous.vertices.length - 1 : 1;
       let stopped = false;
+      let candidateOverflow = false;
       for (let spur = 0; spur < spurCount; spur++) {
         const rootVertices = previous?.vertices.slice(0, spur) ?? [];
         const rootEdges = previous?.edges.slice(0, spur) ?? [];
@@ -137,9 +152,25 @@ export function computeKShortestPathsOnCPU(
           topology: {offsets, neighbors, weights: filteredWeights},
           startNodes: Uint32Array.of(spurSource)
         };
-        const {distances} = computeNetworkRoutingDistances(id, search);
-        if (!Number.isFinite(distances[destination])) continue;
-        const predecessors = computeNetworkRoutingPredecessors(search, distances);
+        const {distances, converged} = computeNetworkRoutingDistances(
+          id,
+          search,
+          1,
+          maximumIterations === undefined ? Infinity : maximumIterations * 64
+        );
+        if (!converged) {
+          yield {searchInterrupted: true};
+          return;
+        }
+        // All active lanes contribute to the shared certificate, even after this query has
+        // encountered a local path/candidate limit. Only reconstruction and merging may stop.
+        if (stopped || !Number.isFinite(distances[destination])) continue;
+        const predecessors = computeNetworkRoutingPredecessors(
+          search,
+          distances,
+          undefined,
+          maximumIterations === undefined ? Infinity : maximumIterations * 64
+        );
         const suffixVertices: number[] = [];
         const suffixEdges: number[] = [];
         let vertex = destination;
@@ -174,8 +205,7 @@ export function computeKShortestPathsOnCPU(
           vertex = parent;
         }
         if (stopped) {
-          result.iterationLimitReached[0] = 1;
-          break;
+          continue;
         }
         const route: Route = {
           vertices: [...rootVertices, ...suffixVertices.reverse()],
@@ -185,21 +215,42 @@ export function computeKShortestPathsOnCPU(
         const key = route.edges.join(',');
         if ([...accepted, ...candidates].some(other => other.edges.join(',') === key)) continue;
         if (candidates.length === candidateCapacity) {
-          result.candidateOverflow[0] = 1;
+          candidateOverflow = true;
           stopped = true;
-          break;
+          continue;
         }
         candidates.push(route);
       }
       if (stopped) {
-        result.converged[0] = 0;
-        break;
+        yield candidateOverflow ? {candidateOverflow: true} : {iterationLimitReached: true};
+        return;
       }
       candidates.sort(compareRoutes);
       const route = candidates.shift();
-      if (!route) break;
+      if (!route) return;
+      // Publication is outside the generator: a shared search interruption vetoes every
+      // proposal in this round before any query accepts its next route.
+      yield {route};
       accepted.push(route);
-      const row = query * options.routeCount + round;
+    }
+  }
+  const searches = Array.from(input.sources, (_, query) => iterateQuery(query));
+  for (let round = 0; round < routeCount; round++) {
+    const proposals = searches.map(search => search.next());
+    if (proposals.some(proposal => !proposal.done && proposal.value.searchInterrupted)) {
+      result.converged[0] = 0;
+      result.iterationLimitReached[0] = 1;
+      break;
+    }
+    if (proposals.every(proposal => proposal.done)) break;
+    for (const [query, proposal] of proposals.entries()) {
+      if (proposal.done) continue;
+      const {route, iterationLimitReached, candidateOverflow} = proposal.value;
+      if (iterationLimitReached || candidateOverflow) result.converged[0] = 0;
+      if (iterationLimitReached) result.iterationLimitReached[0] = 1;
+      if (candidateOverflow) result.candidateOverflow[0] = 1;
+      if (!route) continue;
+      const row = query * routeCount + round;
       result.vertices.set(route.vertices, row * pathLength);
       result.edges.set(route.edges, row * pathLength);
       result.lengths[row] = route.vertices.length;
@@ -213,11 +264,27 @@ export function computeKShortestPathsOnCPU(
 /** CPU twin; prefer it for small networks to avoid the GPU submission overhead of Yen rounds. */
 export class CPUKShortestPathsOperation extends GPUCPUOperation {
   constructor(props: KShortestPathsOperationProps) {
+    // Resolve named props explicitly so inherited accessors and changing getters cannot make
+    // validation, operation declarations and execution use different dimensions.
+    props = {
+      id: props.id,
+      queryCount: props.queryCount,
+      routeCount: props.routeCount,
+      maximumPathLength: props.maximumPathLength ?? 64,
+      candidateCapacity: props.candidateCapacity,
+      maximumIterations: props.maximumIterations,
+      topology: props.topology,
+      sources: props.sources,
+      targets: props.targets,
+      output: props.output
+    };
     const id = props.id ?? 'k-shortest-paths';
     validateCapacity(id, 'queryCount', props.queryCount);
     validateCapacity(id, 'routeCount', props.routeCount);
     validateCapacity(id, 'maximumPathLength', props.maximumPathLength ?? 64);
     validateCapacity(id, 'candidateCapacity', props.candidateCapacity ?? 256);
+    if (props.maximumIterations !== undefined)
+      validateCapacity(id, 'maximumIterations', props.maximumIterations);
     const operation = new GPUKShortestPathsOperation(props);
     super({
       id,

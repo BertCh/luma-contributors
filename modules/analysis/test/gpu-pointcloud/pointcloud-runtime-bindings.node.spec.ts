@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import {getPointCloudKernelNodes} from '../../src/pointcloud-analysis/pointcloud-kernel-nodes';
+import {getPointCloudKernelNodes} from '../../src/pointcloud-analysis/operations/pointcloud-kernel-nodes';
 import {afterAll, afterEach, expect, it, vi} from 'vitest';
 import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
@@ -70,12 +70,11 @@ function createHeightProps(graph: GPUCommandGraph, lengths: number[], padded = f
     id: 'runtime-height',
     grid: GRID,
     positions: rows('positions', 'float32x3'),
-    heights: rows('heights', 'float32'),
-    status: rows('status', 'uint32'),
     terrain: createTransientView(graph, `terrain-${identifier}`, 'float32', 3),
     coverage: createTransientView(graph, `coverage-${identifier}`, 'uint32', 3),
     parameters: createTransientView(graph, `parameters-${identifier}`, 'uint32', 5),
-    interpolation: {method: 'idw' as const, radius: 1}
+    interpolation: {method: 'idw' as const, radius: 1},
+    output: {heights: rows('heights', 'float32'), status: rows('status', 'uint32')}
   };
 }
 
@@ -100,9 +99,13 @@ it('packs exact uint32 settings and rejects IDW powers that round to zero', () =
     expect(() => getGPUPointCloudHeightParameterValues({interpolation}, GRID)).toThrow(
       /interpolation.power/
     );
-    expect(() => new GPUPointCloudHeight({...props, interpolation})).toThrow(
-      /^runtime-height interpolation.power/
-    );
+    expect(
+      () =>
+        new GPUPointCloudHeight({
+          ...props,
+          interpolation
+        })
+    ).toThrow(/^runtime-height interpolation.power/);
   }
   expect(() =>
     getGPUPointCloudHeightParameterValues({interpolation: {method: 'idw', radius: 65}}, GRID)
@@ -147,22 +150,33 @@ it('validates chunk topology and logical output overlap while allowing consecuti
     () =>
       new GPUPointCloudHeight({
         ...props,
-        heights: createVectorView('consecutive', 'float32', [first, second])
+        output: {
+          ...props.output,
+          heights: createVectorView('consecutive', 'float32', [first, second])
+        }
       })
   ).not.toThrow();
   expect(
     () =>
       new GPUPointCloudHeight({
         ...props,
-        heights: createVectorView('overlap', 'float32', [first, first])
+        output: {...props.output, heights: createVectorView('overlap', 'float32', [first, first])}
       })
   ).toThrow(/byte ranges must not overlap/);
   const status = graph.createDataView(backing.buffer, {format: 'uint32', length: 1, byteOffset: 4});
   expect(
-    () => new GPUPointCloudHeight({...createHeightProps(graph, [1]), heights: first, status})
+    () =>
+      new GPUPointCloudHeight({
+        ...createHeightProps(graph, [1]),
+        output: {heights: first, status}
+      })
   ).toThrow(/byte ranges must not overlap/);
   expect(
-    () => new GPUPointCloudHeight({...props, heights: createHeightProps(graph, [2]).heights})
+    () =>
+      new GPUPointCloudHeight({
+        ...props,
+        output: {...props.output, heights: createHeightProps(graph, [2]).output.heights}
+      })
   ).toThrow(/chunk topology/);
 });
 
@@ -238,22 +252,31 @@ it('preflights indexed scratch before allocating an index and rejects aliased ou
     positions,
     classifications: view('uint32', 4),
     grid: GRID,
-    terrain: view('float32', 3),
-    surface: view('float32', 3),
-    canopy: view('float32', 3),
-    coverage: view('uint32', 3)
+    output: {
+      terrain: view('float32', 3),
+      surface: view('float32', 3),
+      canopy: view('float32', 3),
+      coverage: view('uint32', 3)
+    }
   };
-  expect(() => new GPUPointCloudSurfaces({...props, canopy: props.surface})).toThrow(
-    /byte ranges must not overlap/
-  );
+  expect(
+    () =>
+      new GPUPointCloudSurfaces({
+        ...props,
+        output: {...props.output, canopy: props.output.surface}
+      })
+  ).toThrow(/byte ranges must not overlap/);
   const cells = 33_554_432;
   const contributor = new GPUPointCloudSurfaces({
     ...props,
     grid: {...GRID, width: 8192, height: 4096},
-    terrain: view('float32', cells),
-    surface: view('float32', cells),
-    canopy: view('float32', cells),
-    coverage: view('uint32', cells)
+    output: {
+      ...props.output,
+      terrain: view('float32', cells),
+      surface: view('float32', cells),
+      canopy: view('float32', cells),
+      coverage: view('uint32', cells)
+    }
   });
   const allocate = vi.spyOn(graph, 'createTransientBuffer');
   expect(() => contributor.getCommandNodes(graph)).toThrow(
@@ -275,14 +298,20 @@ it('audits runtime neighbourhood and surface shaders within eight baseline bindi
       strategy,
       grid: {origin: [0, 0, 0] as const, cellSize: 1, dimensions: [2, 2, 2] as const},
       parameters: view('float32', 9),
-      indices: view('uint32', 8),
-      squaredDistances: view('float32', 8),
-      counts: view('uint32', 4),
-      status
+      output: {
+        indices: view('uint32', 8),
+        squaredDistances: view('float32', 8),
+        counts: view('uint32', 4),
+        status
+      }
     };
-    expect(() => new GPUPointCloudNeighborhoods({...neighborhoods, counts: status})).toThrow(
-      /byte ranges must not overlap/
-    );
+    expect(
+      () =>
+        new GPUPointCloudNeighborhoods({
+          ...neighborhoods,
+          output: {...neighborhoods.output, counts: status}
+        })
+    ).toThrow(/byte ranges must not overlap/);
     const nodes = [
       ...new GPUPointCloudNeighborhoods(neighborhoods).getCommandNodes(graph),
       ...new GPUPointCloudSurfaces({
@@ -290,10 +319,12 @@ it('audits runtime neighbourhood and surface shaders within eight baseline bindi
         classifications: view('uint32', 4),
         grid: GRID,
         parameters: view('uint32', 1),
-        terrain: view('float32', 3),
-        surface: view('float32', 3),
-        canopy: view('float32', 3),
-        coverage: view('uint32', 3)
+        output: {
+          terrain: view('float32', 3),
+          surface: view('float32', 3),
+          canopy: view('float32', 3),
+          coverage: view('uint32', 3)
+        }
       }).getCommandNodes(graph)
     ];
     getParsedKernelSources(nodes);
@@ -320,15 +351,21 @@ it('checks all M3C2 grid scratch before an alignment resource or node is declare
     radius: 1,
     halfDepth: 1,
     grid: {origin: [0, 0, 0] as const, dimensions: [8192, 4096, 1] as const, cellSize: 1},
-    changes: view('float32x3', 4),
-    roughness: view('float32x3', 4),
-    counts: view('uint32', 8),
-    status: view('uint32', 4)
+    output: {
+      changes: view('float32x3', 4),
+      roughness: view('float32x3', 4),
+      counts: view('uint32', 8),
+      status: view('uint32', 4)
+    }
   };
   const contributor = new GPUPointCloudChange(props);
-  expect(() => new GPUPointCloudChange({...props, roughness: props.changes})).toThrow(
-    /byte ranges must not overlap/
-  );
+  expect(
+    () =>
+      new GPUPointCloudChange({
+        ...props,
+        output: {...props.output, roughness: props.output.changes}
+      })
+  ).toThrow(/byte ranges must not overlap/);
   const allocate = vi.spyOn(graph, 'createTransientBuffer');
   const add = vi.spyOn(graph, 'add');
   expect(() => contributor.getCommandNodes(graph)).toThrow(
@@ -347,24 +384,30 @@ it('checks aligned ground raster ranges before allocating morphology scratch', (
     positions,
     classifications: view('uint32', 4),
     grid: {...GRID, width: 8192, height: 4096},
+    radii: [1],
+    initialThreshold: 0,
+    slope: 0,
+    maximumThreshold: 0,
     minimumSurface: graph.createDataView(backing.buffer, {
       format: 'float32',
       length: cells,
       byteOffset: 4
     }),
     coverage: view('uint32', cells),
-    radii: [1],
-    initialThreshold: 0,
-    slope: 0,
-    maximumThreshold: 0,
-    groundMask: view('uint32', 4),
-    outputClassifications: view('uint32', 4),
-    status: view('uint32', 4)
+    output: {
+      groundMask: view('uint32', 4),
+      outputClassifications: view('uint32', 4),
+      status: view('uint32', 4)
+    }
   };
   const contributor = new GPUPointCloudGround(props);
-  expect(() => new GPUPointCloudGround({...props, status: props.groundMask})).toThrow(
-    /byte ranges must not overlap/
-  );
+  expect(
+    () =>
+      new GPUPointCloudGround({
+        ...props,
+        output: {...props.output, status: props.output.groundMask}
+      })
+  ).toThrow(/byte ranges must not overlap/);
   const allocate = vi.spyOn(graph, 'createTransientBuffer');
   expect(() => contributor.getCommandNodes(graph)).toThrow(
     /minimumSurface chunk 0 needs 134217732 bytes/
@@ -385,17 +428,25 @@ it('checks derived ICP moments against device binding size before allocating the
       target: positions,
       maximumDistance: 1,
       iterations: 1,
-      transform: view('float32', 16),
-      history: view('float32x3', 1),
-      inlierMask: view('uint32', 4),
-      status: view('uint32', 1)
+      output: {
+        transform: view('float32', 16),
+        history: view('float32x3', 1),
+        inlierMask: view('uint32', 4),
+        status: view('uint32', 1)
+      }
     };
     const contributor = new GPUPointCloudICP(props);
     expect(
       () =>
         new GPUPointCloudICP({
           ...props,
-          inlierMask: graph.createDataView(props.transform.buffer, {format: 'uint32', length: 4})
+          output: {
+            ...props.output,
+            inlierMask: graph.createDataView(props.output.transform.buffer, {
+              format: 'uint32',
+              length: 4
+            })
+          }
         })
     ).toThrow(/byte ranges must not overlap/);
     const allocate = vi.spyOn(graph, 'createTransientBuffer');
@@ -420,15 +471,21 @@ it('checks voxel inputs and output binding ranges before allocating merge interm
         sourceRowOffset: 0
       }
     ],
-    counts: view('uint32', rows),
-    centroids: view('float32x3', rows),
-    representatives: view('uint32', rows),
-    status: view('uint32', rows)
+    output: {
+      counts: view('uint32', rows),
+      centroids: view('float32x3', rows),
+      representatives: view('uint32', rows),
+      status: view('uint32', rows)
+    }
   };
   const contributor = new GPUPointCloudVoxelMerge(props);
-  expect(() => new GPUPointCloudVoxelMerge({...props, status: props.counts})).toThrow(
-    /byte ranges must not overlap/
-  );
+  expect(
+    () =>
+      new GPUPointCloudVoxelMerge({
+        ...props,
+        output: {...props.output, status: props.output.counts}
+      })
+  ).toThrow(/byte ranges must not overlap/);
   const allocate = vi.spyOn(graph, 'createTransientBuffer');
   expect(() => contributor.getCommandNodes(graph)).toThrow(
     /centroids chunk 0 needs 134217732 bytes/
@@ -447,10 +504,12 @@ it('keeps runtime numeric settings out of neighborhood, height and surface pipel
       capacity: 2,
       parameters: view('float32', 9),
       grid: {origin: [-4, -4, -4], cellSize: 1, dimensions: [8, 8, 8]},
-      indices: view('uint32', 8),
-      squaredDistances: view('float32', 8),
-      counts: view('uint32', 4),
-      status: view('uint32', 4)
+      output: {
+        indices: view('uint32', 8),
+        squaredDistances: view('float32', 8),
+        counts: view('uint32', 4),
+        status: view('uint32', 4)
+      }
     });
     const surface = new GPUPointCloudSurfaces({
       positions,
@@ -458,10 +517,12 @@ it('keeps runtime numeric settings out of neighborhood, height and surface pipel
       groundClass: radius === 2 ? 0xffffffff : 2,
       grid: GRID,
       parameters: view('uint32', 1),
-      terrain: view('float32', 3),
-      surface: view('float32', 3),
-      canopy: view('float32', 3),
-      coverage: view('uint32', 3)
+      output: {
+        terrain: view('float32', 3),
+        surface: view('float32', 3),
+        canopy: view('float32', 3),
+        coverage: view('uint32', 3)
+      }
     });
     const height = new GPUPointCloudHeight({
       ...createHeightProps(graph, [1, 257], true),
@@ -499,10 +560,12 @@ it('rejects certified support bounds that collapse to equal float32 endpoints', 
         radius: 1,
         capacity: 2,
         supportBounds: {minimum: [1, 0, 0], maximum: [1 + 1e-10, 1, 1]},
-        indices: view('uint32', 8),
-        squaredDistances: view('float32', 8),
-        counts: view('uint32', 4),
-        status: view('uint32', 4)
+        output: {
+          indices: view('uint32', 8),
+          squaredDistances: view('float32', 8),
+          counts: view('uint32', 4),
+          status: view('uint32', 4)
+        }
       })
   ).toThrow(/supportBounds.*float32/);
 });
@@ -516,10 +579,12 @@ it('checks each raster axis at its named limit before declaring graph resources'
       positions,
       classifications: view('uint32', 4),
       grid: {...GRID, width: 1, height: 1, [axis]: dimension},
-      terrain: view('float32', dimension),
-      surface: view('float32', dimension),
-      canopy: view('float32', dimension),
-      coverage: view('uint32', dimension)
+      output: {
+        terrain: view('float32', dimension),
+        surface: view('float32', dimension),
+        canopy: view('float32', dimension),
+        coverage: view('uint32', dimension)
+      }
     });
     expect(() => new GPUPointCloudSurfaces(makeProps(maximum))).not.toThrow();
     const props = makeProps(maximum + 1);
@@ -551,10 +616,7 @@ it('accepts logical voxel fields sharing a binding prefix only across separate d
   const props = {
     partitionPolicy: 'disjoint-owned-rows' as const,
     parts,
-    counts,
-    centroids,
-    representatives: view('uint32', 1),
-    status: view('uint32', 1)
+    output: {counts, centroids, representatives: view('uint32', 1), status: view('uint32', 1)}
   };
   expect(new GPUPointCloudVoxelMerge(props).getCommandNodes(graph).length).toBeGreaterThan(0);
   const representatives = graph.createDataView(backing.buffer, {
@@ -563,12 +625,20 @@ it('accepts logical voxel fields sharing a binding prefix only across separate d
     byteOffset: 4
   });
   expect(
-    () => new GPUPointCloudVoxelMerge({...props, centroids: view('float32x3', 1), representatives})
+    () =>
+      new GPUPointCloudVoxelMerge({
+        ...props,
+        output: {...props.output, centroids: view('float32x3', 1), representatives}
+      })
   ).toThrow(/aligned binding byte ranges must not overlap/);
   const overlap = graph.createDataView(backing.buffer, {format: 'float32x3', length: 1});
-  expect(() => new GPUPointCloudVoxelMerge({...props, centroids: overlap})).toThrow(
-    /logical byte ranges must not overlap/
-  );
+  expect(
+    () =>
+      new GPUPointCloudVoxelMerge({
+        ...props,
+        output: {...props.output, centroids: overlap}
+      })
+  ).toThrow(/logical byte ranges must not overlap/);
 });
 
 it('ignores unused point-to-point normals and permits disjoint ICP outputs across dispatches', () => {
@@ -580,11 +650,17 @@ it('ignores unused point-to-point normals and permits disjoint ICP outputs acros
     target: positions,
     maximumDistance: 1,
     iterations: 1,
-    transform: graph.createDataView(backing.buffer, {format: 'float32', length: 16}),
-    history: graph.createDataView(backing.buffer, {format: 'float32x3', length: 1, byteOffset: 64}),
-    inlierMask: view('uint32', 4),
-    status: view('uint32', 1),
-    targetNormals: graph.createDataView(backing.buffer, {format: 'float32x3', length: 1})
+    targetNormals: graph.createDataView(backing.buffer, {format: 'float32x3', length: 1}),
+    output: {
+      transform: graph.createDataView(backing.buffer, {format: 'float32', length: 16}),
+      history: graph.createDataView(backing.buffer, {
+        format: 'float32x3',
+        length: 1,
+        byteOffset: 64
+      }),
+      inlierMask: view('uint32', 4),
+      status: view('uint32', 1)
+    }
   };
   expect(() => new GPUPointCloudICP(props).getCommandNodes(graph)).not.toThrow();
 });
@@ -602,10 +678,12 @@ it('keeps ICP shader and pipeline counts fixed across iterations and merge level
         metric,
         maximumDistance: 1,
         iterations,
-        transform: view('float32', 16),
-        history: view('float32x3', iterations),
-        inlierMask: view('uint32', 68_000),
-        status: view('uint32', 1)
+        output: {
+          transform: view('float32', 16),
+          history: view('float32x3', iterations),
+          inlierMask: view('uint32', 68_000),
+          status: view('uint32', 1)
+        }
       });
       const nodes = contributor.getCommandNodes(graph);
       expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
@@ -653,10 +731,12 @@ it('keeps voxel merge shader and pipeline counts fixed across differently padded
         representatives: padded('uint32', partIndex + 2),
         sourceRowOffset: partIndex * 13
       })),
-      counts: padded('uint32', 3),
-      centroids: padded('float32x3', 5),
-      representatives: padded('uint32', 7),
-      status: padded('uint32', 9)
+      output: {
+        counts: padded('uint32', 3),
+        centroids: padded('float32x3', 5),
+        representatives: padded('uint32', 7),
+        status: padded('uint32', 9)
+      }
     });
     const nodes = contributor.getCommandNodes(graph);
     expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
@@ -696,11 +776,13 @@ it('keeps feature pipelines fixed across strided chunks and accepts separate-pas
       capacity: 4,
       counts: rows('uint32'),
       indices: rows('uint32', 4),
-      normals: rows('float32x3'),
-      eigenvalues: rows('float32x3'),
-      shapes: rows('float32x3'),
-      covariance: rows('float32', 6),
-      status: rows('uint32')
+      output: {
+        normals: rows('float32x3'),
+        eigenvalues: rows('float32x3'),
+        shapes: rows('float32x3'),
+        covariance: rows('float32', 6),
+        status: rows('uint32')
+      }
     });
     const nodes = contributor.getCommandNodes(graph);
     expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
@@ -719,14 +801,16 @@ it('keeps feature pipelines fixed across strided chunks and accepts separate-pas
       capacity: 4,
       counts: view('uint32', 1),
       indices: view('uint32', 4),
-      normals: graph.createDataView(backing.buffer, {format: 'float32x3', length: 1}),
-      shapes: graph.createDataView(backing.buffer, {
-        format: 'float32x3',
-        length: 1,
-        byteOffset: 12
-      }),
-      eigenvalues: view('float32x3', 1),
-      status: view('uint32', 1)
+      output: {
+        normals: graph.createDataView(backing.buffer, {format: 'float32x3', length: 1}),
+        shapes: graph.createDataView(backing.buffer, {
+          format: 'float32x3',
+          length: 1,
+          byteOffset: 12
+        }),
+        eigenvalues: view('float32x3', 1),
+        status: view('uint32', 1)
+      }
     }).getCommandNodes(graph)
   ).not.toThrow();
 });
@@ -746,16 +830,18 @@ it('keeps ground pipelines fixed across chunk and morphology round counts', () =
     const contributor = new GPUPointCloudGround({
       positions: rows('float32x3'),
       classifications: rows('uint32'),
-      groundMask: rows('uint32'),
-      outputClassifications: rows('uint32'),
-      status: rows('uint32'),
       grid: {...GRID, width: 9, height: 9},
-      minimumSurface: view('float32', 81),
-      coverage: view('uint32', 81),
       radii: Array.from({length: count}, (_, index) => index + 1),
       initialThreshold: 0,
       maximumThreshold: 1,
-      slope: 0.1
+      slope: 0.1,
+      minimumSurface: view('float32', 81),
+      coverage: view('uint32', 81),
+      output: {
+        groundMask: rows('uint32'),
+        outputClassifications: rows('uint32'),
+        status: rows('uint32')
+      }
     });
     const nodes = contributor.getCommandNodes(graph);
     expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
@@ -782,10 +868,12 @@ it('audits runtime grid variants within baseline storage bindings', () => {
         parameters: view('float32', 9),
         capacity: 4,
         strategy,
-        indices: view('uint32', 16),
-        squaredDistances: view('float32', 16),
-        counts: view('uint32', 4),
-        status: view('uint32', 4)
+        output: {
+          indices: view('uint32', 16),
+          squaredDistances: view('float32', 16),
+          counts: view('uint32', 4),
+          status: view('uint32', 4)
+        }
       }).getCommandNodes(graph),
       ...new GPUPointCloudSurfaces({
         positions,
@@ -793,10 +881,12 @@ it('audits runtime grid variants within baseline storage bindings', () => {
         grid: GRID,
         gridParameters,
         parameters: view('uint32', 1),
-        terrain: view('float32', 3),
-        surface: view('float32', 3),
-        canopy: view('float32', 3),
-        coverage: view('uint32', 3)
+        output: {
+          terrain: view('float32', 3),
+          surface: view('float32', 3),
+          canopy: view('float32', 3),
+          coverage: view('uint32', 3)
+        }
       }).getCommandNodes(graph),
       ...new GPUPointCloudHeight({
         ...createHeightProps(graph, [1, 257], true),
@@ -805,9 +895,6 @@ it('audits runtime grid variants within baseline storage bindings', () => {
       ...new GPUPointCloudGround({
         positions,
         classifications: view('uint32', 4),
-        groundMask: view('uint32', 4),
-        outputClassifications: view('uint32', 4),
-        status: view('uint32', 4),
         grid: {...GRID, width: 9, height: 9},
         gridParameters,
         parameters: view('float32', 2),
@@ -816,7 +903,12 @@ it('audits runtime grid variants within baseline storage bindings', () => {
         maximumThreshold: 1,
         slope: 0.1,
         minimumSurface: view('float32', 81),
-        coverage: view('uint32', 81)
+        coverage: view('uint32', 81),
+        output: {
+          groundMask: view('uint32', 4),
+          outputClassifications: view('uint32', 4),
+          status: view('uint32', 4)
+        }
       }).getCommandNodes(graph)
     ];
     getParsedKernelSources(nodes);
@@ -845,7 +937,10 @@ it('checks STORAGE usage and separates read-only buffers while allowing packed w
     graph.importBuffer({id: 'copy-only-terrain', byteLength: 12, usage: Buffer.COPY_DST}),
     {format: 'float32', length: 3}
   );
-  const contributor = new GPUPointCloudHeight({...props, terrain});
+  const contributor = new GPUPointCloudHeight({
+    ...props,
+    terrain
+  });
   const allocate = vi.spyOn(graph, 'createTransientBuffer');
   expect(() => contributor.getCommandNodes(graph)).toThrow(
     /terrain.*usage must include Buffer.STORAGE/
@@ -855,16 +950,19 @@ it('checks STORAGE usage and separates read-only buffers while allowing packed w
   const backing = createTransientView(graph, 'packed-layout', 'uint32', 129);
   const packed = {
     ...props,
-    heights: graph.createDataView(backing.buffer, {
-      format: 'float32',
-      length: 1,
-      byteOffset: 256
-    }),
-    status: graph.createDataView(backing.buffer, {
-      format: 'uint32' as const,
-      length: 1,
-      byteOffset: 512
-    })
+    output: {
+      ...props.output,
+      heights: graph.createDataView(backing.buffer, {
+        format: 'float32',
+        length: 1,
+        byteOffset: 256
+      }),
+      status: graph.createDataView(backing.buffer, {
+        format: 'uint32' as const,
+        length: 1,
+        byteOffset: 512
+      })
+    }
   };
   expect(() => new GPUPointCloudHeight(packed).getCommandNodes(graph)).not.toThrow();
   expect(
@@ -915,10 +1013,12 @@ it('keeps normal-scale pipelines fixed across scale rounds and preflights its ne
       radii,
       capacity: 4,
       parameters: view('float32', 5),
-      normals: view('float32x3', 4),
-      normalScales: view('float32', 4),
-      normalVariances: view('float32', 4),
-      status: view('uint32', 4)
+      output: {
+        normals: view('float32x3', 4),
+        normalScales: view('float32', 4),
+        normalVariances: view('float32', 4),
+        status: view('uint32', 4)
+      }
     });
     const nodes = contributor.getCommandNodes(graph);
     expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
@@ -936,10 +1036,12 @@ it('keeps normal-scale pipelines fixed across scale rounds and preflights its ne
     capacity: 4,
     grid: {origin: [0, 0, 0], dimensions: [8192, 4096, 1], cellSize: 1},
     parameters: view('float32', 5),
-    normals: view('float32x3', 4),
-    normalScales: view('float32', 4),
-    normalVariances: view('float32', 4),
-    status: view('uint32', 4)
+    output: {
+      normals: view('float32x3', 4),
+      normalScales: view('float32', 4),
+      normalVariances: view('float32', 4),
+      status: view('uint32', 4)
+    }
   });
   const allocate = vi.spyOn(graph, 'createTransientBuffer');
   expect(() => contributor.getCommandNodes(graph)).toThrow(
@@ -976,10 +1078,12 @@ it('keeps voxel row-chunk pipelines fixed, including empty and padded chunks', (
         representatives: rows('uint32'),
         sourceRowOffset
       })),
-      counts: rows('uint32'),
-      centroids: rows('float32x3'),
-      representatives: rows('uint32'),
-      status: rows('uint32')
+      output: {
+        counts: rows('uint32'),
+        centroids: rows('float32x3'),
+        representatives: rows('uint32'),
+        status: rows('uint32')
+      }
     });
     const nodes = contributor.getCommandNodes(graph);
     expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
@@ -1002,8 +1106,7 @@ it('preflights statistical-filter output flags and SMRF nested grid scratch befo
     counts: view('uint32', 4),
     squaredDistances: view('float32', 16),
     capacity: 4,
-    meanDistances: view('float32', 4),
-    validity
+    output: {meanDistances: view('float32', 4), validity}
   });
   const allocate = vi.spyOn(graph, 'createTransientBuffer');
   expect(() => statisticalFilter.getCommandNodes(graph)).toThrow(
@@ -1017,10 +1120,12 @@ it('preflights statistical-filter output flags and SMRF nested grid scratch befo
     classifications: view('uint32', 4),
     grid: {...GRID, width: 8192, height: 4096},
     window: 1,
-    groundSurface: view('float32', cells),
-    groundMask: view('uint32', 4),
-    outputClassifications: view('uint32', 4),
-    status: view('uint32', 4)
+    output: {
+      groundSurface: view('float32', cells),
+      groundMask: view('uint32', 4),
+      outputClassifications: view('uint32', 4),
+      status: view('uint32', 4)
+    }
   });
   const allocateSMRF = vi.spyOn(graph, 'createTransientBuffer');
   expect(() => smrf.getCommandNodes(graph)).toThrow(/grid cell offsets needs 134217732 bytes/);
@@ -1037,10 +1142,12 @@ it('keeps SMRF shader and pipeline counts fixed as the opening rounds grow', () 
       classifications: view('uint32', 4),
       grid: {...GRID, width: 9, height: 9},
       window,
-      groundSurface: view('float32', 81),
-      groundMask: view('uint32', 4),
-      outputClassifications: view('uint32', 4),
-      status: view('uint32', 4)
+      output: {
+        groundSurface: view('float32', 81),
+        groundMask: view('uint32', 4),
+        outputClassifications: view('uint32', 4),
+        status: view('uint32', 4)
+      }
     });
     const nodes = contributor.getCommandNodes(graph);
     expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
@@ -1067,10 +1174,12 @@ it('accepts disjoint packed status fields across actual neighborhood and ground 
       radius: 1,
       capacity: 2,
       parameters: view('float32', 9),
-      indices: graph.createDataView(shared.buffer, {format: 'uint32', length: 8}),
-      status: graph.createDataView(shared.buffer, {format: 'uint32', length: 4, byteOffset: 32}),
-      counts: view('uint32', 4),
-      squaredDistances: view('float32', 8)
+      output: {
+        indices: graph.createDataView(shared.buffer, {format: 'uint32', length: 8}),
+        status: graph.createDataView(shared.buffer, {format: 'uint32', length: 4, byteOffset: 32}),
+        counts: view('uint32', 4),
+        squaredDistances: view('float32', 8)
+      }
     }).getCommandNodes(graph)
   ).not.toThrow();
   const groundShared = view('uint32', 8);
@@ -1079,19 +1188,21 @@ it('accepts disjoint packed status fields across actual neighborhood and ground 
       positions,
       classifications: view('uint32', 4),
       grid: {...GRID, width: 9, height: 9},
-      minimumSurface: view('float32', 81),
-      coverage: view('uint32', 81),
       radii: [1],
       initialThreshold: 0,
       slope: 0,
       maximumThreshold: 0,
-      groundMask: view('uint32', 4),
-      status: graph.createDataView(groundShared.buffer, {format: 'uint32', length: 4}),
-      outputClassifications: graph.createDataView(groundShared.buffer, {
-        format: 'uint32',
-        length: 4,
-        byteOffset: 16
-      })
+      minimumSurface: view('float32', 81),
+      coverage: view('uint32', 81),
+      output: {
+        groundMask: view('uint32', 4),
+        status: graph.createDataView(groundShared.buffer, {format: 'uint32', length: 4}),
+        outputClassifications: graph.createDataView(groundShared.buffer, {
+          format: 'uint32',
+          length: 4,
+          byteOffset: 16
+        })
+      }
     }).getCommandNodes(graph)
   ).not.toThrow();
 });
@@ -1108,20 +1219,16 @@ it('skips all empty row dispatches without validating unused storage bindings', 
   const merge = new GPUPointCloudVoxelMerge({
     partitionPolicy: 'disjoint-owned-rows',
     parts: [{counts, centroids, representatives: counts, sourceRowOffset: 0}],
-    counts,
-    centroids,
-    representatives: counts,
-    status: counts
+    output: {counts, centroids, representatives: counts, status: counts}
   });
   expect(merge.estimatedCommandNodeCount).toBe(0);
   expect(merge.getCommandNodes(graph)).toEqual([]);
   const height = new GPUPointCloudHeight({
     positions: centroids,
-    heights: graph.createDataView(backing, {format: 'float32', length: 0}),
-    status: counts,
     grid: GRID,
     terrain: graph.createDataView(backing, {format: 'float32', length: 3}),
-    coverage: graph.createDataView(backing, {format: 'uint32', length: 3})
+    coverage: graph.createDataView(backing, {format: 'uint32', length: 3}),
+    output: {heights: graph.createDataView(backing, {format: 'float32', length: 0}), status: counts}
   });
   expect(height.getCommandNodes(graph)).toEqual([]);
 });
@@ -1138,15 +1245,17 @@ it('permits normal-scale status to share an alignment prefix with separately rea
   });
   const contributor = new GPUPointCloudNormalScale({
     positions,
-    status,
     radii: [1],
     capacity: 4,
     parameters: view('float32', 5),
     grid: {origin: [0, 0, 0], dimensions: [3, 3, 3], cellSize: 1},
     gridParameters: view('float32', 4),
-    normals: view('float32x3', 4),
-    normalScales: view('float32', 4),
-    normalVariances: view('float32', 4)
+    output: {
+      status,
+      normals: view('float32x3', 4),
+      normalScales: view('float32', 4),
+      normalVariances: view('float32', 4)
+    }
   });
   const nodes = contributor.getCommandNodes(graph);
   expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);

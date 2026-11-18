@@ -52,10 +52,11 @@ it('GPUTrackSimilarity decision and DTW kernels fit the core limits at maximal o
   expect(ids).toContain('track-similarity-dynamic-time-warping');
   expect(ids).toContain('track-similarity-pair-ranges');
   expect(ids).toContain('track-similarity-frechet-decision');
-  for (const [kernelId, source] of getParsedKernelSources(nodes)) {
+  const recordedKernelSources1 = getParsedKernelSources(nodes);
+  for (const {id: kernelId, source: source, constants} of recordedKernelSources1.configurations) {
     expect(getStorageBindingCount(source), kernelId).toBeLessThanOrEqual(8);
-    expect(getWorkgroupMemoryBytes(source), kernelId).toBeLessThanOrEqual(16384);
-    expect(getPrivateMemoryBytes(source), kernelId).toBeLessThanOrEqual(8192);
+    expect(getWorkgroupMemoryBytes(source, constants), kernelId).toBeLessThanOrEqual(16384);
+    expect(getPrivateMemoryBytes(source, constants), kernelId).toBeLessThanOrEqual(8192);
   }
   // Rule 12: the pair capacity is a size; it adds no kernel variant.
   const other = new GPUCommandGraph(createNullWebGPUDevice());
@@ -132,5 +133,7 @@ it('decision-only work prunes endpoints before coupling and boxes before reachab
   expect(decision).toContain('predecessor && coupledMetric');
   expect(decision).toContain('deadDiagonals >= 2u');
   expect(decision).toContain('previousBoundaryCount == 0u');
-  expect(getWorkgroupMemoryBytes(decision)).toBeLessThanOrEqual(16384);
+  for (const kernel of sources.getConfigurations('track-similarity-frechet-decision')) {
+    expect(getWorkgroupMemoryBytes(kernel.source, kernel.constants)).toBeLessThanOrEqual(16384);
+  }
 });

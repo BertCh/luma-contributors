@@ -25,11 +25,22 @@ import {
 import {getCPUTrajectoryDistance} from '../../analysis-core/operations/cpu-trajectory-distance';
 import {GPU_MOVEMENT_SENTINEL} from '../trajectory-staypoints/movement-common';
 import type {GPUModalSplitMetric} from './gpu-modal-split';
-import {GPUModalSplitOperation, type ModalSplitOperationProps} from './gpu-modal-split-operation';
+import {
+  GPUModalSplitOperation,
+  snapshotModalSplitOperationProps,
+  type ModalSplitOperationProps
+} from './gpu-modal-split-operation';
 
 /** Trajectory rows and a sorted, capacity-sized tripleg table. */
 export type CPUModalSplitInput = CPUTrajectoryRows & {
-  triplegs: {tracks: Uint32Array; startRows: Uint32Array; endRows: Uint32Array; count: Uint32Array};
+  triplegs: {
+    tracks: Uint32Array;
+    startRows: Uint32Array;
+    endRows: Uint32Array;
+    count: Uint32Array;
+    overflow?: Uint32Array;
+    candidateOverflow?: Uint32Array;
+  };
   modes?: Uint32Array;
 };
 /** Plain numeric settings are compile-time, as in GPUModalSplit. */
@@ -39,7 +50,7 @@ export type CPUModalSplitOptions = {
   modeSpeedBreaks?: readonly number[];
   spatialContext?: GPUSpatialContext;
 };
-/** Track-major metric and predicted modes, zero past the active tripleg count. */
+/** Track-major metric and predicted modes; incomplete input yields NaN and missing modes. */
 export type CPUModalSplitResult = {modalSplit: Float32Array; predictedModes: Uint32Array};
 
 function validateOptions(id: string, options: CPUModalSplitOptions): void {
@@ -95,6 +106,17 @@ export function computeModalSplitOnCPU(
   const trackCount = trackOffsets.length - 1;
   const {triplegs} = input;
   const capacity = triplegs.tracks.length;
+  for (const name of ['overflow', 'candidateOverflow'] as const) {
+    const flag = triplegs[name];
+    if (flag && flag.length < 1)
+      throw new Error(`modal-split triplegs.${name} must contain at least one row`);
+  }
+  if (triplegs.overflow?.[0] || triplegs.candidateOverflow?.[0]) {
+    return {
+      modalSplit: new Float32Array(trackCount * options.modeCount).fill(NaN),
+      predictedModes: new Uint32Array(capacity).fill(GPU_MOVEMENT_SENTINEL)
+    };
+  }
   if (triplegs.startRows.length !== capacity)
     throw new Error('triplegs.startRows length must match triplegs.tracks');
   if (triplegs.endRows.length !== capacity)
@@ -161,6 +183,7 @@ export function computeModalSplitOnCPU(
 /** CPU twin. Prediction uses an output-owned mode table instead of a writable input. */
 export class CPUModalSplitOperation extends GPUCPUOperation {
   constructor(props: ModalSplitOperationProps) {
+    props = snapshotModalSplitOperationProps(props);
     const id = props.id ?? 'modal-split';
     validateOptions(id, props);
     validateCapacity(id, 'rowCount', props.rowCount, 0);
@@ -219,7 +242,15 @@ export class CPUModalSplitOperation extends GPUCPUOperation {
               tracks,
               startRows: getCPUOperationUint32Rows(id, inputs, 'triplegStartRows'),
               endRows: getCPUOperationUint32Rows(id, inputs, 'triplegEndRows'),
-              count: getCPUOperationUint32Rows(id, inputs, 'triplegCount')
+              count: getCPUOperationUint32Rows(id, inputs, 'triplegCount'),
+              overflow:
+                props.triplegs.status.overflow !== undefined
+                  ? getCPUOperationUint32Rows(id, inputs, 'triplegOverflow')
+                  : undefined,
+              candidateOverflow:
+                props.triplegs.status.candidateOverflow !== undefined
+                  ? getCPUOperationUint32Rows(id, inputs, 'triplegCandidateOverflow')
+                  : undefined
             },
             modes:
               !props.modeSpeedBreaks && props.modes !== undefined

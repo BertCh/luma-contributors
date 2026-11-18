@@ -58,7 +58,7 @@ it('does not preflight elevations when playhead elevation output is absent', () 
   }
 });
 
-it('ignores an unused tested-count view when no multiple-testing output is requested', () => {
+it('publishes and validates testedCount without an adjusted-p output', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const buffer = device.createBuffer({byteLength: 4, usage: Buffer.COPY_DST});
@@ -77,17 +77,42 @@ it('ignores an unused tested-count view when no multiple-testing output is reque
         pValues: createTransientView(graph, 'p-values', 'float32', 1)
       }
     };
-    for (const testedCount of [
-      importGraphBuffer(graph, 'unused', buffer, 'uint32', 1),
-      graph.createDataView(correlations.buffer, {format: 'uint32', length: 1}),
-      graph.createDataView(first.buffer, {format: 'uint32', length: 1})
-    ]) {
+    for (const [testedCount, message] of [
+      [importGraphBuffer(graph, 'unused', buffer, 'uint32', 1), /Buffer.STORAGE/],
+      [graph.createDataView(correlations.buffer, {format: 'uint32', length: 1}), /logical/],
+      [
+        graph.createDataView(first.buffer, {format: 'uint32', length: 1}),
+        /share buffers with inputs/
+      ]
+    ] as const) {
       expect(() =>
         new GPUSpaceTimeCrossCorrelation({
           ...props,
           output: {...props.output, testedCount}
         }).getCommandNodes(graph)
-      ).not.toThrow();
+      ).toThrow(message);
+    }
+    const testedCount = createTransientView(graph, 'tested-count', 'uint32', 1);
+    const nodes = new GPUSpaceTimeCrossCorrelation({
+      ...props,
+      output: {...props.output, testedCount}
+    })
+      .getCommandNodes(graph)
+      .filter(node => node.id.includes('tested-count'));
+    expect(nodes.map(node => node.id)).toEqual([
+      'space-time-cross-correlation-clear-tested-count',
+      'space-time-cross-correlation-tested-count',
+      'space-time-cross-correlation-publish-tested-count'
+    ]);
+    const memory = createCPUGraphMemory();
+    for (const [pValue, expected] of [
+      [0.5, 1],
+      [NaN, 0]
+    ]) {
+      memory.write(props.output.pValues, new Float32Array([pValue]));
+      memory.write(testedCount, new Uint32Array([99]));
+      executeCommandNodesOnCPU(nodes, memory);
+      expect(Array.from(memory.readUint32(testedCount))).toEqual([expected]);
     }
   } finally {
     buffer.destroy();

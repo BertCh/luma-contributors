@@ -49,7 +49,112 @@ function getFitProps(semivariances: string): VariogramModelFitOperationProps {
   };
 }
 
+it.each([
+  'output/output',
+  'input/output'
+] as const)('both variogram graph entry points refuse %s collisions before planning', async collision => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props = getFitProps('semivariances');
+  if (collision === 'output/output') {
+    props.output.parameters = 'x';
+    props.output.diagnostics = 'x';
+  } else props.output.parameters = props.distances;
+  const port = collision === 'output/output' ? 'diagnostics' : 'parameters';
+  const value = collision === 'output/output' ? 'x' : props.distances;
+  const error = new Error(
+    `fit outputs.${port} must name a graph value ("${value}") that no other port uses`
+  );
+  for (const Operation of [GPUVariogramModelFitOperation, CPUVariogramModelFitOperation]) {
+    await expect(async () =>
+      runOperationGraph(device, {
+        inputs: getInputs(),
+        operations: [new Operation(props)],
+        outputs: Object.values(props.output)
+      })
+    ).rejects.toEqual(error);
+  }
+});
+
+it('final1 CPU and GPU variogram honor zero and one-step budgets before model selection', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const [rangeSteps, maximumIterations] of [
+    [200, 0],
+    [101, 0],
+    [200, 1]
+  ]) {
+    const outputs: Record<string, Awaited<ReturnType<typeof runOperationGraph>>> = {};
+    const expectedBracket =
+      ((2 * Math.log((3 * DISTANCES[BIN_COUNT - 1]) / (DISTANCES[0] / 10))) / (rangeSteps - 1)) *
+      ((Math.sqrt(5) - 1) / 2) ** maximumIterations;
+    for (const location of ['cpu', 'gpu'] as const) {
+      const props: VariogramModelFitOperationProps = {
+        ...getFitProps('semivariances'),
+        models: ['exponential'],
+        rangeSteps,
+        maximumIterations
+      };
+      const rows = await runOperationGraph(device, {
+        inputs: getInputs(),
+        operations: [
+          location === 'cpu'
+            ? new CPUVariogramModelFitOperation(props)
+            : new GPUVariogramModelFitOperation(props)
+        ],
+        outputs: ['parameters', 'diagnostics', 'status']
+      });
+      // Check completeness before accepting the candidate parameters as an identified fit.
+      expect(Array.from(rows['status'])).toEqual([3]);
+      expect(Number.isFinite(rows['diagnostics'][3])).toBe(true);
+      expect(rows['diagnostics'][3]).toBeCloseTo(expectedBracket, 5);
+      expect(rows['diagnostics'][3]).toBeGreaterThan(1e-5);
+      outputs[location] = rows;
+    }
+    for (let component = 0; component < 4; component++) {
+      const reference = outputs['cpu']['parameters'][component];
+      const actual = outputs['gpu']['parameters'][component];
+      expect(Number.isFinite(reference)).toBe(true);
+      expect(Number.isFinite(actual)).toBe(true);
+      expect(Math.abs(actual - reference) / Math.max(1, Math.abs(reference))).toBeLessThanOrEqual(
+        3e-4
+      );
+    }
+  }
+});
+
 for (const location of ['gpu', 'cpu'] as const) {
+  it(`final1b ${location} variogram operation retains model order and declared output names`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const models = [...MODELS];
+    const props = {...getFitProps('semivariances'), models, rangeSteps: 200, maximumIterations: 32};
+    const operation =
+      location === 'gpu'
+        ? new GPUVariogramModelFitOperation(props)
+        : new CPUVariogramModelFitOperation(props);
+    models.splice(0, models.length, 'gaussian');
+    props.maximumIterations = 0;
+    props.rangeSteps = 3;
+    props.output.parameters = 'other';
+    props.output.diagnostics = 'other-diagnostics';
+    props.output.status = 'other-status';
+    const rows = await runOperationGraph(device, {
+      inputs: getInputs(),
+      operations: [operation],
+      outputs: ['parameters', 'diagnostics', 'status']
+    });
+    expect(rows['parameters']).toHaveLength(12);
+    expect(rows['diagnostics']).toHaveLength(12);
+    expect(rows['status']).toHaveLength(3);
+    expect(rows['status'][EXPONENTIAL_ROW]).toBe(0);
+    const parameters = rows['parameters'].subarray(EXPONENTIAL_ROW * 4, EXPONENTIAL_ROW * 4 + 4);
+    expect(parameters[0]).toBeCloseTo(TRUTH.nugget, 2);
+    expect(parameters[1]).toBeCloseTo(TRUTH.sill, 2);
+    expect(parameters[2]).toBeCloseTo(TRUTH.range, 2);
+    expect(parameters[3]).toBeLessThan(1e-8);
+  });
+
   it(`the ${location} fit operation recovers the model the bins were drawn from`, async () => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);

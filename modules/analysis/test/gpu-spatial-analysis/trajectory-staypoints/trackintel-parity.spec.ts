@@ -147,7 +147,11 @@ describe('trackintel parity', () => {
             },
             trips: {
               ids: tripIds.view,
-              status: {count: tripCount.view, overflow: tripOverflow.view},
+              status: {
+                count: tripCount.view,
+                overflow: tripOverflow.view,
+                candidateOverflow: harness.output('trip-candidate-overflow', 'uint32', 1).view
+              },
               startRows: tripStarts.view,
               finishRows: tripFinishes.view,
               originStaypoints: tripOrigins.view,

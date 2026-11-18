@@ -127,6 +127,8 @@ describe('storage top-k kernels executed on the WGSL interpreter', () => {
     const chunks = [view('float32x2', 65), view('float32x2', 1)];
     const positions = view('float32x2', 5);
     const ids = view('uint32', queryCount * capacity);
+    const neighborRows = view('uint32', queryCount * capacity);
+    const featureIds = view('uint32', 5);
     const counts = view('uint32', queryCount);
     const distances = view('float32', queryCount * capacity);
     const foot = view('float32x2', queryCount * capacity);
@@ -145,6 +147,8 @@ describe('storage top-k kernels executed on the WGSL interpreter', () => {
       querySort,
       scratchChunkQueryCount: 64,
       neighborIds: ids,
+      neighborRows,
+      featureIds,
       neighborCounts: counts,
       neighborDistances: distances,
       neighborFootPoints: foot,
@@ -160,6 +164,8 @@ describe('storage top-k kernels executed on the WGSL interpreter', () => {
     ];
     const queries = Array.from({length: queryCount}, (_, row) => [row % 11, 0]);
     memory.write(positions, Float32Array.from(features.flat()));
+    const sourceIds = Uint32Array.of(500, 400, 300, 200, 100);
+    memory.write(featureIds, sourceIds);
     memory.write(chunks[0], Float32Array.from(queries.slice(0, 65).flat()));
     memory.write(chunks[1], Float32Array.from(queries[65]));
     // The interpreter's arrayLength reads the whole backing ArrayBuffer, including the executor's
@@ -170,6 +176,7 @@ describe('storage top-k kernels executed on the WGSL interpreter', () => {
     }
     executeTopKNodes(nodes, memory);
     const actualIds = memory.readUint32(ids);
+    const actualRows = memory.readUint32(neighborRows);
     const actualDistances = memory.readFloat32(distances);
     const actualFoot = memory.readFloat32(foot);
     expect(Array.from(memory.readUint32(counts))).toEqual(Array(queryCount).fill(features.length));
@@ -186,7 +193,10 @@ describe('storage top-k kernels executed on the WGSL interpreter', () => {
         );
       for (let slot = 0; slot < capacity; slot++) {
         const offset = row * capacity + slot;
-        expect(actualIds[offset]).toBe(expected[slot]?.featureRow ?? 0xffffffff);
+        expect(actualIds[offset]).toBe(
+          slot < expected.length ? sourceIds[expected[slot].featureRow] : 0xffffffff
+        );
+        expect(actualRows[offset]).toBe(expected[slot]?.featureRow ?? 0xffffffff);
         expect(actualDistances[offset]).toBeCloseTo(expected[slot]?.distance ?? -1, 5);
         if (slot < expected.length) {
           expect(Array.from(actualFoot.slice(offset * 2, offset * 2 + 2))).toEqual(
@@ -293,7 +303,7 @@ describe('storage top-k kernels executed on the WGSL interpreter', () => {
     };
     const contributor = new GPUNearestFeatureWeights({
       slotCapacity: 65,
-      neighborIds: ids,
+      neighborRows: ids,
       neighborCounts: counts,
       neighborDistances: distances,
       weightType: 'inverse-distance',

@@ -41,7 +41,8 @@ export type GPUTopologyStatusPort = GPUBoundedResultStatusPort & {
   candidateOverflow: GraphDataView<'uint32'>;
   /**
    * Optional one-row count of segment pairs the intersection predicates could not certify. They
-   * are counted (and set `overflow`) whether or not this view is given.
+   * are counted (and set `candidateOverflow`) whether or not this view is given. Polygonize
+   * publishes the same counter to every supplied top-level, noded and directed destination.
    */
   uncertainCount?: GraphDataView<'uint32'>;
 };
@@ -92,5 +93,13 @@ export type GPUPolygonizeOutput = {
     sourceIds: GraphDataView<'uint32'>;
   };
   diagnostics: GPUPolygonizeDiagnosticsPort;
-  status: GPUTopologyStatusPort;
+  /**
+   * `count` counts written features. `requiredRingCount` counts all directed face rings needed
+   * by assembly, including holes and unbounded walks, before ring capacity truncation. It is
+   * only a lower bound when noding was incomplete. No exact feature requirement is available
+   * after ring loss, so this port deliberately has no `requiredCount`.
+   */
+  status: Omit<GPUTopologyStatusPort, 'requiredCount'> & {
+    requiredRingCount: GraphDataView<'uint32'>;
+  };
 };

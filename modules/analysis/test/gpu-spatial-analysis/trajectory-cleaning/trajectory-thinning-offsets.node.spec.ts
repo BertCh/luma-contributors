@@ -15,6 +15,41 @@ import {
   executeCommandNodesOnCPU
 } from '../segment-intersection/wgsl-graph-executor';
 
+it('accepts adjacent independently written count and candidate status subviews', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const storage = createTransientView(graph, 'status', 'uint32', 2);
+    const count = graph.createDataView(storage.buffer, {format: 'uint32', length: 1});
+    const candidateOverflow = graph.createDataView(storage.buffer, {
+      format: 'uint32',
+      byteOffset: 4,
+      length: 1
+    });
+    expect(() =>
+      new GPUTrajectoryThinning({
+        mode: 'minimum-time',
+        maximumSearchRows: 1,
+        positions: createTransientView(graph, 'positions', 'float32x2', 4),
+        timestamps: createTransientView(graph, 'timestamps', 'float32', 4),
+        trackOffsets: createTransientView(graph, 'offsets', 'uint32', 2),
+        parameters: createTransientView(graph, 'parameters', 'float32', 4),
+        output: {
+          rowIds: createTransientView(graph, 'rows', 'uint32', 4),
+          trackOffsets: createTransientView(graph, 'out-offsets', 'uint32', 2),
+          status: {
+            count,
+            candidateOverflow,
+            overflow: createTransientView(graph, 'overflow', 'uint32', 1)
+          }
+        }
+      }).getCommandNodes(graph)
+    ).not.toThrow();
+  } finally {
+    device.destroy();
+  }
+});
+
 it('computes independent track boundaries with empty tracks and a clamped compact capacity', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);

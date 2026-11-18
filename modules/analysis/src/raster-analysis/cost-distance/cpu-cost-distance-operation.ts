@@ -18,7 +18,7 @@ import {
   type CPURasterOperationBand
 } from '../raster-grid/raster-operation-band';
 import {validateRasterGridAxisAligned, validateRasterGridOrthogonal} from '../raster-band-utils';
-import {validateRasterCellSizeMode} from '../../analysis-core/raster-grid';
+import {validateRasterCellSizeMode} from '../../analysis-core/contracts/raster-grid';
 import {GPU_COST_DISTANCE_NONE, GPU_COST_DISTANCE_PARAMETER_LENGTH} from './gpu-cost-distance';
 import {GPU_RASTER_D8_DIRECTIONS, getRasterD8Distance} from './raster-grid-utils';
 import {

@@ -38,7 +38,10 @@ import {
   validateDisjointWritableViews,
   validateGraphChunkBindingRanges
 } from '../../analysis-core/kernels/graph-chunk-dispatch';
-import {GPU_CELL_DEFAULT_SUM_SCALE, validateSumScale} from '../../analysis-core/cell-key-wgsl';
+import {
+  GPU_CELL_DEFAULT_SUM_SCALE,
+  validateSumScale
+} from '../../analysis-core/kernels/cell-key-wgsl';
 import {readBinding, writeBinding} from './group-statistics-common';
 import {getColumnReductionNodes} from './group-statistics-moments';
 import {getColumnOrderNodes} from './group-statistics-order';

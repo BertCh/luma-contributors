@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+
 /** Variogram model families supported by {@link fitVariogramModel}. */
 export type VariogramModelType =
   | 'spherical'
@@ -73,11 +75,31 @@ export type VariogramModelOptions = {
   model: VariogramModelType;
   /** Least-squares weighting. Defaults to `'cressie'`. */
   weighting?: VariogramModelWeighting;
+  /** Log-range ladder length, 3–1024. Defaults to 200. */
+  rangeSteps?: number;
+  /** Golden-section refinements per weighting pass, 0–64. Defaults to 60 on CPU. */
+  maximumIterations?: number;
 };
 
 const RANGE_LADDER_LENGTH = 200;
 const GOLDEN_SECTION_ITERATIONS = 60;
+/** Match the GPU's bounded per-model candidate table. */
+const MAXIMUM_RANGE_STEPS = 1024;
+/** Match the ordered cooperative-refinement budget accepted by the GPU contributor. */
+const MAXIMUM_ITERATIONS = 64;
 const CRESSIE_PASSES = 3;
+
+/** @internal Validate explicit CPU search budgets, including zero, before fitting. */
+export function getVariogramModelSearchOptions(
+  options: Pick<VariogramModelOptions, 'rangeSteps' | 'maximumIterations'>,
+  id: string = 'fitVariogramModel'
+): {rangeSteps: number; maximumIterations: number} {
+  const rangeSteps = options.rangeSteps ?? RANGE_LADDER_LENGTH;
+  const maximumIterations = options.maximumIterations ?? GOLDEN_SECTION_ITERATIONS;
+  validateCapacity(id, 'rangeSteps', rangeSteps, 3, MAXIMUM_RANGE_STEPS);
+  validateCapacity(id, 'maximumIterations', maximumIterations, 0, MAXIMUM_ITERATIONS);
+  return {rangeSteps, maximumIterations};
+}
 
 /** Below 0.5 the direct Matérn correlations cancel; the positive exponential remainder is stable. */
 const MATERN_CPU_SERIES_ARGUMENT_LIMIT = 0.5;
@@ -204,20 +226,31 @@ export function evaluateVariogramModel(
  * squares, on the CPU.
  *
  * Fitting runs on at most a few hundred read-back bins and is nonlinear only in the range, so it
- * stays on the CPU: for each range on a 200-step log ladder over `[minLag / 10, 3 * maxLag]` the
+ * stays on the CPU: for each range on a log ladder (200 points by default) over `[minLag / 10, 3 * maxLag]` the
  * nugget and partial sill are the closed-form non-negative weighted linear least-squares solution,
  * and the best range is refined by golden-section search between its ladder neighbors. Cressie
- * weighting repeats the search three times with weights from the previous model.
+ * weighting repeats the search three times with weights from the previous model. Every pass
+ * honors explicit rangeSteps and maximumIterations, including zero; omitted CPU refinement
+ * budgets retain 60 steps.
  *
  * @param input Empirical bins.
- * @param options Model family and weighting.
+ * @param options Model family, weighting and search budgets.
  * @returns The fitted model.
- * @throws If fewer than two bins are usable or the model or weighting is unknown.
+ * @throws If fewer than two bins are usable, the model or weighting is unknown, or a budget is invalid.
  */
 export function fitVariogramModel(
   input: VariogramModelInput,
   options: VariogramModelOptions
 ): VariogramModel {
+  return fitVariogramModelWithDiagnostics(input, options).model;
+}
+
+/** @internal Share the CPU search and its measured bracket with the operation twin. */
+export function fitVariogramModelWithDiagnostics(
+  input: VariogramModelInput,
+  options: VariogramModelOptions
+): {model: VariogramModel; logRangeBracket: number; atBoundary: boolean} {
+  const searchOptions = getVariogramModelSearchOptions(options);
   const {model} = options;
   const weighting = options.weighting ?? 'cressie';
   getVariogramModelShape(model, 0);
@@ -251,18 +284,22 @@ export function fitVariogramModel(
     throw new Error('Variogram model fitting needs at least two non-empty bins');
   }
   let weights = pairCounts.map(count => (weighting === 'none' ? 1 : count));
-  let best = fitRange(model, distances, semivariances, weights);
+  let best = fitRange(model, distances, semivariances, weights, searchOptions);
   if (weighting === 'cressie') {
     for (let pass = 0; pass < CRESSIE_PASSES; pass++) {
-      const previous = best;
+      const previous = best.fit;
       weights = pairCounts.map((count, bin) => {
         const fitted = evaluateVariogramModel({...previous, model}, distances[bin]);
         return count / Math.max(fitted * fitted, Number.MIN_VALUE);
       });
-      best = fitRange(model, distances, semivariances, weights);
+      best = fitRange(model, distances, semivariances, weights, searchOptions);
     }
   }
-  return {model, ...best};
+  return {
+    model: {model, ...best.fit},
+    logRangeBracket: best.logRangeBracket,
+    atBoundary: best.atBoundary
+  };
 }
 
 type LinearFit = {nugget: number; sill: number; range: number; residual: number};
@@ -271,15 +308,16 @@ function fitRange(
   model: VariogramModelType,
   distances: number[],
   semivariances: number[],
-  weights: number[]
-): LinearFit {
+  weights: number[],
+  options: {rangeSteps: number; maximumIterations: number}
+): {fit: LinearFit; logRangeBracket: number; atBoundary: boolean} {
   const minimumLag = Math.min(...distances);
   const maximumLag = Math.max(...distances);
   const lowest = Math.log(minimumLag / 10);
   const highest = Math.log(3 * maximumLag);
   const ladder: LinearFit[] = [];
-  for (let step = 0; step < RANGE_LADDER_LENGTH; step++) {
-    const range = Math.exp(lowest + ((highest - lowest) * step) / (RANGE_LADDER_LENGTH - 1));
+  for (let step = 0; step < options.rangeSteps; step++) {
+    const range = Math.exp(lowest + ((highest - lowest) * step) / (options.rangeSteps - 1));
     ladder.push(fitLinear(model, range, distances, semivariances, weights));
   }
   let bestStep = 0;
@@ -295,7 +333,7 @@ function fitRange(
   let outer = left + ratio * (right - left);
   let innerFit = fitLinear(model, Math.exp(inner), distances, semivariances, weights);
   let outerFit = fitLinear(model, Math.exp(outer), distances, semivariances, weights);
-  for (let iteration = 0; iteration < GOLDEN_SECTION_ITERATIONS; iteration++) {
+  for (let iteration = 0; iteration < options.maximumIterations; iteration++) {
     if (innerFit.residual <= outerFit.residual) {
       right = outer;
       outer = inner;
@@ -316,7 +354,11 @@ function fitRange(
       best = candidate;
     }
   }
-  return best;
+  return {
+    fit: best,
+    logRangeBracket: right - left,
+    atBoundary: bestStep === 0 || bestStep === ladder.length - 1
+  };
 }
 
 /** Non-negative weighted least squares of `gamma ~ nugget + sill * shape` for a fixed range. */

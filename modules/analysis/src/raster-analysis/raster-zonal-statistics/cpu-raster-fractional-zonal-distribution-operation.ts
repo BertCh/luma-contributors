@@ -21,7 +21,10 @@ import {GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH} from '../gpu-raster-fra
 import {GPU_RASTER_FRACTIONAL_ZONAL_DISTRIBUTION_STATUS as STATUS} from '../gpu-raster-fractional-zonal-distribution';
 import type {RasterFractionalZonalDistributionOperationProps} from './gpu-raster-fractional-zonal-distribution-operation';
 import {validateRasterGridAxisAligned} from '../raster-band-utils';
-import {getRasterRowAreaScale} from '../raster-grid/raster-cell-area-scale';
+import {
+  getRasterRowAreaScale,
+  isRasterEffectiveAxisAligned
+} from '../raster-grid/raster-cell-area-scale';
 
 export type CPURasterFractionalZonalDistributionOptions = Pick<
   RasterFractionalZonalDistributionOperationProps,
@@ -37,6 +40,7 @@ export type CPURasterFractionalZonalDistributionInput = {
     count: Uint32Array;
     requiredCount: Uint32Array;
     overflow: Uint32Array;
+    candidateOverflow?: Uint32Array;
   };
   probabilities: Float32Array;
   observationWeights?: Float32Array;
@@ -104,7 +108,10 @@ export function computeRasterFractionalZonalDistributionOnCPU(
   if (coverage.zoneValidity.length !== options.zoneCount)
     throw new Error(`${id} coverage.zoneValidity must have zoneCount rows`);
   for (const name of ['count', 'requiredCount', 'overflow'] as const)
-    if (coverage[name].length !== 1) throw new Error(`${id} coverage.${name} must have one row`);
+    if (coverage[name].length < 1)
+      throw new Error(`${id} coverage.${name} must have at least one row`);
+  if (coverage.candidateOverflow && coverage.candidateOverflow.length < 1)
+    throw new Error(`${id} coverage.candidateOverflow must have at least one row`);
   const cellCount = options.grid.width * options.grid.height;
   for (const name of ['observationWeights', 'cellAreas'] as const)
     if (input[name] && input[name].length !== cellCount)
@@ -125,6 +132,12 @@ export function computeRasterFractionalZonalDistributionOnCPU(
   const zones: CoverageRecord[][] = Array.from({length: options.zoneCount}, () => []);
   let invalidZone = false;
   const completeCoverage =
+    isRasterEffectiveAxisAligned(
+      options.grid,
+      options.cellSizeMode ?? 'uniform',
+      input.parameters
+    ) &&
+    (coverage.candidateOverflow?.[0] ?? 0) === 0 &&
     coverage.count[0] <= capacity &&
     coverage.requiredCount[0] === coverage.count[0] &&
     coverage.overflow[0] === 0;
@@ -369,6 +382,9 @@ export class CPURasterFractionalZonalDistributionOperation extends GPUCPUOperati
         count: props.coverage.status.count,
         requiredCount: props.coverage.status.requiredCount,
         overflow: props.coverage.status.overflow,
+        ...(props.coverage.status.candidateOverflow !== undefined
+          ? {candidateOverflow: props.coverage.status.candidateOverflow}
+          : {}),
         ...(props.input.validity !== undefined ? {inputValidity: props.input.validity} : {}),
         ...(props.observationWeights !== undefined
           ? {observationWeights: props.observationWeights}
@@ -412,7 +428,11 @@ export class CPURasterFractionalZonalDistributionOperation extends GPUCPUOperati
               zoneValidity: getCPUOperationUint32Rows(id, inputs, 'zoneValidity'),
               count: getCPUOperationUint32Rows(id, inputs, 'count'),
               requiredCount: getCPUOperationUint32Rows(id, inputs, 'requiredCount'),
-              overflow: getCPUOperationUint32Rows(id, inputs, 'overflow')
+              overflow: getCPUOperationUint32Rows(id, inputs, 'overflow'),
+              candidateOverflow:
+                props.coverage.status.candidateOverflow !== undefined
+                  ? getCPUOperationUint32Rows(id, inputs, 'candidateOverflow')
+                  : undefined
             },
             observationWeights:
               props.observationWeights !== undefined

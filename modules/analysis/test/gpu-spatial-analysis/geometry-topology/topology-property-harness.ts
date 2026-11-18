@@ -158,7 +158,7 @@ export type MakeValidResult = {
   /** Polygons as rings of `[x, y]` vertices; the first ring is the shell. */
   polygons: number[][][][];
   count: number;
-  requiredCount: number;
+  requiredRingCount: number;
   overflow: number;
   candidateOverflow: number;
   sourceIds: number[];
@@ -215,7 +215,7 @@ export async function runMakeValid(
   };
   const status = {
     count: scalar('count'),
-    requiredCount: scalar('required'),
+    requiredRingCount: scalar('required-rings'),
     overflow: scalar('overflow'),
     candidateOverflow: scalar('candidate-overflow')
   };
@@ -336,7 +336,7 @@ export async function runMakeValid(
     polygons,
     sourceIds: (await readUint32(sourceIds.buffer, capacity.rings)).slice(0, count),
     count,
-    requiredCount: (await readUint32(status.requiredCount.buffer, 1))[0],
+    requiredRingCount: (await readUint32(status.requiredRingCount.buffer, 1))[0],
     overflow: (await readUint32(status.overflow.buffer, 1))[0],
     candidateOverflow: (await readUint32(status.candidateOverflow.buffer, 1))[0]
   };

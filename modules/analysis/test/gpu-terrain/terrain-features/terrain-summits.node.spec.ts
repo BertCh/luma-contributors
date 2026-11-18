@@ -18,7 +18,7 @@ import {
   type GPUTerrainSummitsProps
 } from '../../../src/gpu-terrain/terrain-features/gpu-terrain-summits';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
-import {getRasterGridGeoreference} from '../../../src/analysis-core/raster-grid';
+import {getRasterGridGeoreference} from '../../../src/analysis-core/contracts/raster-grid';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {createBand} from '../terrain-test-utils';
 import {getRasterPipelines} from '../../gpu-raster/raster-pipeline-count';
@@ -145,7 +145,9 @@ it('GPUTerrainSummits validates its props', () => {
     create({}, {status: {radiusClamped: createTransientView(graph, 'empty-overflow', 'uint32', 0)}})
   ).toThrow(/radiusClamped/);
   const shared = createBand(graph, 'shared', 30);
-  expect(() => create({elevation: shared}, {drop: shared.storage.values})).toThrow(/share buffers/);
+  expect(() => create({elevation: shared}, {drop: shared.storage.values})).toThrow(
+    /^terrain-summits output\[1\] chunk 0 logical byte ranges must not overlap \(writable storage\)$/
+  );
   const foreign = new GPUCommandGraph(device);
   expect(() =>
     new GPUTerrainSummits({
@@ -258,7 +260,9 @@ it('GPUTerrainPeakSnap validates its props', () => {
     create({}, {status: {radiusClamped: createTransientView(graph, 'empty-overflow', 'uint32', 0)}})
   ).toThrow(/radiusClamped/);
   const candidates = createTransientView(graph, 'aliased', 'float32x2', 3);
-  expect(() => create({candidates}, {positions: candidates})).toThrow(/share buffers/);
+  expect(() => create({candidates}, {positions: candidates})).toThrow(
+    /^terrain-peak-snap output\[0\] chunk 0 logical byte ranges must not overlap \(writable storage\)$/
+  );
   const foreign = new GPUCommandGraph(device);
   expect(() =>
     new GPUTerrainPeakSnap({

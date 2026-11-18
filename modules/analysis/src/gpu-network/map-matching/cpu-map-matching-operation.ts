@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import {snapshotMapMatchingConstructionProps} from './map-matching-construction';
 import {
   getGPUGreatCircleRadius,
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
@@ -52,12 +53,14 @@ export type CPUMapMatchingInput = {
     targets: Uint32Array;
     costs: Float32Array;
     costLimit: Float32Array;
-    overflow?: Uint32Array;
+    complete?: Uint32Array;
   };
 };
 
-/** Compile-time model choices. Grid and route storage budgets do not limit the CPU search. */
+/** Compile-time model choices. Explicit route budgets bind the CPU fallback too. */
 export type CPUMapMatchingOptions = {
+  /** Explicit private route capacity, as on GPU; omitted keeps CPU fallback searches uncapped. */
+  routeNodeBudget?: number;
   spatialContext?: GPUSpatialContext;
   cellSize: number;
   candidateCount?: number;
@@ -83,6 +86,7 @@ export type CPUMapMatchingResult = {
   traversedEdges: Uint32Array;
   traversedCounts: Uint32Array;
   traversedOverflow: Uint32Array;
+  traversedCandidateOverflow: Uint32Array;
 };
 
 type Candidate = {edge: number; fraction: number; distance: number};
@@ -103,6 +107,8 @@ function resolveContext(id: string, context?: GPUSpatialContext): GPUSpatialCont
 }
 
 function validateOptions(id: string, options: CPUMapMatchingOptions): void {
+  if (options.routeNodeBudget !== undefined)
+    validateCapacity(id, 'routeNodeBudget', options.routeNodeBudget, 1);
   validateCapacity(id, 'candidateCount', options.candidateCount ?? 8);
   validateFiniteNumber(id, 'cellSize', options.cellSize);
   validateRequirement(id, options.cellSize > 0, 'cellSize must be positive');
@@ -129,7 +135,7 @@ function validateOffsets(name: string, offsets: Uint32Array, maximum?: number): 
 }
 
 /**
- * Unbounded A*, preserving the contributor's discovery-order queue ties and strict parent
+ * A*, preserving the contributor's discovery-order queue ties and strict parent
  * improvements. A single target is used again when recovering traversed edges, just as on GPU.
  * The generic CPU routing helper takes float32 weights and has different parent ties, so cannot
  * represent these float64 geometric edge lengths and this route's deliberate tie definition.
@@ -142,9 +148,10 @@ function searchRoute(
   neighbors: Uint32Array,
   lengths: Float64Array,
   nodePositions: Float32Array,
-  radius: number | undefined
-): Map<number, SearchEntry> {
-  const entries = new Map<number, SearchEntry>();
+  radius: number | undefined,
+  routeNodeBudget = Infinity
+): Map<number, SearchEntry> & {droppedCount: number} {
+  const entries = Object.assign(new Map<number, SearchEntry>(), {droppedCount: 0});
   const pending = new Set(targets);
   const heap: SearchEntry[] = [];
   const precedes = (first: SearchEntry, second: SearchEntry) =>
@@ -214,6 +221,22 @@ function searchRoute(
         parent: edge,
         done: false
       };
+      if (!previous && entries.size >= routeNodeBudget) {
+        entries.droppedCount++;
+        let worst: SearchEntry | undefined;
+        for (const candidate of entries.values()) {
+          if (
+            !candidate.done &&
+            (!worst ||
+              candidate.key > worst.key ||
+              (candidate.key === worst.key && candidate.order > worst.order))
+          )
+            worst = candidate;
+        }
+        if (!worst || next.key >= worst.key) continue;
+        entries.delete(worst.node);
+        next.order = worst.order;
+      }
       entries.set(node, next);
       pushEntry(next);
     }
@@ -222,7 +245,7 @@ function searchRoute(
 }
 
 /**
- * Newson-Krumm matching with exact geometric candidate search, unbounded A* and per-track
+ * Newson-Krumm matching with exact geometric candidates, optionally bounded A* and per-track
  * Viterbi decoding. Distances and likelihoods remain float64 until output. Equal candidate
  * distances prefer the lowest edge row; equal Viterbi scores prefer the earliest candidate.
  * The finite score sentinel and cutoff of the contributor are retained: only scores strictly
@@ -237,11 +260,13 @@ function searchRoute(
  * - All valid edges are searched, without the grid's 16-cell span or entryCapacity truncation.
  *   The searchRadius clamp to twice the cell size in metric units is retained. CPU candidateCount
  *   may exceed 8, but the requested candidateCount and default 8 still define the model.
- * - Routes have no routeNodeBudget or device storage cap. overflow and routeOverflow are always
- *   zero, and breaks never contains 2. The optional routeTable is shape-checked but bypassed:
- *   network costs are recomputed in float64 rather than using its rounded costs.
+ * - An explicit routeNodeBudget limits fallback and recovery searches as on GPU, including
+ *   candidateOverflow, routeOverflow and budget breaks (2). Omitted, CPU searches remain uncapped.
+ *   A complete routeTable within its cost limit certifies scoring transitions without a search.
+ *   Grid candidate loss is absent on CPU. Fixed matched outputs always have overflow=0.
  * - Traversed counts remain unclamped, as on GPU; traversedOverflow reports output truncation
- *   only. Unwritten traversed edge slots are zero on CPU (GPU leaves them untouched).
+ *   only; traversedCandidateOverflow reports incomplete recovery and inserts a NONE separator
+ *   before the destination edge. Unwritten slots are zero on CPU (GPU leaves them untouched).
  *   This inherited layout is a section 8 contract departure, not compact output: counts is the
  *   per-track requirement and no separate requiredCount exists. Correcting it needs a coordinated
  *   contributor/twin API change; clamping only the twin would violate the same-graph-values rule.
@@ -255,6 +280,7 @@ export function computeMapMatchingOnCPU(
   input: CPUMapMatchingInput,
   options: CPUMapMatchingOptions
 ): CPUMapMatchingResult {
+  options = snapshotMapMatchingConstructionProps(options);
   validateOptions('computeMapMatchingOnCPU', options);
   if (options.traversedEdgeCapacity !== undefined)
     validateCapacity(
@@ -295,8 +321,8 @@ export function computeMapMatchingOnCPU(
       throw new Error('routeTable.costs length must equal routeTable.targets length');
     validateOffsets('routeTable.offsets', table.offsets, table.targets.length);
     if (table.costLimit.length !== 1) throw new Error('routeTable.costLimit must contain one row');
-    if (table.overflow && table.overflow.length !== 1)
-      throw new Error('routeTable.overflow must contain one row');
+    if (table.complete && table.complete.length !== 1)
+      throw new Error('routeTable.complete must contain one row');
   }
   const radius = getGPUGreatCircleRadius(
     resolveContext('computeMapMatchingOnCPU', options.spatialContext)
@@ -338,10 +364,10 @@ export function computeMapMatchingOnCPU(
       const segmentEast =
         radius === undefined
           ? endLongitude - startLongitude
-          : computeLongitudeDelta(pointLongitude, endLongitude) * cosine - startEast;
+          : computeLongitudeDelta(startLongitude, endLongitude) * cosine;
       const segmentNorth = endLatitude - startLatitude;
       const denominator = segmentEast ** 2 + segmentNorth ** 2;
-      const fraction =
+      let fraction =
         denominator > 0
           ? Math.max(
               0,
@@ -365,6 +391,23 @@ export function computeMapMatchingOnCPU(
             computeCosLatitude(pointLatitude + latitudeOffset) *
             Math.sin(0.5 * longitudeOffset * DEGREES_TO_RADIANS) ** 2;
         distance = 2 * radius * Math.asin(Math.sqrt(Math.max(0, Math.min(1, term))));
+        const startDistance = getCPUTrajectoryDistance(
+          [pointLongitude, pointLatitude, startLongitude, startLatitude],
+          0,
+          1,
+          radius
+        );
+        const endDistance = getCPUTrajectoryDistance(
+          [pointLongitude, pointLatitude, endLongitude, endLatitude],
+          0,
+          1,
+          radius
+        );
+        const endpointDistance = Math.min(startDistance, endDistance);
+        if (fraction === 0 || fraction === 1 || endpointDistance < distance) {
+          fraction = startDistance <= endDistance ? 0 : 1;
+          distance = endpointDistance;
+        }
       }
       if (distance <= candidateRadius) found.push({edge, fraction, distance});
     }
@@ -386,9 +429,11 @@ export function computeMapMatchingOnCPU(
     routeOverflow: new Uint32Array(1),
     traversedEdges: new Uint32Array(trackCount * capacity),
     traversedCounts: new Uint32Array(trackCount),
-    traversedOverflow: new Uint32Array(1)
+    traversedOverflow: new Uint32Array(1),
+    traversedCandidateOverflow: new Uint32Array(1)
   };
   const chosen: (Candidate | undefined)[] = new Array(pointCount);
+  const budgetLimited = new Uint8Array(pointCount);
   const predecessors = new Float64Array(pointCount).fill(-1);
   const emissionConstant = -Math.log(sigma) - 0.5 * Math.log(2 * Math.PI);
   for (let track = 0; track < trackCount; track++) {
@@ -421,7 +466,8 @@ export function computeMapMatchingOnCPU(
             .filter(to => !(to.edge === from.edge && to.fraction >= from.fraction))
             .map(to => sources[to.edge]);
           const search =
-            remaining >= 0
+            remaining >= 0 &&
+            !(input.routeTable?.complete?.[0] && remaining <= input.routeTable.costLimit[0])
               ? searchRoute(
                   neighbors[from.edge],
                   targets,
@@ -430,17 +476,52 @@ export function computeMapMatchingOnCPU(
                   neighbors,
                   lengths,
                   nodePositions,
-                  radius
+                  radius,
+                  options.routeNodeBudget
                 )
               : undefined;
+          if (search?.droppedCount) {
+            budgetLimited[point] = 1;
+            result.candidateOverflow[0] = 1;
+            result.routeOverflow[0] = Math.min(
+              0xffffffff,
+              result.routeOverflow[0] + search.droppedCount
+            );
+          }
+          const certified =
+            remaining >= 0 &&
+            Boolean(input.routeTable?.complete?.[0]) &&
+            remaining <= input.routeTable!.costLimit[0];
           here.forEach((to, toSlot) => {
             const network = search?.get(sources[to.edge]);
+            const table = input.routeTable;
+            let entry = -1;
+            if (certified) {
+              const target = sources[to.edge];
+              const end = table!.offsets[neighbors[from.edge] + 1];
+              let low = table!.offsets[neighbors[from.edge]];
+              let high = end;
+              while (low < high) {
+                const middle = low + Math.floor((high - low) / 2);
+                if (table!.targets[middle] < target) low = middle + 1;
+                else high = middle;
+              }
+              if (low < end && table!.targets[low] === target) entry = low;
+            }
+            const tableCost =
+              entry >= 0 && entry < table!.offsets[neighbors[from.edge] + 1]
+                ? table!.costs[entry]
+                : -1;
             const route =
               to.edge === from.edge && to.fraction >= from.fraction
                 ? (to.fraction - from.fraction) * lengths[from.edge]
-                : network?.done
-                  ? tail + network.distance + to.fraction * lengths[to.edge]
-                  : -1;
+                : certified
+                  ? tableCost >= 0 && tableCost <= remaining
+                    ? tail + tableCost + to.fraction * lengths[to.edge]
+                    : -1
+                  : network?.done
+                    ? tail + network.distance + to.fraction * lengths[to.edge]
+                    : -1;
             if (route < 0 || route > bound) return;
             const candidateScore = fromScore - Math.log(beta) - Math.abs(straight - route) / beta;
             if (candidateScore > score[toSlot]) {
@@ -511,7 +592,7 @@ export function computeMapMatchingOnCPU(
         result.matchedCount[0]++;
       }
       if (isBreak && point > trackOffsets[track]) {
-        result.breaks[point] = 1;
+        result.breaks[point] = chosen[point] && budgetLimited[point] ? 2 : 1;
         result.breakCount[0]++;
       }
     }
@@ -544,28 +625,46 @@ export function computeMapMatchingOnCPU(
           neighbors,
           lengths,
           nodePositions,
-          radius
+          radius,
+          options.routeNodeBudget
         );
         const path: number[] = [];
+        let recovered = true;
+        if (search.droppedCount) {
+          result.traversedCandidateOverflow[0] = 1;
+          result.candidateOverflow[0] = 1;
+        }
         for (let node = target; node !== start; ) {
           const entry = search.get(node);
-          if (!entry?.done || entry.parent === NONE)
-            throw new Error('topology route recovery failed');
+          if (
+            !entry?.done ||
+            entry.parent === NONE ||
+            path.length >= (options.routeNodeBudget ?? Infinity)
+          ) {
+            recovered = false;
+            break;
+          }
           path.push(entry.parent);
           node = sources[entry.parent];
         }
-        for (let step = path.length - 1; step >= 0; step--) emitEdge(path[step]);
+        if (!recovered) {
+          result.traversedCandidateOverflow[0] = 1;
+          result.candidateOverflow[0] = 1;
+          emitEdge(NONE);
+        } else for (let step = path.length - 1; step >= 0; step--) emitEdge(path[step]);
         emitEdge(to.edge);
       }
     }
     result.traversedCounts[track] = emitted;
   }
+  if (capacity && result.candidateOverflow[0]) result.traversedCandidateOverflow[0] = 1;
   return result;
 }
 
-/** CPU twin; grid, private route-table and device limits are dropped. Ports retain GPU layouts. */
+/** CPU twin; explicit route budgets and output status meanings match the GPU form. */
 export class CPUMapMatchingOperation extends GPUCPUOperation {
   constructor(props: MapMatchingOperationProps) {
+    props = snapshotMapMatchingConstructionProps(props);
     const id = props.id ?? 'map-matching';
     validateOptions(id, props);
     for (const name of ['pointCount', 'trackCount', 'nodeCount', 'edgeCount'] as const)
@@ -630,10 +729,10 @@ export class CPUMapMatchingOperation extends GPUCPUOperation {
                   targets: tableTargets!,
                   costs: getCPUOperationFloat32Rows(id, inputs, 'tableCosts'),
                   costLimit: getCPUOperationFloat32Rows(id, inputs, 'tableCostLimit'),
-                  overflow:
-                    props.routeTable.status?.overflow === undefined
+                  complete:
+                    props.routeTable.status?.complete === undefined
                       ? undefined
-                      : getCPUOperationUint32Rows(id, inputs, 'tableOverflow')
+                      : getCPUOperationUint32Rows(id, inputs, 'tableComplete')
                 }
               : undefined
           },

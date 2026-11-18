@@ -4,13 +4,13 @@
 
 import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
-import {GPUDatumGridTransform} from '../../src/geospatial-analysis/gpu-datum-grid-transform';
+import {GPUDatumGridTransform} from '../../src/geospatial-analysis/datum-grid-transform/index';
 import {
   GPUPointBuffer,
   getGPUPointBufferParameterValues
-} from '../../src/geospatial-analysis/gpu-point-buffer';
-import {GPUPointCloudStatisticalFilter} from '../../src/pointcloud-analysis/gpu-pointcloud-statistical-filter';
-import {GPUPointCloudSurfaces} from '../../src/pointcloud-analysis/gpu-pointcloud-surfaces';
+} from '../../src/geospatial-analysis/point-buffer/index';
+import {GPUPointCloudStatisticalFilter} from '../../src/pointcloud-analysis/operations/gpu-pointcloud-statistical-filter';
+import {GPUPointCloudSurfaces} from '../../src/pointcloud-analysis/operations/gpu-pointcloud-surfaces';
 import {createNullWebGPUDevice} from '../utils/gpu-contributor-test-utils';
 
 function createPointBuffer(overrides: Record<string, unknown> = {}, offsetCount = 8) {
@@ -128,10 +128,15 @@ it('GPUPointCloudStatisticalFilter takes validity and no longer accepts the mask
     squaredDistances: view('distances', 'float32', 8),
     counts: view('counts', 'uint32', 4),
     capacity: 2,
-    meanDistances: view('means', 'float32', 4)
+    output: {meanDistances: view('means', 'float32', 4)}
   };
   const validity = view('validity', 'uint32', 4);
-  expect(new GPUPointCloudStatisticalFilter({...props, validity}).validity).toBe(validity);
+  expect(
+    new GPUPointCloudStatisticalFilter({
+      ...props,
+      output: {...props.output, validity}
+    }).props.output.validity
+  ).toBe(validity);
   expect(() => new GPUPointCloudStatisticalFilter({...props, mask: validity} as never)).toThrow(
     /^gpu-pointcloud-statistical-filter validity must be given$/
   );
@@ -149,10 +154,12 @@ it('PointCloudRasterGrid rowDirection defaults to north and refuses other values
       positions: view('positions', 'float32x3', 4),
       classifications: view('classifications', 'uint32', 4),
       grid: {origin: [0, 0], cellSize: 1, width: 2, height: 2, rowDirection: rowDirection as never},
-      terrain: view('terrain', 'float32', 4),
-      surface: view('surface', 'float32', 4),
-      canopy: view('canopy', 'float32', 4),
-      coverage: view('coverage', 'uint32', 4)
+      output: {
+        terrain: view('terrain', 'float32', 4),
+        surface: view('surface', 'float32', 4),
+        canopy: view('canopy', 'float32', 4),
+        coverage: view('coverage', 'uint32', 4)
+      }
     });
   };
   expect(build()).toBeInstanceOf(GPUPointCloudSurfaces);

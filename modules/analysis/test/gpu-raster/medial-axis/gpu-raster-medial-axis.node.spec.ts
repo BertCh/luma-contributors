@@ -85,9 +85,9 @@ it('medial axis composes exact distance nodes beyond the old limit, retaining ov
   try {
     const sources = getParsedKernelSources(contributor.getCommandNodes(graph));
     expect(sources.size).toBeGreaterThan(2);
-    for (const [name, source] of sources) {
+    for (const {id: name, source: source, constants} of sources.configurations) {
       expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
-      expect(getPrivateMemoryBytes(source), name).toBeLessThanOrEqual(
+      expect(getPrivateMemoryBytes(source, constants), name).toBeLessThanOrEqual(
         CORE_PRIVATE_MEMORY_LIMIT_BYTES
       );
     }

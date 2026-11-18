@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   validateTrajectoryBindings,
   validateTrajectoryWritableDispatches,
@@ -77,10 +79,13 @@ export type GPUMobilityStaypointColumns = {
   /** Location of each staypoint (`GPUTrajectoryLocations` `locationIds`). */
   locationIds: GraphDataView<'uint32'>;
   /** One row in `count`: active staypoint count, as `GPUTrajectoryStaypoints` writes it. */
-  status: {count: GPUStatusScalar};
+  status: {count: GPUStatusScalar; overflow?: GPUStatusScalar; candidateOverflow?: GPUStatusScalar};
 };
 
-/** Caller-owned outputs of {@link GPUMobilityIndicators}. At least one is required. */
+/**
+ * Caller-owned outputs. Supplied staypoint loss suppresses every numeric row to NaN and every
+ * location row to 0xffffffff, including unused capacity rows. At least one indicator is required.
+ */
 export type GPUMobilityIndicatorsOutput = {
   /** Per-track radius of gyration of the staypoint centroids (`trackCount` rows). */
   radiusOfGyration?: GraphDataView<'float32'>;
@@ -98,9 +103,9 @@ export type GPUMobilityIndicatorsOutput = {
   homeLocations?: GraphDataView<'uint32'>;
   /** Per-track location with the second largest summed duration; `0xffffffff` when absent. */
   workLocations?: GraphDataView<'uint32'>;
-  /** Per-track temporal tracking quality: tracked duration / extent (requires `triplegs`). */
+  /** Per-track tracking quality; NaN for all tracks when supplied tripleg loss is nonzero. */
   trackingQuality?: GraphDataView<'float32'>;
-  /** `candidateOverflow` is 1 when a track's sequence exceeded `maximumEntropySequenceRows`. */
+  /** 1 for supplied staypoint loss or a sequence exceeding maximumEntropySequenceRows. */
   status?: GPUCandidateStatusPort;
 };
 
@@ -120,7 +125,11 @@ export type GPUMobilityIndicatorsProps = {
     tracks: GraphDataView<'uint32'>;
     startRows: GraphDataView<'uint32'>;
     endRows: GraphDataView<'uint32'>;
-    status: {count: GPUStatusScalar};
+    status: {
+      count: GPUStatusScalar;
+      overflow?: GPUStatusScalar;
+      candidateOverflow?: GPUStatusScalar;
+    };
     /** Staypoint `finishRows`. */
     staypointFinishRows: GraphDataView<'uint32'>;
   };
@@ -156,6 +165,60 @@ export class GPUMobilityIndicators implements GPUCommandNodeProducer {
   readonly maximumEntropySequenceRows: number;
 
   constructor(props: GPUMobilityIndicatorsProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'trackCount',
+      'timestamps',
+      'staypoints',
+      'triplegs',
+      'maximumEntropySequenceRows',
+      'output'
+    ]);
+    const stays = snapshotConstructionFields(props.staypoints, [
+      'tracks',
+      'centroids',
+      'startRows',
+      'durations',
+      'locationIds',
+      'status'
+    ]);
+    const legs =
+      props.triplegs &&
+      snapshotConstructionFields(props.triplegs, [
+        'tracks',
+        'startRows',
+        'endRows',
+        'status',
+        'staypointFinishRows'
+      ]);
+    const outputs = snapshotConstructionFields(props.output, [
+      'radiusOfGyration',
+      'jumpLengths',
+      'waitingTimes',
+      'randomEntropy',
+      'uncorrelatedEntropy',
+      'realEntropy',
+      'homeLocations',
+      'workLocations',
+      'trackingQuality',
+      'status'
+    ]);
+    props = {
+      ...props,
+      staypoints: {
+        ...stays,
+        status: snapshotConstructionFields(stays.status, ['count', 'overflow', 'candidateOverflow'])
+      },
+      triplegs: legs && {
+        ...legs,
+        status: snapshotConstructionFields(legs.status, ['count', 'overflow', 'candidateOverflow'])
+      },
+      output: {
+        ...outputs,
+        status: outputs.status && snapshotConstructionFields(outputs.status, ['candidateOverflow'])
+      }
+    };
     this.id = props.id ?? 'mobility-indicators';
     this.props = props;
     const id = this.id;
@@ -165,6 +228,24 @@ export class GPUMobilityIndicators implements GPUCommandNodeProducer {
       SPATIAL_CONTEXT_SUPPORT
     );
     const {staypoints, triplegs, output, timestamps} = props;
+    for (const [name, flag] of Object.entries(staypoints.status)) {
+      if (!flag) continue;
+      validateSinglePackedView(flag, ['uint32'], `${id} staypoints.status.${name}`);
+      validateRequirement(
+        id,
+        flag.length >= 1,
+        `staypoints.status.${name} must contain at least one row`
+      );
+    }
+    for (const [name, flag] of Object.entries(triplegs?.status ?? {})) {
+      if (!flag) continue;
+      validateSinglePackedView(flag, ['uint32'], `${id} triplegs.status.${name}`);
+      validateRequirement(
+        id,
+        flag.length >= 1,
+        `triplegs.status.${name} must contain at least one row`
+      );
+    }
     validateCapacity(id, 'trackCount', props.trackCount);
     validateSinglePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
     validateSinglePackedView(staypoints.tracks, ['uint32'], `${id} staypoints.tracks`);
@@ -224,6 +305,14 @@ export class GPUMobilityIndicators implements GPUCommandNodeProducer {
       Boolean(!output.trackingQuality || triplegs),
       'trackingQuality requires triplegs'
     );
+    if (output.status?.candidateOverflow) {
+      validateSinglePackedView(
+        output.status.candidateOverflow,
+        ['uint32'],
+        `${id} output.status.candidateOverflow`
+      );
+      validateViewLength(id, 'output.status.candidateOverflow', output.status.candidateOverflow, 1);
+    }
     this.maximumEntropySequenceRows =
       props.maximumEntropySequenceRows ?? GPU_MOBILITY_DEFAULT_ENTROPY_SEQUENCE_ROWS;
     validateMaximumCount(
@@ -256,10 +345,14 @@ export class GPUMobilityIndicators implements GPUCommandNodeProducer {
       staypoints.durations,
       staypoints.locationIds,
       staypoints.status.count,
+      staypoints.status.overflow,
+      staypoints.status.candidateOverflow,
       triplegs?.tracks,
       triplegs?.startRows,
       triplegs?.endRows,
       triplegs?.status.count,
+      triplegs?.status.overflow,
+      triplegs?.status.candidateOverflow,
       triplegs?.staypointFinishRows
     ];
   }
@@ -573,6 +666,15 @@ fn pointDistance(a: vec2<f32>, b: vec2<f32>) -> f32 {
       );
     }
     if (output.trackingQuality && triplegs) {
+      const lossBindings = [triplegs.status.overflow, triplegs.status.candidateOverflow].flatMap(
+        (view, index) =>
+          view
+            ? [{name: `triplegLoss${index}`, view, type: 'u32' as const, access: 'read' as const}]
+            : []
+      );
+      const hasLoss =
+        lossBindings.map(binding => `${binding.name}[${binding.name}Offset] != 0u`).join(' || ') ||
+        'false';
       const triplegCapacity = triplegs.tracks.length;
       const triplegOffsets = createTransientView(
         graph,
@@ -638,6 +740,95 @@ fn pointDistance(a: vec2<f32>, b: vec2<f32>) -> f32 {
   trackingQuality[trackingQualityOffset + index] = quality;`
         })
       );
+      if (lossBindings.length)
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-suppress-incomplete-quality`,
+            operation: OPERATION,
+            invocationCount: trackCount,
+            bindings: [
+              ...lossBindings,
+              {
+                name: 'trackingQuality',
+                view: output.trackingQuality,
+                type: 'f32',
+                access: 'read_write'
+              }
+            ],
+            declarations: GET_NAN_WGSL,
+            body: `if (${hasLoss}) { trackingQuality[trackingQualityOffset + index] = getNaN(); }`
+          })
+        );
+    }
+    const stayLossBindings = [
+      staypoints.status.overflow,
+      staypoints.status.candidateOverflow
+    ].flatMap((view, index) =>
+      view ? [{name: `stayLoss${index}`, view, type: 'u32' as const, access: 'read' as const}] : []
+    );
+    const hasStayLoss =
+      stayLossBindings
+        .map(binding => `${binding.name}[${binding.name}Offset] != 0u`)
+        .join(' || ') || 'false';
+    for (const port of [
+      'radiusOfGyration',
+      'jumpLengths',
+      'waitingTimes',
+      'randomEntropy',
+      'uncorrelatedEntropy',
+      'realEntropy',
+      'homeLocations',
+      'workLocations',
+      'trackingQuality'
+    ] as const) {
+      const view = output[port];
+      if (!view) continue;
+      if (!stayLossBindings.length) continue;
+      const location = port === 'homeLocations' || port === 'workLocations';
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-suppress-incomplete-stays-${port}`,
+          operation: OPERATION,
+          invocationCount: view.length,
+          bindings: [
+            ...stayLossBindings,
+            {name: 'values', view, type: location ? 'u32' : 'f32', access: 'read_write'}
+          ],
+          declarations: location ? '' : GET_NAN_WGSL,
+          body: `if (${hasStayLoss}) { values[valuesOffset + index] = ${location ? '0xffffffffu' : 'getNaN()'}; }`
+        })
+      );
+    }
+    if (output.status?.candidateOverflow) {
+      if (!output.realEntropy)
+        nodes.push(
+          createFillNode<Parameters>(graph, {
+            id: `${id}-candidate-overflow-reset`,
+            operation: OPERATION,
+            view: output.status.candidateOverflow,
+            type: 'u32',
+            value: '0u',
+            componentCount: 1
+          })
+        );
+      if (stayLossBindings.length)
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-staypoint-loss-status`,
+            operation: OPERATION,
+            invocationCount: 1,
+            bindings: [
+              ...stayLossBindings,
+              {
+                name: 'candidateOverflow',
+                view: output.status.candidateOverflow,
+                type: 'u32',
+                access: 'read_write'
+              }
+            ],
+            body: `if (${hasStayLoss}) { candidateOverflow[candidateOverflowOffset] = 1u; }`
+          })
+        );
     }
     return nodes;
   }

@@ -46,9 +46,14 @@ export const GPU_GEODESIC_WGS84_FLATTENING = GPU_WGS84_FLATTENING;
  *   `geodesicSegmentDistance(point, start, end, fraction, radius) -> f32`: point-to-segment
  *   distance for segments that are straight in longitude/latitude (the edge model of the
  *   planar-in-degrees containment tests and of network edges). The closest fraction is found in
- *   the local equirectangular frame at the point; the distance is a haversine of coordinate
- *   differences, so short distances keep their precision near +-180. Exact to first order for
- *   segments of road length (kilometers); densify long edges.
+ *   the local equirectangular frame at the point on one wrapped start-to-end arc, then compared
+ *   with both endpoint distances. The returned fraction selects the nearest of those three
+ *   candidates. The distance is a haversine of coordinate
+ *   differences. An interior projection survives a rounded distance tie; ties between endpoint
+ *   candidates select the start. Short distances keep their precision near +-180.
+ *   Exact to first order for
+ *   segments of road length (kilometers); densify long edges. An explicitly supplied fraction
+ *   is evaluated at that fraction; only `geodesicSegmentFraction` selects the nearest candidate.
  * - Helpers: `geodesicWrapLongitudeDelta(delta)` (wrap to [-180, 180]),
  *   `geodesicLongitudeDelta(source, destination)` (preserve short seam separations), `geodesicCosLatitude(lat)`,
  *   `geodesicUnitVector(lngLat)`, `geodesicFromUnitVector(v)`, `geodesicLocalOffset(origin, p)`,
@@ -79,6 +84,9 @@ const GEODESIC_DIRECT_POLAR_LATITUDE: f32 = 80.0;
 const GEODESIC_DIRECT_POLAR_SINE: f32 = 0.984807753012208; // sin(80 degrees)
 const GEODESIC_DEGREES_TO_RADIANS: f32 = 0.0174532925199433;
 const GEODESIC_RADIANS_TO_DEGREES: f32 = 57.2957795130823;
+// Haversine terms remain well conditioned below a 90-degree separation. Compare local snap
+// candidates in that common representation, before asin/atan2 rounding can reverse a near tie.
+const GEODESIC_LOCAL_COMPARISON_MAXIMUM_TERM: f32 = 0.5;
 
 fn geodesicWrapLongitudeDelta(delta: f32) -> f32 {
   return delta - 360.0 * round(delta / 360.0);
@@ -285,6 +293,24 @@ fn geodesicLocalOffset(origin: vec2<f32>, position: vec2<f32>) -> vec2<f32> {
   );
 }
 
+// Haversine term at a supplied segment fraction, using coordinate differences to preserve short
+// offsets near the seam. Endpoint terms use the same haversine arithmetic as direct candidates.
+fn geodesicSegmentHaversineTerm(
+  point: vec2<f32>, start: vec2<f32>, end: vec2<f32>, fraction: f32
+) -> f32 {
+  if (fraction == 0.0) { return geodesicHaversineTerm(point, start); }
+  if (fraction == 1.0) { return geodesicHaversineTerm(point, end); }
+  let startOffset = vec2<f32>(geodesicLongitudeDelta(point.x, start.x), start.y - point.y);
+  let delta = vec2<f32>(geodesicLongitudeDelta(start.x, end.x), end.y - start.y);
+  let offset = startOffset + fraction * delta;
+  let sinHalfLatitude = sin(0.5 * offset.y * GEODESIC_DEGREES_TO_RADIANS);
+  let sinHalfLongitude = sin(0.5 * offset.x * GEODESIC_DEGREES_TO_RADIANS);
+  let term = sinHalfLatitude * sinHalfLatitude +
+    geodesicCosLatitude(point.y) * geodesicCosLatitude(point.y + offset.y) *
+    sinHalfLongitude * sinHalfLongitude;
+  return clamp(term, 0.0, 1.0);
+}
+
 // Fraction in [0, 1] of the point of segment start-end closest to point, in the local
 // equirectangular frame at point: exact to first order for segments of road length.
 fn geodesicSegmentFraction(point: vec2<f32>, start: vec2<f32>, end: vec2<f32>) -> f32 {
@@ -294,12 +320,38 @@ fn geodesicSegmentFraction(point: vec2<f32>, start: vec2<f32>, end: vec2<f32>) -
     return 0.0;
   }
   let startOffset = geodesicLocalOffset(point, start);
-  let segment = geodesicLocalOffset(point, end) - startOffset;
+  // Project the same wrapped start-to-end arc that distance evaluation interpolates. Wrapping
+  // each endpoint relative to the query independently can instead project the opposite arc.
+  let segment = vec2<f32>(
+    geodesicLongitudeDelta(start.x, end.x) * geodesicCosLatitude(point.y), end.y - start.y
+  );
   let denominator = dot(segment, segment);
+  var fraction = 0.0;
   if (denominator > 0.0) {
-    return clamp(-dot(startOffset, segment) / denominator, 0.0, 1.0);
+    fraction = clamp(-dot(startOffset, segment) / denominator, 0.0, 1.0);
   }
-  return 0.0;
+  // The local projection is an approximation on the sphere. Always retain both endpoints as
+  // candidates, and return their fraction as well as their distance to snapping consumers.
+  let projectedTerm = geodesicSegmentHaversineTerm(point, start, end, fraction);
+  let startTerm = geodesicHaversineTerm(point, start);
+  let endTerm = geodesicHaversineTerm(point, end);
+  if (max(projectedTerm, max(startTerm, endTerm)) < GEODESIC_LOCAL_COMPARISON_MAXIMUM_TERM) {
+    // Comparing an asin projection with atan2 endpoints can manufacture a one-ulp preference
+    // for an endpoint. On rounded local ties retain the interior position, which is still distinct.
+    if (fraction == 0.0 || fraction == 1.0 || min(startTerm, endTerm) < projectedTerm) {
+      return select(1.0, 0.0, startTerm <= endTerm);
+    }
+    return fraction;
+  }
+  // Central angles retain endpoint resolution near antipodes where haversine terms approach 1.
+  let projectedDistance = geodesicSegmentDistance(point, start, end, fraction, 1.0);
+  let startDistance = geodesicHaversineDistance(point, start, 1.0);
+  let endDistance = geodesicHaversineDistance(point, end, 1.0);
+  // Keep an interior projection on rounded distance ties: its snap position still matters.
+  if (fraction == 0.0 || fraction == 1.0 || min(startDistance, endDistance) < projectedDistance) {
+    return select(1.0, 0.0, startDistance <= endDistance);
+  }
+  return fraction;
 }
 
 // Great-circle distance (units of radius) from point to the position at fraction along the
@@ -311,16 +363,12 @@ fn geodesicSegmentDistance(
   fraction: f32,
   radius: f32
 ) -> f32 {
+  // Preserve exact endpoint distances without reconstructing their coordinates from offsets.
+  // Other fractions retain the distance-at-fraction contract (including extrapolation).
+  if (fraction == 0.0) { return geodesicHaversineDistance(point, start, radius); }
+  if (fraction == 1.0) { return geodesicHaversineDistance(point, end, radius); }
   // Use the same seam-preserving differences as edge lengths and local projection. Mixing
   // rounded seam offsets with precise edge lengths biases map-matching likelihoods.
-  let startOffset = vec2<f32>(geodesicLongitudeDelta(point.x, start.x), start.y - point.y);
-  let delta = vec2<f32>(geodesicLongitudeDelta(start.x, end.x), end.y - start.y);
-  let offset = startOffset + fraction * delta;
-  let sinHalfLatitude = sin(0.5 * offset.y * GEODESIC_DEGREES_TO_RADIANS);
-  let sinHalfLongitude = sin(0.5 * offset.x * GEODESIC_DEGREES_TO_RADIANS);
-  let term = sinHalfLatitude * sinHalfLatitude +
-    geodesicCosLatitude(point.y) * geodesicCosLatitude(point.y + offset.y) *
-    sinHalfLongitude * sinHalfLongitude;
-  return 2.0 * radius * asin(sqrt(clamp(term, 0.0, 1.0)));
+  return 2.0 * radius * asin(sqrt(geodesicSegmentHaversineTerm(point, start, end, fraction)));
 }
 `;

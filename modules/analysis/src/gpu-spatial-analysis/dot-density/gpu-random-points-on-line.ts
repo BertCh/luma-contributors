@@ -18,6 +18,7 @@ import {
 import type {GPUCompactOutput} from '../../analysis-core/kernels/gpu-contributor-types';
 import {
   validateCompactOutput,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGPUStorageBindingByteLength,
   validateSinglePackedView
@@ -59,7 +60,8 @@ export type GPURandomPointsOnLineOutput = {
   /**
    * Compact point list: `ids` holds the line row of each point (capacity rows, `0xffffffff` past
    * the count), `count = min(total, capacity)` is safe as an instance count, and `overflow` is 1
-   * when the total exceeds the capacity or a per-line count was clamped.
+   * when the final total exceeds capacity. Optional candidateOverflow reports a per-line count
+   * clamp; requiredCount counts retained requests and is then a lower bound.
    */
   points: GPUCompactOutput;
   /**
@@ -141,6 +143,12 @@ export class GPURandomPointsOnLine implements GPUCommandNodeProducer {
     validateSinglePackedView(output.positions, ['float32x2'], `${id} output.positions`);
     validateCompactOutput(id, output.points);
     const capacity = output.positions.length;
+    validateRequirement(
+      id,
+      getDotSlotCountLimit(this.lineCount, capacity) > capacity ||
+        Boolean(output.points.status.candidateOverflow),
+      'output.points.status.candidateOverflow is required when the per-line limit can hide loss below final capacity'
+    );
     if (capacity < 1 || output.points.ids.length !== capacity) {
       throw new Error(
         `${id} output.positions and output.points.ids must share a positive capacity`
@@ -160,6 +168,7 @@ export class GPURandomPointsOnLine implements GPUCommandNodeProducer {
     validateDisjointWritableViews(id, {
       count: output.points.status.count,
       overflow: output.points.status.overflow,
+      candidateOverflow: output.points.status.candidateOverflow,
       requiredCount: output.points.status.requiredCount
     });
     validateGraphOutputsDisjointFromInputs(id, getOutputs(props), getInputs(props));
@@ -379,7 +388,7 @@ ${IS_FINITE_FLOAT_WGSL}`,
         operation: OPERATION,
         requiredCount: total,
         output: output.points,
-        overflowSources: [clampFlag]
+        candidateOverflowSources: output.points.status.candidateOverflow ? [clampFlag] : []
       })
     ];
     return nodes;
@@ -399,6 +408,7 @@ function getOutputs(props: GPURandomPointsOnLineProps): (GraphDataView | undefin
     output.points.ids,
     output.points.status.count,
     output.points.status.overflow,
+    output.points.status.candidateOverflow,
     output.points.status.requiredCount,
     output.fractions
   ];

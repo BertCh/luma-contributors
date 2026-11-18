@@ -166,8 +166,8 @@ export type GPUZoneVisitTableOutput = GPUCompactOutput & {
 };
 
 /**
- * Optional one-row status words of {@link GPUZoneEvents} that split `output.events.overflow` into
- * its causes and report the capacity the candidate scratch needed. Every view is optional and
+ * Optional one-row diagnostics of {@link GPUZoneEvents} that identify each capacity loss
+ * and report the capacity the candidate scratch needed. Every view is optional and
  * independent.
  */
 export type GPUZoneEventsStatus = GPUCandidateStatusPort & {
@@ -317,9 +317,10 @@ export type GPUZoneEventsProps = {
  * them. No kernel walks a track's events serially, so a few tracks with very many events cost the
  * same as many tracks with few (dwell sums are reduced in a fixed order that depends only on the
  * cell offsets, so they are reproducible; they can differ from a sequential sum in the last bits).
- * The matrices are `trackCount * zoneCount` rows (so very large zone counts need a sparse approach). `output.events.overflow` is 1 when the candidate scratch overflowed, when a
- * track has more than `trackEventCapacity` events, or when more events were kept than
- * `output.events.ids.length`; `output.status` reports each cause separately plus the candidate
+ * The matrices are `trackCount * zoneCount` rows (so very large zone counts need a sparse approach).
+ * `output.events.status.overflow` reports final event-list capacity loss only. Optional
+ * `output.events.status.candidateOverflow` reports candidate scratch or per-track event loss;
+ * `requiredCount` counts retained events and is then a lower bound. `output.status` reports each cause separately plus the candidate
  * count the scratch needed. After a candidate overflow every result may be missing events.
  *
  * Crossing positions: `output.events.eventPositions` holds the interpolated crossing point of each event.
@@ -518,6 +519,7 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
         events.ids,
         events.status.count,
         events.status.overflow,
+        events.status.candidateOverflow,
         events.status.requiredCount,
         events.eventZones,
         events.eventTypes,
@@ -563,6 +565,7 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
       events.ids,
       events.status.count,
       events.status.overflow,
+      events.status.candidateOverflow,
       events.status.requiredCount,
       events.eventZones,
       events.eventTypes,
@@ -999,6 +1002,20 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
         })
       );
     }
+    const visitCandidateOverflow =
+      output.status?.candidateOverflow ?? u32('visit-candidate-overflow', 1);
+    if (visitTable?.status.candidateOverflow && !output.status?.candidateOverflow) {
+      nodes.push(
+        createZoneDiagnosticsNode<Parameters>(graph, {
+          id: `${id}-visit-candidate-status`,
+          shape,
+          state,
+          keptTotal,
+          eventCapacity: events.ids.length,
+          candidateOverflow: visitCandidateOverflow
+        })
+      );
+    }
     const columns: ZoneGatherColumn[] = [
       {source: sortedTracks, destination: events.ids, sentinel: '0xffffffffu'}
     ];
@@ -1043,7 +1060,7 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
         operation: OPERATION,
         requiredCount: keptTotal,
         output: events,
-        overflowSources: [overflowFlag]
+        candidateOverflowSources: events.status.candidateOverflow ? [overflowFlag] : []
       })
     );
     if (visitTable) {
@@ -1053,7 +1070,8 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
           visitCounts,
           dwellTimes,
           firstEnterTimes,
-          lastExitTimes
+          lastExitTimes,
+          candidateOverflow: visitCandidateOverflow
         })
       );
     }
@@ -1068,6 +1086,7 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
           table.ids,
           table.status.count,
           table.status.overflow,
+          table.status.candidateOverflow,
           table.status.requiredCount,
           table.zones,
           table.visits,
@@ -1087,6 +1106,7 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
       dwellTimes: GraphDataView<'float32'>;
       firstEnterTimes?: GraphDataView<'float32'>;
       lastExitTimes?: GraphDataView<'float32'>;
+      candidateOverflow: GraphDataView<'uint32'>;
     }
   ): GPUCommandNode<Parameters>[] {
     const {id} = this;
@@ -1133,7 +1153,8 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
         id: `${id}-table-publish`,
         operation: OPERATION,
         requiredCount: keptTotal,
-        output: table
+        output: table,
+        candidateOverflowSources: table.status.candidateOverflow ? [cells.candidateOverflow] : []
       })
     );
     return nodes;

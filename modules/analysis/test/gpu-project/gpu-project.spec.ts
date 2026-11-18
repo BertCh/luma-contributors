@@ -16,6 +16,7 @@ import {
 } from '@luma.gl/graph/gpu-project';
 import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
+import {requireTestDevice} from '../../src/testing/require-test-device';
 
 type Coordinates = readonly [number, number];
 
@@ -48,11 +49,7 @@ it('packProjectionPlan rounds subnormal float32 bounds inward', () => {
 
 it('GPUProjection writes origin-relative f32 positions and honors nonzero view offsets', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const projection = (coordinates: number[]): number[] => {
     const horizontal = coordinates[0] - 120;
@@ -122,11 +119,7 @@ it('GPUProjection writes origin-relative f32 positions and honors nonzero view o
 
 it('GPUProjection preserves Float32 positions around fractional binary64 source origins', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const projection = (coordinates: number[]): number[] => [
     coordinates[0] - 4_000_000,
@@ -197,17 +190,11 @@ it('GPUProjection preserves Float32 positions around fractional binary64 source 
   void 0;
 });
 
-it('GPUProjection subtracts raw binary64 origins before converting local offsets to f32', async () => {
+it('GPUProjection subtracts raw binary64 origins before converting local offsets to f32', async context => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
   if (isSoftwareBackedDevice(device)) {
-    void 0;
-    void 0;
-    return;
+    context.skip('raw binary64 projection requires a hardware-backed device');
   }
 
   const sourceOrigin: Coordinates = [20_000_000.125, 30_000_000.375];
@@ -268,17 +255,11 @@ it('GPUProjection subtracts raw binary64 origins before converting local offsets
   void 0;
 });
 
-it('GPUProjection evaluates and returns absolute double-single positions with validity', async () => {
+it('GPUProjection evaluates and returns absolute double-single positions with validity', async context => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
   if (isSoftwareBackedDevice(device)) {
-    void 0;
-    void 0;
-    return;
+    context.skip('double-single projection requires a hardware-backed device');
   }
 
   const sourceOrigin: Coordinates = [20_000_000.125, 30_000_000.375];
@@ -352,17 +333,11 @@ it('GPUProjection evaluates and returns absolute double-single positions with va
   void 0;
 });
 
-it('GPUProjection accepts inclusive binary64 patch endpoints after Float32 normalization', async () => {
+it('GPUProjection accepts inclusive binary64 patch endpoints after Float32 normalization', async context => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
   if (isSoftwareBackedDevice(device)) {
-    void 0;
-    void 0;
-    return;
+    context.skip('binary64 patch endpoints require a hardware-backed device');
   }
 
   const minimum = 4_189_890.0279418225;
@@ -433,11 +408,7 @@ it('GPUProjection accepts inclusive binary64 patch endpoints after Float32 norma
 
 it('GPUProjection rejects outer-domain positions without removing patch seam tolerance', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
   const softwareBackedDevice = isSoftwareBackedDevice(device);
   if (softwareBackedDevice) {
     void 0;
@@ -573,11 +544,7 @@ it('GPUProjection rejects outer-domain positions without removing patch seam tol
 
 it('GPUProjection compares Float32 positions against exact fractional binary64 bounds', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const plan = compileProjectionPlan({
     projection: (coordinates: number[]): number[] => [...coordinates],
@@ -625,11 +592,7 @@ it('GPUProjection compares Float32 positions against exact fractional binary64 b
 
 it('GPUProjection automatically selects different adaptive patches for mixed rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const plan = makeCurvedProjectionPlan();
   const points: Coordinates[] = [
@@ -670,11 +633,7 @@ it('GPUProjection automatically selects different adaptive patches for mixed row
 
 it('GPUProjection preserves empty vector chunks and honors explicit mixed patch IDs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const plan = makeCurvedProjectionPlan();
   const points: Coordinates[] = [
@@ -750,11 +709,7 @@ it('GPUProjection preserves empty vector chunks and honors explicit mixed patch 
 
 it('GPUProjection writes deterministic zero rows for invalid coordinates and patch IDs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const plan = makeCurvedProjectionPlan();
   const validCoordinate = [0.25, 0.25] as const;
@@ -837,11 +792,7 @@ it('GPUProjection writes deterministic zero rows for invalid coordinates and pat
 
 it('GPUProjection rejects source and output handles sharing physical storage', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const plan = compileProjectionPlan({
     projection: (coordinates: number[]): number[] => [...coordinates],
@@ -869,11 +820,7 @@ it('GPUProjection rejects source and output handles sharing physical storage', a
 
 it('GPUProjection rejects legacy packed plans without the bounds trailer', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const plan = compileProjectionPlan({
     projection: (coordinates: number[]): number[] => [...coordinates],
@@ -912,11 +859,7 @@ it('GPUProjection rejects legacy packed plans without the bounds trailer', async
 
 it('GPUProjection rejects caller-owned plan and output handles sharing physical storage', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const plan = compileProjectionPlan({
     projection: (coordinates: number[]): number[] => [...coordinates],
@@ -949,11 +892,7 @@ it('GPUProjection rejects caller-owned plan and output handles sharing physical 
 
 it('GPUProjection rejects updates to caller-owned plans without COPY_DST usage', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const bounds = [0, 0, 1, 1] as const;
   const initialPlan = compileProjectionPlan({
@@ -1033,11 +972,7 @@ it('GPUProjection rejects updates to caller-owned plans without COPY_DST usage',
 
 it('GPUProjection updates caller-owned packed plans without rebuilding its graph', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const bounds = [99, 199, 101, 201] as const;
   const initialPlan = compileProjectionPlan({
@@ -1120,17 +1055,11 @@ it('GPUProjection updates caller-owned packed plans without rebuilding its graph
   void 0;
 });
 
-it('GPUProjection updates exact global bounds without rebuilding its graph', async () => {
+it('GPUProjection updates exact global bounds without rebuilding its graph', async context => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
   if (isSoftwareBackedDevice(device)) {
-    void 0;
-    void 0;
-    return;
+    context.skip('exact binary64 bounds require a hardware-backed device');
   }
 
   const projection = (coordinates: number[]): number[] => [...coordinates];
@@ -1198,17 +1127,11 @@ it('GPUProjection updates exact global bounds without rebuilding its graph', asy
   void 0;
 });
 
-it('GPUProjection retains tolerant raw-binary64 assignment at internal patch seams', async () => {
+it('GPUProjection retains tolerant raw-binary64 assignment at internal patch seams', async context => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
   if (isSoftwareBackedDevice(device)) {
-    void 0;
-    void 0;
-    return;
+    context.skip('raw binary64 patch seams require a hardware-backed device');
   }
 
   const minimum = 4_189_890.0279418225;
@@ -1260,11 +1183,7 @@ it('GPUProjection retains tolerant raw-binary64 assignment at internal patch sea
 
 it('GPUProjection keeps strict bounds coupled to per-encoding plan overrides', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const initialPlan = compileProjectionPlan({
     projection: (coordinates: number[]): number[] => [

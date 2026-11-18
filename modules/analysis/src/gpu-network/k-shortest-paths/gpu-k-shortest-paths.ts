@@ -14,9 +14,10 @@ import {
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology,
   type GPUNetworkTopology
-} from '../../analysis-core/network-topology';
+} from '../../analysis-core/contracts/network-topology';
 import {
   validateCapacity,
+  validateRequirement,
   validateCommandNodeBudget,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
@@ -42,6 +43,7 @@ import {
 import {GPUNetworkReachability} from '../network-reachability/gpu-network-reachability';
 import {getKShortestPathsWGSL} from './k-shortest-paths-wgsl';
 import {gateKShortestPathSearchNodes} from './k-shortest-paths-search-gate';
+import {getGPUKShortestPathsOutputLayout} from './k-shortest-paths-output';
 
 // Eight setup/publication nodes, and fourteen per Yen round plus two spare nodes for the
 // reachability composition. Node specs measure the emitted graph against this allowance.
@@ -170,24 +172,28 @@ export class GPUKShortestPaths implements GPUCommandNodeProducer {
     validateSinglePackedView(props.targets, ['uint32'], `${id} targets`);
     validateCapacity(id, 'queryCount', props.sources.length);
     validateViewLength(id, 'targets', props.targets, props.sources.length);
-    const routeRows = props.sources.length * props.routeCount;
-    for (const [name, view] of Object.entries({...props.output, ...props.output.status})) {
-      if (name === 'status') continue;
-      const scalar = view as GraphDataView;
-      validateSinglePackedView(
-        scalar,
-        [name === 'costs' ? 'float32' : 'uint32'],
-        `${id} output.${name}`
+    const {status: statusLayout, ...columnLayout} = getGPUKShortestPathsOutputLayout({
+      id,
+      queryCount: props.sources.length,
+      routeCount: props.routeCount,
+      maximumPathLength: this.maximumPathLength
+    });
+    validateRequirement(
+      id,
+      props.output.status !== null && typeof props.output.status === 'object',
+      'output.status must contain the required status views'
+    );
+    const outputByName = {...props.output, ...props.output.status};
+    for (const [name, descriptor] of Object.entries({...columnLayout, ...statusLayout})) {
+      const scalar = outputByName[name as keyof typeof outputByName] as GraphDataView;
+      const path = `output.${Object.hasOwn(statusLayout, name) ? 'status.' : ''}${name}`;
+      validateRequirement(
+        id,
+        scalar !== null && scalar !== undefined,
+        `${path} must be a packed ${descriptor.format} view`
       );
-      const expected =
-        name === 'vertices' || name === 'edges'
-          ? routeRows * this.maximumPathLength
-          : name === 'costs' || name === 'lengths'
-            ? routeRows
-            : name === 'counts'
-              ? props.sources.length
-              : 1;
-      validateViewLength(id, `output.${name}`, scalar, expected);
+      validateSinglePackedView(scalar, [descriptor.format], `${id} ${path}`);
+      validateViewLength(id, path, scalar, descriptor.length);
     }
     const outputViews = getGraphOutputViews(props.output);
     validateDisjointWritableViews(

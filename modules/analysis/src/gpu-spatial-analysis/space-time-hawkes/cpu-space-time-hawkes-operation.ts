@@ -37,6 +37,7 @@ export type CPUSpaceTimeHawkesOptions = {
 export type CPUSpaceTimeHawkesResult = {
   estimates: Float32Array;
   logLikelihood: Float32Array;
+  fittedLogLikelihood: Float32Array;
   backgroundProbability: Float32Array;
   converged: Uint32Array;
   iterationLimitReached: Uint32Array;
@@ -52,7 +53,8 @@ export type CPUSpaceTimeHawkesResult = {
  * Equal-time events do not trigger each other. The convergence comparison uses spatial variance,
  * as the kernel does.
  * logLikelihood is evaluated at the iterate entering the final update; probabilities use the
- * published estimates. The finite-window temporal mass is evaluated with expm1 in float64.
+ * published estimates, as does fittedLogLikelihood. The finite-window temporal mass is evaluated
+ * with expm1 in float64.
  *
  * What differs from the GPU contributor:
  * - No parent capacity; candidateOverflow is always zero. A finite CPU iteration budget defaults
@@ -220,12 +222,21 @@ export function computeSpaceTimeHawkesOnCPU(
     }
   }
   const backgroundProbability = new Float32Array(times.length).fill(NaN);
-  rows.forEach((row, index) => {
-    backgroundProbability[row] = evaluateEvent(index).background;
-  });
+  let fittedLogIntensity = 0;
+  let fittedWindowMass = 0;
+  if ([background, branchingRatio, decayRate, variance].every(Number.isFinite))
+    rows.forEach((row, index) => {
+      const statistics = evaluateEvent(index);
+      backgroundProbability[row] = statistics.background;
+      fittedLogIntensity += statistics.logIntensity;
+      fittedWindowMass += -Math.expm1(-decayRate * (duration - times[row]));
+    });
   return {
     estimates: Float32Array.of(background, branchingRatio, decayRate, Math.sqrt(variance)),
     logLikelihood: Float32Array.of(logLikelihood),
+    fittedLogLikelihood: Float32Array.of(
+      fittedLogIntensity - (background * area * duration + branchingRatio * fittedWindowMass)
+    ),
     backgroundProbability,
     converged: Uint32Array.of(Number(converged)),
     iterationLimitReached: Uint32Array.of(Number(iterationLimitReached)),

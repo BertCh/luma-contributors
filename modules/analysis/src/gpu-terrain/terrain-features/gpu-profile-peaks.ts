@@ -6,6 +6,7 @@ import {validateTerrainBindings} from '../terrain-processing/terrain-binding-pre
 import {
   createTransientView,
   GPUCompaction,
+  doGraphDataViewsOverlap,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -30,6 +31,7 @@ import {
   validateGraphViewsBelongToGraph,
   validateCapacity,
   validateCompactOutput,
+  validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -70,12 +72,10 @@ export const GPU_PROFILE_PEAKS_UNRESOLVED_MASK = 0xffffffff;
 export const GPU_PROFILE_PEAKS_UNRESOLVED_VALUE = Number.POSITIVE_INFINITY;
 
 /**
- * Bit set in `output.peaks.overflow` when suppression left candidates undecided, so the compact
- * list of peaks is incomplete. Bit 0 (value 1) keeps its meaning, a full `output.peaks.ids`; the
- * flag is the OR of both and reads 0 only for a complete result. A converged run never sets this
- * bit.
+ * Boolean candidate-loss value when suppression left undecided peaks. Final overflow reports
+ * only the compact output capacity.
  */
-export const GPU_PROFILE_PEAKS_OVERFLOW_UNCONVERGED = 2;
+export const GPU_PROFILE_PEAKS_CANDIDATE_UNCONVERGED = 1;
 
 /**
  * CPU-side description packed by {@link getGPUProfilePeaksParameterValues}.
@@ -155,8 +155,8 @@ export type GPUProfilePeaksOutput = {
   peakMask?: GraphDataView<'uint32'>;
   /**
    * Compact result: sample row IDs (indices into `values`) of kept peaks in ascending order, with
-   * a clamped count and an overflow flag. Undecided candidates are not listed; `overflow` then has
-   * {@link GPU_PROFILE_PEAKS_OVERFLOW_UNCONVERGED} set.
+   * a clamped count and final-capacity overflow. Undecided candidates are not listed; optional
+   * `candidateOverflow` then has {@link GPU_PROFILE_PEAKS_CANDIDATE_UNCONVERGED} set.
    */
   peaks?: GPUCompactOutput;
   /** Optional status words. */
@@ -279,7 +279,7 @@ const STATE_SUPPRESSED = 3;
  * the scan. If `maximumSuppressionIterations` rounds do not decide every candidate (a chain of mutually suppressing
  * candidates longer than the cap), `output.status.converged` reads 0, undecided candidates carry the unresolved sentinels (see
  * {@link GPU_PROFILE_PEAKS_UNRESOLVED_VALUE}, {@link GPU_PROFILE_PEAKS_UNRESOLVED_MASK}) and the
- * compact list sets {@link GPU_PROFILE_PEAKS_OVERFLOW_UNCONVERGED}.
+ * compact list sets optional `status.candidateOverflow` to 1; final overflow stays capacity-only.
  *
  * Offsets must be non-decreasing; each sample finds its profile by binary search. All work is in
  * sample space and profile-value units, independent of any cell size. Chunked views are not
@@ -384,6 +384,24 @@ export class GPUProfilePeaks implements GPUCommandNodeProducer {
     }
     if (output.peaks) {
       validateCompactOutput(id, output.peaks);
+      const candidate = output.peaks.status.candidateOverflow;
+      validateRequirement(
+        id,
+        !candidate ||
+          ![
+            output.peaks.ids,
+            output.peaks.status.count,
+            output.peaks.status.overflow,
+            output.peaks.status.requiredCount,
+            output.prominence,
+            output.refinedIndex,
+            output.refinedValue,
+            output.peakMask,
+            converged,
+            iterationLimitReached
+          ].some(view => view && doGraphDataViewsOverlap(view, candidate)),
+        'output.peaks.status.candidateOverflow must not overlap other outputs'
+      );
     }
     if (converged) {
       validateSinglePackedView(converged, ['uint32'], `${id} output.status.converged`);
@@ -413,6 +431,7 @@ export class GPUProfilePeaks implements GPUCommandNodeProducer {
         output.peaks?.ids,
         output.peaks?.status.count,
         output.peaks?.status.overflow,
+        output.peaks?.status.candidateOverflow,
         output.peaks?.status.requiredCount
       ],
       [props.values, props.validity, props.offsets, props.parameters]
@@ -444,6 +463,7 @@ export class GPUProfilePeaks implements GPUCommandNodeProducer {
       output.peaks?.ids,
       output.peaks?.status.count,
       output.peaks?.status.overflow,
+      output.peaks?.status.candidateOverflow,
       output.peaks?.status.requiredCount
     ]);
     const sampleCount = props.values.length;
@@ -868,10 +888,16 @@ ${getInfinityFunction()}`,
           operation: OPERATION,
           requiredCount,
           compactIds: compactRows,
-          output: output.peaks
+          output: {
+            ids: output.peaks.ids,
+            status: {
+              count: output.peaks.status.count,
+              overflow: output.peaks.status.overflow,
+              requiredCount: output.peaks.status.requiredCount
+            }
+          }
         }),
-        // Publish only knows capacity overflow; add the unconverged bit when any candidate is
-        // still undecided.
+        // Candidate publication is separate from the final-capacity publisher.
         createFillNode<Parameters>(graph, {
           id: `${id}-incomplete-clear`,
           operation: OPERATION,
@@ -893,23 +919,27 @@ ${getInfinityFunction()}`,
     atomicStore(&incomplete[incompleteOffset], 1u);
   }`
         }),
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-publish-unconverged`,
-          operation: OPERATION,
-          variant: 'publish-unconverged',
-          bindings: [
-            {name: 'incomplete', view: incomplete, type: 'u32', access: 'read'},
-            {
-              name: 'overflowOut',
-              view: output.peaks.status.overflow,
-              type: 'u32',
-              access: 'read_write'
-            }
-          ],
-          invocationCount: 1,
-          body: `overflowOut[overflowOutOffset] = overflowOut[overflowOutOffset] |
-    select(0u, ${GPU_PROFILE_PEAKS_OVERFLOW_UNCONVERGED}u, incomplete[incompleteOffset] != 0u);`
-        })
+        ...(output.peaks.status.candidateOverflow
+          ? [
+              createWGSLKernelNode<Parameters>(graph, {
+                id: `${id}-publish-unconverged`,
+                operation: OPERATION,
+                variant: 'publish-unconverged',
+                bindings: [
+                  {name: 'incomplete', view: incomplete, type: 'u32', access: 'read'},
+                  {
+                    name: 'candidateOverflowOut',
+                    view: output.peaks.status.candidateOverflow,
+                    type: 'u32',
+                    access: 'read_write'
+                  }
+                ],
+                invocationCount: 1,
+                body: `candidateOverflowOut[candidateOverflowOutOffset] =
+    select(0u, ${GPU_PROFILE_PEAKS_CANDIDATE_UNCONVERGED}u, incomplete[incompleteOffset] != 0u);`
+              })
+            ]
+          : [])
       );
     }
     return nodes;

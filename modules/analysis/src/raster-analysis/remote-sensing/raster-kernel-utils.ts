@@ -87,24 +87,25 @@ fn leastSquares(design: array<f32, ${rows * columns}>, response: array<f32, ${ro
   result.valid = false;
   var maximumNorm = 0.0;
   for (var column = 0u; column < ${columnCount}; column++) {
-    var originalNorm = 0.0;
-    for (var row = 0u; row < ${rows}u; row++) { originalNorm += basis[column * ${rows}u + row] * basis[column * ${rows}u + row]; }
-    maximumNorm = max(maximumNorm, sqrt(originalNorm));
+    // Original norm, orthogonal projections and final norm have disjoint lifetimes.
+    var columnAccumulator = 0.0;
+    for (var row = 0u; row < ${rows}u; row++) { columnAccumulator += basis[column * ${rows}u + row] * basis[column * ${rows}u + row]; }
+    maximumNorm = max(maximumNorm, sqrt(columnAccumulator));
     for (var orthogonalizationRound = 0u; orthogonalizationRound < 2u; orthogonalizationRound++) {
       for (var previous = 0u; previous < column; previous++) {
-        var projection = 0.0;
-        for (var row = 0u; row < ${rows}u; row++) { projection += basis[previous * ${rows}u + row] * basis[column * ${rows}u + row]; }
-        upper[previous * ${columns}u + column] += projection;
-        for (var row = 0u; row < ${rows}u; row++) { basis[column * ${rows}u + row] -= projection * basis[previous * ${rows}u + row]; }
+        columnAccumulator = 0.0;
+        for (var row = 0u; row < ${rows}u; row++) { columnAccumulator += basis[previous * ${rows}u + row] * basis[column * ${rows}u + row]; }
+        upper[previous * ${columns}u + column] += columnAccumulator;
+        for (var row = 0u; row < ${rows}u; row++) { basis[column * ${rows}u + row] -= columnAccumulator * basis[previous * ${rows}u + row]; }
       }
     }
-    var norm = 0.0;
-    for (var row = 0u; row < ${rows}u; row++) { norm += basis[column * ${rows}u + row] * basis[column * ${rows}u + row]; }
-    norm = sqrt(norm);
-    if (!finite(norm) || norm <= maximumNorm * 1e-6) { return result; }
-    upper[column * ${columns}u + column] = norm;
+    columnAccumulator = 0.0;
+    for (var row = 0u; row < ${rows}u; row++) { columnAccumulator += basis[column * ${rows}u + row] * basis[column * ${rows}u + row]; }
+    columnAccumulator = sqrt(columnAccumulator);
+    if (!finite(columnAccumulator) || columnAccumulator <= maximumNorm * 1e-6) { return result; }
+    upper[column * ${columns}u + column] = columnAccumulator;
     for (var row = 0u; row < ${rows}u; row++) {
-      basis[column * ${rows}u + row] /= norm;
+      basis[column * ${rows}u + row] /= columnAccumulator;
       projected[column] += basis[column * ${rows}u + row] * response[row];
     }
   }

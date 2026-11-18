@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {reconcileLandscapePatchLabels} from './reconcile-patches';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {addLandscapePatchMetrics} from './landscape-patch-metrics';
 import {getSortedSegmentSumNodes} from '../../analysis-core/kernels/sorted-segment-sums';
 import {
@@ -87,6 +88,22 @@ export function addLandscapeMetricsRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPULandscapeMetricsProps
 ) {
+  props = snapshotConstructionFields(props, [
+    'id',
+    'patches',
+    'patchClasses',
+    'width',
+    'height',
+    'classCount',
+    'cellSize',
+    'connectivity',
+    'reconcilePatches',
+    'countBoundary',
+    'countBackground',
+    'backgroundClass',
+    'contagionWeighting',
+    'output'
+  ]);
   const id = props.id ?? 'landscape-metrics';
   const {width, height, classCount, cellSize} = props;
   const cellCount = width * height;
@@ -128,14 +145,38 @@ export function addLandscapeMetricsRecipe<Parameters>(
     patchCount * 16,
     'reduce the patch count'
   );
-  const output = props.output;
+  const output = snapshotConstructionFields(props.output ?? {}, [
+    'patchMetrics',
+    'classMetrics',
+    'classAdjacency',
+    'aggregation',
+    'landscape',
+    'landscapeAggregation',
+    'landscapeCohesion',
+    'reconciledPatches',
+    'patchParents'
+  ]);
   validateRecipeBoundary(
     graph,
     id,
     [props.patches, props.patchClasses],
     Object.values(output ?? {})
   );
-  // Validation precedes reconcileLandscapePatchLabels, which adds nodes to the graph.
+  for (const [name, format, length] of [
+    ['patchMetrics', 'float32x4', patchCount],
+    ['classMetrics', 'float32x4', classCount],
+    ['classAdjacency', 'uint32', classCount * classCount],
+    ['aggregation', 'float32', classCount],
+    ['landscape', 'float32x4', 1],
+    ['landscapeAggregation', 'float32', 1],
+    ['landscapeCohesion', 'float32', 1],
+    ['reconciledPatches', 'uint32', cellCount],
+    ['patchParents', 'uint32', patchCount]
+  ] as const) {
+    const view = output[name];
+    if (view) getRecipeView(graph, `${id} output.${name}`, format, length, view);
+  }
+  // Every supplied output is validated before reconciliation or default allocation.
   const reconciled = props.reconcilePatches
     ? reconcileLandscapePatchLabels(graph, {
         ...props,

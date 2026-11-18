@@ -42,6 +42,78 @@ import {validateRegressionOutputDispatches} from './regression-output-dispatches
 import {getPanelLagTiledNodes} from './panel-lag-tiled-nodes';
 import {GPU_SPATIAL_EXACT_LOG_DETERMINANT_MAXIMUM_ROW_COUNT} from './spatial-exact-log-determinant';
 import {REGRESSION_TILE_MAXIMUM_ROW_COUNT} from './regression-row-tiles';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+
+/** @internal Capture weights metadata and declared status fields without copying graph views. */
+export function snapshotPanelLagWeights<
+  Weights extends {
+    offsets: unknown;
+    neighbors: unknown;
+    weights: unknown;
+    distances?: unknown;
+    overflow?: unknown;
+    status?: Partial<Record<keyof NonNullable<GPUSpatialWeights['status']>, unknown>>;
+    information?: GPUSpatialWeights['information'];
+    spatialContext?: GPUSpatialWeights['spatialContext'];
+  }
+>(weights: Weights): Weights {
+  const snapshot = snapshotConstructionFields(weights, [
+    'offsets',
+    'neighbors',
+    'weights',
+    'distances',
+    'overflow',
+    'status',
+    'information',
+    'spatialContext'
+  ]);
+  const information = snapshot.information
+    ? snapshotConstructionFields(snapshot.information, [
+        'rowCount',
+        'transform',
+        'symmetric',
+        'hasSelfWeights',
+        'provenance'
+      ])
+    : undefined;
+  return Object.freeze({
+    ...snapshot,
+    status: snapshot.status
+      ? snapshotConstructionFields(snapshot.status, [
+          'count',
+          'requiredCount',
+          'overflow',
+          'candidateOverflow',
+          'uncertainCount',
+          'invalidCount',
+          'iterationCount',
+          'converged',
+          'iterationLimitReached',
+          'approximation'
+        ])
+      : undefined,
+    information: information
+      ? Object.freeze({
+          ...information,
+          provenance: information.provenance
+            ? snapshotConstructionFields(information.provenance, [
+                'source',
+                'criterion',
+                'k',
+                'radius',
+                'order'
+              ])
+            : undefined
+        })
+      : undefined,
+    spatialContext: snapshot.spatialContext
+      ? snapshotConstructionSpatialContext(snapshot.spatialContext)
+      : undefined
+  }) as Weights;
+}
 
 /** Supplied entity spectra share the existing exact-logdet decomposition envelope. */
 export const GPU_PANEL_LAG_TILED_MAXIMUM_ENTITY_COUNT =
@@ -194,7 +266,40 @@ export class GPUSpatialPanelLagMaximumLikelihood implements GPUCommandNodeProduc
   readonly id: string;
   readonly fitMode: 'reference' | 'tiled';
   readonly estimatedCommandNodeCount: number;
-  constructor(readonly props: GPUSpatialPanelLagMaximumLikelihoodProps) {
+  readonly props: GPUSpatialPanelLagMaximumLikelihoodProps;
+  constructor(props: GPUSpatialPanelLagMaximumLikelihoodProps) {
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'fitMode',
+      'eigenvalues',
+      'weights',
+      'periodCount',
+      'predictors',
+      'predictorCount',
+      'response',
+      'effects',
+      'maximumIterations',
+      'maximumSearchIterations',
+      'tolerance',
+      'output',
+      'hausman'
+    ]);
+    props = Object.freeze({
+      ...snapshot,
+      weights: snapshotPanelLagWeights(snapshot.weights),
+      output: snapshotConstructionFields(snapshot.output, [
+        'coefficients',
+        'covariance',
+        'summary',
+        'status',
+        'fitted',
+        'residuals'
+      ]),
+      hausman: snapshot.hausman
+        ? snapshotConstructionFields(snapshot.hausman, ['tests', 'status'])
+        : undefined
+    });
+    this.props = props;
     this.id = props.id ?? 'spatial-panel-lag-maximum-likelihood';
     const entities = validateGPUSpatialWeights(this.id, props.weights);
     const rows = entities * props.periodCount;
@@ -322,7 +427,8 @@ export class GPUSpatialPanelLagMaximumLikelihood implements GPUCommandNodeProduc
         props.weights.offsets,
         props.weights.neighbors,
         props.weights.weights,
-        props.weights.status?.overflow
+        props.weights.status?.overflow,
+        props.weights.status?.candidateOverflow
       ]
     );
   }
@@ -348,6 +454,7 @@ export class GPUSpatialPanelLagMaximumLikelihood implements GPUCommandNodeProduc
       neighbors: props.weights.neighbors,
       weights: props.weights.weights,
       overflow: props.weights.status?.overflow,
+      candidateOverflow: props.weights.status?.candidateOverflow,
       ...props.output,
       hausmanTests: props.hausman?.tests,
       hausmanStatus: props.hausman?.status
@@ -424,10 +531,20 @@ if (index == 0u) { centers[centersOffset + ${columns}u] = 0.0; }`
                   access: 'read' as const
                 }
               ]
+            : []),
+          ...(props.weights.status?.candidateOverflow
+            ? [
+                {
+                  name: 'candidateOverflow',
+                  view: props.weights.status.candidateOverflow,
+                  type: 'u32' as const,
+                  access: 'read' as const
+                }
+              ]
             : [])
         ],
         declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}`,
-        body: `for (var column = 0u; column < ${entities}u; column++) { dense[denseOffset + index * ${entities}u + column] = 0.0; } var valid = ${props.weights.status?.overflow ? 'overflow[overflowOffset] == 0u' : 'true'}; var total = 0.0; let begin = offsets[offsetsOffset + index]; let end = offsets[offsetsOffset + index + 1u]; if (end < begin || end > ${props.weights.neighbors.length}u) { valid = false; } else { for (var slot = begin; slot < end; slot++) { let neighbor = neighbors[neighborsOffset + slot]; let weight = weights[weightsOffset + slot]; if (neighbor >= ${entities}u || neighbor == index || !(weight >= 0.0) || !isFiniteBits(weight) || (slot > begin && neighbors[neighborsOffset + slot - 1u] >= neighbor)) { valid = false; } else { dense[denseOffset + index * ${entities}u + neighbor] = weight; total += weight; } } } if (!valid || abs(total-1.0) > 1.0e-5) { dense[denseOffset + index * ${entities}u] = getNaN(); }`
+        body: `for (var column = 0u; column < ${entities}u; column++) { dense[denseOffset + index * ${entities}u + column] = 0.0; } var valid = ${props.weights.status?.overflow ? 'overflow[overflowOffset] == 0u' : 'true'} && ${props.weights.status?.candidateOverflow ? 'candidateOverflow[candidateOverflowOffset] == 0u' : 'true'}; var total = 0.0; let begin = offsets[offsetsOffset + index]; let end = offsets[offsetsOffset + index + 1u]; if (end < begin || end > ${props.weights.neighbors.length}u) { valid = false; } else { for (var slot = begin; slot < end; slot++) { let neighbor = neighbors[neighborsOffset + slot]; let weight = weights[weightsOffset + slot]; if (neighbor >= ${entities}u || neighbor == index || !(weight >= 0.0) || !isFiniteBits(weight) || (slot > begin && neighbors[neighborsOffset + slot - 1u] >= neighbor)) { valid = false; } else { dense[denseOffset + index * ${entities}u + neighbor] = weight; total += weight; } } } if (!valid || abs(total-1.0) > 1.0e-5) { dense[denseOffset + index * ${entities}u] = getNaN(); }`
       }),
       createWGSLKernelNode(graph, {
         id: `${id}-pack`,

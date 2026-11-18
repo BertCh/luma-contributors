@@ -32,6 +32,7 @@ import {createAffineChunkNodes} from './gpu-affine-transform-chunks';
 import {GPUGeometryMeasures} from '../geometry-measures/gpu-geometry-measures';
 import {GEOMETRY_STATS_STRIDE} from '../geometry-measures/geometry-measures-kernels';
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
+import {validateGPUMultipartGeometryPort} from '../../analysis-core/contracts/index';
 import {createAffineTransformNode} from './geometry-edit-kernels';
 import {
   resolveGPUSpatialContext,
@@ -304,6 +305,23 @@ export class GPUAffineTransform<
       GRAPH_CHUNK_MAXIMUM_ROW_COUNT
     );
     const layout = getAffineLayout(props);
+    if (props.geometryType === 'points' && props.featureOffsets) {
+      validateGPUMultipartGeometryPort(id, {
+        kind: 'points',
+        positions: props.positions,
+        featureOffsets: props.featureOffsets
+      });
+    } else if (props.geometryType !== 'polygons' && layout.featureOffsets) {
+      if (!layout.ringOffsets) {
+        throw new Error(`${id} featureOffsets requires lineOffsets`);
+      }
+      validateGPUMultipartGeometryPort(id, {
+        kind: 'lines',
+        positions: props.positions,
+        lineOffsets: layout.ringOffsets,
+        featureOffsets: layout.featureOffsets
+      });
+    }
     for (const name of ['ringOffsets', 'featureOffsets', 'polygonOffsets'] as const) {
       const view = layout[name];
       if (view) {
@@ -311,9 +329,6 @@ export class GPUAffineTransform<
         // Binary-search upper bounds are emitted as u32 literals in both transform routes.
         validateCapacity(id, `${name}.length`, view.length, 2, GRAPH_CHUNK_MAXIMUM_ROW_COUNT);
       }
-    }
-    if (props.geometryType === 'lines' && layout.featureOffsets && !layout.ringOffsets) {
-      throw new Error(`${id} featureOffsets requires lineOffsets`);
     }
     this.featureCount = layout.featureOffsets
       ? layout.featureOffsets.length - 1

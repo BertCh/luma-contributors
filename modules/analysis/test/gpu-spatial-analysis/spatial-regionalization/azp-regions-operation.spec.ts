@@ -8,6 +8,7 @@ import {CPUAZPRegionsOperation} from '../../../src/gpu-spatial-analysis/spatial-
 import {GPUAZPRegionsOperation} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-azp-regions-operation';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {createRegionalizationBudgetPath} from './regionalization-final1-fixtures';
 import {
   createAZPInput,
   createAZPCycleInput,
@@ -15,6 +16,30 @@ import {
   createAZPProps,
   getRegionalizationOperationInputs
 } from './regionalization-operation-test-utils';
+
+it('spatial-3:F7 bounds both AZP operations to one boundary-move round', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props = {
+    ...createAZPProps(),
+    rowCount: 6,
+    columnCount: 1,
+    regionCapacity: 2,
+    maximumIterations: 1,
+    extensiveValues: undefined,
+    extensiveThreshold: undefined
+  };
+  for (const Operation of [GPUAZPRegionsOperation, CPUAZPRegionsOperation]) {
+    const result = await runOperationGraph(device, {
+      inputs: getRegionalizationOperationInputs(createRegionalizationBudgetPath()),
+      operations: [new Operation(props)],
+      outputs: Object.values(props.output)
+    });
+    expect(Array.from(result['labels'])).toEqual([0, 0, 0, 0, 1, 1]);
+    expect(Array.from(result['status'])).toEqual([1, 0, 1, 0]);
+    expect(result['objective'][0]).toBe(50);
+  }
+});
 
 for (const scene of [
   'batched-moves',

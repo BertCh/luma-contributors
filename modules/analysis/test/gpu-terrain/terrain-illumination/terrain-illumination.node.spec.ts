@@ -41,7 +41,7 @@ import {
 import {
   getRasterGridGeoreference,
   getRasterGroundCellSize
-} from '../../../src/analysis-core/raster-grid';
+} from '../../../src/analysis-core/contracts/raster-grid';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {getTerrainHorizonReadWGSL} from '../../../src/gpu-terrain/terrain-illumination/terrain-illumination-utils';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
@@ -76,7 +76,7 @@ it('GPUTerrainHorizon validates props and schedules one node per sector', () => 
   };
   const contributor = create();
   expect(contributor.id).toBe('terrain-horizon');
-  expect(contributor.requiredHalo).toBe(4);
+  expect(contributor.getHaloStage().requiredHalo).toBe(5);
   const nodeIds = contributor.getCommandNodes(graph).map(node => node.id);
   // A tiny grid fits every sector into one fused march chunk.
   expect(nodeIds.filter(id => /-horizon-march-\d$/.test(id))).toHaveLength(1);
@@ -136,7 +136,7 @@ it('GPUTerrainHorizon validates props and schedules one node per sector', () => 
   expect(sweepIds.filter(id => /-horizon-\d-nadir$/.test(id))).toHaveLength(8);
   const shared = createBand(graph, 'shared', 30);
   expect(() => create({elevation: shared}, {skyViewFactor: shared.storage.values})).toThrow(
-    /share buffers/
+    /^terrain-horizon output\[0\] chunk 0 logical byte ranges must not overlap \(writable storage\)$/
   );
 
   expect(Array.from(getGPUTerrainHorizonStepDistances(5))).toEqual([1, 2, 3, 4, 5]);
@@ -284,7 +284,9 @@ it('GPUReliefShading validates props and packs MDOW and custom lights', () => {
     })
   ).toThrow(/parameters/);
   const svf = createTransientView(graph, 'svf-alias', 'float32', 30);
-  expect(() => create({skyViewFactor: svf}, {hillshade: svf})).toThrow(/share buffers/);
+  expect(() => create({skyViewFactor: svf}, {hillshade: svf})).toThrow(
+    /^relief-shading output\[0\] chunk 0 logical byte ranges must not overlap \(writable storage\)$/
+  );
 
   const grid = makeGPURasterMetadata({width: 6, height: 5, cellSize: [10, 12]});
   const mdow = getGPUReliefShadingParameterValues({}, grid);
@@ -528,7 +530,7 @@ it('GPUTerrainHorizon validates unorm16, anisotropic, and negative-openness opti
   // The same buffer cannot back two outputs.
   const shared = createTransientView(graph, 'shared-output', 'float32', 30);
   expect(() => create({}, {skyViewFactor: shared, negativeOpenness: shared})).toThrow(
-    /share buffers/
+    /^terrain-horizon output\[1\] chunk 0 logical byte ranges must not overlap \(writable storage\)$/
   );
 
   // Parameter packing: 8 values unless anisotropy is given or the target holds 12; the cell size

@@ -10,6 +10,7 @@ import {
   GPU_LOCAL_KRIGING_BRUTE_FORCE_MAXIMUM_SAMPLE_COUNT,
   GPU_LOCAL_KRIGING_MAXIMUM_BRUTE_FORCE_WORK,
   GPULocalKriging,
+  createLocalKrigingForTesting,
   type GPULocalKrigingProps
 } from '../../../src/gpu-spatial-analysis/spatial-interpolation/gpu-local-kriging';
 import {
@@ -40,8 +41,7 @@ type Scenario = {
     | 'coKrigingMean'
     | 'targetVariable'
     | 'driftCount'
-    | 'sampleIndexChunkQueryCount'
-  >;
+  > & {sampleIndexChunkQueryCount?: number};
   /** Row-major float32 external drift columns, `driftCount` per sample and per query. */
   sampleDrift?: number[];
   queryDrift?: number[];
@@ -156,7 +156,7 @@ async function runLocalKriging(
   const statusBuffer = createOutputBuffer(device, queryCount);
   const weightsBuffer = createOutputBuffer(device, queryCount * neighborCount);
   buffers.push(valuesBuffer, statusBuffer, weightsBuffer);
-  const kriging = new GPULocalKriging({
+  const kriging = createLocalKrigingForTesting({
     ...scenario.props,
     id: `local-kriging-${sampleIndex}`,
     sampleIndex,

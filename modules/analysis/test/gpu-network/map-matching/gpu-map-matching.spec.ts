@@ -37,6 +37,7 @@ import {
 } from '../network-metric-oracle';
 import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../../src/analysis-core/contracts/earth';
 import {matchOracle} from './map-matching-oracle';
+import {getMatchedEndpointNode} from './map-matching-operation-fixture';
 import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 10;
@@ -217,7 +218,7 @@ async function runMatching(
       targets: output('table-targets', 'uint32', capacity),
       costs: output('table-costs', 'float32', capacity),
       costLimit: input('table-cost-limit', Float32Array.of(routeTableOptions.costLimit), 'float32'),
-      status: {overflow: output('table-overflow', 'uint32', 1)}
+      status: {complete: output('table-complete', 'uint32', 1)}
     };
     graph.add(
       new GPUNetworkCostTable({
@@ -233,7 +234,10 @@ async function runMatching(
           offsets: routeTable.offsets,
           targets: routeTable.targets,
           costs: routeTable.costs,
-          status: {overflow: routeTable.status?.overflow}
+          status: {
+            complete: routeTable.status?.complete,
+            overflow: output('table-overflow', 'uint32', 1)
+          }
         }
       })
     );
@@ -431,13 +435,60 @@ it('GPUMapMatching great-circle path matches the f64 oracle across the antimerid
         }
       }
     );
-    expect(kilometers.edges).toEqual(result.edges);
+    kilometers.edges.forEach((edge, point) => {
+      if (edge !== result.edges[point]) {
+        // At a junction, an incoming edge at fraction 1 and an outgoing edge at fraction 0
+        // can represent equal-likelihood paths. Unit conversion can change f32 tie rounding;
+        // it must not change the junction or select an interior point on another road.
+        const endpoint = getMatchedEndpointNode(result.edges[point], result.fractions[point], CSR);
+        expect(endpoint, `meters endpoint at point ${point}`).toBeDefined();
+        expect(
+          getMatchedEndpointNode(edge, kilometers.fractions[point], CSR),
+          `kilometers endpoint at point ${point}`
+        ).toBe(endpoint);
+      }
+    });
     expect(kilometers.breaks).toEqual(result.breaks);
     expect(kilometers.overflow).toBe(0);
+    result.logLikelihoods.forEach((likelihood, track) => {
+      let densityTermCount = 0;
+      for (let point = TRACKS.offsets[track]; point < TRACKS.offsets[track + 1]; point++) {
+        if (result.edges[point] !== GPU_MAP_MATCHING_NONE) {
+          densityTermCount++;
+          if (point > TRACKS.offsets[track] && result.breaks[point] === 0) densityTermCount++;
+        }
+      }
+      // Each Gaussian emission and each connected exponential transition gains log(1000)
+      // when its length unit changes from meters to kilometers. Tied endpoint edge IDs may
+      // change, but the path likelihood, locations and break structure must remain equivalent.
+      expect(Number.isFinite(likelihood)).toBe(true);
+      expect(Number.isFinite(kilometers.logLikelihoods[track])).toBe(true);
+      expect(kilometers.logLikelihoods[track] - likelihood).toBeCloseTo(
+        densityTermCount * Math.log(1000),
+        1
+      );
+    });
     result.edges.forEach((edge, point) => {
       if (edge !== GPU_MAP_MATCHING_NONE) {
         expect(kilometers.distances[point]).toBeCloseTo(result.distances[point] / 1000, 5);
-        expect(kilometers.offsets[point]).toBeCloseTo(result.offsets[point] / 1000, 5);
+        if (kilometers.edges[point] === edge) {
+          expect(kilometers.offsets[point]).toBeCloseTo(result.offsets[point] / 1000, 5);
+        } else {
+          // Offsets are measured from each directed edge's source, so the two equivalent
+          // endpoint representations legitimately have different offsets (full length or 0).
+          const convertedEdge = kilometers.edges[point];
+          const source = CSR.sources[convertedEdge];
+          const target = CSR.neighbors[convertedEdge];
+          const length = getHaversineDistance(
+            [fixture.nodePositions[source * 2], fixture.nodePositions[source * 2 + 1]],
+            [fixture.nodePositions[target * 2], fixture.nodePositions[target * 2 + 1]]
+          );
+          expect(Number.isFinite(kilometers.offsets[point])).toBe(true);
+          expect(kilometers.offsets[point]).toBeCloseTo(
+            (kilometers.fractions[point] * length) / 1000,
+            4
+          );
+        }
       }
     });
     const expected = matchOracle(
@@ -458,7 +509,20 @@ it('GPUMapMatching great-circle path matches the f64 oracle across the antimerid
       CELL_SIZE
     );
     expect(result.overflow).toBe(0);
-    expect(result.edges.map(getRoadKey)).toEqual(expected.edges.map(getRoadKey));
+    result.edges.forEach((edge, point) => {
+      if (getRoadKey(edge) !== getRoadKey(expected.edges[point])) {
+        const endpoint = getMatchedEndpointNode(
+          expected.edges[point],
+          expected.fractions[point],
+          CSR
+        );
+        expect(endpoint, `oracle endpoint at point ${point}`).toBeDefined();
+        expect(
+          getMatchedEndpointNode(edge, result.fractions[point], CSR),
+          `GPU endpoint at point ${point}`
+        ).toBe(endpoint);
+      }
+    });
     expect(result.breaks).toEqual(expected.breaks);
     expected.trackLogLikelihoods.forEach((value, track) => {
       expect(result.logLikelihoods[track]).toBeCloseTo(value, 1);

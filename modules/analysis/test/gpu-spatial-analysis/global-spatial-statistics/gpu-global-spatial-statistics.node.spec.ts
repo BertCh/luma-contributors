@@ -441,9 +441,9 @@ it('islands and join-count kernels add to the global counters once per workgroup
   ).getCommandNodes(graph);
   const sources = getGPUCommandNodeKernelSources(nodes);
   device.destroy();
-  for (const {id, source} of sources) {
+  for (const {id, source, constants} of sources) {
     expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
-    expect(getWorkgroupMemoryBytes(source), id).toBeLessThanOrEqual(
+    expect(getWorkgroupMemoryBytes(source, constants), id).toBeLessThanOrEqual(
       CORE_WORKGROUP_STORAGE_LIMIT_BYTES
     );
   }
@@ -466,7 +466,8 @@ it('islands and join-count kernels add to the global counters once per workgroup
     // Barrier at function scope, not under the row guard.
     expect(body, kernel.id).toMatch(/\n {2}workgroupBarrier\(\);/);
     expect(body, kernel.id).toContain('if (index < ROWS) {');
-    expect(getWorkgroupMemoryBytes(kernel.source), kernel.id).toBe(expected * 4);
+    // Each workgroup atomic consumes 16 bytes of the WebGPU storage limit.
+    expect(getWorkgroupMemoryBytes(kernel.source, kernel.constants), kernel.id).toBe(expected * 16);
   }
 });
 

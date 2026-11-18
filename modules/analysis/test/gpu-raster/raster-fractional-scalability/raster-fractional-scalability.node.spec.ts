@@ -119,7 +119,7 @@ it('rejects overlapping output fields and status words at construction', () => {
         ...coverage,
         output: {...coverage.output, cellIds: coverage.output.zoneIds}
       })
-  ).toThrow(/outputs must not share/);
+  ).toThrow(/^raster-fractional-coverage .*logical byte ranges must not overlap/);
   expect(
     () =>
       new GPURasterFractionalCoverage({
@@ -129,14 +129,14 @@ it('rejects overlapping output fields and status words at construction', () => {
           status: {...coverage.output.status, candidateOverflow: coverage.output.status.count}
         }
       })
-  ).toThrow(/outputs must not share/);
+  ).toThrow(/^raster-fractional-coverage .*logical byte ranges must not overlap/);
   expect(
     () =>
       new GPURasterFractionalCategoricalStatistics({
         ...categorical,
         output: {...categorical.output, proportions: categorical.output.classAreas}
       })
-  ).toThrow(/outputs must not share/);
+  ).toThrow(/^fractional-categorical-statistics .*logical byte ranges must not overlap/);
 });
 
 it('preflights aligned input ranges and derived scratch before declaring any graph resource', () => {
@@ -216,7 +216,7 @@ it('preflights categorical sort scratch even when every caller view fits', () =>
   resources.mockRestore();
 });
 
-it('rejects overlapping aligned writable ranges behind distinct handles of the same buffer', () => {
+it('rejects separately imported writable aliases, including disjoint rows with aligned overlap', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const {coverage, categorical} = createScalabilityProps(graph);
@@ -240,7 +240,7 @@ it('rejects overlapping aligned writable ranges behind distinct handles of the s
         ...categorical,
         output: {...categorical.output, coverageSums: firstOutput, classAreas: secondOutput}
       })
-  ).toThrow(/aligned binding byte ranges must not overlap/);
+  ).toThrow(/^fractional-categorical-statistics .*physical buffer.*write.*one imported handle/);
   const firstIds = graph.createDataView(first.buffer, {
     format: 'uint32',
     byteOffset: 256,
@@ -257,7 +257,7 @@ it('rejects overlapping aligned writable ranges behind distinct handles of the s
         ...coverage,
         output: {...coverage.output, zoneIds: firstIds, cellIds: secondIds}
       })
-  ).toThrow(/aligned binding byte ranges must not overlap/);
+  ).toThrow(/^raster-fractional-coverage .*physical buffer.*write.*one imported handle/);
   buffer.destroy();
 });
 
@@ -451,7 +451,8 @@ it('uses floating literals for large finite cell areas and refuses unrepresentab
         sources.some(
           kernel =>
             kernel.source.includes(`* ${floatingLiteral}`) ||
-            kernel.source.includes(`*${floatingLiteral}`)
+            kernel.source.includes(`*${floatingLiteral}`) ||
+            kernel.source.includes(`let area=${floatingLiteral};`)
         )
       ).toBe(true);
       for (const kernel of sources) {

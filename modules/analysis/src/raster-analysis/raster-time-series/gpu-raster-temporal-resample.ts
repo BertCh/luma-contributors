@@ -80,9 +80,9 @@ export type GPURasterTemporalResampleProps<Rows extends RasterScalarView = Graph
   dateAxis: GPURasterIrregularDateAxis;
   output: {
     /** `cell * gridCount + point`; NaN where status is nonzero. */
-    values: RasterTimeSeriesView<'float32', Rows>;
+    values: RasterTimeSeriesView<'float32'>;
     /** Per grid point: 0 interpolated, 1 outside the observed range, 2 gap larger than `maximumGap`. */
-    status: RasterTimeSeriesView<'uint32', Rows>;
+    status: RasterTimeSeriesView<'uint32'>;
   };
 };
 
@@ -141,7 +141,10 @@ export class GPURasterTemporalResample<Rows extends RasterScalarView = GraphData
       'output.status': {view: props.output.status, entriesPerCell: props.gridCount}
     });
     this.estimatedCommandNodeCount = this.chunkPlan.estimatedCommandNodeCount;
-    validateRasterViews(this.id, this.getInputs(), this.getOutputs(), this.chunkPlan);
+    const inputs = this.getInputs();
+    const outputs = this.getOutputs();
+    // One interpolation dispatch per cell chunk binds all source and destination fields.
+    validateRasterViews(this.id, inputs, outputs, this.chunkPlan, [{inputs, outputs}]);
   }
 
   private getInputs(): RasterScalarView[] {

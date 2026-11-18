@@ -4,7 +4,8 @@
 
 import {Buffer, type Device} from '@luma.gl/core';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
-import {Vector, type Decimal} from 'apache-arrow';
+import {DataType, Vector, type Decimal} from 'apache-arrow';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   combineDecimal128SumAccumulators,
   joinWordsToDecimal128,
@@ -156,12 +157,37 @@ export async function aggregateDecimal128OnGpu(props: {
   };
 }
 
-/** Uploads one Arrow Decimal column's 128-bit words chunk by chunk, with a validity vector when nulls exist. */
-export function makeDecimal128WordVectors(device: Device, column: Vector) {
+/**
+ * Uploads only Arrow Decimal128 words, preserving chunks. Every chunk must have bitWidth 128 and
+ * the column's scale. Allocates validity for every chunk only when any chunk has nulls.
+ * The returned destroy() releases all owned vectors.
+ */
+export function makeDecimal128WordVectors(
+  device: Device,
+  column: Vector<Decimal>
+): {
+  words: GPUVector<'uint32x4'>;
+  validity: GPUVector<'uint32'> | undefined;
+  destroy(): void;
+} {
+  validateRequirement(
+    'makeDecimal128WordVectors',
+    DataType.isDecimal(column.type) && column.type.bitWidth === 128,
+    `column must be Decimal128 (bitWidth 128); received ${column.type} (bitWidth ${'bitWidth' in column.type ? column.type.bitWidth : 'none'})`
+  );
+  for (const [chunkIndex, chunk] of column.data.entries()) {
+    validateRequirement(
+      'makeDecimal128WordVectors',
+      DataType.isDecimal(chunk.type) &&
+        chunk.type.bitWidth === 128 &&
+        chunk.type.scale === column.type.scale,
+      `column chunk ${chunkIndex} must be Decimal128 (bitWidth 128) with scale ${column.type.scale}; received ${chunk.type} (bitWidth ${'bitWidth' in chunk.type ? chunk.type.bitWidth : 'none'}, scale ${'scale' in chunk.type ? chunk.type.scale : 'none'})`
+    );
+  }
   const wordData: GPUData<'uint32x4'>[] = [];
   const validityData: GPUData<'uint32'>[] = [];
   const allocatedBuffers: Buffer[] = [];
-  let hasNulls = false;
+  const hasNulls = column.data.some(chunk => chunk.nullCount > 0);
   try {
     for (const chunk of column.data) {
       const values = chunk.values as unknown as Uint32Array;
@@ -180,9 +206,9 @@ export function makeDecimal128WordVectors(device: Device, column: Vector) {
           buffer: wordBuffer
         })
       );
+      if (!hasNulls) continue;
       const flags = new Uint32Array(Math.max(1, chunk.length)).fill(1);
       if (chunk.nullCount > 0) {
-        hasNulls = true;
         const vector = new Vector([chunk]);
         for (let row = 0; row < chunk.length; row++) flags[row] = vector.get(row) === null ? 0 : 1;
       }
@@ -202,10 +228,15 @@ export function makeDecimal128WordVectors(device: Device, column: Vector) {
     }
     const make = <Format extends 'uint32x4' | 'uint32'>(format: Format, data: GPUData<Format>[]) =>
       new GPUVector({name: `decimal128-${format}`, type: 'data', format, ownsData: true, data});
+    const words = make('uint32x4', wordData);
+    const validity = hasNulls ? make('uint32', validityData) : undefined;
     return {
-      words: make('uint32x4', wordData),
-      validity: hasNulls ? make('uint32', validityData) : undefined,
-      unusedValidity: hasNulls ? undefined : make('uint32', validityData)
+      words,
+      validity,
+      destroy() {
+        words.destroy();
+        validity?.destroy();
+      }
     };
   } catch (error) {
     // A failed factory returns no owner, so release even buffers allocated before a constructor failed.
@@ -230,8 +261,6 @@ export async function aggregateDecimal128Column(
       comparison
     });
   } finally {
-    vectors.words.destroy();
-    vectors.validity?.destroy();
-    vectors.unusedValidity?.destroy();
+    vectors.destroy();
   }
 }

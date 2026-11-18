@@ -32,6 +32,56 @@ const PALETTE = [
 ];
 const EDGES = [-1e6, -8, -2, 2, 8, 1e6];
 
+it('addPeriodComparisonRecipe preserves a one-cell change at its selected sum scale', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new RecipeTestFixture(device, 'period-comparison-sum-scale');
+  try {
+    const delta = fixture.output('delta', 'float32', 1);
+    const count = fixture.output('count', 'uint32', 1);
+    const overflow = fixture.output('overflow', 'uint32', 1);
+    addPeriodComparisonRecipe(fixture.graph, {
+      family: 'quadbin',
+      resolution: 0,
+      tableCapacity: 1,
+      unionCapacity: 1,
+      measure: 'sum',
+      sumScale: 2 ** 18,
+      before: {
+        positions: fixture.input('before-positions', new Float32Array([0, 0]), 'float32x2', 1),
+        values: fixture.input('before-values', new Float32Array([0]), 'float32', 1)
+      },
+      after: {
+        positions: fixture.input('after-positions', new Float32Array([0, 0]), 'float32x2', 1),
+        values: fixture.input('after-values', new Float32Array([2 ** -18]), 'float32', 1)
+      },
+      outputs: {
+        comparison: {delta: delta.view, status: {count: count.view, overflow: overflow.view}}
+      },
+      classBreaksParameters: fixture.parameters(
+        'break-parameters',
+        'float32',
+        getGPUClassBreaksParameterValues({method: 'custom', customEdges: [-1, 0, 1]}, 2)
+      ),
+      maximumClassCount: 2,
+      methods: ['custom'],
+      palette: fixture.input('palette', Uint32Array.from(PALETTE.slice(0, 2)), 'uint32', 2),
+      colorScaleParameters: fixture.parameters(
+        'color-parameters',
+        'float32',
+        getGPUColorScaleParameterValues({scale: 'threshold', domainCount: 3, paletteCount: 2})
+      ),
+      maximumPaletteCount: 2
+    });
+    fixture.run();
+    expect(await fixture.readUint32(count, 1)).toEqual([1]);
+    expect(await fixture.readUint32(overflow, 1)).toEqual([0]);
+    expect(await fixture.readFloat32(delta, 1)).toEqual([2 ** -18]);
+  } finally {
+    fixture.destroy();
+  }
+});
+
 /** Two periods over the same area: the cluster moves from the south-west to the north-east. */
 function createPeriods() {
   const random = createSeededRandom(77);

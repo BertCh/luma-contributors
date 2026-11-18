@@ -14,6 +14,7 @@ import {
 import {GPU_NETWORK_PATH_NO_EDGE} from './gpu-network-path-extraction';
 import {
   GPUNetworkPathExtractionOperation,
+  snapshotNetworkPathExtractionOperationProps,
   type NetworkPathExtractionOperationProps
 } from './gpu-network-path-extraction-operation';
 
@@ -28,7 +29,7 @@ export type CPUNetworkPathExtractionInput = {
   targetCount?: number | Uint32Array;
   predecessorsComplete?: Uint32Array;
   nodeIds?: Uint32Array;
-  /** Accepted for interchange with the GPU; does not truncate the CPU walk. */
+  /** Maximum nodes per path, binding on CPU and GPU. Defaults to 1024. */
   maximumPathLength?: number;
   capacity: number;
   edges?: {
@@ -46,14 +47,16 @@ export type CPUNetworkPathExtractionCompactResult = {
   count: Uint32Array;
   requiredCount: Uint32Array;
   overflow: Uint32Array;
+  candidateOverflow: Uint32Array;
   lineOffsets: Uint32Array;
 };
 
 /** Packed nodes, optional edges, and per-target costs/found flags. */
 export type CPUNetworkPathExtractionResult = CPUNetworkPathExtractionCompactResult & {
+  nodeRows: Uint32Array;
   pathCosts: Float32Array;
   pathFound: Uint32Array;
-  edges?: CPUNetworkPathExtractionCompactResult;
+  edges?: CPUNetworkPathExtractionCompactResult & {edgeRows: Uint32Array};
 };
 
 /**
@@ -64,8 +67,9 @@ export type CPUNetworkPathExtractionResult = CPUNetworkPathExtractionCompactResu
  * with the right endpoints, then 0xffffffff. Counts clamp to capacity; offsets remain unclamped.
  *
  * What differs from the GPU contributor:
- * - maximumPathLength and its 65536 GPU cap do not truncate CPU paths. Cycles are detected
- *   exactly and report not found, without setting overflow. Only output capacity sets overflow.
+ * - Cycles are detected exactly instead of waiting for the walk budget; they report candidate loss.
+ *   maximumPathLength binds both forms (default 1024); CPU accepts budgets above the GPU 65536 cap.
+ *   Only final output capacity sets overflow; candidateOverflow reports bounded walk loss.
  * - Edge cost consistency is evaluated in float64; a link consistent only after float32 addition
  *   rounding may select a different fallback slot. The smallest-slot tie order is unchanged.
  * - Potential node output rows (targets.length * predecessors.length) must fit uint32 counts.
@@ -122,14 +126,21 @@ export function computeNetworkPathExtractionOnCPU(
     count: new Uint32Array(1),
     requiredCount: new Uint32Array(1),
     overflow: new Uint32Array(1),
+    candidateOverflow: new Uint32Array(1),
     lineOffsets: new Uint32Array(targets.length + 1)
   });
   const result: CPUNetworkPathExtractionResult = {
     ...makeCompactResult(input.capacity, 0),
+    nodeRows: new Uint32Array(input.capacity),
     pathCosts: new Float32Array(targets.length).fill(Infinity),
     pathFound: new Uint32Array(targets.length),
     edges: edges
-      ? makeCompactResult(edges.capacity, targets.length === 0 ? 0 : GPU_NETWORK_PATH_NO_EDGE)
+      ? {
+          ...makeCompactResult(edges.capacity, targets.length === 0 ? 0 : GPU_NETWORK_PATH_NO_EDGE),
+          edgeRows: new Uint32Array(edges.capacity).fill(
+            targets.length === 0 ? 0 : GPU_NETWORK_PATH_NO_EDGE
+          )
+        }
       : undefined
   };
   const activeCount =
@@ -156,6 +167,12 @@ export function computeNetworkPathExtractionOnCPU(
         found = predecessorsComplete === undefined || predecessorsComplete[0] !== 0;
         break;
       }
+      if (predecessor >= nodeCount) break;
+      if (reversed.length >= (input.maximumPathLength ?? 1024) || visited.has(predecessor)) {
+        result.candidateOverflow[0] = 1;
+        if (result.edges) result.edges.candidateOverflow[0] = 1;
+        break;
+      }
       node = predecessor;
     }
     if (!found) continue;
@@ -163,8 +180,10 @@ export function computeNetworkPathExtractionOnCPU(
     result.pathFound[targetRow] = 1;
     result.pathCosts[targetRow] = costs[target];
     for (let position = 0; position < path.length; position++) {
-      if (nodeTotal < input.capacity)
+      if (nodeTotal < input.capacity) {
+        result.nodeRows[nodeTotal] = path[position];
         result.ids[nodeTotal] = nodeIds ? nodeIds[path[position]] : path[position];
+      }
       nodeTotal++;
       if (edges && result.edges && position + 1 < path.length) {
         const tail = path[position];
@@ -184,6 +203,7 @@ export function computeNetworkPathExtractionOnCPU(
           }
         }
         if (selected === GPU_NETWORK_PATH_NO_EDGE) selected = fallback;
+        if (edgeTotal < edges.capacity) result.edges.edgeRows[edgeTotal] = selected;
         if (selected !== GPU_NETWORK_PATH_NO_EDGE && edges.edgeIds)
           selected = edges.edgeIds[selected];
         if (edgeTotal < edges.capacity) result.edges.ids[edgeTotal] = selected;
@@ -202,9 +222,10 @@ export function computeNetworkPathExtractionOnCPU(
   return result;
 }
 
-/** CPU twin with complete chain traversal; GPU maximumPathLength is accepted but not applied. */
+/** CPU twin with the same path budget and separate final/candidate status as the GPU. */
 export class CPUNetworkPathExtractionOperation extends GPUCPUOperation {
   constructor(props: NetworkPathExtractionOperationProps) {
+    props = snapshotNetworkPathExtractionOperationProps(props);
     const id = props.id ?? 'network-path-extraction';
     validateCapacity(id, 'nodeCount', props.nodeCount);
     validateCapacity(id, 'targetCapacity', props.targetCapacity, 0);
@@ -287,14 +308,21 @@ export class CPUNetworkPathExtractionOperation extends GPUCPUOperation {
           outputs[output.status.count] = compact.count;
           outputs[output.status.overflow] = compact.overflow;
           outputs[output.status.requiredCount] = compact.requiredCount;
+          if (output.status.candidateOverflow !== undefined)
+            outputs[output.status.candidateOverflow] = compact.candidateOverflow;
           if (output.lineOffsets !== undefined) outputs[output.lineOffsets] = compact.lineOffsets;
         };
         addCompactResult(props.output, result);
+        if (props.output.nodeRows !== undefined) outputs[props.output.nodeRows] = result.nodeRows;
         if (props.output.pathCosts !== undefined)
           outputs[props.output.pathCosts] = result.pathCosts;
         if (props.output.pathFound !== undefined)
           outputs[props.output.pathFound] = result.pathFound;
-        if (props.edges && result.edges) addCompactResult(props.edges.output, result.edges);
+        if (props.edges && result.edges) {
+          addCompactResult(props.edges.output, result.edges);
+          if (props.edges.output.edgeRows !== undefined)
+            outputs[props.edges.output.edgeRows] = result.edges.edgeRows;
+        }
         return outputs;
       }
     });

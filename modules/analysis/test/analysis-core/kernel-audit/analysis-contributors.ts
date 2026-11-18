@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import * as dataframeAnalysis from '../../../src/dataframe-analysis/index';
+import * as analysisCore from '../../../src/analysis-core/index';
 import * as geospatialAnalysis from '../../../src/geospatial-analysis/index';
 import * as network from '../../../src/gpu-network/index';
 import * as spatialAnalysis from '../../../src/gpu-spatial-analysis/index';
@@ -13,6 +14,7 @@ import type {KernelAuditCase} from './kernel-audit-context';
 
 /** Analysis entry barrels whose contributors the kernel audit builds. */
 export const ANALYSIS_BARRELS: Readonly<Record<string, Record<string, unknown>>> = {
+  'analysis-core': analysisCore,
   'geospatial-analysis': geospatialAnalysis,
   'dataframe-analysis': dataframeAnalysis,
   'raster-analysis': rasterAnalysis,
@@ -33,11 +35,11 @@ export function getContributorNames(
   for (const [entry, barrel] of Object.entries(barrels)) {
     for (const [name, value] of Object.entries(barrel)) {
       if (typeof value !== 'function') continue;
-      const prototype = (value as {prototype?: object}).prototype;
-      const methods = prototype ? Object.getOwnPropertyNames(prototype) : [];
+      const prototype = (value as {prototype?: {getCommandNodes?: unknown; addToGraph?: unknown}})
+        .prototype;
       const isContributor =
-        methods.includes('getCommandNodes') ||
-        methods.includes('addToGraph') ||
+        typeof prototype?.getCommandNodes === 'function' ||
+        typeof prototype?.addToGraph === 'function' ||
         /^add\w+Recipe$/.test(name);
       if (isContributor && !contributors.has(name)) contributors.set(name, entry);
     }

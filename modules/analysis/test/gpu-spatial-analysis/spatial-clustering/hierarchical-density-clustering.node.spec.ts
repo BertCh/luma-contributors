@@ -70,10 +70,11 @@ function getNodes(rows: number) {
 
 it('GPUHierarchicalDensityClustering kernels parse and fit the core limits', () => {
   const nodes = getNodes(1000);
-  for (const [kernelId, source] of getParsedKernelSources(nodes)) {
+  const recordedKernelSources1 = getParsedKernelSources(nodes);
+  for (const {id: kernelId, source: source, constants} of recordedKernelSources1.configurations) {
     expect(getStorageBindingCount(source), kernelId).toBeLessThanOrEqual(8);
-    expect(getPrivateMemoryBytes(source), kernelId).toBeLessThanOrEqual(8192);
-    expect(getWorkgroupMemoryBytes(source), kernelId).toBeLessThanOrEqual(16384);
+    expect(getPrivateMemoryBytes(source, constants), kernelId).toBeLessThanOrEqual(8192);
+    expect(getWorkgroupMemoryBytes(source, constants), kernelId).toBeLessThanOrEqual(16384);
   }
   const ids = nodes.map(node => node.id);
   const order = [

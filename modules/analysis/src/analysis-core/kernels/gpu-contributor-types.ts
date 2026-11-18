@@ -22,7 +22,11 @@ export type GPUStatusScalar = GraphDataView<'uint32'>;
 export type GPUCardinalityPort = {
   /** Number of usable rows or elements written. */
   count: GPUStatusScalar;
-  /** Exact unclamped requirement. Omit when the operation cannot compute it exactly. */
+  /**
+   * Unclamped requirement at the producer's final stage, before final-output truncation.
+   * A lower bound on the full requirement when candidates were lost; scan totals saturate at
+   * `0xffffffff`. Exact only when neither candidate loss nor saturation occurred.
+   */
   requiredCount?: GPUStatusScalar;
 };
 
@@ -40,12 +44,14 @@ export type GPUOverflowStatusPort = {
  * draw instance count. Writable views must not alias each other or contributor inputs.
  */
 export type GPUCompactOutput = {
-  /** Compact stable source IDs, or zero-based row indices when the contributor has no source IDs. */
+  /** Compact identities in the producer's declared ID domain; never infer source rows from IDs. */
   ids: GraphDataView<'uint32'>;
   /**
    * One-row status scalars: `count` receives `min(requiredCount, ids.length)`, `overflow` receives
-   * `1` when any capacity in the contributor overflowed (otherwise `0`), and the optional
-   * `requiredCount` receives the unclamped number of accepted rows.
+   * `1` when final output capacity was too small (otherwise `0`). Optional `candidateOverflow`
+   * reports earlier candidate loss, which growing `ids` cannot recover. Optional `requiredCount`
+   * counts accepted rows reaching the final stage; it is a lower bound when candidates were lost
+   * or the count saturated at `0xffffffff`.
    */
-  status: GPUCardinalityPort & GPUOverflowStatusPort;
+  status: GPUCardinalityPort & GPUOverflowStatusPort & {candidateOverflow?: GPUStatusScalar};
 };

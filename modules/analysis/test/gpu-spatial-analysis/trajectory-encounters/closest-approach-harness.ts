@@ -6,7 +6,10 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {getInt64TimeWords} from '../../../src/dataframe-analysis/time-window-filter/time-words';
-import {GPUTrajectoryClosestApproach} from '../../../src/gpu-spatial-analysis/trajectory-encounters/index';
+import {
+  GPUTrajectoryClosestApproach,
+  type GPUTrajectoryClosestApproachProps
+} from '../../../src/gpu-spatial-analysis/trajectory-encounters/index';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -20,6 +23,7 @@ import type {ClosestApproachTrack} from './closest-approach-oracle';
 export type ClosestApproachGPUResult = {
   count: number;
   overflow: number;
+  candidateOverflow: number;
   requiredCount: number;
   ids: number[];
   partners: number[];
@@ -47,6 +51,7 @@ export async function runClosestApproach(
     hitCapacity: number;
     pairCapacity: number;
     wordBase?: bigint;
+    temporalContext?: GPUTrajectoryClosestApproachProps['temporalContext'];
     /** Largest bridged segment in time units; omitted means no limit. */
     maximumGap?: number;
     timedEncodings?: number;
@@ -77,6 +82,7 @@ export async function runClosestApproach(
     ids: output(pairCapacity),
     count: output(1),
     overflow: output(1),
+    candidateOverflow: output(1),
     total: output(1),
     partners: output(pairCapacity),
     minimumDistances: output(pairCapacity),
@@ -100,6 +106,7 @@ export async function runClosestApproach(
   );
   graph.add(
     new GPUTrajectoryClosestApproach({
+      temporalContext: options.temporalContext,
       positions: importGraphBuffer(graph, 'positions', input(positions), 'float32x2', rowCount),
       timestamps:
         options.wordBase === undefined
@@ -138,6 +145,7 @@ export async function runClosestApproach(
           status: {
             count: view('count', 'uint32', 1),
             overflow: view('overflow', 'uint32', 1),
+            candidateOverflow: view('candidateOverflow', 'uint32', 1),
             requiredCount: view('total', 'uint32', 1)
           },
           partners: view('partners', 'uint32', pairCapacity),
@@ -172,6 +180,7 @@ export async function runClosestApproach(
   const result: ClosestApproachGPUResult = {
     count,
     overflow: (await readUint32(out.overflow, 1))[0],
+    candidateOverflow: (await readUint32(out.candidateOverflow, 1))[0],
     requiredCount: (await readUint32(out.total, 1))[0],
     ids: await readUint32(out.ids, pairCapacity),
     partners: await readUint32(out.partners, pairCapacity),

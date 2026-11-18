@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
+import {prepareGPUNetworkPointRoutingTurns} from '../../../src/gpu-network/network-optimization/prepare-point-routing-turns';
 import {
   CPUNetworkPointRoutingOperation,
   computeNetworkPointRoutingOnCPU
@@ -15,6 +16,70 @@ import {
   enumeratePointRoutingCosts,
   getPointRoutingInput
 } from './network-point-routing-operation-test-utils';
+
+it('charges incoming-specific turn penalties in full at partial destinations', () => {
+  const input = {
+    costs: Float32Array.of(2, 2, 10),
+    turns: Uint32Array.of(0, 2, 1, 2),
+    turnPenalties: Float32Array.of(7, 1),
+    queries: Uint32Array.of(0, 2, 1, 2),
+    fractions: Float32Array.of(0.5, 0.25, 0.5, 0.25)
+  };
+  const result = computeNetworkPointRoutingOnCPU(input);
+  expect(result.costs).toEqual(Float32Array.of(10.5, 4.5));
+  expect(result.status).toEqual(Uint32Array.of(0, 0));
+});
+
+it('selects a cheaper indirect turn rather than the penalized direct entry', () => {
+  const input = {
+    costs: Float32Array.of(0, 2, 10),
+    turns: Uint32Array.of(0, 2, 0, 1, 1, 2),
+    turnPenalties: Float32Array.of(7, 0, 1),
+    queries: Uint32Array.of(0, 2),
+    fractions: Float32Array.of(0, 0.25)
+  };
+  const result = computeNetworkPointRoutingOnCPU(input);
+  expect(result.costs).toEqual(Float32Array.of(5.5));
+  expect(result.predecessorEdges).toEqual(Uint32Array.of(0xffffffff, 0, 1));
+});
+
+it('adapts complete line-graph CSR without losing incoming-specific penalties or reading padding', () => {
+  const costs = Float32Array.of(2, 2, 10);
+  const input = {
+    offsets: Uint32Array.of(0, 1, 2, 2),
+    neighbors: Uint32Array.of(2, 2, 0xffffffff),
+    weights: Float32Array.of(17, 11, -1),
+    costs,
+    overflow: 0
+  };
+  const turns = prepareGPUNetworkPointRoutingTurns(input);
+  expect(turns.turns).toEqual(Uint32Array.of(0, 2, 1, 2));
+  expect(turns.turnPenalties).toEqual(Float32Array.of(7, 1));
+  expect(
+    computeNetworkPointRoutingOnCPU({
+      ...turns,
+      costs,
+      queries: Uint32Array.of(0, 2, 1, 2),
+      fractions: Float32Array.of(0.5, 0.25, 0.5, 0.25)
+    }).costs
+  ).toEqual(Float32Array.of(10.5, 4.5));
+  expect(() => prepareGPUNetworkPointRoutingTurns({...input, overflow: 1})).toThrow(/overflow/);
+  expect(() =>
+    prepareGPUNetworkPointRoutingTurns({...input, offsets: Uint32Array.of(0, 2, 1, 2)})
+  ).toThrow(/offsets/);
+});
+
+it('rejects malformed penalty lengths and diagnoses invalid penalty values', () => {
+  const input = {...getPointRoutingInput(), turnPenalties: Float32Array.of(0)};
+  expect(() => computeNetworkPointRoutingOnCPU(input)).toThrow(/turnPenalties/);
+  for (const penalty of [-1, NaN, Infinity]) {
+    const result = computeNetworkPointRoutingOnCPU({
+      ...input,
+      turnPenalties: new Float32Array(input.turns.length / 2).fill(penalty)
+    });
+    expect(result.status).toEqual(new Uint32Array(input.queries.length / 2).fill(1));
+  }
+});
 
 it('keeps a finite partial-target cost when only the full-edge float32 sum would overflow', () => {
   const maximumFloat32 = new Float32Array(Uint32Array.of(0x7f7fffff).buffer)[0];
@@ -82,13 +147,14 @@ it('retains turn-order ties and status 1 for defined invalid data', () => {
   expect(tied.costs[0]).toBe(3);
   expect(tied.predecessorEdges[3]).toBe(2);
   const input = getPointRoutingInput();
-  const invalidCosts = computeNetworkPointRoutingOnCPU({
+  const closedEdge = computeNetworkPointRoutingOnCPU({
     ...input,
     costs: Float32Array.of(8, -1, 6, 2, 3, 5)
   });
-  expect(invalidCosts.status.every(value => value === 1)).toBe(true);
-  expect(invalidCosts.costs.every(value => value === Infinity)).toBe(true);
-  expect(invalidCosts.predecessorEdges.every(value => value === 0xffffffff)).toBe(true);
+  expect(closedEdge.status).toEqual(Uint32Array.of(0, 0, 0, 1, 0));
+  expect(closedEdge.costs).toEqual(Float32Array.of(11, 12, 4, Infinity, Infinity));
+  for (let query = 0; query < input.queries.length / 2; query++)
+    expect(closedEdge.predecessorEdges[query * input.costs.length + 1]).toBe(0xffffffff);
   for (const fractions of [
     Float32Array.of(-1, 0),
     Float32Array.of(0, 1.25),

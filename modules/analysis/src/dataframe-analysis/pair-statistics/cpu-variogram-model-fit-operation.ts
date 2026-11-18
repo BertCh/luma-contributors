@@ -9,23 +9,29 @@ import {
 } from '../../analysis-core/operations/cpu-operation-rows';
 import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
+  GPUVariogramModelFitOperation,
   VARIOGRAM_MODEL_FIT_DEFAULT_MODELS,
+  snapshotVariogramModelFitOperationProps,
   type VariogramModelFitOperationProps
 } from './gpu-variogram-model-fit-operation';
 import {
   evaluateVariogramModel,
-  fitVariogramModel,
+  fitVariogramModelWithDiagnostics,
+  getVariogramModelSearchOptions,
   getVariogramModelShape,
   type VariogramModelInput,
   type VariogramModelType,
   type VariogramModelWeighting
 } from './variogram-model';
 
-/** Range ladder length of `fitVariogramModel`, which sets the boundary intervals below. */
-const RANGE_LADDER_LENGTH = 200;
-/** Golden-section steps `fitVariogramModel` always runs. */
-const GOLDEN_SECTION_ITERATIONS = 60;
-const GOLDEN_SECTION_RATIO = (Math.sqrt(5) - 1) / 2;
+function validateVariogramModelFitBins(id: string, input: VariogramModelInput): void {
+  if (
+    input.semivariances.length !== input.distances.length ||
+    input.pairCounts.length !== input.distances.length
+  ) {
+    throw new Error(`${id} invalid model or bin topology`);
+  }
+}
 
 /** Options of {@link computeVariogramModelFitOnCPU}. */
 export type CPUVariogramModelFitOptions = {
@@ -33,6 +39,10 @@ export type CPUVariogramModelFitOptions = {
   models?: readonly VariogramModelType[];
   /** Least-squares weighting. Defaults to `'cressie'`. */
   weighting?: VariogramModelWeighting;
+  /** Log-range ladder length, 3–1024. Defaults to 200. */
+  rangeSteps?: number;
+  /** Golden-section refinements per weighting pass, 0–64. Defaults to 60 on CPU. */
+  maximumIterations?: number;
 };
 
 /** Result of {@link computeVariogramModelFitOnCPU}, in the layout of `GPUVariogramModelFit`. */
@@ -41,7 +51,7 @@ export type CPUVariogramModelFitResult = {
   parameters: Float32Array;
   /** Per model: [usable bins, unweighted squared residual, AIC, relative log-range bracket]. */
   diagnostics: Float32Array;
-  /** Per model: 0 interior solution; 1 insufficient bins; 2 numerical failure; 3 boundary. */
+  /** Per model: 0 interior solution; 1 insufficient bins; 2 numerical failure; 3 boundary/budget. */
   status: Uint32Array;
 };
 
@@ -52,33 +62,30 @@ export type CPUVariogramModelFitResult = {
  * What differs from the GPU fit:
  * - Status 2 is set only when a fitted value is not finite. The GPU fit also refuses inputs whose
  *   float32 objective cannot be evaluated; float64 fits those.
- * - Status 3 is decided from the fitted range: it lies in the first or last interval of the range
- *   ladder over `[minimum lag / 10, 3 * maximum lag]`. The GPU fit decides it from the best ladder
- *   step and from its own search budget.
- * - The bracket diagnostic is an upper bound of the final golden-section bracket, which is below
- *   float32 resolution of the log range after the fixed 60 steps.
+ * - CPU defaults to 60 refinement steps, GPU to 32. Explicit rangeSteps and maximumIterations
+ *   bind both searches. CPU refines up to its budget in float64; GPU may stop at bracket 1e-5.
+ * - The bracket diagnostic is the measured final log-range bracket. Both forms set status 3
+ *   for an endpoint ladder optimum or a final bracket wider than 1e-5.
  * - Cressie weights have no floor other than the smallest float64.
  *
  * @param input Empirical bins. Bins with no pairs, a non-finite value or a non-positive lag are
  *   skipped.
- * @param options Model families and weighting.
+ * @param options Model families, weighting and search budgets.
  * @returns One row per model.
- * @throws If a model family or the weighting is unknown.
+ * @throws If bin arrays have unequal lengths, a model family or the weighting is unknown.
  */
 export function computeVariogramModelFitOnCPU(
   input: VariogramModelInput,
   options: CPUVariogramModelFitOptions = {}
 ): CPUVariogramModelFitResult {
+  validateVariogramModelFitBins('variogram-model-fit', input);
+  const searchOptions = getVariogramModelSearchOptions(options, 'variogram-model-fit');
   const models = options.models ?? VARIOGRAM_MODEL_FIT_DEFAULT_MODELS;
   const weighting = options.weighting ?? 'cressie';
   const distances: number[] = [];
   const semivariances: number[] = [];
   const pairCounts: number[] = [];
-  const length = Math.min(
-    input.distances.length,
-    input.semivariances.length,
-    input.pairCounts.length
-  );
+  const length = input.distances.length;
   for (let bin = 0; bin < length; bin++) {
     const distance = input.distances[bin];
     const semivariance = input.semivariances[bin];
@@ -103,9 +110,6 @@ export function computeVariogramModelFitOnCPU(
   }
   // The rule of the GPU fit: two usable bins at two different lags.
   const isFittable = binCount >= 2 && maximumLag > minimumLag;
-  const lowestLogRange = Math.log(minimumLag / 10);
-  const highestLogRange = Math.log(3 * maximumLag);
-  const ladderStep = (highestLogRange - lowestLogRange) / (RANGE_LADDER_LENGTH - 1);
 
   const parameters = new Float32Array(models.length * 4).fill(Number.NaN);
   const diagnostics = new Float32Array(models.length * 4).fill(Number.NaN);
@@ -117,7 +121,11 @@ export function computeVariogramModelFitOnCPU(
       status[modelIndex] = 1;
       return;
     }
-    const fit = fitVariogramModel({distances, semivariances, pairCounts}, {model, weighting});
+    const search = fitVariogramModelWithDiagnostics(
+      {distances, semivariances, pairCounts},
+      {model, weighting, ...searchOptions}
+    );
+    const fit = search.model;
     let unweightedResidual = 0;
     for (let bin = 0; bin < binCount; bin++) {
       const difference = semivariances[bin] - evaluateVariogramModel(fit, distances[bin]);
@@ -131,20 +139,17 @@ export function computeVariogramModelFitOnCPU(
       status[modelIndex] = 2;
       return;
     }
-    const logRange = Math.log(fit.range);
-    const isBoundary =
-      logRange <= lowestLogRange + ladderStep || logRange >= highestLogRange - ladderStep;
     parameters.set(row, modelIndex * 4);
     diagnostics.set(
       [
         binCount,
         unweightedResidual,
         binCount * Math.log(Math.max(unweightedResidual / binCount, 1e-30)) + 6,
-        2 * ladderStep * GOLDEN_SECTION_RATIO ** GOLDEN_SECTION_ITERATIONS
+        search.logRangeBracket
       ],
       modelIndex * 4
     );
-    status[modelIndex] = isBoundary ? 3 : 0;
+    status[modelIndex] = search.atBoundary || search.logRangeBracket > 1e-5 ? 3 : 0;
   });
   return {parameters, diagnostics, status};
 }
@@ -156,13 +161,18 @@ export function computeVariogramModelFitOnCPU(
  * at most, and the float64 fit has no representability limit (measured in one graph on the test
  * GPU: 0.5 ms against 1.6 to 2.5 ms).
  *
- * `rangeSteps` and `maximumIterations` are budgets of the GPU search and are not used.
+ * Explicit `rangeSteps` and `maximumIterations` bind every weighting pass just as on GPU.
+ * CPU defaults remain 200 ladder points and 60 refinements when those props are omitted.
+ * Unequal bin lengths throw the GPU contributor's `invalid model or bin topology` error,
+ * prefixed by this operation's ID.
  */
 export class CPUVariogramModelFitOperation extends GPUCPUOperation {
   constructor(props: VariogramModelFitOperationProps) {
+    props = snapshotVariogramModelFitOperationProps(props);
     const id = props.id ?? 'variogram-model-fit';
     const models = props.models ?? VARIOGRAM_MODEL_FIT_DEFAULT_MODELS;
     const weighting = props.weighting ?? 'cressie';
+    const searchOptions = getVariogramModelSearchOptions(props, id);
     validateRequirement(
       id,
       models.length >= 1 && models.length <= 5,
@@ -197,6 +207,8 @@ export class CPUVariogramModelFitOperation extends GPUCPUOperation {
         `outputs.${port}.value must be a non-empty graph value name`
       );
     }
+    // Apply the shared contributor-operation name rules before output keys can collapse.
+    new GPUVariogramModelFitOperation(props);
     const shape = {length: models.length};
     super({
       id,
@@ -207,14 +219,13 @@ export class CPUVariogramModelFitOperation extends GPUCPUOperation {
         [props.output.status]: gpuGraph.vector('uint32', shape)
       },
       execute({inputs}) {
-        const result = computeVariogramModelFitOnCPU(
-          {
-            distances: getCPUOperationFloat32Rows(id, inputs, 'distances'),
-            semivariances: getCPUOperationFloat32Rows(id, inputs, 'semivariances'),
-            pairCounts: getCPUOperationUint32Rows(id, inputs, 'pairCounts')
-          },
-          {models, weighting}
-        );
+        const bins = {
+          distances: getCPUOperationFloat32Rows(id, inputs, 'distances'),
+          semivariances: getCPUOperationFloat32Rows(id, inputs, 'semivariances'),
+          pairCounts: getCPUOperationUint32Rows(id, inputs, 'pairCounts')
+        };
+        validateVariogramModelFitBins(id, bins);
+        const result = computeVariogramModelFitOnCPU(bins, {models, weighting, ...searchOptions});
         return {
           [props.output.parameters]: result.parameters,
           [props.output.diagnostics]: result.diagnostics,

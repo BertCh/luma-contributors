@@ -107,7 +107,7 @@ export const FITTING_KERNEL_OPERATORS: readonly GPUAnalysisOperator[] = (
     evidence: {
       status: 'partial',
       tests: TEST,
-      documentation: 'modules/analysis/docs/fitting-kernels.md',
+      documentation: 'docs/api/analysis-core/fitting-kernels.md',
       contract: 'GPUCommandNodeProducer; caller-supplied fitting state; no bundled weights'
     },
     ...detail

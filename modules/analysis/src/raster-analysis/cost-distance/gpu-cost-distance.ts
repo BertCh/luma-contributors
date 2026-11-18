@@ -27,7 +27,7 @@ import {
 import {
   validateRasterCellSizeMode,
   type GPURasterCellSizeMode
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 import {
   getRasterBandViews,
   getRasterBufferBandNodes,

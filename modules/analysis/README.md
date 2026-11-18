@@ -1,76 +1,64 @@
 # @luma-contributors/analysis
 
 GPU geospatial and analysis operations built on published [luma.gl](https://luma.gl)
-(`@luma.gl/core`, `@luma.gl/shaders` and `@luma.gl/graph` at `10.0.0-alpha.13`). The GPU
+(`@luma.gl/core`, `@luma.gl/shaders` and `@luma.gl/graph`). Tested with luma.gl `10.0.0-alpha.14`. The GPU
 infrastructure itself (command graphs, GPU Core operations, GPU tables, dataframes, graph algorithms)
 comes from luma.gl. This package holds only the analysis code.
+
+## Run your first computation
+
+Start with the [CPU variogram fit](https://github.com/visgl/luma-contributors/blob/master/docs/api/operation-forms-and-cpu-twins.md#variogram-fitting-without-a-graph):
+20 generated bins, one public function and the expected exponential model, with no GPU or dataset.
+Continue with [point density from device to readback](https://github.com/visgl/luma-contributors/blob/master/docs/api/operation-forms-and-cpu-twins.md#point-density-from-device-to-readback)
+for a complete browser GPU computation using public APIs, including typed readback and cleanup.
+
+## Installation contract
+
+`apache-arrow >=17.0.0` is a required peer, including when importing only construction helpers
+or network contributors. The luma.gl peers accept `~10.0.0-alpha.14`, which permits later
+10.0.0 prereleases and stable 10.0.x versions below 10.1.0. This accepted range is broader than
+the tested version above. See the [alpha package contract](https://github.com/visgl/luma-contributors/blob/master/dev-docs/release-package.md)
+for release status and offline verification of the packed package.
+
+The package licence is `MIT AND Apache-2.0 AND BSD-3-Clause`. Individual source expressions
+and copyright holders remain in their files; the shipped [licence and notice inventory](THIRD-PARTY-NOTICES.md)
+links the applicable licence texts and lists the third-party adaptations.
 
 ## Entry points
 
 | Import | Contents | Docs |
 | --- | --- | --- |
-| `@luma-contributors/analysis/gpu-spatial-analysis` | Spatial weights, autocorrelation, regression, interpolation, clustering, joins, density, geometry, accessibility, landscape ecology | [docs/api/gpu-spatial-analysis](../../docs/api/gpu-spatial-analysis/README.md) |
-| `@luma-contributors/analysis/gpu-spatial-analysis/ontology` | Operator catalog and analysis ontology | [analysis catalog](../../docs/api/analysis-catalog.md) |
-| `@luma-contributors/analysis/gpu-network` | Network statistics, structure, routing, centrality and movement | [docs/api/gpu-network](../../docs/api/gpu-network/README.md) |
-| `@luma-contributors/analysis/gpu-terrain` | Terrain derivatives, hydrology and relief | [docs/api/gpu-terrain](../../docs/api/gpu-terrain/README.md) |
-| `@luma-contributors/analysis/raster-analysis` | Raster algebra, cost distance, zonal statistics, patches, remote sensing | [docs/api/gpu-raster](../../docs/api/gpu-raster/README.md) |
-| `@luma-contributors/analysis/dataframe-analysis` | Classification, profiles, pair statistics, temporal reduction, joins, standardization | [dataframe analysis](../../docs/api/gpu-dataframe-analysis.md) |
-| `@luma-contributors/analysis/pointcloud-analysis` | Ground filtering, ICP, features and change detection | [point cloud analysis](../../docs/api/pointcloud-analysis.md) |
-| `@luma-contributors/analysis/geospatial-analysis` | Geospatial helpers, including the datum grid transform | [geospatial](../../docs/api/geospatial.md) |
-| `@luma-contributors/analysis/computation-record` | Recording and describing command graphs for computation lenses | [computation record](../../docs/api/computation-record.md) |
-| `@luma-contributors/analysis/analysis-core` | Shared contracts, kernel helpers and WGSL utilities | |
+| `@luma-contributors/analysis/gpu-spatial-analysis` | Spatial weights, autocorrelation, regression, interpolation, clustering, joins, density, geometry, accessibility, landscape ecology | [docs/api/gpu-spatial-analysis](https://github.com/visgl/luma-contributors/blob/master/docs/api/gpu-spatial-analysis/README.md) |
+| `@luma-contributors/analysis/gpu-spatial-analysis/ontology` | Operator catalog and analysis ontology | [analysis catalog](https://github.com/visgl/luma-contributors/blob/master/docs/api/analysis-catalog.md) |
+| `@luma-contributors/analysis/gpu-network` | Network statistics, structure, routing, centrality and movement | [docs/api/gpu-network](https://github.com/visgl/luma-contributors/blob/master/docs/api/gpu-network/README.md) |
+| `@luma-contributors/analysis/gpu-terrain` | Terrain derivatives, hydrology and relief | [docs/api/gpu-terrain](https://github.com/visgl/luma-contributors/blob/master/docs/api/gpu-terrain/README.md) |
+| `@luma-contributors/analysis/raster-analysis` | Raster algebra, cost distance, zonal statistics, patches, remote sensing | [docs/api/gpu-raster](https://github.com/visgl/luma-contributors/blob/master/docs/api/gpu-raster/README.md) |
+| `@luma-contributors/analysis/dataframe-analysis` | Classification, profiles, pair statistics, temporal reduction, joins, standardization | [dataframe analysis](https://github.com/visgl/luma-contributors/blob/master/docs/api/gpu-dataframe-analysis.md) |
+| `@luma-contributors/analysis/pointcloud-analysis` | Ground filtering, ICP, features and change detection | [point cloud analysis](https://github.com/visgl/luma-contributors/blob/master/docs/api/pointcloud-analysis.md) |
+| `@luma-contributors/analysis/geospatial-analysis` | Geospatial helpers, including the datum grid transform | [geospatial](https://github.com/visgl/luma-contributors/blob/master/docs/api/geospatial.md) |
+| `@luma-contributors/analysis/computation-record` | Recording and describing command graphs for computation lenses | [computation record](https://github.com/visgl/luma-contributors/blob/master/docs/api/computation-record.md) |
+| `@luma-contributors/analysis/analysis-core` | Shared contracts, kernel helpers and WGSL utilities | [fitting kernels](https://github.com/visgl/luma-contributors/blob/master/docs/api/analysis-core/fitting-kernels.md) |
 
-What is implemented, function by function, is in [dev-docs/coverage-matrix.md](../../dev-docs/coverage-matrix.md).
-Open work is in [dev-docs/roadmap.md](../../dev-docs/roadmap.md).
+What is implemented, function by function, is in [dev-docs/coverage-matrix.md](https://github.com/visgl/luma-contributors/blob/master/dev-docs/coverage-matrix.md).
+Open work is in [dev-docs/roadmap.md](https://github.com/visgl/luma-contributors/blob/master/dev-docs/roadmap.md).
 
-## MGWR bandwidth selection and limits
+## Detailed guides
 
-`GPUMultiscaleGeographicallyWeightedRegression` and its GPU/CPU operation forms accept
-`bandwidthSelection: {criterion: 'AICc', searchMethod: 'golden-section', maximumSearchIterations: 30}`.
-`bandwidthCandidates` then holds two positive finite distance bounds per component, in
-`[interceptLower, interceptUpper, predictor0Lower, predictor0Upper, ...]` order, with
-`bandwidthCandidateCount: 2`. Equal bounds select a fixed bandwidth; reversed or invalid bounds
-invalidate the fit. The existing finite-grid mode remains the default, as does the
-`'leave-one-out'` criterion. Candidate/bound values can change per frame.
+The canonical guides are published with the API documentation. These absolute links also work
+when this README is read from an installed package.
 
-Each backfit component selects its bandwidth from the scalar regression on its current partial
-response, following [PySAL mgwr multi_bw](https://github.com/pysal/mgwr/blob/master/mgwr/search.py).
-For AICc, include the focal observation and compute
-`n log(max(RSS / n, 1e-30)) + n log(2π) + n (n + tr(H_j)) / (n - tr(H_j) - 2)`.
-`H_j` is that scalar partial-response smoother, and `n` counts complete, unmasked rows.
-The GPU accumulates power-of-two-scaled residual squares and recovers `RSS / n` using that
-included count, so an overflowing intermediate RSS does not reject a representable variance.
-A nonpositive denominator or any failed local fit rejects the candidate. Grid ties select the
-first candidate; golden-section ties keep the lower interior point. Golden-section shares GWR's
-`delta = 0.38197` and score tolerance `max(1e-6, 4e-6 max(abs(scores)))`, with at most 64 search
-iterations. MGWR also evaluates the upper endpoint and keeps it if it is better than the
-interior winner. A feasible endpoint keeps an initially infeasible interior bracket searchable.
-If the search budget is exhausted, it returns the better of that endpoint and the last interior
-winner. The
-contributor retains OLS initialization (zero with full inference), its relative-contribution
-backfit stopping rule, and unrounded distance bandwidths; it does not reproduce PySAL's initial
-single-bandwidth GWR fit, SOC stopping rule, or two-decimal bandwidth rounding.
+| Topic | Guide |
+| --- | --- |
+| Chunked spatial weights | [Transpose layouts and capacity status](https://github.com/visgl/luma-contributors/blob/master/docs/api/gpu-spatial-analysis/chunked-spatial-weights-transpose.md) |
+| Coregionalization | [GPU contributor, graph operation and CPU twin](https://github.com/visgl/luma-contributors/blob/master/docs/api/dataframe-analysis/coregionalization-fit.md) |
+| Shared fitting | [Gradient sums, Adam, minibatches and coordinate encoders](https://github.com/visgl/luma-contributors/blob/master/docs/api/analysis-core/fitting-kernels.md) |
+| Geodesics | [Precision, statuses and measured envelopes](https://github.com/visgl/luma-contributors/blob/master/docs/api/gpu-spatial-analysis/geodesic-precision.md) |
+| Polygon profiles | [Contiguity statistics and completeness](https://github.com/visgl/luma-contributors/blob/master/docs/api/gpu-spatial-analysis/gpu-analysis-contiguity-statistics.md) |
+| Network communities | [Sparse Louvain and CPU operation](https://github.com/visgl/luma-contributors/blob/master/docs/api/gpu-network/louvain.md) |
+| Quantile LISA | [Single-variable and multivariate inference](https://github.com/visgl/luma-contributors/blob/master/docs/api/gpu-spatial-analysis/quantile-lisa.md) |
+| Instrumental variables | [Robust covariance and solver status](https://github.com/visgl/luma-contributors/blob/master/docs/api/gpu-spatial-analysis/instrumental-variables-covariance.md) |
+| Raster contours | [Isoline tiles and vector overlays](https://github.com/visgl/luma-contributors/blob/master/docs/api/gpu-raster/isolines-tiles.md) |
+| Hydrology | [Height above drainage over D-infinity flow](https://github.com/visgl/luma-contributors/blob/master/docs/api/gpu-terrain/height-above-drainage.md) |
 
-For the **full MGWR model**, the trace is `tr(S) = sum_j tr(R_j)`, where `R_j` is the coupled
-component response operator propagated through the backfit, conditional on the selected bandwidth
-history (Li and Fotheringham, 2020, [*Computational improvements to multi-scale geographically
-weighted regression*](https://doi.org/10.1080/13658816.2020.1720692)). This is the trace in
-`inference.output.summary[0]`, and each `tr(R_j)` is in `effectiveParameters`. Summing independent
-scalar `H_j` traces would give a different full-model effective parameter count. Standard errors
-remain conditional on bandwidth history; bandwidth confidence intervals and full selection
-uncertainty are not provided.
-
-Planar bisquare and explicitly truncated Gaussian fits automatically use the shared GWR grid at
-1024 rows: square dimensions `ceil(sqrt(rows / 8))`, capped at 1024 per axis. `indexGridSize`
-overrides the dimensions, and `false` forces the dense path. Untruncated Gaussian and great-circle
-fits retain the dense fallback. Limits are 65,536 dense rows, 1,048,576 indexed rows, 24 predictors,
-128 backfit sweeps, 32 finite-grid candidates and the shared 32,768 command-node budget. The
-selection score buffer needs `rows * candidateWidth * 16` bytes in one storage binding
-(`candidateWidth = 3` for golden-section: two interior points and the upper endpoint), checked against the device limit. Full inference retains
-its 128-row and cubic-work limits. The CPU twin uses float64 internally and retains its documented
-uncapped backfit behavior; near-tied scores can produce different bandwidths within float32 error.
-
-The independent [NumPy fixture generator](test/gpu-spatial-analysis/spatial-regression/multiscale-bandwidth-selection-fixtures.py)
-records the initialization and stopping differences and checks scalar selection plus coupled traces.
-Chunked transpose output layouts, capacity status and limits are documented in
-[GPUChunkedSpatialWeightsTranspose](docs/chunked-spatial-weights-transpose.md).
+For an independent numerical reference, see the
+[coregionalization fixture generator](https://github.com/visgl/luma-contributors/blob/master/modules/analysis/test/gpu-dataframe/pair-statistics/fixtures/generate-coregionalization.py).

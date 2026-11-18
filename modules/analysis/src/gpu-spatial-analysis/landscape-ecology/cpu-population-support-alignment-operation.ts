@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import {POPULATION_SUPPORT_ALIGNMENT_CODES} from './gpu-population-support-alignment';
 import {
   validateCapacity,
   validateRequirement
@@ -25,8 +26,10 @@ export type CPUPopulationSupportAlignmentInput = {
 
 export type CPUPopulationSupportAlignmentResult = {
   populations: Float32Array;
-  /** Legacy codes: 0 matched, 1 no source, 2 ambiguous source or target; missing takes precedence. */
-  validity: Uint32Array;
+  /** 0 matched, 1 no source, 2 ambiguous source or target; missing takes precedence. */
+  alignmentCode: Uint32Array;
+  /** 1 for a unique source and target match, otherwise 0; usable as a downstream mask. */
+  matchedMask: Uint32Array;
   /** [aligned, missingTargetRows, ambiguousTargetRows, excludedSourceRows]. */
   status: Uint32Array;
 };
@@ -64,18 +67,21 @@ export function computePopulationSupportAlignmentOnCPU(
   for (const identifier of input.targetIds)
     targets.set(identifier, (targets.get(identifier) ?? 0) + 1);
   const populations = new Float32Array(2 * input.targetIds.length).fill(NaN);
-  const validity = new Uint32Array(input.targetIds.length);
+  const alignmentCode = new Uint32Array(input.targetIds.length);
+  const matchedMask = new Uint32Array(input.targetIds.length);
   let missingCount = 0;
   let duplicateCount = 0;
   input.targetIds.forEach((identifier, row) => {
     const source = sources.get(identifier);
     if (!source) {
-      validity[row] = 1;
+      alignmentCode[row] = POPULATION_SUPPORT_ALIGNMENT_CODES.MISSING;
       missingCount++;
     } else if (source.count !== 1 || targets.get(identifier) !== 1) {
-      validity[row] = 2;
+      alignmentCode[row] = POPULATION_SUPPORT_ALIGNMENT_CODES.AMBIGUOUS;
       duplicateCount++;
     } else {
+      alignmentCode[row] = POPULATION_SUPPORT_ALIGNMENT_CODES.MATCHED;
+      matchedMask[row] = 1;
       populations.set(input.populations.subarray(2 * source.row, 2 * source.row + 2), 2 * row);
     }
   });
@@ -83,7 +89,8 @@ export function computePopulationSupportAlignmentOnCPU(
   for (const identifier of input.sourceIds) if (!targets.has(identifier)) excludedCount++;
   return {
     populations,
-    validity,
+    alignmentCode,
+    matchedMask,
     status: Uint32Array.of(
       Number(missingCount === 0 && duplicateCount === 0 && excludedCount === 0),
       missingCount,

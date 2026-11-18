@@ -16,7 +16,7 @@ import {
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology,
   type GPUNetworkTopology
-} from '../../analysis-core/network-topology';
+} from '../../analysis-core/contracts/network-topology';
 import {
   validateCapacity,
   validateRequirement,
@@ -30,7 +30,11 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {GPUNetworkReachability} from '../network-reachability/index';
+import {
+  GPUNetworkReachability,
+  GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS,
+  GPU_NETWORK_REACHABILITY_MAXIMUM_LOCAL_ITERATIONS
+} from '../network-reachability/index';
 import {recommendLaneCount} from '../network-accessibility/network-accessibility-lanes';
 
 const OPERATION = 'GPUNetworkCostTable';
@@ -43,6 +47,27 @@ const WORKGROUP_SIZE = 256;
 const NO_START = 0xffffffff;
 /** Words of the GPU state buffer: entry cursor, row cursor, converged flag, spare. */
 const STATE_WORDS = 4;
+
+/** Construction-time iteration checks shared with the graph operation. @internal */
+export function validateNetworkCostTableIterations(
+  id: string,
+  props: {maximumIterations?: number; localIterations?: number}
+): void {
+  validateCapacity(
+    id,
+    'maximumIterations',
+    props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS,
+    1,
+    GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS
+  );
+  validateCapacity(
+    id,
+    'localIterations',
+    props.localIterations ?? DEFAULT_LOCAL_ITERATIONS,
+    1,
+    GPU_NETWORK_REACHABILITY_MAXIMUM_LOCAL_ITERATIONS
+  );
+}
 
 /** Caller-owned outputs of {@link GPUNetworkCostTable}. */
 export type GPUNetworkCostTableOutput = {
@@ -61,6 +86,8 @@ export type GPUNetworkCostTableOutput = {
   costs: GraphDataView<'float32'>;
   /** Optional GPU-written status words. */
   status?: {
+    /** One-row flag: 1 only when every batch converged and no entries were truncated. */
+    complete?: GraphDataView<'uint32'>;
     /** Optional one-row flag: 1 when the entries exceed the capacity, so the table is truncated. */
     overflow?: GraphDataView<'uint32'>;
     /**
@@ -100,12 +127,12 @@ export type GPUNetworkCostTableProps = {
   /**
    * Compile-time source nodes searched together in one lane-expanded reachability batch. Defaults
    * to `recommendLaneCount()` with one row per node: about 1M expanded nodes per batch, at least
-   * 32 lanes, at most `nodeCount`. The table is identical for every lane count.
+   * 32 lanes, at most `nodeCount`. Converged costs are identical for every lane count.
    */
   laneCount?: number;
-  /** Rounds of every batch, as `GPUNetworkReachability.maximumIterations`. Defaults to 64. */
+  /** Rounds of every batch, 1 to 1024, as `GPUNetworkReachability.maximumIterations`. Defaults to 64. */
   maximumIterations?: number;
-  /** Hops chained per workgroup per round, as `GPUNetworkReachability.localIterations`. Defaults to 16. */
+  /** Hops chained per workgroup per round, 1 to 64, as `GPUNetworkReachability.localIterations`. Defaults to 16. */
   localIterations?: number;
   /** The GPU-written views. */
   output: GPUNetworkCostTableOutput;
@@ -116,26 +143,33 @@ export type GPUNetworkCostTableProps = {
  * UBODT of fast map matching (Yang and Gidofalvi 2018): for every node `u`, every node `v` whose
  * shortest-path cost from `u` is at most `costLimit`, as a CSR with ascending targets so a consumer
  * binary-searches a row (`GPUMapMatching.routeTable`).
+ * Named budgets and port fields are captured at construction before validation, including
+ * class-instance status fields. Later caller-props mutation cannot alter the validated graph.
  *
  * Source nodes are searched `laneCount` at a time with one lane-expanded `GPUNetworkReachability`
  * per batch into one scratch block, then three kernels per batch compact the block: a per-lane
  * count (one workgroup per lane), a single-workgroup scan of the batch's lane counts on top of a
  * GPU running entry cursor that writes the batch's `offsets` rows, and a per-lane ordered fill.
- * Costs are the f32 fixpoint of reachability, so they equal the single-source costs for every lane
- * count. There are no float atomics, one search per row, and results are deterministic. Per-batch
+ * Converged costs are the f32 fixpoint of reachability, equal to the single-source costs for every
+ * lane count. Before convergence, lane packing and scheduling can change partial incumbents.
+ * There are no float atomics and one search per row. Per-batch
  * values (first row, running entry count) live in a GPU state buffer, so the batch count does not
  * change any pipeline.
  *
  * Capacity: `output.targets.length` entries. Entries past it are dropped and the offsets are
  * clamped, so a reader always sees a consistent (possibly truncated) CSR;
  * `output.status.overflow` and `output.status.requiredCount` report it. A consumer must not use a
- * table that overflowed or did not converge.
+ * table that overflowed or did not converge. `output.status.complete` combines both conditions
+ * into one word for downstream consumers.
  *
  * Scaling: each batch sweeps its `laneCount x nodeCount` scratch block (dense lane layout) a few
- * times, so work and memory traffic are `O(nodeCount^2 / laneCount)` words per batch and
- * `O(nodeCount^2)` words in all, plus the searches. That targets static networks up to roughly
- * 1e5 nodes, built once and reused across many encodings; the table itself holds only the entries
- * within `costLimit`. A network whose weights change per frame can rebuild it, at that price.
+ * times, so work and memory traffic are `O(laneCount * nodeCount)` words per batch and
+ * `O(ceil(nodeCount / laneCount) * laneCount * nodeCount)` words in all (including padding), plus
+ * the searches. Feasibility depends jointly on the round budget,
+ * lane count and device binding limit: 50,000 nodes with 128 lanes and 64 rounds use 27,763 command
+ * nodes with completeness tracking and a 51,200,000-byte frontier binding. At 100,000 nodes no lane
+ * count fits both the 32,768-command cap and a 128 MiB frontier binding at 64 rounds. The table itself
+ * holds only the entries within `costLimit`; every input/output must also fit its storage binding.
  */
 export class GPUNetworkCostTable implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -165,7 +199,39 @@ export class GPUNetworkCostTable implements GPUCommandNodeProducer {
    * shares a physical buffer with an input.
    */
   constructor(props: GPUNetworkCostTableProps) {
+    // Capture named fields, including class getters, before validating or retaining caller bags.
+    const callerTopology = props.topology;
+    const callerOutput = props.output;
+    const callerStatus = callerOutput.status;
+    props = Object.freeze({
+      id: props.id,
+      costLimit: props.costLimit,
+      laneCount: props.laneCount,
+      maximumIterations: props.maximumIterations,
+      localIterations: props.localIterations,
+      topology: Object.freeze({
+        offsets: callerTopology.offsets,
+        neighbors: callerTopology.neighbors,
+        weights: callerTopology.weights,
+        nodePositions: callerTopology.nodePositions
+      }),
+      output: Object.freeze({
+        offsets: callerOutput.offsets,
+        targets: callerOutput.targets,
+        costs: callerOutput.costs,
+        status: callerStatus
+          ? Object.freeze({
+              complete: callerStatus.complete,
+              overflow: callerStatus.overflow,
+              requiredCount: callerStatus.requiredCount,
+              converged: callerStatus.converged,
+              iterationLimitReached: callerStatus.iterationLimitReached
+            })
+          : undefined
+      })
+    });
     const id = props.id ?? 'network-cost-table';
+    validateNetworkCostTableIterations(id, props);
     this.id = id;
     this.props = props;
     validateNetworkWritableViews(this.id, props.output, [
@@ -197,11 +263,13 @@ export class GPUNetworkCostTable implements GPUCommandNodeProducer {
     });
     const converged = output.status?.converged;
     const iterationLimitReached = output.status?.iterationLimitReached;
+    const complete = output.status?.complete;
     for (const [name, view] of [
       ['overflow', output.status?.overflow],
       ['requiredCount', output.status?.requiredCount],
       ['converged', converged],
-      ['iterationLimitReached', iterationLimitReached]
+      ['iterationLimitReached', iterationLimitReached],
+      ['complete', complete]
     ] as const) {
       if (view) {
         validateSinglePackedView(view, ['uint32'], `${id} output.status.${name}`);
@@ -224,7 +292,7 @@ export class GPUNetworkCostTable implements GPUCommandNodeProducer {
     const reachabilityNodeCount =
       2 +
       (props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS) +
-      Number(Boolean(converged || iterationLimitReached));
+      Number(Boolean(converged || iterationLimitReached || complete));
     this.estimatedCommandNodeCount = 2 + this.batchCount * (4 + reachabilityNodeCount);
     // The rounds of every batch are unrolled; lower maximumIterations or raise laneCount.
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
@@ -265,7 +333,7 @@ export class GPUNetworkCostTable implements GPUCommandNodeProducer {
     const laneCounts = createTransientView(graph, `${id}-lane-counts`, 'uint32', laneCount);
     const laneBases = createTransientView(graph, `${id}-lane-bases`, 'uint32', laneCount);
     const batchConverged =
-      converged || iterationLimitReached
+      converged || iterationLimitReached || output.status?.complete
         ? createTransientView(graph, `${id}-batch-converged`, 'uint32', 1)
         : undefined;
     const declarations = `const NODE_COUNT: u32 = ${nodeCount}u;
@@ -480,6 +548,9 @@ var<workgroup> prefix: array<u32, ${WORKGROUP_SIZE}>;`,
     if (iterationLimitReached) {
       finalizeBindings.push(write('iterationLimitReached', iterationLimitReached));
     }
+    if (output.status?.complete) {
+      finalizeBindings.push(write('complete', output.status.complete));
+    }
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-finalize`,
@@ -492,6 +563,7 @@ var<workgroup> prefix: array<u32, ${WORKGROUP_SIZE}>;`,
   ${output.status?.overflow ? 'overflow[overflowOffset] = select(0u, 1u, total > CAPACITY);' : ''}
   ${output.status?.requiredCount ? 'requiredCount[requiredCountOffset] = total;' : ''}
   ${converged ? 'converged[convergedOffset] = state[stateOffset + CONVERGED_FLAG];' : ''}
+  ${output.status?.complete ? 'complete[completeOffset] = select(0u, 1u, state[stateOffset + CONVERGED_FLAG] != 0u && total <= CAPACITY);' : ''}
   ${iterationLimitReached ? 'iterationLimitReached[iterationLimitReachedOffset] = 1u - state[stateOffset + CONVERGED_FLAG];' : ''}`
       })
     );
@@ -514,6 +586,7 @@ function getOutputs(props: GPUNetworkCostTableProps): (GraphDataView | undefined
     output.status?.overflow,
     output.status?.requiredCount,
     output.status?.converged,
-    output.status?.iterationLimitReached
+    output.status?.iterationLimitReached,
+    output.status?.complete
   ];
 }

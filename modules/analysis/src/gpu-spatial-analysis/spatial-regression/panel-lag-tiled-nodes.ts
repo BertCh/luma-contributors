@@ -28,6 +28,7 @@ import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
 import {getPanelWithinNodes, getPanelWithinScratchLengths} from './panel-within-nodes';
 import {validateRegressionAllocations} from './spatial-likelihood-allocations';
 import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
+import {PANEL_LAG_PROFILE_WGSL} from './panel-lag-profile-wgsl';
 import type {GPUSpatialPanelLagMaximumLikelihoodProps} from './gpu-spatial-panel-lag-maximum-likelihood';
 
 /** Each pivot index is a runtime word in an aligned slot; pivot count never creates new pipelines. */
@@ -65,6 +66,7 @@ export function getPanelLagTiledNodes<Parameters>(
     neighbors: props.weights.neighbors,
     weights: props.weights.weights,
     overflow: props.weights.status?.overflow,
+    candidateOverflow: props.weights.status?.candidateOverflow,
     eigenvalues: props.eigenvalues,
     ...props.output
   });
@@ -186,6 +188,7 @@ const COVARIANCE: u32 = ${covarianceStart}u;`;
         body
       })
     );
+  // contract-allow: single-invocation -- <=142 model words from the constructor's <=7 predictors.
   kernel(
     'initialize',
     1,
@@ -201,9 +204,12 @@ const COVARIANCE: u32 = ${covarianceStart}u;`;
       binding('validity', validation, 'read_write'),
       ...(props.weights.status?.overflow
         ? [binding('overflow', props.weights.status.overflow)]
+        : []),
+      ...(props.weights.status?.candidateOverflow
+        ? [binding('candidateOverflow', props.weights.status.candidateOverflow)]
         : [])
     ],
-    `var valid = ${props.weights.status?.overflow ? 'overflow[overflowOffset] == 0u' : 'true'};
+    `var valid = ${props.weights.status?.overflow ? 'overflow[overflowOffset] == 0u' : 'true'} && ${props.weights.status?.candidateOverflow ? 'candidateOverflow[candidateOverflowOffset] == 0u' : 'true'};
 let begin = offsets[offsetsOffset + index]; let end = offsets[offsetsOffset + index + 1u]; var total = 0.0;
 if (end < begin || end > ${props.weights.neighbors.length}u) { valid = false; }
 else { for (var slot = begin; slot < end; slot++) { let neighbor = neighbors[neighborsOffset + slot]; let weight = weights[weightsOffset + slot];
@@ -234,6 +240,7 @@ for (var other = 0u; other < ${columns}u; other++) { terms[column * ${columns + 
 terms[column * ${columns + 2}u + ${columns}u] += value * observed; terms[column * ${columns + 2}u + ${columns + 1}u] += value * lagged; } }
 for (var slot = 0u; slot < ${momentCount}u; slot++) { partial[partialOffset + index * ${partialStride}u + slot] = select(terms[slot], getNaN(), invalid != 0.0); }`
   );
+  // contract-allow: single-invocation -- reference fit: <=7 columns, <=4096 default-layout tile partials per term.
   kernel(
     'solve-moments',
     1,
@@ -259,6 +266,7 @@ for (var row = index * ${tileRowCount}u; row < min((index + 1u) * ${tileRowCount
 partial[partialOffset + index * ${partialStride}u] = cross; partial[partialOffset + index * ${partialStride}u + 1u] = squares;`,
     rowDeclarations
   );
+  // contract-allow: single-invocation -- reference fit: two merges of <=4096 default-layout tile partials.
   kernel(
     'residual-pair-merge',
     1,
@@ -274,6 +282,7 @@ for (var row = index * ${tileRowCount}u; row < min((index + 1u) * ${tileRowCount
 partial[partialOffset + index * ${partialStride}u] = squares; partial[partialOffset + index * ${partialStride}u + 1u] = cross;`,
     rowDeclarations
   );
+  // contract-allow: single-invocation -- reference fit: <=4096 tiles, <=64 search steps over <=1024 eigenvalues.
   kernel(
     'profile-rho',
     1,
@@ -283,8 +292,8 @@ ${merge('0u', 'squares')}
 ${merge('1u', 'cross')}
 let lagSquares = model[modelOffset + 2u]; let correction = select(0.0, cross / lagSquares, lagSquares > 0.0);
 let direct = vec4<f32>(squares - cross * correction, lagSquares, model[modelOffset + 1u], correction);
-var lower = -0.999; var upper = 0.999; var left = lower + 0.38196601125 * (upper - lower); var right = lower + 0.61803398875 * (upper - lower); var leftScore = objective(left, direct); var rightScore = objective(right, direct);
-for (var step = 0u; step < ${props.maximumSearchIterations ?? 32}u; step++) { if (leftScore <= rightScore) { upper = right; right = left; rightScore = leftScore; left = lower + 0.38196601125 * (upper - lower); leftScore = objective(left, direct); } else { lower = left; left = right; leftScore = rightScore; right = lower + 0.61803398875 * (upper - lower); rightScore = objective(right, direct); } }
+var lower = -0.999; var upper = 0.999; var left = lower + 0.38196601125 * (upper - lower); var right = lower + 0.61803398875 * (upper - lower); var leftScore = profileObjective(left, direct); var rightScore = profileObjective(right, direct);
+for (var step = 0u; step < ${props.maximumSearchIterations ?? 32}u; step++) { if (leftScore <= rightScore) { upper = right; right = left; rightScore = leftScore; left = lower + 0.38196601125 * (upper - lower); leftScore = profileObjective(left, direct); } else { lower = left; left = right; leftScore = rightScore; right = lower + 0.61803398875 * (upper - lower); rightScore = profileObjective(right, direct); } }
 let rho = select(right, left, leftScore <= rightScore); let width = upper - lower; let offset = getRoundedDifference(rho, direct.z, bitcast<u32>(model[modelOffset + 7u])) - direct.w;
 let variance = (direct.x + direct.y * offset * offset) / ${rows}.0;
 model[modelOffset] = select(0.0, 3.0, width > ${getWGSLFloatLiteral(props.tolerance ?? 1e-5)});
@@ -294,8 +303,10 @@ model[modelOffset + 3u] = -objective(rho, direct) - ${getWGSLFloatLiteral(rows /
 model[modelOffset + 4u] = width; model[modelOffset + 5u] = select(0.0, 1.0, abs(rho) > 0.9989);
 model[modelOffset + 6u] = getTraceTwo(rho) * ${props.periodCount}.0;
 for (var column = 0u; column < ${columns}u; column++) { model[modelOffset + BETA + column] = model[modelOffset + FIRST_BETA + column] - rho * model[modelOffset + LAG_BETA + column]; }`,
-    `${getExactLogDeterminantWGSL('eigenvalues', entities)}
-fn objective(rho: f32, direct: vec4<f32>) -> f32 { let offset = getRoundedDifference(rho, direct.z, bitcast<u32>(model[modelOffset + 7u])) - direct.w; let variance = (direct.x + direct.y * offset * offset) / ${rows}.0; if (!(variance > 0.0)) { return 3.402823e38; } return ${getWGSLFloatLiteral(rows / 2)} * log(variance) - ${props.periodCount}.0 * getSpatialLogDeterminant(rho); }`
+    `${getExactLogDeterminantWGSL('eigenvalues', entities)}\n${PANEL_LAG_PROFILE_WGSL}
+fn evaluatePanelObjective(rho: f32, direct: vec4<f32>, centered: bool) -> f32 { let runtimeZero = bitcast<u32>(model[modelOffset + 7u]); let offset = getRoundedDifference(rho, direct.z, runtimeZero) - direct.w; let variance = (direct.x + direct.y * offset * offset) / ${rows}.0; if (!(variance > 0.0)) { return 3.402823e38; } let logarithm = select(log(variance), getPanelLagProfileLogVariance(rho, direct, ${rows}.0, runtimeZero), centered); return ${getWGSLFloatLiteral(rows / 2)} * logarithm - ${props.periodCount}.0 * getSpatialLogDeterminant(rho); }
+fn objective(rho: f32, direct: vec4<f32>) -> f32 { return evaluatePanelObjective(rho, direct, false); }
+fn profileObjective(rho: f32, direct: vec4<f32>) -> f32 { return evaluatePanelObjective(rho, direct, true); }`
   );
   kernel(
     'matrix-initialize',
@@ -321,6 +332,10 @@ matrix[matrixOffset + index] = select(0.0, 1.0, row == column) - model[modelOffs
       length: 1
     });
     const pivotBinding = binding('parameters', pivotParameters);
+    // This is an entity-axis scan, not coefficient work: tiled construction caps entities at
+    // GPU_PANEL_LAG_TILED_MAXIMUM_ENTITY_COUNT (1024). One serial selection per pivot gives
+    // O(entities^2) total selection work; swap/normalize/eliminate remain parallel kernels.
+    // contract-allow: single-invocation -- reference fit: <=1024 entity candidates per pivot, enforced by the constructor.
     kernel(
       `pivot-select-${pivot}`,
       1,
@@ -401,6 +416,7 @@ terms[${informationCount - 1}u] += lagPrediction * lagPrediction / model[modelOf
 }
 for (var slot = 0u; slot < ${informationCount}u; slot++) { partial[partialOffset + index * ${partialStride}u + slot] = terms[slot]; }`
   );
+  // contract-allow: single-invocation -- reference fit: <=8 information columns, <=4096 default-layout tile partials per term.
   kernel(
     'information-solve',
     1,
@@ -414,6 +430,7 @@ if (factorization.status != 0u || !invertDenseCholesky_${informationSize}(&infor
 for (var slot = 0u; slot < ${informationCount}u; slot++) { model[modelOffset + COVARIANCE + slot] = covariance[slot]; }`,
     getDenseCholeskyWGSL(informationSize)
   );
+  // contract-allow: single-invocation -- <=10 coefficient slots, <=81 covariance entries, six summary words.
   kernel(
     'publish',
     1,

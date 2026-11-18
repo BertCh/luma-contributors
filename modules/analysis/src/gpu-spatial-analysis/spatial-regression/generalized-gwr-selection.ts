@@ -26,6 +26,7 @@ import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgs
 import {validateGraphViewsBelongToGraph} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPUGeneralizedGeographicallyWeightedRegression,
+  getGeneralizedRegressionCompositionNodes,
   createLocalRegressionGrid,
   getRegressionBindings,
   getRegressionWGSL
@@ -208,17 +209,20 @@ export function getGeneralizedSelectionNodes<Parameters>(
       })
     );
     nodes.push(
-      ...new GPUGeneralizedGeographicallyWeightedRegression({
-        ...effective,
-        id: `${id}-candidate-${candidate}`,
-        bandwidthSelection: undefined,
-        inference: isAICc ? {standardErrors: standardErrors!, influence: influence!} : undefined,
-        leaveOneOut: !isAICc,
-        predictExcluded: false,
-        fittedScale: 'link',
-        parameters,
-        output: {coefficients, fitted, status: {codes, iterationCount}}
-      }).getCommandNodes(graph, {gridSetup, gate: candidateGate, fits: fitState, focusGate})
+      ...getGeneralizedRegressionCompositionNodes(
+        graph,
+        {
+          ...effective,
+          id: `${id}-candidate-${candidate}`,
+          bandwidthSelection: undefined,
+          inference: isAICc ? {standardErrors: standardErrors!, influence: influence!} : undefined,
+          leaveOneOut: !isAICc,
+          predictExcluded: false,
+          parameters,
+          output: {coefficients, fitted, status: {codes, iterationCount}}
+        },
+        {fittedScale: 'link', gridSetup, gate: candidateGate, fits: fitState, focusGate}
+      )
     );
     nodes.push(
       createWGSLKernelNode(graph, {
@@ -460,12 +464,16 @@ fn getFeasibilityFraction(ordinal: u32) -> f32 {
     })
   );
   nodes.push(
-    ...new GPUGeneralizedGeographicallyWeightedRegression({
-      ...effective,
-      id: `${id}-selected-fit`,
-      bandwidthSelection: undefined,
-      parameters
-    }).getCommandNodes(graph, {gridSetup, fits: fitState, focusGate})
+    ...getGeneralizedRegressionCompositionNodes(
+      graph,
+      {
+        ...effective,
+        id: `${id}-selected-fit`,
+        bandwidthSelection: undefined,
+        parameters
+      },
+      {gridSetup, fits: fitState, focusGate}
+    )
   );
   return nodes;
 }

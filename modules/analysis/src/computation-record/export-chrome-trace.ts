@@ -33,6 +33,12 @@ export function toChromeTraceEvents(
   displayTimeUnit: 'ns';
   metadata: Record<string, unknown>;
 } {
+  for (const measurement of metrics) {
+    if (measurement.runId !== record.runId)
+      throw new Error('Trace metrics runId does not match record');
+    if (measurement.executionId !== record.executionId)
+      throw new Error('Trace metrics executionId does not match record');
+  }
   const traceEvents: ChromeTraceEvent[] = [
     {name: 'process_name', ph: 'M', ts: 0, pid: 1, tid: 0, args: {name: record.id}}
   ];
@@ -137,6 +143,7 @@ export function toChromeTraceEvents(
     metadata: {
       schema: record.schema,
       runId: record.runId,
+      ...(record.executionId !== undefined && {executionId: record.executionId}),
       adapter:
         metrics.length > 1
           ? metrics.map(measurement => measurement.adapter ?? record.adapter)

@@ -125,7 +125,7 @@ it('the change-of-support recipe requires an area-compatible metric and frame', 
     ...planar,
     frame: {id: 'area-frame', kind: 'local-lambert-equal-area'}
   } as const;
-  expect(create(spatialContext).spatialContext).toBe(spatialContext);
+  expect(create(spatialContext).spatialContext).toEqual(spatialContext);
   const kilometers = {...LONGITUDE_LATITUDE, units: 'kilometers'} as const;
-  expect(create(kilometers).spatialContext).toBe(kilometers);
+  expect(create(kilometers).spatialContext).toEqual(kilometers);
 });

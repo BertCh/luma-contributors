@@ -69,12 +69,12 @@ function expectWithinCoreLimits(inspected: InspectedGraph, nodes: readonly GPUCo
   expect(nodes.length).toBeGreaterThan(0);
   const sources = getGPUCommandNodeKernelSources(nodes);
   expect(sources.length).toBeGreaterThan(0);
-  for (const {id, source} of sources) {
+  for (const {id, source, constants} of sources) {
     expect(getStorageBindingCount(source), `${id} storage bindings`).toBeLessThanOrEqual(8);
-    expect(getPrivateMemoryBytes(source), `${id} private bytes`).toBeLessThanOrEqual(
+    expect(getPrivateMemoryBytes(source, constants), `${id} private bytes`).toBeLessThanOrEqual(
       CORE_PRIVATE_MEMORY_LIMIT_BYTES
     );
-    expect(getWorkgroupMemoryBytes(source), `${id} workgroup bytes`).toBeLessThanOrEqual(
+    expect(getWorkgroupMemoryBytes(source, constants), `${id} workgroup bytes`).toBeLessThanOrEqual(
       CORE_WORKGROUP_STORAGE_LIMIT_BYTES
     );
   }
@@ -130,6 +130,7 @@ function buildCompare(
       status: {
         count: view('uint32', 1),
         overflow: view('uint32', 1),
+        candidateOverflow: view('uint32', 1),
         requiredCount: view('uint32', 1)
       }
     }

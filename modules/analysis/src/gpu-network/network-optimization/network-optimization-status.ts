@@ -6,7 +6,7 @@ import type {
   GPUInvalidStatusPort,
   GPUIterationStatusPort
 } from '../../analysis-core/contracts/status';
-import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 import {
   validateRequirement,
   validateSinglePackedView

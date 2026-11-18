@@ -3,8 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {Buffer} from '@luma.gl/core';
 import {expect, it, vi} from 'vitest';
+import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {GPURasterNDWI} from '../../src/raster-analysis/gpu-raster-spectral-indices';
+import {GPURasterNBR} from '../../src/raster-analysis/gpu-raster-spectral-indices';
+import * as spectralExports from '../../src/raster-analysis/gpu-raster-spectral-indices';
+import * as spectralFamilyExports from '../../src/raster-analysis/spectral-indices/index';
 import type {GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
 import {
   createNullWebGPUDevice,
@@ -16,6 +22,35 @@ import {
   SPECTRAL_CASES,
   SPECTRAL_REFERENCE
 } from './raster-spectral-indices-test-utils';
+
+it('keeps spectral producers in separate files without a contributor-contract allowance', () => {
+  const root = fileURLToPath(new URL('../../../../', import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    [
+      'scripts/check-contributor-contract.mjs',
+      '--all',
+      '--rule',
+      'multiple-classes',
+      '--paths',
+      'modules/analysis/src/raster-analysis/gpu-raster-spectral-indices.ts',
+      'modules/analysis/src/raster-analysis/spectral-indices'
+    ],
+    {cwd: root, encoding: 'utf8', timeout: 30_000}
+  );
+  expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+  expect(result.stdout).toMatch(/^multiple-classes\s+0\s+0$/m);
+}, 30_000);
+
+it('preserves the four public spectral exports through the established source barrel', () => {
+  expect(Object.keys(spectralExports).sort()).toEqual([
+    'GPURasterEVI',
+    'GPURasterNBR',
+    'GPURasterNDWI',
+    'GPURasterSAVI'
+  ]);
+  expect(spectralExports).toEqual(spectralFamilyExports);
+});
 
 function createScene() {
   const device = createNullWebGPUDevice();
@@ -49,6 +84,104 @@ function createScene() {
   return {device, graph, bands, props};
 }
 
+it('G3 spectral construction retains validated output and band descriptors after mutation', () => {
+  const {device, graph, bands, props} = createScene();
+  const nearInfrared = {...bands['nearInfrared']};
+  const input = {...props, nearInfrared, shortwaveInfrared2: bands['shortwaveInfrared2']};
+  const output = props.output;
+  const contributor = new GPURasterNBR(input);
+  const source = nearInfrared.storage.values;
+  input.output = graph.createDataView(source.buffer, {format: 'float32', length: 12});
+  nearInfrared.storage = {...nearInfrared.storage, values: output} as typeof nearInfrared.storage;
+  try {
+    const nodes = contributor.getCommandNodes(graph);
+    expect(
+      nodes
+        .at(-1)
+        ?.resources?.some(
+          resource =>
+            'buffer' in resource && resource.buffer === output && resource.usage === 'storage-write'
+        )
+    ).toBe(true);
+    expect(
+      nodes.some(node =>
+        node.resources?.some(
+          resource =>
+            'buffer' in resource && resource.buffer === source && resource.usage === 'storage-read'
+        )
+      )
+    ).toBe(true);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('G3 spectral construction reads inherited band-storage getters once', () => {
+  const {device, graph, bands, props} = createScene();
+  const source = bands['nearInfrared'].storage.values;
+  let reads = 0;
+  const storage = Object.create({
+    kind: 'buffer',
+    get values() {
+      reads++;
+      return reads === 1 ? source : props.output;
+    }
+  });
+  const band = {...bands['nearInfrared'], storage};
+  try {
+    const contributor = new GPURasterNBR({
+      ...props,
+      nearInfrared: band,
+      shortwaveInfrared2: bands['shortwaveInfrared2']
+    });
+    const nodes = contributor.getCommandNodes(graph);
+    expect(reads).toBe(1);
+    expect(
+      nodes.some(node =>
+        node.resources?.some(
+          resource =>
+            'buffer' in resource && resource.buffer === source && resource.usage === 'storage-read'
+        )
+      )
+    ).toBe(true);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('F5 rejects spectral output aliases through two physical imports and permits shared read-only bands', () => {
+  const {device, graph, bands, props} = createScene();
+  const buffer = device.createBuffer({byteLength: 48, usage: Buffer.STORAGE});
+  const views = ['nir-import', 'output-import'].map(id =>
+    graph.createDataView(graph.importBuffer({id, byteLength: 48, usage: Buffer.STORAGE}, buffer), {
+      format: 'float32',
+      length: 12
+    })
+  );
+  const nearInfrared: GPURasterBufferBand = {
+    ...bands['nearInfrared'],
+    format: 'float32',
+    storage: {kind: 'buffer', values: views[0]}
+  };
+  try {
+    expect(() =>
+      createSpectralIndex('nbr', {...props, output: views[1]}, {...bands, nearInfrared})
+    ).toThrow(/share buffers/);
+    expect(() =>
+      graph.add(
+        createSpectralIndex('nbr', props, {
+          ...bands,
+          nearInfrared,
+          shortwaveInfrared2: {...nearInfrared, storage: {kind: 'buffer', values: views[1]}}
+        })
+      )
+    ).not.toThrow();
+  } finally {
+    buffer.destroy();
+    device.destroy();
+  }
+});
+
 for (const [index, passes] of [
   ['ndwi-mcfeeters', 1],
   ['ndwi-gao', 1],
@@ -60,14 +193,12 @@ for (const [index, passes] of [
     const {device, graph, bands, props} = createScene();
     const addPass = vi.spyOn(graph, 'addComputePass');
     try {
-      createSpectralIndex(index, {...props, epsilon: 0.001, clamp: [-1, 1]}, bands).addToGraph(
-        graph
-      );
+      graph.add(createSpectralIndex(index, {...props, epsilon: 0.001, clamp: [-1, 1]}, bands));
       expect(addPass).toHaveBeenCalledTimes(passes);
       const nodes = addPass.mock.calls.map(([node]) => node);
       const sources = getParsedKernelSources(nodes);
       expect(sources.size).toBe(passes);
-      for (const [id, source] of sources) {
+      for (const {id, source} of sources.configurations) {
         expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(6);
       }
       expect(nodes.at(-1)?.id).toBe('spectral');

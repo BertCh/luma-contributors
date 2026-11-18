@@ -7,6 +7,14 @@ import type {KernelAuditRejection} from './kernel-audit-rejection-type';
 /** Expected declaration refusals of the points-and-regions cases. */
 export const POINTS_AND_REGIONS_REJECTIONS: readonly KernelAuditRejection[] = [
   {
+    exportName: 'GPUHuffTradeAreas',
+    name: 'normalization scratch one row above the binding limit',
+    kind: 'binding',
+    limit: 134217728,
+    rejects:
+      /^Error: huff-trade-areas normalization scratch needs 134217744 bytes in one binding \(limit 134217728\); reduce row or group counts$/
+  },
+  {
     exportName: 'GPUKernelDensity',
     name: 'index grid above the maximum gaussian',
     kind: 'binding',

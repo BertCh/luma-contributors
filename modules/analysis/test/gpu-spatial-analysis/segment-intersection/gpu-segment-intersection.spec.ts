@@ -29,6 +29,16 @@ import {
   type OracleSegmentFeature
 } from './segment-intersection-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {checkCompactPairCauses} from '../../analysis-core/compact-pair-causes.final1.test-utils';
+
+it.each([
+  'leaves',
+  'pairs'
+] as const)('final1 segment intersection separates %s loss and clears both flags on output-buffer reuse', async loss => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  await checkCompactPairCauses(device, 'segments', loss);
+});
 
 type GPUHit = {
   left: number;
@@ -77,8 +87,8 @@ async function runIntersection(
     buffers.push(buffer);
     return {buffer, view: importGraphBuffer(graph, name, buffer, format, length) as never};
   };
-  const leftIds = output('left-ids', capacity);
-  const rightIds = output('right-ids', capacity);
+  const leftRows = output('left-ids', capacity);
+  const rightRows = output('right-ids', capacity);
   const count = output('count', 1);
   const overflow = output('overflow', 1);
   const total = output('total', 1);
@@ -99,8 +109,8 @@ async function runIntersection(
       spatialSort: options.spatialSort,
       output: {
         pairs: {
-          leftIds: leftIds.view,
-          rightIds: rightIds.view,
+          leftRows: leftRows.view,
+          rightRows: rightRows.view,
           status: {
             count: count.view,
             overflow: overflow.view,
@@ -122,8 +132,8 @@ async function runIntersection(
   submitGraph(device, compiled, undefined);
   const [countValue] = await readUint32(count.buffer, 1);
   const columns = {
-    left: await readUint32(leftIds.buffer, capacity),
-    right: await readUint32(rightIds.buffer, capacity),
+    left: await readUint32(leftRows.buffer, capacity),
+    right: await readUint32(rightRows.buffer, capacity),
     kind: await readUint32(kinds.buffer, capacity),
     point: await readFloat32(points.buffer, capacity * 2),
     endPoint: await readFloat32(endPoints.buffer, capacity * 2),
@@ -482,8 +492,8 @@ it('GPUSegmentIntersection skips degenerate and non-finite segments and validate
   const view = (name: string, length: number) =>
     importGraphBuffer(graph, name, createOutputBuffer(device, length), 'uint32', length);
   const pairs = {
-    leftIds: view('a', 4),
-    rightIds: view('b', 4),
+    leftRows: view('a', 4),
+    rightRows: view('b', 4),
     status: {count: view('c', 1), overflow: view('d', 1)}
   };
   expect(

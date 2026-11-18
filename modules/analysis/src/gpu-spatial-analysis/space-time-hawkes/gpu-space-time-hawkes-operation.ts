@@ -22,6 +22,7 @@ export type SpaceTimeHawkesOperationProps = Pick<
   output: {
     estimates: string;
     logLikelihood?: string;
+    fittedLogLikelihood?: string;
     backgroundProbability?: string;
     status?: {
       converged?: string;
@@ -65,6 +66,15 @@ export class GPUSpaceTimeHawkesOperation extends GPUContributorOperation {
                 length: props.rowCount
               }
             }),
+        ...(props.output.fittedLogLikelihood === undefined
+          ? {}
+          : {
+              fittedLogLikelihood: {
+                value: props.output.fittedLogLikelihood,
+                format: 'float32' as const,
+                length: 1
+              }
+            }),
         ...Object.fromEntries(
           Object.entries(props.output.status ?? {})
             .filter((entry): entry is [string, string] => entry[1] !== undefined)
@@ -87,6 +97,10 @@ export class GPUSpaceTimeHawkesOperation extends GPUContributorOperation {
               props.output.logLikelihood === undefined
                 ? undefined
                 : getView<'float32'>('logLikelihood'),
+            fittedLogLikelihood:
+              props.output.fittedLogLikelihood === undefined
+                ? undefined
+                : getView<'float32'>('fittedLogLikelihood'),
             backgroundProbability:
               props.output.backgroundProbability === undefined
                 ? undefined

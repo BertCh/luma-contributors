@@ -42,7 +42,7 @@ import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-cont
 import {
   createLonLatPolygonCheckNode,
   hasLonLatPolygonStatus
-} from '../../analysis-core/lon-lat-ring-wgsl';
+} from '../../analysis-core/kernels/lon-lat-ring-wgsl';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 

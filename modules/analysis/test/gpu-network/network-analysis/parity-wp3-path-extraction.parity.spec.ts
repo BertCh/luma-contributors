@@ -10,7 +10,12 @@ import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {compareParity, EXACT} from '../parity-wp3-comparison';
 import {createParityResources} from '../parity-wp3-round2-resources';
-import {mapEdgeId, mapNodeId, routingFixtures} from './parity-wp3-routing-fixture';
+import {
+  getPathExtractionExpectedStatus,
+  mapEdgeId,
+  mapNodeId,
+  routingFixtures
+} from './parity-wp3-routing-fixture';
 
 for (const {input, cases} of routingFixtures) {
   for (const fixture of cases) {
@@ -41,7 +46,8 @@ for (const {input, cases} of routingFixtures) {
           status: {
             count: resources.output(`${prefix}-count`, 'uint32', 1),
             requiredCount: resources.output(`${prefix}-required`, 'uint32', 1),
-            overflow: resources.output(`${prefix}-overflow`, 'uint32', 1)
+            overflow: resources.output(`${prefix}-overflow`, 'uint32', 1),
+            candidateOverflow: resources.output(`${prefix}-candidate-overflow`, 'uint32', 1)
           }
         });
         resources.graph.add(
@@ -166,17 +172,14 @@ for (const {input, cases} of routingFixtures) {
               compareParity(
                 'GPUNetworkPathExtraction',
                 comparison,
-                `${prefix}: count, required, overflow`,
+                `${prefix}: count, required, overflow, candidateOverflow`,
                 [
                   ...(await resources.readUint(`${prefix}-count`)),
                   ...(await resources.readUint(`${prefix}-required`)),
-                  ...(await resources.readUint(`${prefix}-overflow`))
+                  ...(await resources.readUint(`${prefix}-overflow`)),
+                  ...(await resources.readUint(`${prefix}-candidate-overflow`))
                 ],
-                [
-                  Math.min(values.length, capacity),
-                  values.length,
-                  Number(Boolean(truncated || values.length > capacity))
-                ],
+                getPathExtractionExpectedStatus(values.length, capacity, truncated),
                 EXACT
               );
             }

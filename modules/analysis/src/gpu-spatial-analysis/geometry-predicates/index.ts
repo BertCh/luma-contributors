@@ -4,6 +4,7 @@
 
 export {GPUGeometryPredicates} from './gpu-geometry-predicates';
 export type {
+  GPUGeometryPredicatesGeometry,
   GPUGeometryPredicatesOutput,
   GPUGeometryPredicatesProps
 } from './gpu-geometry-predicates';

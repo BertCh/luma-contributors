@@ -15,6 +15,8 @@ import {requireTestDevice} from '../../utils/require-test-device';
 
 for (const testCase of [
   'ordinary',
+  'zero-rounds',
+  'zero-rounds-inherited',
   'overflow',
   'gaps',
   'seam',
@@ -40,6 +42,7 @@ for (const testCase of [
       parameters: 'parameters',
       sampleCount: values.length,
       window: 2,
+      maximumSuppressionIterations: testCase.startsWith('zero-rounds') ? 0 : 16,
       minimumSide: 1,
       suppressionRadius: testCase === 'suppression' || testCase === 'separate-profiles' ? 3 : 0,
       wrap: testCase === 'seam',
@@ -51,7 +54,12 @@ for (const testCase of [
         peaks: {
           ids: 'ids',
           capacity: testCase === 'overflow' || testCase === 'seam' ? 1 : 2,
-          status: {count: 'count', requiredCount: 'requiredCount', overflow: 'overflow'}
+          status: {
+            count: 'count',
+            requiredCount: 'requiredCount',
+            overflow: 'overflow',
+            candidateOverflow: 'candidateOverflow'
+          }
         },
         status: {converged: 'converged', iterationLimitReached: 'iterationLimitReached'}
       }
@@ -65,6 +73,7 @@ for (const testCase of [
       'count',
       'requiredCount',
       'overflow',
+      'candidateOverflow',
       'converged',
       'iterationLimitReached'
     ];
@@ -83,17 +92,41 @@ for (const testCase of [
         values: getGPUProfilePeaksParameterValues({minimumProminence: testCase === 'seam' ? 0 : 1})
       }
     };
+    let budget = props.maximumSuppressionIterations;
+    if (testCase === 'zero-rounds-inherited') {
+      delete props.maximumSuppressionIterations;
+      Object.setPrototypeOf(props, {
+        get maximumSuppressionIterations() {
+          return budget;
+        }
+      });
+    }
+    const gpuOperation = new GPUProfilePeaksOperation(props);
+    const cpuOperation = new CPUProfilePeaksOperation(props);
+    if (testCase.startsWith('zero-rounds')) {
+      budget = 16;
+      if (testCase === 'zero-rounds') props.maximumSuppressionIterations = 16;
+    }
     const gpu = await runOperationGraph(device, {
       inputs,
-      operations: [new GPUProfilePeaksOperation(props)],
+      operations: [gpuOperation],
       outputs
     });
     const cpu = await runOperationGraph(device, {
       inputs,
-      operations: [new CPUProfilePeaksOperation(props)],
+      operations: [cpuOperation],
       outputs
     });
     for (const rows of [gpu, cpu]) {
+      if (testCase.startsWith('zero-rounds')) {
+        expect([
+          rows['count'][0],
+          rows['overflow'][0],
+          rows['candidateOverflow'][0],
+          rows['converged'][0],
+          rows['iterationLimitReached'][0]
+        ]).toEqual([0, 0, 1, 0, 1]);
+      }
       if (testCase === 'seam') {
         expect(rows['refinedIndex'][0]).toBe(0);
         expect(rows['refinedIndex'][0]).toBeGreaterThanOrEqual(0);
@@ -111,6 +144,7 @@ for (const testCase of [
       for (let index = 0; index < length; index++) {
         const expected = cpu[name][index];
         if (Number.isNaN(expected)) expect(gpu[name][index]).toBeNaN();
+        else if (!Number.isFinite(expected)) expect(gpu[name][index]).toBe(expected);
         else if (cpu[name] instanceof Float32Array)
           expect(Math.abs(gpu[name][index] - expected)).toBeLessThanOrEqual(2e-5);
         else expect(gpu[name][index]).toBe(expected);

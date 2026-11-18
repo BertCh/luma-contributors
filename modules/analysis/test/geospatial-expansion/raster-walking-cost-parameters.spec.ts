@@ -15,7 +15,7 @@ import {
   getRasterGridGeoreference,
   getRasterGroundScale,
   type GPURasterCellSizeMode
-} from '../../src/analysis-core/raster-grid';
+} from '../../src/analysis-core/contracts/raster-grid';
 import {makeGPURasterMetadata} from '../../src/raster-analysis/raster-grid/gpu-raster-grid';
 import {
   GPU_RASTER_WALKING_COST_PARAMETER_LENGTH,

@@ -149,7 +149,9 @@ describe('authoritative operator kind completeness', () => {
   });
 
   it('does not suggest cost tables or facility assignments as polygon-producing network paths', () => {
-    const names = findGPUAnalysisOperatorPaths('network', 'polygons', 1).paths.flat();
+    const names = findGPUAnalysisOperatorPaths('network', 'polygons', 1)
+      .paths.flat()
+      .map(step => step.exportName);
     for (const name of ['GPUNetworkServiceAreas', 'GPUNetworkCostMatrix', 'GPUNetworkCostTable']) {
       expect(names).not.toContain(name);
     }

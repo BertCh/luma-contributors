@@ -29,6 +29,7 @@ import {
 import {isGPUSpatialWeightsRowStandardized} from '../spatial-weights/spatial-weights';
 import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
 import type {GPUGlobalSpatialStatisticsProps} from './gpu-global-spatial-statistics';
+import {getGlobalSpatialStatisticsStatusNodes} from './global-spatial-statistics-status';
 
 /** A tile bounds serial sums to sixteen values per lane before a compensated binary tree. */
 const TILE_ROWS = 4096;
@@ -80,7 +81,8 @@ export function getTiledGlobalSpatialStatisticsNodes<Parameters>(
     'tile partials': blocks * 8 * 2 * 4,
     'totals and control': 256
   });
-  const nodes: GPUCommandNode<Parameters>[] = [];
+  const weightsStatus = getGlobalSpatialStatisticsStatusNodes(graph, props);
+  const nodes: GPUCommandNode<Parameters>[] = [...weightsStatus.nodes];
   const scratch = <Format extends 'float32' | 'uint32'>(
     name: string,
     format: Format,
@@ -701,7 +703,7 @@ columnOffsets[columnOffsetsOffset + index] = low;`
       ...(props.output.joinCounts
         ? [bind('joinCounts', props.output.joinCounts, 'read_write')]
         : []),
-      ...(props.weights.status?.overflow ? [bind('overflow', props.weights.status.overflow)] : [])
+      ...(weightsStatus.incomplete ? [bind('overflow', weightsStatus.incomplete)] : [])
     ],
     finalizeBody,
     `${totalDeclarations}\n${finalizeDeclarations}`

@@ -54,6 +54,33 @@ function expectThrows(
   device.destroy();
 }
 
+it('final1b F1 rejects candidate publication into temporal cell IDs', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const base = createProps(graph);
+    const cells = createTransientView(graph, 'alias-cells', 'uint32', 10);
+    expect(() =>
+      new GPUTemporalReduction({
+        ...base,
+        cellIds: cells,
+        output: {
+          ...base.output,
+          occupiedSlots: {
+            ...base.output.occupiedSlots,
+            status: {
+              ...base.output.occupiedSlots.status,
+              candidateOverflow: graph.createDataView(cells.buffer, {format: 'uint32', length: 1})
+            }
+          }
+        }
+      }).getCommandNodes(graph)
+    ).toThrow(/share buffers|overlap/);
+  } finally {
+    device.destroy();
+  }
+});
+
 it('GPUTemporalReduction parameter helpers pack layouts', () => {
   expect(Array.from(getGPUTemporalReductionParameterValues(2.5, 4))).toEqual([2.5, 4]);
   expect(Array.from(getGPUTemporalReductionWordParameterValues(-1n, 3600000))).toEqual([

@@ -93,17 +93,18 @@ it('createLoadBalancedSegmentSumNodes builds a walk and a fixup that parse withi
     expect(nodes.map(node => node.id)).toEqual(['sum', 'sum-fixup']);
     const sources = getParsedKernelSources(nodes);
     expect([...sources.keys()]).toEqual(['sum', 'sum-fixup']);
-    for (const [id, source] of sources) {
+    for (const {id, source: source, constants} of sources.configurations) {
       // Utility bindings: offsets, output and carries (walk), carries and output (fixup).
       expect(getStorageBindingCount(source), `${id} bindings`).toBeLessThanOrEqual(8);
-      expect(getWorkgroupMemoryBytes(source), `${id} workgroup`).toBeLessThanOrEqual(
+      expect(getWorkgroupMemoryBytes(source, constants), `${id} workgroup`).toBeLessThanOrEqual(
         CORE_WORKGROUP_STORAGE_LIMIT_BYTES
       );
-      expect(getPrivateMemoryBytes(source), `${id} private`).toBeLessThanOrEqual(
+      expect(getPrivateMemoryBytes(source, constants), `${id} private`).toBeLessThanOrEqual(
         CORE_PRIVATE_MEMORY_LIMIT_BYTES
       );
     }
-    expect(getStorageBindingCount(sources.get('sum')!)).toBe(8);
+    for (const {source} of sources.getConfigurations('sum'))
+      expect(getStorageBindingCount(source)).toBe(8);
   }
 });
 
@@ -192,9 +193,14 @@ it('createLoadBalancedForEachNode parses and binds the offsets first', () => {
   rowOfItem[rowOfItemOffset + item] = row + lane;
 }`
   });
-  const source = getParsedKernelSources([node]).get('visit')!;
+  const sources = getParsedKernelSources([node]);
+  const source = sources.get('visit')!;
   expect(source).toMatch(/@binding\(0\) var<storage, read> loadBalancedOffsets/);
-  expect(getWorkgroupMemoryBytes(source)).toBe((LOAD_BALANCED_TILE_SIZE + 1) * 4 + 8);
+  for (const kernel of sources.getConfigurations('visit')) {
+    expect(getWorkgroupMemoryBytes(kernel.source, kernel.constants)).toBe(
+      Math.ceil(((LOAD_BALANCED_TILE_SIZE + 1) * 4) / 16) * 16 + 16
+    );
+  }
 });
 
 it('load-balanced loops reject topologies past uint32 (rule 16)', () => {

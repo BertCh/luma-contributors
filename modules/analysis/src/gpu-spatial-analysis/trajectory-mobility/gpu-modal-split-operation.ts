@@ -4,6 +4,7 @@
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUModalSplit, type GPUModalSplitProps} from './gpu-modal-split';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 /**
  * Graph-value form. In prediction mode the optional input modes port is omitted: the contributor
@@ -20,16 +21,67 @@ export type ModalSplitOperationProps = Pick<
   rowCount: number;
   trackCount: number;
   triplegCapacity: number;
-  triplegs: {tracks: string; startRows: string; endRows: string; status: {count: string}};
+  triplegs: {
+    tracks: string;
+    startRows: string;
+    endRows: string;
+    status: {count: string; overflow?: string; candidateOverflow?: string};
+  };
   output: {modalSplit: string; predictedModes?: string};
 } & (
     | {modes: string; modeSpeedBreaks?: never}
     | {modes?: never; modeSpeedBreaks: readonly number[]}
   );
 
+/** @internal Capture compile-time settings and nested port maps for both operation forms. */
+export function snapshotModalSplitOperationProps(
+  props: ModalSplitOperationProps
+): ModalSplitOperationProps {
+  props = snapshotConstructionFields(props, [
+    'id',
+    'metric',
+    'modeCount',
+    'spatialContext',
+    'temporalContext',
+    'positions',
+    'timestamps',
+    'trackOffsets',
+    'timestampFormat',
+    'rowCount',
+    'trackCount',
+    'triplegCapacity',
+    'triplegs',
+    'modes',
+    'modeSpeedBreaks',
+    'output'
+  ]);
+  const triplegs = snapshotConstructionFields(props.triplegs, [
+    'tracks',
+    'startRows',
+    'endRows',
+    'status'
+  ]);
+  const captured = {
+    ...props,
+    triplegs: {
+      ...triplegs,
+      status: snapshotConstructionFields(triplegs.status, [
+        'count',
+        'overflow',
+        'candidateOverflow'
+      ])
+    },
+    output: snapshotConstructionFields(props.output, ['modalSplit', 'predictedModes'])
+  };
+  return props.modeSpeedBreaks
+    ? {...captured, modes: undefined, modeSpeedBreaks: Object.freeze([...props.modeSpeedBreaks])}
+    : {...captured, modes: props.modes!, modeSpeedBreaks: undefined};
+}
+
 /** GPU modal aggregation operation. Compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUModalSplitOperation extends GPUContributorOperation {
   constructor(props: ModalSplitOperationProps) {
+    props = snapshotModalSplitOperationProps(props);
     const id = props.id ?? 'modal-split';
     const predictedModes = props.modeSpeedBreaks ? props.output.predictedModes : undefined;
     super({
@@ -42,6 +94,12 @@ export class GPUModalSplitOperation extends GPUContributorOperation {
         triplegStartRows: props.triplegs.startRows,
         triplegEndRows: props.triplegs.endRows,
         triplegCount: props.triplegs.status.count,
+        ...(props.triplegs.status.overflow !== undefined
+          ? {triplegOverflow: props.triplegs.status.overflow}
+          : {}),
+        ...(props.triplegs.status.candidateOverflow !== undefined
+          ? {triplegCandidateOverflow: props.triplegs.status.candidateOverflow}
+          : {}),
         ...(!props.modeSpeedBreaks && props.modes !== undefined ? {modes: props.modes} : {})
       },
       outputs: {
@@ -78,7 +136,17 @@ export class GPUModalSplitOperation extends GPUContributorOperation {
             tracks: getView<'uint32'>('triplegTracks'),
             startRows: getView<'uint32'>('triplegStartRows'),
             endRows: getView<'uint32'>('triplegEndRows'),
-            status: {count: getView<'uint32'>('triplegCount')}
+            status: {
+              count: getView<'uint32'>('triplegCount'),
+              overflow:
+                props.triplegs.status.overflow !== undefined
+                  ? getView<'uint32'>('triplegOverflow')
+                  : undefined,
+              candidateOverflow:
+                props.triplegs.status.candidateOverflow !== undefined
+                  ? getView<'uint32'>('triplegCandidateOverflow')
+                  : undefined
+            }
           },
           modes:
             !props.modeSpeedBreaks && props.modes !== undefined

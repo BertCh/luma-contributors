@@ -23,7 +23,7 @@ export type {
 export {
   getGPUStreamlinesParameterValues,
   getGPUStreamlinesUint32ParameterValues,
-  GPU_STREAMLINES_OVERFLOW_UNCONVERGED,
+  GPU_STREAMLINES_CANDIDATE_UNCONVERGED,
   GPU_STREAMLINES_PARAMETER_LENGTH,
   GPU_STREAMLINES_UINT32_PARAMETER_LENGTH
 } from './streamlines-parameters';

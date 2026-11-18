@@ -37,8 +37,8 @@ export type CPUConstrainedDelaunayTriangulationResult = CPUPolygonTriangulationR
  * What differs from the GPU contributor:
  * - maximumFlips is ignored: Lawson flipping continues until no strictly illegal convex
  *   quadrilateral remains. Every valid polygon then has converged=1; failed polygons have 0.
- * - The initial triangulation uses uncapped corrected Earcut, without monotone routing, as
- *   documented by computePolygonTriangulationOnCPU. GPU-monotone initial slices may differ.
+ * - The initial triangulation uses budgeted un-hashed Earcut and the selected monotone route,
+ *   as documented by computePolygonTriangulationOnCPU. GPU hashing can change the initial slices.
  * - Arbitrary-precision predicates accept all finite float32 exponent spans, without the GPU
  *   incircle fallback above span 55. Midpoints/crossings in the initial Earcut use float64.
  * - Inconsistent arrays throw with the argument name. Nonfinite live rings fail; subnormals

@@ -445,11 +445,29 @@ export type GPUAnalysisClassTally = {
 };
 
 /**
- * Counts how many rows fall in each class of a scheme. A value the scheme does not contain
- * (null, NaN, an infinity, an unknown code, text where numbers are expected) is counted under
- * `unrecognized`; nothing here throws on data. Booleans are read as 1 and 0 for the two flag
- * schemes.
+ * Normalize a value for both tallying and publication. Flag booleans become 0/1; contributor
+ * validity uint32 values become zero/nonzero. Other schemes retain their exact codes.
  */
+export function normalizeGPUAnalysisClassValue(
+  scheme: GPUAnalysisClassScheme,
+  encoding: GPUAnalysisClassEncoding,
+  value: number | string | boolean | null | undefined
+): number | string | null | undefined {
+  if ((scheme === 'significance-flag' || scheme === 'validity-flag') && typeof value === 'boolean')
+    value = value ? 1 : 0;
+  if (
+    scheme === 'validity-flag' &&
+    encoding === 'contributor-integer' &&
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= 0xffffffff
+  )
+    return value === 0 ? 0 : 1;
+  return typeof value === 'boolean' ? undefined : value;
+}
+
+/** Count normalized classes; null, nonfinite, malformed and unknown values are unrecognized. */
 export function classifyGPUAnalysisResultValues(
   scheme: GPUAnalysisClassScheme,
   values: ArrayLike<number | string | boolean | null | undefined>,
@@ -457,7 +475,6 @@ export function classifyGPUAnalysisResultValues(
 ): GPUAnalysisClassTally {
   const classes = getGPUAnalysisResultClasses(scheme, encoding);
   const isMembership = scheme === 'cluster-membership';
-  const isFlag = scheme === 'significance-flag' || scheme === 'validity-flag';
   const tally = new Map<number | string, number>();
   for (const resultClass of classes) tally.set(resultClass.value, 0);
   const noiseLabel =
@@ -466,8 +483,7 @@ export function classifyGPUAnalysisResultValues(
   let unrecognized = 0;
 
   for (let index = 0; index < values.length; index++) {
-    let value = values[index];
-    if (isFlag && typeof value === 'boolean') value = value ? 1 : 0;
+    const value = normalizeGPUAnalysisClassValue(scheme, encoding, values[index]);
     if (value === null || value === undefined || typeof value === 'boolean') {
       unrecognized++;
     } else if (isMembership) {

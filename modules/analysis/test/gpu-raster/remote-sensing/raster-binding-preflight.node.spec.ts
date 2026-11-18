@@ -332,25 +332,51 @@ it('rejects read-only and writable ranges of one buffer in a single dispatch, ev
   }
 });
 
-it('requires all views of one physical buffer to share one imported graph handle', () => {
+it('accepts separate graph handles when the physical buffer is only read', () => {
   const device = createNullWebGPUDevice();
   const buffer = device.createBuffer({byteLength: 128, usage: Buffer.STORAGE});
   try {
     const graph = new GPUCommandGraph(device);
+    const {contributor} = createCase(graph, 'texture', (field, format, length) => {
+      if (field !== 'values' && field !== 'mask') return;
+      const handle = graph.importBuffer(
+        {id: `duplicate-import-${serial++}`, byteLength: 128, usage: Buffer.STORAGE},
+        buffer
+      );
+      return graph.createDataView(handle, {
+        format,
+        length,
+        byteOffset: field === 'values' ? 0 : 64
+      });
+    });
+    expect(contributor.getCommandNodes(graph).length).toBeGreaterThan(0);
+  } finally {
+    buffer.destroy();
+    device.destroy();
+  }
+});
+
+it('requires one imported graph handle when the physical buffer is writable', () => {
+  const device = createNullWebGPUDevice();
+  const buffer = device.createBuffer({byteLength: 4096, usage: Buffer.STORAGE});
+  try {
+    const graph = new GPUCommandGraph(device);
     expect(() =>
       createCase(graph, 'texture', (field, format, length) => {
-        if (field !== 'values' && field !== 'mask') return;
+        if (field !== 'features' && field !== 'pairCount') return;
         const handle = graph.importBuffer(
-          {id: `duplicate-import-${serial++}`, byteLength: 128, usage: Buffer.STORAGE},
+          {id: `writable-import-${serial++}`, byteLength: 4096, usage: Buffer.STORAGE},
           buffer
         );
         return graph.createDataView(handle, {
           format,
           length,
-          byteOffset: field === 'values' ? 0 : 64
+          byteOffset: field === 'features' ? 0 : 256
         });
       })
-    ).toThrow(/physical buffer must be imported once/);
+    ).toThrow(
+      /views for one physical buffer that participates in a write must use one imported handle/
+    );
   } finally {
     buffer.destroy();
     device.destroy();

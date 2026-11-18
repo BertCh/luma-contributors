@@ -404,7 +404,7 @@ it('segment snap removes duplicate references separated by projection-tied refer
     6,
     0
   ]);
-  expect(memory.readUint32(output.validity)[0]).toBe(0);
+  expect(memory.readUint32(output.validity)[0]).toBe(1);
 });
 
 it('tree normalization exact winding respects the baseline binding and WGSL contracts', () => {

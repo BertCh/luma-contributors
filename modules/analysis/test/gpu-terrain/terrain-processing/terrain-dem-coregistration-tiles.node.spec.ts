@@ -55,9 +55,9 @@ it('bounds dense covariance terms per invocation and joins every partial in fixe
   expect(covariance).toContain('local < 256u');
   expect(covariance).toContain('let first = index / 5u');
   expect(covariance).not.toContain('second < 1025u; second++');
-  for (const [name, source] of sources) {
+  for (const {id: name, source, constants} of sources.configurations) {
     expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
-    expect(auditWGSLModule(source), name).toEqual([]);
+    expect(auditWGSLModule(source, constants), name).toEqual([]);
   }
 });
 

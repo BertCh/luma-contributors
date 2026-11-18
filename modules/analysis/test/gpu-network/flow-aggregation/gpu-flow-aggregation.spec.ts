@@ -45,6 +45,7 @@ import {
   type FlowOracleResult
 } from './flow-aggregation-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {createOffsetFlowChunkViews} from './flow-offset-chunks-fixture';
 
 const NO_ZONE = GPU_FLOW_AGGREGATION_NO_ZONE;
 const GARBAGE = 0xdeadbeef;
@@ -54,6 +55,7 @@ type FlowResult = {
   count: number;
   requiredCount: number;
   overflow: number;
+  candidateOverflow: number;
   pairOverflow: number;
   drawInstanceCount: number;
   originZones: number[];
@@ -107,6 +109,7 @@ function createHarness(device: Device, options: HarnessOptions): Harness {
   const ids = createOutput('ids', 'uint32', topCount);
   const count = createOutput('count', 'uint32', 1);
   const overflow = createOutput('overflow', 'uint32', 1);
+  const candidateOverflow = createOutput('candidate-overflow', 'uint32', 1);
   const requiredCount = createOutput('total', 'uint32', 1);
   const pairOverflow = createOutput('pair-overflow', 'uint32', 1);
   const drawInstanceCount = createOutput('draw', 'uint32', 1);
@@ -129,6 +132,7 @@ function createHarness(device: Device, options: HarnessOptions): Harness {
       status: {
         count: count.view,
         overflow: overflow.view,
+        candidateOverflow: candidateOverflow.view,
         requiredCount: requiredCount.view,
         pairOverflow: pairOverflow.view
       },
@@ -162,6 +166,7 @@ function createHarness(device: Device, options: HarnessOptions): Harness {
       count: (await readUint32(count.buffer, 1))[0],
       requiredCount: (await readUint32(requiredCount.buffer, 1))[0],
       overflow: (await readUint32(overflow.buffer, 1))[0],
+      candidateOverflow: (await readUint32(candidateOverflow.buffer, 1))[0],
       pairOverflow: (await readUint32(pairOverflow.buffer, 1))[0],
       drawInstanceCount: (await readUint32(drawInstanceCount.buffer, 1))[0],
       originZones: await readUint32(originZones.buffer, topCount),
@@ -195,6 +200,7 @@ function expectMatchesOracle(
   expect(result.drawInstanceCount).toBe(count);
   expect(result.requiredCount).toBe(distinct);
   expect(result.pairOverflow).toBe(0);
+  expect(result.candidateOverflow).toBe(0);
   expect(result.overflow).toBe(distinct > topCount ? 1 : 0);
   for (let rank = 0; rank < topCount; rank++) {
     const flow = oracle.flows[rank];
@@ -569,7 +575,8 @@ it('GPUFlowAggregation reports pair table overflow and keeps zone totals exact',
   });
   expect(oracle.flows.length).toBeGreaterThan(4);
   expect(result.pairOverflow).toBe(1);
-  expect(result.overflow).toBe(1);
+  expect(result.overflow).toBe(result.requiredCount > topCount ? 1 : 0);
+  expect(result.candidateOverflow).toBe(1);
   expect(result.requiredCount).toBe(4);
   expect(result.count).toBe(4);
   expect(result.drawInstanceCount).toBe(4);
@@ -950,7 +957,8 @@ it('GPUFlowAggregation sorted sums keep zone totals exact when the pair table ov
   harness.submit();
   const result = await harness.read();
   expect(result.pairOverflow).toBe(1);
-  expect(result.overflow).toBe(1);
+  expect(result.overflow).toBe(result.requiredCount > result.ids.length ? 1 : 0);
+  expect(result.candidateOverflow).toBe(1);
   expectZoneTotals(result, oracle, true);
   // Reported flow sums are each pair's fixed-tree sum, in descending order.
   for (let rank = 0; rank < result.count; rank++) {
@@ -1190,7 +1198,8 @@ it('keeps pair-capacity overflow separate from top-K counts with large zone IDs'
     expect(result.requiredCount).toBe(2);
     expect(result.count).toBe(2);
     expect(result.pairOverflow).toBe(1);
-    expect(result.overflow).toBe(1);
+    expect(result.overflow).toBe(0);
+    expect(result.candidateOverflow).toBe(1);
     expect(result.zoneInCounts[1]).toBe(4);
     expect(result.counts.slice(0, 2)).toEqual([1, 1]);
   } finally {
@@ -1515,7 +1524,6 @@ it('flow shared output buffers reject adjacent slices and accept independent ali
 it('packed and unequal empty flow chunks beyond 256-byte offsets match every CPU-oracle output', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  if (!device) return;
   const rowCount = 522;
   const originIds = Array.from({length: rowCount}, (_, row) => row % 4);
   const destinationIds = Array.from({length: rowCount}, (_, row) => (row * 3 + 1) % 4);
@@ -1547,28 +1555,12 @@ it('packed and unequal empty flow chunks beyond 256-byte offsets match every CPU
           data: ArrayLike<number>,
           lengths: number[]
         ) => {
-          const components = format === 'float32x2' ? 2 : 1;
-          let rowBase = 0;
-          const views = lengths.map((length, index) => {
-            const padding = 70 + index;
-            const values = new Float32Array((padding + length) * components).fill(999);
-            for (let component = 0; component < length * components; component++)
-              values[padding * components + component] = data[rowBase * components + component];
-            rowBase += length;
-            const buffer = createInputBuffer(device, values);
-            buffers.push(buffer);
-            const backing = importGraphBuffer(
-              graph,
-              `${name}-${index}`,
-              buffer,
-              format,
-              padding + length
-            );
-            return graph.createDataView(backing.buffer, {
-              format,
-              byteOffset: padding * components * 4,
-              length
-            });
+          const views = createOffsetFlowChunkViews(device, graph, {
+            id: name,
+            format,
+            data,
+            lengths,
+            buffers
           });
           return chunked ? createVectorView(name, format, views) : views[0];
         };
@@ -1670,6 +1662,7 @@ it('skewed flow chunks launch their own workgroups and preserve closed-form aggr
       count: 1,
       requiredCount: 1,
       overflow: 0,
+      candidateOverflow: 0,
       pairOverflow: 0,
       drawInstanceCount: 1,
       originZones: [0, NO_ZONE],

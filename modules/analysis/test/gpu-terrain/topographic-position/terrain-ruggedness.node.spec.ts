@@ -4,7 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
-import {getRasterGridGeoreference} from '../../../src/analysis-core/raster-grid';
+import {getRasterGridGeoreference} from '../../../src/analysis-core/contracts/raster-grid';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {
   GPUTerrainRuggedness,
@@ -63,7 +63,7 @@ it('GPUTerrainRuggedness schedules one window kernel and validates props', () =>
   expect(() => create({grid: {...GRID, width: 0}})).toThrow(/dimensions/);
   const shared = createBand(graph, 'shared', 30);
   expect(() => create({elevation: shared, output: {roughness: shared.storage.values}})).toThrow(
-    /share buffers/
+    /^terrain-ruggedness output\[0\] chunk 0 logical byte ranges must not overlap \(writable storage\)$/
   );
   const otherGraph = new GPUCommandGraph(device);
   expect(() =>

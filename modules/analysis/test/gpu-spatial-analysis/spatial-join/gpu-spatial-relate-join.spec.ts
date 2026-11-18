@@ -39,8 +39,69 @@ import {RELATE_KINDS, getRandomRelateSeeds, getRelateSide} from './spatial-relat
 import {createRandom} from '../segment-intersection/segment-intersection-oracle';
 import {SHAPELY_RELATE_FIXTURES} from './shapely-relate-fixtures';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {checkCompactPairCauses} from '../../analysis-core/compact-pair-causes.final1.test-utils';
+
+it.each([
+  'leaves',
+  'pairs'
+] as const)('final1 candidate join and gather separate %s loss and clear both flags on output-buffer reuse', async loss => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  await checkCompactPairCauses(device, 'candidates', loss);
+});
 
 const INTERSECTS_PATTERNS = ['T********', '*T*******', '***T*****', '****T****'];
+
+it('final2 candidate join keeps adjacent status words and captured destinations through recovery', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  await checkCompactPairCauses(device, 'candidates', 'leaves', true);
+});
+
+it('final2 anti join retains unmatched row 1 after caller output-map mutation', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const graph = new GPUCommandGraph(device);
+  const buffers: Buffer[] = [];
+  const input = (name: string, values: Float32Array) => {
+    const buffer = createInputBuffer(device, values);
+    buffers.push(buffer);
+    return importGraphBuffer(graph, name, buffer, 'float32x2', values.length / 2);
+  };
+  const output = (name: string) => {
+    const buffer = createOutputBuffer(device, 1);
+    buffers.push(buffer);
+    return {buffer, view: importGraphBuffer(graph, name, buffer, 'uint32', 1)};
+  };
+  const ids = output('unmatched');
+  const count = output('count');
+  const candidate = output('candidate');
+  const unmatched = {
+    ids: ids.view,
+    status: {count: count.view, overflow: output('unmatched-overflow').view}
+  };
+  const producer = new GPUSpatialPredicateJoin({
+    left: {kind: 'points', positions: input('left', Float32Array.of(0, 0, 2, 0))},
+    right: {kind: 'points', positions: input('right', Float32Array.of(0, 0))},
+    predicate: 'intersects',
+    engine: 'fast',
+    how: 'anti',
+    candidateCapacity: 2,
+    output: {unmatched, status: {candidateOverflow: candidate.view}}
+  });
+  unmatched.ids = candidate.view;
+  graph.add(producer);
+  const compiled = graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    expect(await readUint32(count.buffer, 1)).toEqual([1]);
+    expect(await readUint32(ids.buffer, 1)).toEqual([1]);
+    expect(await readUint32(candidate.buffer, 1)).toEqual([0]);
+  } finally {
+    compiled.destroy();
+    for (const buffer of buffers) buffer.destroy();
+  }
+});
 
 type RunOptions = {
   predicate: GPUSpatialPredicate;
@@ -119,8 +180,8 @@ async function runJoin(
     buffers.push(buffer);
     return {buffer, view: importGraphBuffer(graph, name, buffer, 'uint32', length)};
   };
-  const leftIds = output('left-ids', capacity);
-  const rightIds = output('right-ids', capacity);
+  const leftRows = output('left-ids', capacity);
+  const rightRows = output('right-ids', capacity);
   const count = output('count', 1);
   const overflow = output('overflow', 1);
   const relate = output('relate', capacity);
@@ -151,8 +212,8 @@ async function runJoin(
         pairs: isAnti
           ? undefined
           : {
-              leftIds: leftIds.view,
-              rightIds: rightIds.view,
+              leftRows: leftRows.view,
+              rightRows: rightRows.view,
               status: {count: count.view, overflow: overflow.view}
             },
         relate: options.relate ? relate.view : undefined,
@@ -170,8 +231,8 @@ async function runJoin(
   submitGraph(device, compiled, undefined);
   const [countValue] = await readUint32(count.buffer, 1);
   const [unmatchedValue] = await readUint32(unmatchedCount.buffer, 1);
-  const lefted = await readUint32(leftIds.buffer, capacity);
-  const righted = await readUint32(rightIds.buffer, capacity);
+  const lefted = await readUint32(leftRows.buffer, capacity);
+  const righted = await readUint32(rightRows.buffer, capacity);
   const matrices = await readUint32(relate.buffer, capacity);
   const result: RunResult = {
     pairs: lefted.slice(0, countValue).map((row, slot) => [row, righted[slot]]),
@@ -415,7 +476,9 @@ it('GPUSpatialPredicateJoin rejects invalid relate configurations', async () => 
   const ids = importGraphBuffer(graph, 'ids', createOutputBuffer(device, 1), 'uint32', 1);
   const scalar = importGraphBuffer(graph, 'scalar', createOutputBuffer(device, 1), 'uint32', 1);
   const base = {left: geometry, right: geometry, candidateCapacity: 1};
-  const output = {pairs: {leftIds: ids, rightIds: ids, status: {count: scalar, overflow: scalar}}};
+  const output = {
+    pairs: {leftRows: ids, rightRows: ids, status: {count: scalar, overflow: scalar}}
+  };
   expect(
     () => new GPUSpatialPredicateJoin({...base, predicate: 'relate', output} as never)
   ).toThrow(/pattern/);
@@ -459,8 +522,8 @@ it('GPUSpatialPredicateJoin reuses a prepared right-hand side until invalidated'
     buffers.push(buffer);
     return {buffer, view: importGraphBuffer(graph, name, buffer, 'uint32', length)};
   };
-  const leftIds = output('l', 8);
-  const rightIds = output('r', 8);
+  const leftRows = output('l', 8);
+  const rightRows = output('r', 8);
   const count = output('c', 1);
   const overflow = output('o', 1);
   const prepared = new GPUSpatialJoinPrepared({geometry: right});
@@ -474,8 +537,8 @@ it('GPUSpatialPredicateJoin reuses a prepared right-hand side until invalidated'
       candidateCapacity: 8,
       output: {
         pairs: {
-          leftIds: leftIds.view,
-          rightIds: rightIds.view,
+          leftRows: leftRows.view,
+          rightRows: rightRows.view,
           status: {
             count: count.view,
             overflow: overflow.view
@@ -487,8 +550,8 @@ it('GPUSpatialPredicateJoin reuses a prepared right-hand side until invalidated'
   const compiled = graph.compile();
   const readPairs = async () => {
     const [matched] = await readUint32(count.buffer, 1);
-    const lefted = await readUint32(leftIds.buffer, matched);
-    const righted = await readUint32(rightIds.buffer, matched);
+    const lefted = await readUint32(leftRows.buffer, matched);
+    const righted = await readUint32(rightRows.buffer, matched);
     return lefted.map((row, slot) => [row, righted[slot]]);
   };
   submitGraph(device, compiled, undefined);
@@ -580,8 +643,8 @@ it('GPUSpatialJoinCandidates reads a per-frame distance and emits sorted candida
       buffers.push(buffer);
       return {buffer, view: importGraphBuffer(graph, name, buffer, 'uint32', length)};
     };
-    const leftIds = output('l', capacity);
-    const rightIds = output('r', capacity);
+    const leftRows = output('l', capacity);
+    const rightRows = output('r', capacity);
     const count = output('c', 1);
     const overflow = output('o', 1);
     const total = output('t', 1);
@@ -601,8 +664,8 @@ it('GPUSpatialJoinCandidates reads a per-frame distance and emits sorted candida
         prepared,
         distance: distance.importToGraph(graph),
         output: {
-          leftIds: leftIds.view,
-          rightIds: rightIds.view,
+          leftRows: leftRows.view,
+          rightRows: rightRows.view,
           status: {
             count: count.view,
             overflow: overflow.view,
@@ -617,8 +680,8 @@ it('GPUSpatialJoinCandidates reads a per-frame distance and emits sorted candida
       submitGraph(device, compiled, undefined);
       const expected = getExpected(value);
       const [matched] = await readUint32(count.buffer, 1);
-      const lefted = await readUint32(leftIds.buffer, matched);
-      const righted = await readUint32(rightIds.buffer, matched);
+      const lefted = await readUint32(leftRows.buffer, matched);
+      const righted = await readUint32(rightRows.buffer, matched);
       expect(
         lefted.map((row, slot) => [row, righted[slot]]),
         `prepared ${usePrepared}, distance ${value}`
@@ -866,8 +929,8 @@ async function runPerFrame(
     buffers.push(buffer);
     return {buffer, view: importGraphBuffer(graph, name, buffer, 'uint32', length)};
   };
-  const leftIds = output('left-ids', capacity);
-  const rightIds = output('right-ids', capacity);
+  const leftRows = output('left-ids', capacity);
+  const rightRows = output('right-ids', capacity);
   const count = output('count', 1);
   const overflow = output('overflow', 1);
   const relate = output('relate', capacity);
@@ -883,8 +946,8 @@ async function runPerFrame(
       candidateCapacity: capacity,
       output: {
         pairs: {
-          leftIds: leftIds.view,
-          rightIds: rightIds.view,
+          leftRows: leftRows.view,
+          rightRows: rightRows.view,
           status: {
             count: count.view,
             overflow: overflow.view
@@ -906,8 +969,8 @@ async function runPerFrame(
     submitGraph(device, compiled, undefined);
     const [countValue] = await readUint32(count.buffer, 1);
     expect((await readUint32(overflow.buffer, 1))[0]).toBe(0);
-    const lefted = await readUint32(leftIds.buffer, capacity);
-    const righted = await readUint32(rightIds.buffer, capacity);
+    const lefted = await readUint32(leftRows.buffer, capacity);
+    const righted = await readUint32(rightRows.buffer, capacity);
     const matrices = await readUint32(relate.buffer, capacity);
     results.push({
       pairs: lefted.slice(0, countValue).map((row, slot) => [row, righted[slot]]),

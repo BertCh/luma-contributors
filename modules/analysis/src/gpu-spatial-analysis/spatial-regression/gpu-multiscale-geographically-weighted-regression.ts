@@ -36,6 +36,7 @@ import {
   createLocalRegressionGrid,
   getRegressionBindings,
   getRegressionWGSL,
+  GPU_LOCAL_REGRESSION_MAXIMUM_ROW_COUNT,
   validateRegressionInputs,
   type LocalRegressionInputs
 } from './gpu-generalized-geographically-weighted-regression';
@@ -58,6 +59,38 @@ const MGWR_FIXED_COMMAND_NODE_ALLOWANCE = 256;
 const CONVERGENCE_WORKGROUP_SIZE = 256;
 const CONVERGENCE_MAXIMUM_GROUP_COUNT = 256;
 const CONVERGENCE_ELEMENTS_PER_GROUP = 1024;
+
+/** MGWR row codes: global backfit outcome on included rows; excluded rows always have code 1. */
+export const GPU_MULTISCALE_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS = {
+  /** Entire coupled backfit reached contribution tolerance. */
+  CONVERGED: 0,
+  /** Masked row or non-finite input. */
+  EXCLUDED: 1,
+  /** Singular/insufficient component neighborhood or no usable bandwidth candidate. */
+  SINGULAR: 2,
+  /** Sweep budget exhausted; coefficients and fitted values retain the finite last iterate. */
+  ITERATION_LIMIT: 3,
+  /** Invalid tolerance, non-finite contribution/prediction, or float32 coefficient/output overflow. */
+  NUMERICAL_FAILURE: 4
+} as const;
+
+/** Decode an MGWR row code; it reports coupled backfit convergence, not bandwidth-search convergence. */
+export function decodeGPUMultiscaleGeographicallyWeightedRegressionStatus(code: number) {
+  switch (code) {
+    case GPU_MULTISCALE_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.CONVERGED:
+      return 'converged';
+    case GPU_MULTISCALE_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.EXCLUDED:
+      return 'excluded';
+    case GPU_MULTISCALE_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.SINGULAR:
+      return 'singular';
+    case GPU_MULTISCALE_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.ITERATION_LIMIT:
+      return 'iteration-limit';
+    case GPU_MULTISCALE_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.NUMERICAL_FAILURE:
+      return 'numerical-failure';
+    default:
+      return 'unknown';
+  }
+}
 
 export type GPUMultiscaleGeographicallyWeightedRegressionProps = Omit<
   LocalRegressionInputs,
@@ -99,15 +132,17 @@ export type GPUMultiscaleGeographicallyWeightedRegressionProps = Omit<
     };
   };
   output: {
-    /** Local coefficients, intercept first. NaN unless the entire backfit converged. */
+    /** Local coefficients, intercept first. Finite last iterate on convergence or iteration limit; NaN on failure/exclusion. */
     coefficients: GraphDataView<'float32'>;
     fitted: GraphDataView<'float32'>;
-    /** Per row GPU_ITERATIVE_REGRESSION_STATUS. Global backfit failure propagates to every included row. */
+    /** Per row GPU_MULTISCALE_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS. Global backfit outcome propagates to every included row. */
     status: {
       /** One status code per observation. */
       codes: GraphDataView<'uint32'>;
       /** One scalar: number of completed backfit sweeps. */
       iterationCount: GraphDataView<'uint32'>;
+      /** One flag per design column, intercept first. One if any golden-section search exhausted its budget this run; independent of backfit convergence. Reset on every submission. */
+      componentSearchIterationLimitReached?: GraphDataView<'uint32'>;
     };
     selectedBandwidths?: GraphDataView<'float32'>;
     /** Conditional on all other fitted component surfaces and selected bandwidths; not full MGWR covariance. */
@@ -127,7 +162,9 @@ export type GPUMultiscaleGeographicallyWeightedRegressionProps = Omit<
  * inference uses trace(S) = sum_j trace(R_j), with R_j the coupled component response operators
  * (Li and Fotheringham 2020), not the sum of independent scalar smoother traces.
  * No valid candidate invalidates the fit. Stop when the largest relative change in any fitted
- * variable contribution is at most tolerance. Fixed graph depth bounds work and propagates singular
+ * variable contribution is at most tolerance. The sweep budget defaults to 32; finite unfinished
+ * fits publish their last coefficients and fitted values with code 3, while inference requires
+ * convergence. Fixed graph depth bounds work and propagates singular
  * univariate fits/non-convergence. Conditional coefficient standard errors, when requested, use the
  * caller-supplied noise variance and the univariate linear-smoother weights, holding all other
  * surfaces and selected bandwidths fixed. They do not include backfit or bandwidth-selection
@@ -161,16 +198,20 @@ export class GPUMultiscaleGeographicallyWeightedRegression implements GPUCommand
       this.spatialContext.metric === 'great-circle'
         ? getGPUSphereRadius(this.spatialContext)
         : null;
+    const supportsIndexedTraversal =
+      this.sphereRadius === null &&
+      (props.kernel === 'bisquare' || props.gaussianCutoff !== undefined);
     const indexGridSize =
-      props.indexGridSize === false
+      props.indexGridSize === false || !supportsIndexedTraversal
         ? undefined
-        : (props.indexGridSize ??
-          (this.sphereRadius === null &&
-          (props.kernel === 'bisquare' || props.gaussianCutoff !== undefined)
-            ? getDefaultGWRGridSize(props.response.length)
-            : undefined));
+        : (props.indexGridSize ?? getDefaultGWRGridSize(props.response.length));
     this.props = {...props, indexGridSize};
-    validateRegressionInputs(this.id, {...props, indexGridSize}, this.sphereRadius !== null);
+    validateRegressionInputs(
+      this.id,
+      {...props, indexGridSize: props.indexGridSize || indexGridSize},
+      this.sphereRadius !== null,
+      indexGridSize ? undefined : GPU_LOCAL_REGRESSION_MAXIMUM_ROW_COUNT
+    );
     validateMultiscaleBandwidthSelection(
       this.id,
       props.bandwidthSelection,
@@ -225,7 +266,7 @@ export class GPUMultiscaleGeographicallyWeightedRegression implements GPUCommand
       const length =
         name === 'iterations'
           ? 1
-          : name === 'selectedBandwidths'
+          : name === 'selectedBandwidths' || name === 'componentSearchIterationLimitReached'
             ? props.predictorCount + 1
             : props.response.length *
               (['coefficients', 'conditionalStandardErrors'].includes(name)
@@ -316,6 +357,7 @@ export class GPUMultiscaleGeographicallyWeightedRegression implements GPUCommand
       'coefficient surfaces': rowCount * columnCount,
       'working parameters': columnCount + 1,
       'iteration state': 2,
+      'component search flags': columnCount,
       'convergence partials':
         3 *
         Math.min(
@@ -362,6 +404,9 @@ export class GPUMultiscaleGeographicallyWeightedRegression implements GPUCommand
     const second = createTransientView(graph, `${id}-second`, 'float32', rows * columns);
     const previous = createTransientView(graph, `${id}-previous`, 'float32', rows * columns);
     const state = createTransientView(graph, `${id}-state`, 'uint32', 2);
+    const componentSearchIterationLimitReached =
+      props.output.status.componentSearchIterationLimitReached ??
+      createTransientView(graph, `${id}-component-search-limit`, 'uint32', columns);
     const workingParameters = createTransientView(
       graph,
       `${id}-working-parameters`,
@@ -455,11 +500,18 @@ fn isActive(row: u32) -> bool { return isFiniteBits(pairs[pairsOffset + 2u * row
         bindings: [
           {name: 'coefficients', view: first, type: 'f32', access: 'read_write'},
           {name: 'state', view: state, type: 'u32', access: 'read_write'},
+          {
+            name: 'componentSearchIterationLimitReached',
+            view: componentSearchIterationLimitReached,
+            type: 'u32',
+            access: 'read_write'
+          },
           ...(globalFit
             ? [{name: 'globalFit', view: globalFit, type: 'f32' as const, access: 'read' as const}]
             : [])
         ],
         body: `coefficients[coefficientsOffset + index] = ${globalFit ? `globalFit[globalFitOffset + index % ${columns}u]` : '0.0'};
+if (index < ${columns}u) { componentSearchIterationLimitReached[componentSearchIterationLimitReachedOffset + index] = 0u; }
 if (index == 0u) { state[stateOffset] = 3u; state[stateOffset + 1u] = 0u; }`
       })
     );
@@ -537,6 +589,7 @@ pairs[pairsOffset + 2u * index + 1u] = predictor(index, ${column}u);`
               selection: props.bandwidthSelection,
               parameters: workingParameters,
               state,
+              componentSearchIterationLimitReached,
               workspace: selectionWorkspace
             })
           );
@@ -635,7 +688,20 @@ for (var element = index; element < elementCount; element += INVOCATION_COUNT) {
   if (column == 0u) { localCount++; }
   let coefficient = source[sourceOffset + element];
   // Key bit 0 distinguishes a non-finite contribution (state 4) from a coefficient (state 2).
-  if (!isFiniteBits(coefficient)) { localKey = element * 2u; break; }
+  if (!isFiniteBits(coefficient)) {
+    let isInfinity = (bitcast<u32>(coefficient) & 0x7fffffffu) == 0x7f800000u;
+    localKey = element * 2u + select(0u, 1u, isInfinity); break;
+  }
+  if (column == 0u) {
+    var prediction = 0.0;
+    var predictionInputsFinite = true;
+    for (var predictionColumn = 0u; predictionColumn < ${columns}u; predictionColumn++) {
+      let predictionCoefficient = source[sourceOffset + row * ${columns}u + predictionColumn];
+      predictionInputsFinite = predictionInputsFinite && isFiniteBits(predictionCoefficient);
+      prediction += predictor(row, predictionColumn) * predictionCoefficient;
+    }
+    if (predictionInputsFinite && !isFiniteBits(prediction)) { localKey = element * 2u + 1u; break; }
+  }
   let contribution = predictor(row, column) * coefficient;
   let previousContribution = predictor(row, column) * previous[previousOffset + element];
   if (!isFiniteBits(contribution) || !isFiniteBits(previousContribution)) { localKey = element * 2u + 1u; break; }
@@ -662,6 +728,7 @@ if (localInvocationIndex == 0u) {
           id: `${id}-convergence-decide-${iteration}`,
           operation: 'GPUMultiscaleGeographicallyWeightedRegression',
           variant: 'convergence-decide',
+          // contract-allow: single-invocation -- <=256 convergence workgroup partials, capped by CONVERGENCE_MAXIMUM_GROUP_COUNT.
           invocationCount: 1,
           bindings: [
             {name: 'parameters', view: workingParameters, type: 'f32', access: 'read'},
@@ -729,7 +796,7 @@ if (count == 0u) { state[stateOffset] = 1u; } else if (maximumChange <= toleranc
         declarations: GET_NAN_WGSL,
         body: `let code = rowStatus[rowStatusOffset + index]; var prediction = 0.0;
 for (var column = 0u; column < ${columns}u; column++) {
-  let coefficient = select(getNaN(), source[sourceOffset + index * ${columns}u + column], code == 0u);
+  let coefficient = select(getNaN(), source[sourceOffset + index * ${columns}u + column], code == 0u || code == 3u);
   coefficients[coefficientsOffset + index * ${columns}u + column] = coefficient;
   var value = 1.0; if (column > 0u) { value = predictors[predictorsOffset + index * ${props.predictorCount}u + column - 1u]; }
   prediction += value * coefficient;
@@ -846,5 +913,10 @@ standardErrors[standardErrorsOffset + index] = standardError;`
 
 function getOutputColumns(output: GPUMultiscaleGeographicallyWeightedRegressionProps['output']) {
   const {status, ...columns} = output;
-  return {...columns, status: status.codes, iterations: status.iterationCount};
+  return {
+    ...columns,
+    status: status.codes,
+    iterations: status.iterationCount,
+    componentSearchIterationLimitReached: status.componentSearchIterationLimitReached
+  };
 }

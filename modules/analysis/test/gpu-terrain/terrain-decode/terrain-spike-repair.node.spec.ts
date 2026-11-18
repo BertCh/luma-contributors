@@ -132,7 +132,9 @@ it('GPUTerrainSpikeRepair validates its properties', () => {
       },
       {values: shared}
     )
-  ).toThrow(/share buffers/);
+  ).toThrow(
+    /^terrain-spike-repair output\[0\] chunk 0 logical byte ranges must not overlap \(writable storage\)$/
+  );
   const otherGraph = new GPUCommandGraph(device);
   expect(() =>
     new GPUTerrainSpikeRepair({

@@ -30,6 +30,54 @@ import {
   type TrajectoryTracks
 } from './trajectory-metrics-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {RecipeTestFixture} from '../recipes/recipe-harness';
+
+it('spatial-4:F1 candidate publication preserves trajectory offsets across two submissions', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new RecipeTestFixture(device, 'metrics-candidate');
+  const offsets = fixture.output('track-offsets', 'uint32', 2);
+  offsets.buffer.write(new Uint32Array([0, 3]));
+  const lengths = fixture.output('lengths', 'float32', 1),
+    ids = fixture.output('stop-ids', 'uint32', 3),
+    count = fixture.output('stop-count', 'uint32', 1),
+    overflow = fixture.output('overflow', 'uint32', 1),
+    candidate = fixture.output('candidate', 'uint32', 1);
+  fixture.graph.add(
+    new GPUTrajectoryMetrics({
+      positions: fixture.input('positions', new Float32Array([0, 0, 1, 0, 2, 0]), 'float32x2', 3),
+      timestamps: fixture.input('times', new Float32Array([0, 1, 2]), 'float32', 3),
+      trackOffsets: offsets.view,
+      parameters: fixture.input(
+        'parameters',
+        getGPUTrajectoryMetricsParameterValues({stopSpeedThreshold: 2, stopMinimumDuration: 1}),
+        'float32',
+        4
+      ),
+      output: {
+        trackLengths: lengths.view,
+        stops: {
+          ids: ids.view,
+          status: {count: count.view, overflow: overflow.view, candidateOverflow: candidate.view}
+        }
+      }
+    })
+  );
+  const compiled = fixture.graph.compile();
+  try {
+    for (let frame = 0; frame < 2; frame++) {
+      candidate.buffer.write(new Uint32Array([37]));
+      submitGraph(device, compiled, undefined);
+      expect(await fixture.readUint32(offsets, 2)).toEqual([0, 3]);
+      expect(await fixture.readFloat32(lengths, 1)).toEqual([2]);
+      expect(await fixture.readUint32(count, 1)).toEqual([1]);
+      expect(await fixture.readUint32(candidate, 1)).toEqual([0]);
+    }
+  } finally {
+    compiled.destroy();
+    fixture.destroy();
+  }
+});
 
 const SENTINEL = 0xffffffff;
 const GARBAGE = 0x7f7f7f7f;

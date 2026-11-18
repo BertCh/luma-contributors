@@ -84,7 +84,7 @@ ${getFixedPointAtomicAddWGSL('words')}`,
   const nodes = build(10_000, 64);
   const sources = getParsedKernelSources(nodes);
   expect([...sources.keys()]).toEqual(['scale-clear', 'scale-0', 'clear', 'accumulate', 'decode']);
-  for (const [id, source] of sources) {
+  for (const {id, source} of sources.configurations) {
     expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(4);
   }
   // Rule 12: sizes and headroom are overrides; a different size changes no module text.

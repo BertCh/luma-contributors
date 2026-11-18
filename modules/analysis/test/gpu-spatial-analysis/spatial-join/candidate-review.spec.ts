@@ -246,8 +246,8 @@ it('predicate pages above 256 slots publish CSR, distances and matrices through 
       rings: {values: new Uint32Array([0, 4, 8]), format: 'uint32'}
     },
     outputs: {
-      leftIds: {format: 'uint32', length: pairCapacity},
-      rightIds: {format: 'uint32', length: pairCapacity},
+      leftRows: {format: 'uint32', length: pairCapacity},
+      rightRows: {format: 'uint32', length: pairCapacity},
       offsets: {format: 'uint32', length: leftCount + 1},
       neighbors: {format: 'uint32', length: pairCapacity},
       weights: {format: 'float32', length: pairCapacity},
@@ -275,8 +275,8 @@ it('predicate pages above 256 slots publish CSR, distances and matrices through 
         candidateTileCapacity: 257,
         output: {
           pairs: {
-            leftIds: words('leftIds'),
-            rightIds: words('rightIds'),
+            leftRows: words('leftRows'),
+            rightRows: words('rightRows'),
             status: {
               count: words('count'),
               requiredCount: words('required'),
@@ -309,10 +309,10 @@ it('predicate pages above 256 slots publish CSR, distances and matrices through 
         )
       );
       if (populated) {
-        expect(result['leftIds']).toEqual(
+        expect(result['leftRows']).toEqual(
           Array.from({length: pairCapacity}, (_, slot) => Math.floor(slot / 2))
         );
-        expect(result['rightIds']).toEqual(
+        expect(result['rightRows']).toEqual(
           Array.from({length: pairCapacity}, (_, slot) => slot % 2)
         );
         expect(result['neighbors']).toEqual(

@@ -48,6 +48,57 @@ it('matches closed-form one-hop affine durations and hand-selected nearest ranks
   expect(Array.from(result.status)).toEqual([1, 1, 1, 1, 1, 1]);
 });
 
+it('distinguishes percentiles below, at and above the median without an epsilon', () => {
+  const result = computeNetworkTravelTimePercentilesOnCPU({
+    ...INPUT,
+    stateVertices: Uint32Array.of(0, 1),
+    transitions: Uint32Array.of(0, 1),
+    // Departures 0 and 1 have travel times 5 and 90.
+    costs: Float32Array.of(5, 85),
+    window: Float32Array.of(0, 1),
+    departureCount: 2,
+    percentiles: [49.99999999, 50, 50.00000001, 100]
+  });
+  expect(Array.from(result.travelTimes.subarray(4, 8))).toEqual([5, 5, 90, 90]);
+  expect(Array.from(result.status)).toEqual([1, 1, 1, 1]);
+});
+
+it('keeps integer percentage boundaries exact despite quotient rounding', () => {
+  const result = computeNetworkTravelTimePercentilesOnCPU({
+    ...INPUT,
+    stateVertices: Uint32Array.of(0, 1),
+    transitions: Uint32Array.of(0, 1),
+    costs: Float32Array.of(1, 1),
+    window: Float32Array.of(0, 1),
+    departureCount: 25,
+    // Sorted durations are 1..25; the adjacent binary64 value above 56% must select 15.
+    percentiles: [28, 56 - 2 ** -47, 56, 56 + 2 ** -47, 100]
+  });
+  expect(Array.from(result.travelTimes.subarray(5, 10))).toEqual([7, 14, 14, 15, 25]);
+});
+
+it.each([
+  {departureCount: 3, percentiles: [100 / 3], expected: [2]},
+  {
+    departureCount: 2,
+    percentiles: [Number.MIN_VALUE, 50 - 2 ** -47, 50, 50 + 2 ** -47, 100],
+    expected: [1, 1, 1, 2, 2]
+  }
+])('uses the exact supplied binary64 percentile for $departureCount departures', fixture => {
+  const result = computeNetworkTravelTimePercentilesOnCPU({
+    ...INPUT,
+    ...fixture,
+    stateVertices: Uint32Array.of(0, 1),
+    transitions: Uint32Array.of(0, 1),
+    costs: Float32Array.of(1, 1),
+    window: Float32Array.of(0, 1)
+  });
+  const columnCount = fixture.percentiles.length;
+  expect(Array.from(result.travelTimes.subarray(columnCount, 2 * columnCount))).toEqual(
+    fixture.expected
+  );
+});
+
 it('sorts waiting travel times, counts invalid runs and keeps subtraction in float64', () => {
   const piecewise = computeNetworkTravelTimePercentilesOnCPU({
     ...INPUT,

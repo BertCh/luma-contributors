@@ -15,11 +15,11 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {GPURasterBufferToTexture} from '@luma.gl/graph/gpu-raster';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import type {GPUNetworkAdjacency} from '../../analysis-core/network-topology';
+import type {GPUNetworkAdjacency} from '../../analysis-core/contracts/network-topology';
 import {
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology
-} from '../../analysis-core/network-topology';
+} from '../../analysis-core/contracts/network-topology';
 import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {

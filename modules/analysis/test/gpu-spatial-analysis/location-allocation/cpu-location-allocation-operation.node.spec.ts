@@ -29,6 +29,104 @@ const OUTPUT = {
 };
 const COSTS = Float32Array.of(5, 0, 100, 5, 1, 100, 5, 100, 0, 5, 100, 1);
 const WEIGHTS = Float32Array.of(1, 2, 3, 4);
+
+for (const scale of [1, 1e30])
+  it(`binds an explicit one-swap budget at scale ${scale}`, () => {
+    const result = computeLocationAllocationOnCPU(
+      {costs: Float32Array.from([1, 7, 2, 0, 2, 1, 4, 8, 9, 5, 1, 0], value => value * scale)},
+      {
+        operation: 'p-median',
+        demandCount: 3,
+        facilityCount: 4,
+        maximumFacilityCount: 2,
+        maximumSwapIterations: 1
+      }
+    );
+    expect(Array.from(result.selectedFacilities)).toEqual([1, 0, 0, 1]);
+    expect(Array.from(result.status.slice(4))).toEqual([1, 0, 1]);
+  });
+
+for (const sparse of [false, true]) {
+  it(`scores and swaps finite costs above the old cutoff, sparse ${sparse}`, () => {
+    const costs = Float32Array.from(
+      [5, 0, 100, 5, 1, 100, 5, 100, 0, 5, 100, 1],
+      cost => cost * 1e30
+    );
+    const result = computeLocationAllocationOnCPU(
+      sparse
+        ? {
+            sparseCosts: {
+              offsets: Uint32Array.of(0, 3, 6, 9, 12),
+              facilities: Uint32Array.of(0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2),
+              costs
+            }
+          }
+        : {costs},
+      {
+        operation: 'p-median',
+        facilityCount: 3,
+        demandCount: 4,
+        maximumFacilityCount: 2,
+        maximumSwapIterations: 10
+      }
+    );
+    expect(Array.from(result.selectedFacilities)).toEqual([0, 1, 1]);
+    expect(Array.from(result.assignments)).toEqual([1, 1, 2, 2]);
+    expect(result.objective[0]).toBe(Math.fround(2 * Math.fround(1e30)));
+    expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.swapIterationCount]).toBe(1);
+  });
+
+  it(`keeps every finite float32 cost reachable, sparse ${sparse}`, () => {
+    const sentinel = Float32Array.of(1e30);
+    const bits = new Uint32Array(sentinel.buffer)[0];
+    const costs = new Float32Array(Uint32Array.of(bits - 1, bits, bits + 1, 0x7f800000).buffer);
+    const result = computeLocationAllocationOnCPU(
+      sparse
+        ? {
+            sparseCosts: {
+              offsets: Uint32Array.of(0, 1, 2, 3, 4),
+              facilities: new Uint32Array(4),
+              costs
+            }
+          }
+        : {costs},
+      {
+        operation: 'p-median',
+        facilityCount: 1,
+        demandCount: 4,
+        maximumFacilityCount: 1,
+        maximumSwapIterations: 0
+      }
+    );
+    expect(Array.from(result.assignments)).toEqual([0, 0, 0, 0xffffffff]);
+    expect(Array.from(result.assignedCosts)).toEqual(Array.from(costs));
+    expect(result.objective[0]).toBe(Math.fround(costs[0] + costs[1] + costs[2]));
+    expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.uncoveredDemandCount]).toBe(1);
+  });
+
+  for (const threshold of [Math.fround(1e30), Infinity])
+    it(`covers reachable rows at threshold ${threshold}, sparse ${sparse}`, () => {
+      const costs = Float32Array.of(1, Infinity);
+      const result = computeLocationAllocationOnCPU(
+        {
+          ...(sparse
+            ? {
+                sparseCosts: {
+                  offsets: Uint32Array.of(0, 1, 2),
+                  facilities: new Uint32Array(2),
+                  costs
+                }
+              }
+            : {costs}),
+          coverageDistance: Float32Array.of(threshold)
+        },
+        {operation: 'set-covering', facilityCount: 1, demandCount: 2, maximumFacilityCount: 1}
+      );
+      expect(Array.from(result.selectedFacilities)).toEqual([1]);
+      expect(Array.from(result.assignments)).toEqual([0, 0xffffffff]);
+      expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.uncoveredDemandCount]).toBe(1);
+    });
+}
 const COVERAGE_COSTS = Float32Array.of(
   0,
   0,
@@ -72,7 +170,7 @@ it('weighted p-median closes a greedy gap and equals exhaustive enumeration of a
   );
   const result = computeLocationAllocationOnCPU(
     {costs: COSTS, demandWeights: WEIGHTS},
-    {...options, maximumSwapIterations: 1}
+    {...options, maximumSwapIterations: 2}
   );
   expect(greedy.objective[0]).toBe(19);
   expect(result.objective[0]).toBe(optimum);

@@ -8,7 +8,7 @@ import {
   WGSL_RESERVED_WORDS,
   stripWGSLComments
 } from '../analysis-core/kernel-audit/kernel-audit-wgsl';
-import {GPUDatumGridTransform} from '../../src/geospatial-analysis/gpu-datum-grid-transform';
+import {GPUDatumGridTransform} from '../../src/geospatial-analysis/datum-grid-transform/index';
 import {
   createNullWebGPUDevice,
   createVectorView,

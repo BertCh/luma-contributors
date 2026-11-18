@@ -374,6 +374,7 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
       {
         count: output.stops?.status.count,
         overflow: output.stops?.status.overflow,
+        candidateOverflow: output.stops?.status.candidateOverflow,
         requiredCount: output.stops?.status.requiredCount,
         drawInstanceCount: output.stops?.drawInstanceCount
       }
@@ -399,6 +400,7 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
         stops?.ids,
         stops?.status.count,
         stops?.status.overflow,
+        stops?.status.candidateOverflow,
         stops?.status.requiredCount,
         stops?.drawInstanceCount,
         stops?.startRows,
@@ -438,6 +440,7 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
       stops?.ids,
       stops?.status.count,
       stops?.status.overflow,
+      stops?.status.candidateOverflow,
       stops?.status.requiredCount,
       stops?.drawInstanceCount,
       stops?.startRows,

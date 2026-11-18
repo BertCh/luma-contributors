@@ -64,7 +64,7 @@ export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_STATUS_OK = 0;
 export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_STATUS_SINGULAR = 1;
 /** `status` value: too few analyzed rows, `n <= predictorCount + 2` (also a failed OLS fit). */
 export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_STATUS_TOO_FEW_ROWS = 2;
-/** `status` value: degenerate weights (`S0 <= 0` or `T <= 0`, for example no neighbors at all). */
+/** `status` value: incomplete weights (overflow or candidateOverflow), or degenerate weights (`S0 <= 0` or `T <= 0`). Tests are suppressed. */
 export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_STATUS_DEGENERATE_WEIGHTS = 3;
 /**
  * `status` value: non-finite moments, or fitted-row residuals that are exactly zero (a perfect

@@ -27,6 +27,11 @@ import {
 } from '../segment-intersection/index';
 import {SEGMENT_PREDICATES_WGSL} from '../segment-intersection/segment-intersection-wgsl';
 import type {GPUSpatialJoinGeometry} from '../spatial-join/index';
+import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
+
+/** Geometry predicates currently support single point/line features and polygon hierarchies. */
+export type GPUGeometryPredicatesGeometry = GPUSpatialJoinGeometry &
+  ({kind: 'polygons'} | {featureOffsets?: never});
 import {
   getPredicateFeatureCount,
   getPredicateGeometryBindings,
@@ -143,11 +148,12 @@ export type GPUGeometryPredicatesProps = {
    */
   otherSpatialContext?: GPUSpatialContext;
   /**
-   * Point, linestring or polygon/multipolygon features in the GeoArrow layout of
+   * Single point, single linestring or polygon/multipolygon features in the GeoArrow layout of
    * `GPUSpatialPredicateJoin`. Each output column has one `uint32` row per feature, holding `0` or
-   * `1` for the boolean columns.
+   * `1` for the boolean columns. Point/line featureOffsets (multipart grouping) are unsupported
+   * on both geometry and other and are refused at construction.
    */
-  geometry: GPUSpatialJoinGeometry;
+  geometry: GPUGeometryPredicatesGeometry;
   /**
    * Capacity of the internal list of same-feature segment intersections. With `isSimple` or
    * `isRing`, `geometry.positions` has at most
@@ -160,7 +166,7 @@ export type GPUGeometryPredicatesProps = {
    * Second geometry for element-wise comparison: feature `i` of `geometry` against feature `i` of
    * `other`. Must have the same kind and feature count. Used by `output.equalsExact` and `output.equalsIdentical`.
    */
-  other?: GPUSpatialJoinGeometry;
+  other?: GPUGeometryPredicatesGeometry;
   /**
    * Per-frame packed float32 view of at least {@link GPU_GEOMETRY_PREDICATES_PARAMETER_LENGTH}
    * elements written with `getGPUGeometryPredicatesParameterValues`. Required with `output.equalsExact`.
@@ -213,6 +219,11 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
       props.otherSpatialContext,
       this.spatialContext
     );
+    props = {
+      ...props,
+      geometry: snapshotSinglePartGeometryPort(this.id, 'geometry', props.geometry),
+      other: props.other && snapshotSinglePartGeometryPort(this.id, 'other', props.other)
+    };
     this.props = props;
     const {id} = this;
     const {geometry} = props;
@@ -535,8 +546,8 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
         leafCapacity: props.leafCapacity,
         output: {
           pairs: {
-            leftIds: pairLeft,
-            rightIds: pairRight,
+            leftRows: pairLeft,
+            rightRows: pairRight,
             status: {
               count: pairCount,
               overflow: props.output.status?.overflow as GraphDataView<'uint32'>,

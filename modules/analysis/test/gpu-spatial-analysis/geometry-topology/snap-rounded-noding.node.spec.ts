@@ -153,13 +153,13 @@ describe('GPUSnapRoundedNoding structure', () => {
       const {nodes} = build({sourceIds});
       const sources = getParsedKernelSources(nodes);
       expect(sources.size).toBeGreaterThan(20);
-      for (const [id, source] of sources) {
+      for (const {id, source: source, constants} of sources.configurations) {
         expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
         expect(getUndeclaredCalls(source), id).toEqual([]);
-        expect(getPrivateMemoryBytes(source), id).toBeLessThanOrEqual(
+        expect(getPrivateMemoryBytes(source, constants), id).toBeLessThanOrEqual(
           CORE_PRIVATE_MEMORY_LIMIT_BYTES
         );
-        expect(getWorkgroupMemoryBytes(source), id).toBeLessThanOrEqual(
+        expect(getWorkgroupMemoryBytes(source, constants), id).toBeLessThanOrEqual(
           CORE_WORKGROUP_STORAGE_LIMIT_BYTES
         );
       }

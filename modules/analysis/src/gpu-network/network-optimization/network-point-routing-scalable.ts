@@ -77,6 +77,12 @@ const TURN_COUNT: u32 = ${turnCount}u;
 const NONE: u32 = 0xffffffffu;
 const INFINITY_BITS: u32 = 0x7f800000u;
 ${IS_FINITE_VALUE_WGSL}`;
+  const penaltyBindings = props.turnPenalties
+    ? [read('turnPenalties', props.turnPenalties, 'f32')]
+    : [];
+  const penaltyExpression = props.turnPenalties
+    ? 'turnPenalties[turnPenaltiesOffset + index]'
+    : '0.0';
   const kernel = (
     suffix: string,
     invocationCount: number,
@@ -116,17 +122,16 @@ if (index == 0u) {
       [
         read('turns', props.turns),
         read('costs', props.costs, 'f32'),
+        ...penaltyBindings,
         write('counts', counts, 'atomic<u32>'),
         write('invalidNetwork', invalidNetwork, 'atomic<u32>')
       ],
-      `if (index < EDGE_COUNT) {
-  let cost = costs[costsOffset + index];
-  if (!isFiniteValue(cost) || cost < 0.0) { atomicStore(&invalidNetwork[invalidNetworkOffset], 1u); }
-}
-if (index < TURN_COUNT) {
+      `if (index < TURN_COUNT) {
+  let penalty = ${penaltyExpression};
+  if (!isFiniteValue(penalty) || penalty < 0.0) { atomicStore(&invalidNetwork[invalidNetworkOffset], 1u); }
   let incoming = turns[turnsOffset + 2u * index]; let outgoing = turns[turnsOffset + 2u * index + 1u];
   if (incoming >= EDGE_COUNT || outgoing >= EDGE_COUNT) { atomicStore(&invalidNetwork[invalidNetworkOffset], 1u); }
-  else { atomicAdd(&counts[countsOffset + incoming], 1u); }
+  else if (isFiniteValue(costs[costsOffset + incoming]) && costs[costsOffset + incoming] >= 0.0 && isFiniteValue(costs[costsOffset + outgoing]) && costs[costsOffset + outgoing] >= 0.0) { atomicAdd(&counts[countsOffset + incoming], 1u); }
 }`
     ),
     ...new GPUScan({
@@ -147,6 +152,7 @@ if (index < TURN_COUNT) {
       [
         read('turns', props.turns),
         read('costs', props.costs, 'f32'),
+        ...penaltyBindings,
         read('offsets', offsets),
         write('counts', counts, 'atomic<u32>'),
         write('neighbors', neighbors),
@@ -154,9 +160,10 @@ if (index < TURN_COUNT) {
       ],
       `let incoming = turns[turnsOffset + 2u * index]; let outgoing = turns[turnsOffset + 2u * index + 1u];
 if (incoming >= EDGE_COUNT || outgoing >= EDGE_COUNT) { return; }
+if (!isFiniteValue(costs[costsOffset + incoming]) || costs[costsOffset + incoming] < 0.0 || !isFiniteValue(costs[costsOffset + outgoing]) || costs[costsOffset + outgoing] < 0.0) { return; }
 let slot = offsets[offsetsOffset + incoming] + atomicAdd(&counts[countsOffset + incoming], 1u);
 neighbors[neighborsOffset + slot] = outgoing;
-weights[weightsOffset + slot] = costs[costsOffset + outgoing];`
+weights[weightsOffset + slot] = ${penaltyExpression} + costs[costsOffset + outgoing];`
     )
   ];
   for (let query = 0; query < props.queries.length; query++) {
@@ -181,6 +188,7 @@ state[stateOffset] = 1u; state[stateOffset + 1u] = INFINITY_BITS; state[stateOff
 state[stateOffset + 3u] = ${maximumRelaxations}u;
 startNodes[startNodesOffset] = NONE; startCosts[startCostsOffset] = 0.0;
 if (invalidNetwork[invalidNetworkOffset] != 0u || source >= EDGE_COUNT || destination >= EDGE_COUNT || !isFiniteValue(sourceFraction) || !isFiniteValue(targetFraction) || sourceFraction < 0.0 || sourceFraction > 1.0 || targetFraction < 0.0 || targetFraction > 1.0) { return; }
+if (!isFiniteValue(costs[costsOffset + source]) || costs[costsOffset + source] < 0.0 || !isFiniteValue(costs[costsOffset + destination]) || costs[costsOffset + destination] < 0.0) { return; }
 state[stateOffset] = 0u;
 startNodes[startNodesOffset] = source;
 startCosts[startCostsOffset] = (1.0 - sourceFraction) * costs[costsOffset + source];
@@ -247,6 +255,7 @@ nextPaths[nextPathsOffset + 2u * index + 1u] = flags;`
           read('queries', props.queries),
           read('fractions', props.fractions, 'f32'),
           read('turns', props.turns),
+          ...penaltyBindings,
           read('costs', props.costs, 'f32'),
           read('distances', distances, 'f32'),
           write('state', state, 'atomic<u32>'),
@@ -258,14 +267,15 @@ let incoming = turns[turnsOffset + 2u * index]; let outgoing = turns[turnsOffset
 if (incoming >= EDGE_COUNT || outgoing >= EDGE_COUNT) { return; }
 let distance = distances[distancesOffset + incoming];
 if (!isFiniteValue(distance)) { return; }
+if (!isFiniteValue(costs[costsOffset + outgoing]) || costs[costsOffset + outgoing] < 0.0) { return; }
 // Retain the reference route's invalid-data status for a reachable full-edge f32 overflow.
-if (!isFiniteValue(distance + costs[costsOffset + outgoing])) { atomicStore(&state[stateOffset], 1u); return; }
+if (!isFiniteValue(distance + (${penaltyExpression} + costs[costsOffset + outgoing]))) { atomicStore(&state[stateOffset], 1u); return; }
 let flags = paths[pathsOffset + 2u * incoming + 1u];
 if (flags != 1u) { return; }
 let destination = queries[queriesOffset + 2u * query + 1u];
 if (outgoing == destination) {
   let targetFraction = fractions[fractionsOffset + 2u * query + 1u];
-  let candidate = distance + targetFraction * costs[costsOffset + destination];
+  let candidate = distance + (${penaltyExpression} + targetFraction * costs[costsOffset + destination]);
   atomicMin(&state[stateOffset + 1u], bitcast<u32>(max(0.0, candidate)));
 }`
       )
@@ -278,6 +288,7 @@ if (outgoing == destination) {
           read('queries', props.queries),
           read('fractions', props.fractions, 'f32'),
           read('turns', props.turns),
+          ...penaltyBindings,
           read('costs', props.costs, 'f32'),
           read('distances', distances, 'f32'),
           write('state', state, 'atomic<u32>'),
@@ -294,7 +305,7 @@ if (!isFiniteValue(best)) { return; }
 let sourceFraction = fractions[fractionsOffset + 2u * query]; let targetFraction = fractions[fractionsOffset + 2u * query + 1u];
 // Direct forward travel wins ties, just as in the reference kernel.
 if (source == destination && targetFraction >= sourceFraction && (targetFraction - sourceFraction) * costs[costsOffset + source] <= best) { return; }
-let candidate = distances[distancesOffset + incoming] + targetFraction * costs[costsOffset + destination];
+let candidate = distances[distancesOffset + incoming] + (${penaltyExpression} + targetFraction * costs[costsOffset + destination]);
 if (candidate == best) { atomicMin(&state[stateOffset + 2u], incoming); }`
       )
     );

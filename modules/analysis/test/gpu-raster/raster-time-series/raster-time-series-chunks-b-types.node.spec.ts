@@ -221,8 +221,12 @@ it('exposes omitted optional props and nested fields with their original packed 
       parameters,
       output: {smoothed: vector(floats(5)), status: vector(integers(1))}
     });
-    expectTypeOf(chunked.props.mask).toEqualTypeOf<GraphVectorView<'uint32'> | undefined>();
-    expectTypeOf(chunked.props.output.smoothed).toEqualTypeOf<GraphVectorView<'float32'>>();
+    expectTypeOf(chunked.props.mask).toEqualTypeOf<
+      GraphVectorView<'uint32'> | GraphDataView<'uint32'> | undefined
+    >();
+    expectTypeOf(chunked.props.output.smoothed).toEqualTypeOf<
+      GraphVectorView<'float32'> | GraphDataView<'float32'>
+    >();
     expectTypeOf(chunked.props.dateAxis).toEqualTypeOf<GPURasterIrregularDateAxis | undefined>();
     const chunkedLagged = new GPURasterLaggedCorrelation({
       cellCount: 1,
@@ -234,7 +238,7 @@ it('exposes omitted optional props and nested fields with their original packed 
       output: {correlations: vector(floats(1)), status: vector(integers(1))}
     });
     expectTypeOf(chunkedLagged.props.output.pairCount).toEqualTypeOf<
-      GraphVectorView<'uint32'> | undefined
+      GraphVectorView<'uint32'> | GraphDataView<'uint32'> | undefined
     >();
   } finally {
     device.destroy();

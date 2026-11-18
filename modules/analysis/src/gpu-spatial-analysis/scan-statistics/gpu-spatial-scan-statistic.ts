@@ -20,12 +20,14 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
+  createFillNode,
   createWGSLDispatchGate,
   getAutomaticWGSLKernelWorkgroupSize
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {createStatisticsKernelNode as createWGSLKernelNode} from '../spatial-weights/statistics-kernel-node';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -61,12 +63,20 @@ import {
 } from './scan-statistic-parameters';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
 import {POISSON_OBSERVED_TERM_WGSL} from '../../analysis-core/kernels/wgsl-poisson-observed-term';
-import {createScanNearestZonesKernelNode} from './scan-statistic-nearest-zones';
+import {
+  createScanNearestZoneNodes,
+  getScanNearestZoneSearchPlan,
+  SCAN_INDEX_BUILD_COMMAND_NODE_ALLOWANCE,
+  type GPUScanNearestZoneSearch
+} from './scan-statistic-nearest-index';
 
 import {SCAN_DRAW_INTERVAL_WGSL} from './scan-draw-interval';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {SCAN_BASELINE_SCALING_WGSL} from './scan-baseline-scaling';
 
 const OPERATION = 'GPUSpatialScanStatistic';
+/** Covers fixed model passes and published count-scan stages at the admitted cell limit. */
+const SCAN_MODEL_COMMAND_NODE_ALLOWANCE = 2048;
 /** Scan windows measure planar or great-circle distances. */
 const SCAN_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
   ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
@@ -136,7 +146,7 @@ export type GPUSpatialScanStatisticOutput = {
  * Per-frame (no recompile): the contents of `cases`, `baseline`, `controls`, `positions` and
  * `parameters` (seed, replicate count, window limits, window shape, rate direction). Compile-time:
  * the zone count, `model`, `timeBuckets`, `maximumWindowZones`, `maximumPermutations`,
- * `maximumClusters`, and `spatialContext`.
+ * `maximumClusters`, `nearestZoneSearch`, and `spatialContext`.
  */
 export type GPUSpatialScanStatisticProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'scan-statistic'`. */
@@ -184,11 +194,13 @@ export type GPUSpatialScanStatisticProps = {
    * largest capacity that fits in the table budget. A center whose windows reach the capacity
    * while the population fraction would allow larger ones is counted in `summary.overflow` and
    * flags its clusters with `truncatedByZoneCap`. The per-frame parameter may lower it.
-   * Selecting and sorting the neighbors costs about `zones * (5 * zones + 12 * capacity)`
-   * operations per frame (`zones * 13 * zones` at the default capacity): a radix select and sort
-   * per center, so it no longer grows with `zones^2 * capacity`.
+   * Auto neighbor discovery indexes truncated lists of at most 65 rows (including lookahead).
+   * Whole-domain or larger lists use full-scan radix selection and sorting. See `nearestZoneSearch` and
+   * `estimatedFullScanSeparationCount` for the exhaustive route's work bound.
    */
   maximumWindowZones?: number;
+  /** Exact discovery route. Auto indexes truncated lists of at most 65 rows including lookahead; whole-domain or larger lists use full-scan. Compile-time. */
+  nearestZoneSearch?: GPUScanNearestZoneSearch;
   /**
    * Compile-time upper bound on the per-frame replicate count, at most 99999. Replicates run in
    * batches of `batchReplicates` (see {@link GPUSpatialScanStatistic}), so the bound no longer
@@ -223,11 +235,6 @@ export type GPUSpatialScanStatisticProps = {
    * once measurements on the target devices justify switching the default.
    */
   parallelDraws?: boolean;
-  /**
-   * Lowers the replicates per batch, for tests of batch independence.
-   * @internal
-   */
-  batchReplicates?: number;
   /**
    * Compile-time. `'retrospective'` (default) scans every run of consecutive buckets. `'prospective'`
    * scans only windows that end at the last bucket, as a surveillance analysis does; the Monte Carlo
@@ -299,8 +306,9 @@ export type GPUSpatialScanStatisticProps = {
  * `batch-evaluate`); the pipeline count does not grow with the batch count.
  *
  * Capacity: one `(R + 1) * zones * timeBuckets` word count table (at most 2^25 words), two
- * neighbor tables of `zones * (maximumWindowZones + 1)` words (at most 2^24 each) plus two sort
- * scratch tables of the same size that are only live while the neighbor tables are built, and
+ * neighbor tables of `zones * (maximumWindowZones + 1)` words (at most 2^24 each), plus seven
+ * `zones`-word coordinate index buffers for short lists or two table-sized sort scratch buffers
+ * for full-scan discovery (and the published sorts' own scratch), and
  * `P + 1` window maxima, and for the Poisson model one `zones * timeBuckets` word table of cell
  * weights (at most 2^24 words, since the count table holds at least two slots) that feeds the
  * cumulative table scan; work is about `(P + 1) * zones * windowZones * timeBuckets^2`,
@@ -327,6 +335,12 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
   readonly usableZones: number;
   /** Rows per center in the neighbor tables: `usableZones` plus one look-ahead row when truncating. */
   readonly listLength: number;
+  /** Resolved exact neighbor discovery route. */
+  readonly nearestZoneSearch: 'indexed' | 'full-scan';
+  /** Upper bound on separation evaluations of full-scan discovery per frame, excluding radix sorting. */
+  readonly estimatedFullScanSeparationCount: number;
+  /** Conservative bound including discovery sorts, model preparation, replicate batches and cluster rounds. */
+  readonly estimatedCommandNodeCount: number;
   /** Cluster capacity. */
   readonly maximumClusters: number;
   /** Replicates drawn and evaluated per batch (`R`), derived from the count table budget. */
@@ -338,7 +352,8 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
   /** Resolved temporal search mode (see `props.temporalMode`). */
   readonly temporalMode: 'retrospective' | 'prospective';
 
-  constructor(props: GPUSpatialScanStatisticProps) {
+  constructor(props: GPUSpatialScanStatisticProps);
+  constructor(props: GPUSpatialScanStatisticProps, batchReplicates?: number) {
     const id = props.id ?? 'scan-statistic';
     this.id = id;
     this.props = props;
@@ -376,8 +391,8 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
     this.maximumClusters = props.maximumClusters ?? 8;
     const {maximumPermutations} = props;
     if (
-      props.batchReplicates !== undefined &&
-      (!Number.isInteger(props.batchReplicates) || props.batchReplicates < 1)
+      batchReplicates !== undefined &&
+      (!Number.isInteger(batchReplicates) || batchReplicates < 1)
     ) {
       throw new Error(`${id} batchReplicates must be a positive integer`);
     }
@@ -394,6 +409,14 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
     const layout = getGPUSpatialScanStatisticLayout(this.zones, props.maximumWindowZones);
     this.usableZones = layout.usableZones;
     this.listLength = layout.listLength;
+    const searchPlan = getScanNearestZoneSearchPlan(
+      id,
+      this.zones,
+      this.listLength,
+      props.nearestZoneSearch
+    );
+    this.nearestZoneSearch = searchPlan.nearestZoneSearch;
+    this.estimatedFullScanSeparationCount = searchPlan.estimatedFullScanSeparationCount;
     validateCapacity(
       id,
       'maximumClusters',
@@ -425,7 +448,7 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
       maximumPermutations,
       MAXIMUM_BATCH_REPLICATES,
       budgetReplicates,
-      props.batchReplicates ?? Infinity
+      batchReplicates ?? Infinity
     );
     this.batchCount = Math.ceil(maximumPermutations / this.batchReplicates);
     this.parallelDraws = (props.parallelDraws ?? false) && this.model !== 'poisson';
@@ -438,6 +461,14 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
         `${id} maximumPermutations needs ${this.batchCount} batches of ${this.batchReplicates} replicates, more than ${MAXIMUM_BATCHES}`
       );
     }
+    // Covers fixed model preparation and published count scans; indexed discovery adds its
+    // separate two-sort allowance. Each batch and each cluster round add four nodes.
+    this.estimatedCommandNodeCount =
+      SCAN_MODEL_COMMAND_NODE_ALLOWANCE +
+      (this.nearestZoneSearch === 'indexed' ? SCAN_INDEX_BUILD_COMMAND_NODE_ALLOWANCE : 1) +
+      4 * this.batchCount +
+      4 * this.maximumClusters;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     if (props.parameters.length < GPU_SPATIAL_SCAN_STATISTIC_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters needs ${GPU_SPATIAL_SCAN_STATISTIC_PARAMETER_LENGTH} words`
@@ -605,14 +636,12 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
       createTransientView(graph, `${id}-${name}`, 'float32', length);
     const neighbors = u32('neighbors', zones * listLength);
     const distances = f32('distances', zones * listLength);
-    // Ping-pong rows of the per-center radix sort in `nearest`; dead once the tables are built.
-    const sortKeys = u32('sort-keys', zones * listLength);
-    const sortZones = u32('sort-zones', zones * listLength);
     const members = u32('members', zones);
     // Per-cell population of the window sums: the Poisson baseline, cases + controls (Bernoulli) or
     // the expectation z_s * m_b / C of the space-time permutation model.
-    const weights: GraphDataView<'float32'> =
-      model === 'poisson' ? props.baseline! : f32('weights', cells);
+    // Normalize Poisson baselines before any sum: their finite input scale may overflow a sum.
+    const weights = f32('weights', cells);
+    const baselineMaximum = model === 'poisson' ? u32('baseline-maximum', 1) : null;
     const population = model === 'bernoulli' ? u32('population', cells) : null;
     const zoneTotals = model === 'space-time-permutation' ? u32('zone-totals', zones) : null;
     const bucketTotals =
@@ -774,6 +803,10 @@ fn isDirected(observed: f32, expected: f32, direction: u32) -> bool {
     return observed < expected;
   }
   return observed != expected;
+}
+// Poisson divides to a bounded baseline fraction before multiplying by the case total.
+fn getExpectedCases(windowWeight: f32, totalCases: f32, totalWeight: f32) -> f32 {
+  return ${model === 'poisson' ? '(windowWeight / totalWeight) * totalCases' : 'windowWeight * totalCases / totalWeight'};
 }`;
     const likelihood =
       model === 'bernoulli'
@@ -785,7 +818,7 @@ fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, tota
   if (!(windowWeight > 0.0) || !(outside > 0.0)) {
     return 0.0;
   }
-  let expectedInside = windowWeight * totalCases / totalWeight;
+  let expectedInside = getExpectedCases(windowWeight, totalCases, totalWeight);
   if (!isDirected(observed, expectedInside, direction)) {
     return 0.0;
   }
@@ -800,7 +833,7 @@ fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, tota
 // Poisson LLR c ln(c/e) + (C - c) ln((C - c)/(C - e)); the space-time permutation model passes the
 // window's e = (zone totals * bucket totals / C) as the window weight of a total weight C.
 fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, totalWeight: f32, direction: u32) -> f32 {
-  let expected = windowWeight * totalCases / totalWeight;
+  let expected = getExpectedCases(windowWeight, totalCases, totalWeight);
   if (!(expected > 0.0) || !isDirected(observed, expected, direction)) {
     return 0.0;
   }
@@ -821,19 +854,68 @@ fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, tota
       : {name: 'baseline', view: weights, type: 'f32' as const, access: 'read' as const};
 
     const nodes: GPUCommandNode<Parameters>[] = [
-      createScanNearestZonesKernelNode<Parameters>(graph, {
+      ...createScanNearestZoneNodes<Parameters>(graph, {
         id: `${id}-nearest`,
         operation: OPERATION,
         positions,
         neighbors,
         distances,
-        sortKeys,
-        sortZones,
         zones,
         listLength,
-        separationWGSL
+        separationWGSL,
+        geographic: this.spatialContext.coordinateSpace === 'longitude-latitude',
+        nearestZoneSearch: this.nearestZoneSearch
       })
     ];
+
+    if (model === 'poisson') {
+      nodes.push(
+        createFillNode(graph, {
+          id: `${id}-baseline-maximum-clear`,
+          operation: OPERATION,
+          view: baselineMaximum!,
+          type: 'u32',
+          value: '0u'
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-baseline-block-maximum`,
+          operation: OPERATION,
+          variant: 'baseline-block-maximum',
+          bindings: [
+            {name: 'rawBaseline', view: props.baseline!, type: 'u32', access: 'read'},
+            {
+              name: 'baselineMaximum',
+              view: baselineMaximum!,
+              type: 'atomic<u32>',
+              access: 'read_write'
+            }
+          ],
+          invocationCount: blocks,
+          declarations: common,
+          body: `var maximum = 0u;
+  let first = index * CELLS_PER_BLOCK;
+  for (var cell = first; cell < min(first + CELLS_PER_BLOCK, CELLS); cell++) {
+    maximum = max(maximum, rawBaseline[rawBaselineOffset + cell] & 0x7fffffffu);
+  }
+  // Nonnegative float32 bits have the same order as uint32; at most 256 blocks contend.
+  atomicMax(&baselineMaximum[baselineMaximumOffset], maximum);`
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-baseline-normalize`,
+          operation: OPERATION,
+          variant: 'baseline-normalize',
+          bindings: [
+            {name: 'rawBaseline', view: props.baseline!, type: 'u32', access: 'read'},
+            {name: 'baselineMaximum', view: baselineMaximum!, type: 'u32', access: 'read'},
+            {name: 'normalizedBaseline', view: weights, type: 'f32', access: 'read_write'}
+          ],
+          invocationCount: cells,
+          declarations: `${common}\n${SCAN_BASELINE_SCALING_WGSL}`,
+          body: `normalizedBaseline[normalizedBaselineOffset + index] = getScaledScanBaseline(
+    rawBaseline[rawBaselineOffset + index] & 0x7fffffffu, baselineMaximum[baselineMaximumOffset]);`
+        })
+      );
+    }
 
     if (model === 'bernoulli') {
       nodes.push(
@@ -1511,7 +1593,7 @@ var<workgroup> maxima: array<f32, ${EVALUATE_WORKGROUP_SIZE}>;`,
           bestFirst = first;
           bestLast = last;
           bestCases = f32(windowCases);
-          bestExpected = windowBaseline * totalCases / totalBaseline;
+          bestExpected = getExpectedCases(windowBaseline, totalCases, totalBaseline);
         }
       }
     }
@@ -1877,4 +1959,15 @@ if (invalid) {
     );
     return nodes;
   }
+}
+
+/** Overrides batch size for deterministic batch-independence tests. @internal */
+export function createSpatialScanStatisticForTesting(
+  props: GPUSpatialScanStatisticProps & {batchReplicates?: number}
+): GPUSpatialScanStatistic {
+  const {batchReplicates, ...publicProps} = props;
+  return Reflect.construct(GPUSpatialScanStatistic, [
+    publicProps,
+    batchReplicates
+  ]) as GPUSpatialScanStatistic;
 }

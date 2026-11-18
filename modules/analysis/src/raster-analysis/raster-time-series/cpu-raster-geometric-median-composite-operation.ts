@@ -10,6 +10,7 @@ import {
 } from '../../analysis-core/operations/cpu-operation-rows';
 import {GPU_RASTER_GEOMETRIC_MEDIAN_COMPOSITE_PARAMETER_LENGTH} from './gpu-raster-geometric-median-composite';
 import type {RasterGeometricMedianCompositeOperationProps} from './gpu-raster-geometric-median-composite-operation';
+import {getGPURasterGeometricMedianCompositeOutputLayout} from './raster-geometric-median-output-layout';
 import {
   getCPUCompositeSlices,
   validateCPUCompositeArrays,
@@ -55,9 +56,14 @@ export function computeRasterGeometricMedianCompositeOnCPU(
     throw new Error('parameters must contain distanceEpsilon');
   // Layout of getGPURasterGeometricMedianCompositeParameterValues; the sole parameter is epsilon.
   const [distanceEpsilon] = parameters;
-  const composite = new Float32Array(options.cellCount * options.bandCount).fill(NaN);
-  const lastStep = new Float32Array(options.cellCount).fill(NaN);
-  const status = new Uint32Array(options.cellCount).fill(1);
+  const outputLayout = getGPURasterGeometricMedianCompositeOutputLayout({
+    ...options,
+    id: 'computeRasterGeometricMedianCompositeOnCPU',
+    lastStep: true
+  });
+  const composite = new Float32Array(outputLayout.composite.length).fill(NaN);
+  const lastStep = new Float32Array(outputLayout.lastStep!.length).fill(NaN);
+  const status = new Uint32Array(outputLayout.status.length).fill(1);
   for (let cell = 0; cell < options.cellCount; cell++) {
     const slices = getCPUCompositeSlices(values, mask, options, cell);
     if (slices.length === 0) continue;
@@ -103,6 +109,11 @@ export class CPURasterGeometricMedianCompositeOperation extends GPUCPUOperation 
     validateCPUCompositeDimensions(id, props);
     validateCapacity(id, 'iterationCount', props.iterationCount);
     const lastStep = props.output.lastStep;
+    const outputLayout = getGPURasterGeometricMedianCompositeOutputLayout({
+      ...props,
+      id,
+      lastStep: lastStep !== undefined
+    });
     super({
       id,
       inputs: {
@@ -111,12 +122,18 @@ export class CPURasterGeometricMedianCompositeOperation extends GPUCPUOperation 
         ...(props.mask !== undefined ? {mask: props.mask} : {})
       },
       outputs: {
-        [props.output.composite]: gpuGraph.vector('float32', {
-          length: props.cellCount * props.bandCount
+        [props.output.composite]: gpuGraph.vector(outputLayout.composite.format, {
+          length: outputLayout.composite.length
         }),
-        [props.output.status]: gpuGraph.vector('uint32', {length: props.cellCount}),
-        ...(lastStep !== undefined
-          ? {[lastStep]: gpuGraph.vector('float32', {length: props.cellCount})}
+        [props.output.status]: gpuGraph.vector(outputLayout.status.format, {
+          length: outputLayout.status.length
+        }),
+        ...(lastStep !== undefined && outputLayout.lastStep
+          ? {
+              [lastStep]: gpuGraph.vector(outputLayout.lastStep.format, {
+                length: outputLayout.lastStep.length
+              })
+            }
           : {})
       },
       execute({inputs}) {

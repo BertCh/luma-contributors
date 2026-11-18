@@ -15,7 +15,7 @@ import {
   type GPUNetworkAdjacency,
   validateGPUNetworkTopology,
   getGPUNetworkTopologyViews
-} from '../../analysis-core/network-topology';
+} from '../../analysis-core/contracts/network-topology';
 import type {GPUIterationStatusPort} from '../../analysis-core/contracts/status';
 import {
   createWGSLDispatchGate,

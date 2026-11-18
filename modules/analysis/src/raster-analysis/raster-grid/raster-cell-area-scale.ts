@@ -7,7 +7,7 @@ import {
   getRasterGroundScale,
   getRasterGroundScaleWGSL,
   type GPURasterCellSizeMode
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 
@@ -15,6 +15,32 @@ import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 const GEOREFERENCE_ORIGIN_Y_SLOT = 1;
 /** Slot of the row step y (`affine[4]`) in the same layout. */
 const GEOREFERENCE_ROW_Y_SLOT = 5;
+
+/** Whether the effective frame supports one ground-area scale per row. @internal */
+export function isRasterEffectiveAxisAligned(
+  grid: GPURasterMetadata,
+  mode: GPURasterCellSizeMode,
+  parameters?: ArrayLike<number>
+): boolean {
+  return (
+    mode === 'uniform' ||
+    (parameters
+      ? parameters[3] === 0 && parameters[4] === 0
+      : grid.affine[1] === 0 && grid.affine[3] === 0)
+  );
+}
+
+/** WGSL counterpart of isRasterEffectiveAxisAligned; no extra binding is introduced. @internal */
+export function getRasterEffectiveAxisAlignmentWGSL(
+  grid: GPURasterMetadata,
+  mode: GPURasterCellSizeMode,
+  binding?: string
+): string {
+  if (mode === 'uniform') return 'true';
+  return binding
+    ? `${binding}[${binding}Offset+3u]==0.0&&${binding}[${binding}Offset+4u]==0.0`
+    : String(isRasterEffectiveAxisAligned(grid, mode));
+}
 
 /**
  * Ground area of one cell of `row`, relative to its area in world units, in float64: the product

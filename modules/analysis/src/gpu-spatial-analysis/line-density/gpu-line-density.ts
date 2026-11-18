@@ -6,6 +6,7 @@ import type {
   GPULineGeometryFields,
   GPUOverflowStatusPort
 } from '../../analysis-core/contracts/index';
+import type {GPUSpatialParameterSchema} from '../../analysis-core/contracts/parameter-schema.js';
 import {
   getGPUAuthalicSphereRadius,
   getGPUSphereRadius,
@@ -66,33 +67,34 @@ export const GPU_LINE_DENSITY_PARAMETER_LENGTH = 4;
 export const GPU_LINE_DENSITY_MAXIMUM_CELL_COUNT = Math.floor(0xffffffff / 256);
 
 /** Declarative layout of the per-encoding line-density grid. */
-export const GPU_LINE_DENSITY_PARAMETER_SCHEMA = defineGPUSpatialParameterSchema({
-  id: 'line-density',
-  format: 'float32',
-  wordLength: GPU_LINE_DENSITY_PARAMETER_LENGTH,
-  fields: [
-    {name: 'minimumX', format: 'float32', wordOffset: 0, defaultValue: 0, dynamic: true},
-    {name: 'minimumY', format: 'float32', wordOffset: 1, defaultValue: 0, dynamic: true},
-    {
-      name: 'cellWidth',
-      format: 'float32',
-      wordOffset: 2,
-      defaultValue: 1,
-      minimum: Number.MIN_VALUE,
-      units: 'position-units',
-      dynamic: true
-    },
-    {
-      name: 'cellHeight',
-      format: 'float32',
-      wordOffset: 3,
-      defaultValue: 1,
-      minimum: Number.MIN_VALUE,
-      units: 'position-units',
-      dynamic: true
-    }
-  ]
-});
+export const GPU_LINE_DENSITY_PARAMETER_SCHEMA: GPUSpatialParameterSchema<'float32'> =
+  defineGPUSpatialParameterSchema({
+    id: 'line-density',
+    format: 'float32',
+    wordLength: GPU_LINE_DENSITY_PARAMETER_LENGTH,
+    fields: [
+      {name: 'minimumX', format: 'float32', wordOffset: 0, defaultValue: 0, dynamic: true},
+      {name: 'minimumY', format: 'float32', wordOffset: 1, defaultValue: 0, dynamic: true},
+      {
+        name: 'cellWidth',
+        format: 'float32',
+        wordOffset: 2,
+        defaultValue: 1,
+        minimum: Number.MIN_VALUE,
+        units: 'position-units',
+        dynamic: true
+      },
+      {
+        name: 'cellHeight',
+        format: 'float32',
+        wordOffset: 3,
+        defaultValue: 1,
+        minimum: Number.MIN_VALUE,
+        units: 'position-units',
+        dynamic: true
+      }
+    ]
+  });
 
 /** CPU description of the per-frame grid of {@link GPULineDensity}. */
 export type GPULineDensitySettings = {

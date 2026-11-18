@@ -165,6 +165,7 @@ export function createMultiscaleBandwidthSelection<Parameters>(
     selection: Selection;
     parameters: GraphDataView<'float32'>;
     state: GraphDataView<'uint32'>;
+    componentSearchIterationLimitReached?: GraphDataView<'uint32'>;
     workspace: ReturnType<typeof createMultiscaleBandwidthWorkspace>;
   }
 ): GPUCommandNode<Parameters>[] {
@@ -420,9 +421,19 @@ table[slot] = bandwidth; table[slot + 1u] = score; table[slot + 2u] = 0.0;`
       invocationCount: 1,
       bindings: [
         read('table', table),
-        read('searchState', searchState),
+        ...(golden ? [read('searchState', searchState)] : []),
         write('parameters', props.parameters),
-        read('state', props.state, 'u32')
+        read('state', props.state, 'u32'),
+        ...(golden && props.componentSearchIterationLimitReached
+          ? [
+              {
+                name: 'componentSearchIterationLimitReached',
+                view: props.componentSearchIterationLimitReached,
+                type: 'u32' as const,
+                access: 'read_write' as const
+              }
+            ]
+          : [])
       ],
       declarations: scalarCommon,
       body: `if (state[stateOffset] != 3u) { return; }
@@ -441,7 +452,14 @@ for (var candidate = 0u; candidate < ${props.candidateCount}u; candidate++) {
   if (isFiniteBits(score) && score < bestScore) { bestScore = score; best = table[slot]; }
 }`
 }
-parameters[parametersOffset + ${column + 1}u] = best;`
+parameters[parametersOffset + ${column + 1}u] = best;
+${
+  golden && props.componentSearchIterationLimitReached
+    ? `if (isFiniteBits(best) && searchState[searchStateOffset + ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SEARCH_STATE.CONVERGED}u] == 0.0) {
+  componentSearchIterationLimitReached[componentSearchIterationLimitReachedOffset + ${column}u] = 1u;
+}`
+    : ''
+}`
     })
   );
   return nodes;

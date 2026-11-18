@@ -169,7 +169,9 @@ export class GPURasterEmbeddingDequantize<
     if (props.output.validity) {
       validateViewLength(id, 'output.validity', props.output.validity, props.pixelCount);
     }
-    validateRasterEmbeddingViews(id, this.getInputs(), this.getOutputs());
+    const inputs = this.getInputs();
+    const outputs = this.getOutputs();
+    validateRasterEmbeddingViews(id, inputs, outputs, [{inputs, outputs}]);
     this.chunks = planRasterEmbeddingChunks(
       id,
       pixelCount,

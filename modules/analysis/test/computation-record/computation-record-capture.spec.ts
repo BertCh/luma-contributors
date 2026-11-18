@@ -17,6 +17,7 @@ import {
 } from '@luma-contributors/analysis/computation-record';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, test} from 'vitest';
+import {requireTestDevice} from '../../src/testing/require-test-device';
 
 /** Three iterations of a counter, each followed by a tap that snapshots the state. */
 function createChain(device: Device, recorder: GPUComputationRecorder, arena: GPUSnapshotArena) {
@@ -71,7 +72,7 @@ function createChain(device: Device, recorder: GPUComputationRecorder, arena: GP
 
 test('taps snapshot an iterative transient while later iterations overwrite it', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const recorder = new GPUComputationRecorder();
   const arena = new GPUSnapshotArena(device, {
     id: 'chain-snapshots',
@@ -107,10 +108,85 @@ test('taps snapshot an iterative transient while later iterations overwrite it',
     expect(
       snapshots.every(capture => capture.elementType === 'u32' && capture.resource === 'state')
     ).toBe(true);
-    const captures = createGPUComputationCaptures({runId: record.runId, snapshots});
+    const captures = createGPUComputationCaptures({
+      runId: record.runId,
+      executionId: record.executionId,
+      snapshots
+    });
     expect(validateGPUComputationSidecars(record, {captures})).toMatchObject({valid: true});
   } finally {
     compiled.destroy();
     arena.destroy();
+  }
+});
+
+test('taps refuse oversized and strided logical views before graph copies are added', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const graph = new GPUCommandGraph(device);
+  const storage = createTransientView(
+    graph,
+    'storage',
+    'uint32',
+    4,
+    Buffer.STORAGE | Buffer.COPY_SRC
+  );
+  const short = graph.createDataView(storage.buffer, {format: 'uint32', length: 1, byteOffset: 4});
+  const strided = graph.createDataView(storage.buffer, {
+    format: 'uint32',
+    length: 2,
+    byteStride: 8
+  });
+  const arena = new GPUSnapshotArena(device, {
+    slots: [{name: 'value', byteLength: 8, elementType: 'u32'}],
+    capacity: 1
+  });
+  try {
+    expect(() =>
+      graph.add(new GPUSnapshotTap({id: 'oversized', arena, views: {value: short}}))
+    ).toThrow('views.value byteLength');
+    expect(() =>
+      graph.add(new GPUSnapshotTap({id: 'strided', arena, views: {value: strided}}))
+    ).toThrow('views.value byteStride');
+    expect(arena.count).toBe(0);
+  } finally {
+    arena.destroy();
+  }
+});
+
+test('R3 repeated encodings copy the original range after the caller mutates its view object', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const graph = new GPUCommandGraph(device);
+  const buffer = device.createBuffer({
+    data: new Uint32Array([11, 22, 33, 44]),
+    usage: Buffer.STORAGE | Buffer.COPY_SRC | Buffer.COPY_DST
+  });
+  const handle = graph.importBuffer(
+    {id: 'source', byteLength: buffer.byteLength, usage: buffer.usage},
+    buffer
+  );
+  const view = graph.createDataView(handle, {format: 'uint32', length: 2});
+  const arena = new GPUSnapshotArena(device, {
+    slots: [{name: 'value', byteLength: 8, elementType: 'u32'}],
+    capacity: 2
+  });
+  graph.add(new GPUSnapshotTap({id: 'review-copy', arena, views: {value: view}}));
+  const compiled = graph.compile();
+  try {
+    for (let frame = 0; frame < 2; frame++) {
+      if (frame === 1) Object.assign(view, {byteOffset: 8, length: 1});
+      const encoder = device.createCommandEncoder();
+      compiled.encode(encoder, {parameters: undefined});
+      device.submit(encoder.finish());
+    }
+    expect((await arena.read()).map(capture => Array.from(capture.values))).toEqual([
+      [11, 22],
+      [11, 22]
+    ]);
+  } finally {
+    compiled.destroy();
+    arena.destroy();
+    buffer.destroy();
   }
 });

@@ -15,7 +15,7 @@ import {
   validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import type {GPURasterCellSizeMode} from '../../analysis-core/raster-grid';
+import type {GPURasterCellSizeMode} from '../../analysis-core/contracts/raster-grid';
 import {
   createWGSLDispatchGate,
   createWGSLKernelNode,

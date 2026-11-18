@@ -8,7 +8,7 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {
   GPUDatumGridTransform,
   type GPUDatumGridTransformProps
-} from '../../../src/geospatial-analysis/gpu-datum-grid-transform';
+} from '../../../src/geospatial-analysis/datum-grid-transform/index';
 import areaReference from './fixtures/geodesic-area-adaptive.json';
 import difficultReference from './fixtures/difficult-geodesics.json';
 import datumReference from './fixtures/datum-horizontal.json';

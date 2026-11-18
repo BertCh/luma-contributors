@@ -26,14 +26,15 @@ import {
 import {
   getStorageBindingElementLimit,
   validateMaximumCount,
+  validateRequirement,
   validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import type {GPUNetworkTopology} from '../../analysis-core/network-topology';
+import type {GPUNetworkTopology} from '../../analysis-core/contracts/network-topology';
 import {
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology
-} from '../../analysis-core/network-topology';
+} from '../../analysis-core/contracts/network-topology';
 import type {
   GPUSpatialContext,
   GPUSpatialContextSupport
@@ -110,6 +111,9 @@ export type GPUNetworkLineGraphProps = {
 
 /** GPU-written output of {@link GPUNetworkLineGraph}. */
 export type GPUNetworkLineGraphOutput = {
+  /** Optional penalty per CSR arc, before adding the following base-edge cost. Same capacity as
+   * topology.neighbors; padding is -1. This preserves penalties absorbed by a large base cost. */
+  turnPenalties?: GraphDataView<'float32'>;
   /**
    * The line graph as a CSR network, so it feeds `GPUNetworkReachability.topology` and the other
    * routing contributors directly.
@@ -213,6 +217,14 @@ export class GPUNetworkLineGraph implements GPUCommandNodeProducer {
       ['output.topology.weights', output.topology.weights]
     ] as const) {
       validateSinglePackedView(view, ['float32'], `${id} ${name}`);
+    }
+    if (output.turnPenalties) {
+      validateSinglePackedView(output.turnPenalties, ['float32'], `${id} output.turnPenalties`);
+      validateRequirement(
+        id,
+        output.turnPenalties.length === output.topology.neighbors.length,
+        'output.turnPenalties length must equal topology.neighbors length'
+      );
     }
     this.nodeCount = nodeCount;
     this.edgeCount = edgeCount;
@@ -654,6 +666,51 @@ ${liveEdgeSource}`,
     min(lineOffsets[lineOffsetsOffset + index], ARC_CAPACITY);`
       })
     );
+    if (props.output.turnPenalties) {
+      nodes.push(
+        createFillNode<Parameters>(graph, {
+          id: `${id}-clear-turn-penalties`,
+          operation: OPERATION,
+          view: props.output.turnPenalties,
+          type: 'f32',
+          value: '-1.0'
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-fill-turn-penalties`,
+          operation: OPERATION,
+          variant: 'fill-turn-penalties',
+          invocationCount: edgeCount,
+          bindings: [
+            {name: 'lineOffsets', view: props.output.topology.offsets, type: 'u32', access: 'read'},
+            {
+              name: 'lineNeighbors',
+              view: props.output.topology.neighbors,
+              type: 'u32',
+              access: 'read'
+            },
+            {name: 'edgeVectors', view: edgeVectors, type: 'f32', access: 'read'},
+            {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
+            {
+              name: 'linePenalties',
+              view: props.output.turnPenalties,
+              type: 'f32',
+              access: 'read_write'
+            }
+          ],
+          declarations: `const EDGE_COUNT: u32 = ${edgeCount}u;
+const EDGE_VECTOR_STRIDE: u32 = ${edgeVectorStride}u;
+const ARRIVAL_OFFSET: u32 = ${edgeVectorStride - 2}u;
+${TURN_WGSL}`,
+          body: `let end = lineOffsets[lineOffsetsOffset + index + 1u];
+for (var slot = lineOffsets[lineOffsetsOffset + index]; slot < end; slot++) {
+  let following = lineNeighbors[lineNeighborsOffset + slot];
+  if (following < EDGE_COUNT) {
+    linePenalties[linePenaltiesOffset + slot] = max(getTurnCost(index, following), 0.0);
+  }
+}`
+        })
+      );
+    }
     return nodes;
   }
 
@@ -810,6 +867,7 @@ function getOutputs(props: GPUNetworkLineGraphProps): (GraphDataView | undefined
     output.topology.offsets,
     output.topology.neighbors,
     output.topology.weights,
+    output.turnPenalties,
     output.arcCount,
     output.status.overflow
   ];

@@ -367,7 +367,11 @@ it('summit kernels parse, fit private memory and bindings, and keep one pipeline
         const sources = getParsedKernelSources(nodes);
         const kernel = sources.get('terrain-summits-summits')!;
         expect(kernel).toBeDefined();
-        expect(getPrivateMemoryBytes(kernel)).toBeLessThan(CORE_PRIVATE_MEMORY_LIMIT_BYTES);
+        for (const configuration of sources.getConfigurations('terrain-summits-summits')) {
+          expect(getPrivateMemoryBytes(configuration.source, configuration.constants)).toBeLessThan(
+            CORE_PRIVATE_MEMORY_LIMIT_BYTES
+          );
+        }
         expect(getStorageBindingCount(kernel)).toBeLessThanOrEqual(8);
         expect(getTerrainSummitsStackBytes(summits.pyramidLayout)).toBeLessThan(
           CORE_PRIVATE_MEMORY_LIMIT_BYTES - 256

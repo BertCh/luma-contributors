@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+
 import {
   createTransientView,
   GPUVisibilityWorkflow,
@@ -170,6 +172,42 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
   readonly slotCount: number;
 
   constructor(props: GPUTemporalReductionProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'cellIds',
+      'timestamps',
+      'values',
+      'mask',
+      'parameters',
+      'cellCount',
+      'bucketCount',
+      'output',
+      'sorted'
+    ]);
+    const declaredOutput = snapshotConstructionFields(props.output, [
+      'counts',
+      'minimums',
+      'maximums',
+      'first',
+      'last',
+      'occupiedSlots'
+    ]);
+    const compact = snapshotConstructionFields(declaredOutput.occupiedSlots, ['ids', 'status']);
+    props = Object.freeze({
+      ...props,
+      output: Object.freeze({
+        ...declaredOutput,
+        occupiedSlots: Object.freeze({
+          ...compact,
+          status: snapshotConstructionFields(compact.status, [
+            'count',
+            'overflow',
+            'candidateOverflow',
+            'requiredCount'
+          ])
+        })
+      })
+    });
     this.id = props.id ?? 'temporal-reduction';
     this.props = props;
     const id = this.id;
@@ -243,6 +281,7 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
           ids: output.occupiedSlots.ids,
           count: output.occupiedSlots.status.count,
           overflow: output.occupiedSlots.status.overflow,
+          candidateOverflow: output.occupiedSlots.status.candidateOverflow,
           requiredCount: output.occupiedSlots.status.requiredCount
         };
       const publicationPasses: readonly (readonly (
@@ -255,6 +294,7 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
         [
           output.occupiedSlots.status.count,
           output.occupiedSlots.status.overflow,
+          output.occupiedSlots.status.candidateOverflow,
           output.occupiedSlots.status.requiredCount,
           ...(output.occupiedSlots.ids.length < this.slotCount ? [output.occupiedSlots.ids] : [])
         ]
@@ -307,6 +347,7 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
         output.occupiedSlots.ids,
         output.occupiedSlots.status.count,
         output.occupiedSlots.status.overflow,
+        output.occupiedSlots.status.candidateOverflow,
         output.occupiedSlots.status.requiredCount
       ],
       [props.cellIds, props.timestamps, props.values, props.mask, props.parameters]
@@ -333,6 +374,7 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
       occupiedIds: output.occupiedSlots.ids,
       count: output.occupiedSlots.status.count,
       overflow: output.occupiedSlots.status.overflow,
+      candidateOverflow: output.occupiedSlots.status.candidateOverflow,
       requiredCount: output.occupiedSlots.status.requiredCount
     });
     const rows = props.values.length;

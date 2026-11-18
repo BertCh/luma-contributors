@@ -9,6 +9,62 @@ import {
   GPUMantelTestOperation,
   type MantelTestOperationProps
 } from '../../../src/gpu-spatial-analysis/space-time-tests/gpu-mantel-test-operation';
+
+it('both Mantel operation forms carry pair loss ports and recover', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props: MantelTestOperationProps = {
+    rowCount: 3,
+    maximumPermutations: 3,
+    pairs: {
+      offsets: 'offsets',
+      neighbors: 'neighbors',
+      weights: 'weights',
+      distances: 'distances',
+      status: {overflow: 'loss', candidateOverflow: 'candidateLoss'}
+    },
+    times: 'times',
+    parameters: 'parameters',
+    output: {statistics: 'statistics', summary: 'summary'}
+  };
+  for (const Operation of [GPUMantelTestOperation, CPUMantelTestOperation]) {
+    const settings: MantelTestOperationProps = {
+      ...props,
+      pairs: {...props.pairs, status: {...props.pairs.status}},
+      output: {...props.output}
+    };
+    const operation = new Operation(settings);
+    delete settings.pairs.status!.overflow;
+    delete settings.pairs.status!.candidateOverflow;
+    settings.output.summary = 'replacement';
+    for (const [loss, candidateLoss] of [
+      [1, 0],
+      [0, 1],
+      [0, 0]
+    ]) {
+      const result = await runOperationGraph(device, {
+        operations: [operation],
+        outputs: ['summary'],
+        inputs: {
+          offsets: {format: 'uint32', values: Uint32Array.of(0, 2, 3, 3)},
+          neighbors: {format: 'uint32', values: Uint32Array.of(1, 2, 2)},
+          weights: {format: 'float32', values: Float32Array.of(1, 1, 1)},
+          distances: {format: 'float32', values: Float32Array.of(1, 2, 4)},
+          times: {format: 'float32', values: Float32Array.of(0, 1, 3)},
+          parameters: {
+            format: 'uint32',
+            values: getGPUSpaceTimeParameterValues({seed: 17, permutationCount: 3})
+          },
+          loss: {format: 'uint32', values: Uint32Array.of(loss)},
+          candidateLoss: {format: 'uint32', values: Uint32Array.of(candidateLoss)}
+        }
+      });
+      if (loss || candidateLoss)
+        expect(Array.from(result['summary']).every(Number.isNaN)).toBe(true);
+      else expect(result['summary'][0]).toBeCloseTo(Math.sqrt(3 / 28), 5);
+    }
+  }
+});
 import {
   getGPUSpaceTimeParameterValues,
   GPU_SPACE_TIME_SUMMARY

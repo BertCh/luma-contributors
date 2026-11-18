@@ -4,8 +4,8 @@
 
 import {expect, it} from 'vitest';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {createPointCloudGridIndex} from '../../src/pointcloud-analysis/pointcloud-grid-index';
-import {getPointCloudKernelNodes} from '../../src/pointcloud-analysis/pointcloud-kernel-nodes';
+import {createPointCloudGridIndex} from '../../src/pointcloud-analysis/operations/pointcloud-grid-index';
+import {getPointCloudKernelNodes} from '../../src/pointcloud-analysis/operations/pointcloud-kernel-nodes';
 import {makeSpatialFixture, readIntegers} from '../spatial-test-utils';
 import {requireTestDevice} from '../utils/require-test-device';
 

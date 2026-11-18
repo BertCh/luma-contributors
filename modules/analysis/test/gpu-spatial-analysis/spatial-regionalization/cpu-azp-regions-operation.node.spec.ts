@@ -54,7 +54,10 @@ it('matches exhaustive path-cut minimization and applies two independent moves i
     }
   expect(result.objective[0]).toBe(Math.fround(optimum));
   expect(result.objective[0]).toBeCloseTo(1820 / 3, 4);
-  expect(result.status).toEqual(Uint32Array.of(1, 1, 0, 0));
+  expect(result.status).toEqual(Uint32Array.of(1, 0, 1, 0));
+  expect(computeAZPRegionsOnCPU(input, {...createAZPProps(), maximumIterations: 2}).status).toEqual(
+    Uint32Array.of(1, 1, 0, 0)
+  );
   expect(input.initialLabels).toEqual(before);
 });
 

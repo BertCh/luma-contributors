@@ -5,8 +5,13 @@
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
 import {GUARDED_ATAN2_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
-import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateCapacity,
+  validateRequirement,
+  validateSinglePackedView
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {classifyUrbanViewpoints, type UrbanFreeSpaceRegion} from './classify-viewpoints';
+import {validateUrbanLandscapeRecipeViews} from '../landscape-ecology/urban-landscape-recipe-validation';
 import {
   URBAN_MAXIMUM_OBSTACLE_SEGMENT_COUNT,
   addUrbanObstacleBVH,
@@ -34,18 +39,67 @@ const ISOVISTS_RAYS_PER_ENDPOINT = 3;
 /** Largest accepted `angularEpsilon` in radians: a larger offset no longer brackets an endpoint. */
 const ISOVISTS_MAXIMUM_ANGULAR_EPSILON = 0.01;
 
+/**
+ * Total rays per viewpoint. Uniform sampling uses `baseRayCount`; vertex sampling adds six
+ * rays per obstacle segment. Multiply this count by `positions.length` for every per-ray output.
+ * The base count must be an integer in [3, 65536], segmentCount in [1, 16777216], and the expanded
+ * vertex-sampled count must be at most 4096.
+ */
+export function getGPUIsovistRayCount(
+  baseRayCount: number,
+  segmentCount: number,
+  sampling: 'uniform' | 'vertices' = 'uniform'
+): number {
+  return calculateIsovistRayCount('isovists', baseRayCount, segmentCount, sampling);
+}
+
+function calculateIsovistRayCount(
+  id: string,
+  baseRayCount: number,
+  segmentCount: number,
+  sampling: 'uniform' | 'vertices'
+): number {
+  validateCapacity(
+    id,
+    'rayCount',
+    baseRayCount,
+    ISOVISTS_MINIMUM_RAY_COUNT,
+    ISOVISTS_MAXIMUM_RAY_COUNT
+  );
+  validateRequirement(
+    id,
+    Number.isSafeInteger(segmentCount) &&
+      segmentCount > 0 &&
+      segmentCount <= URBAN_MAXIMUM_OBSTACLE_SEGMENT_COUNT,
+    `segments must have between 1 and ${URBAN_MAXIMUM_OBSTACLE_SEGMENT_COUNT} rows`
+  );
+  validateRequirement(
+    id,
+    sampling === 'uniform' || sampling === 'vertices',
+    "sampling must be 'uniform' or 'vertices'"
+  );
+  const rayCount =
+    baseRayCount + (sampling === 'vertices' ? 2 * ISOVISTS_RAYS_PER_ENDPOINT * segmentCount : 0);
+  validateRequirement(
+    id,
+    sampling !== 'vertices' || rayCount <= ISOVISTS_MAXIMUM_VERTEX_SAMPLED_RAY_COUNT,
+    `rayCount plus ${2 * ISOVISTS_RAYS_PER_ENDPOINT} rays per obstacle segment must be at most ${ISOVISTS_MAXIMUM_VERTEX_SAMPLED_RAY_COUNT} when sampling is 'vertices'`
+  );
+  return rayCount;
+}
+
 export type GPUIsovistsOutput = {
-  /** `float32x2`, `positions.length * rayCount` rows: ray end points. */
+  /** `float32x2`, `positions.length * getGPUIsovistRayCount(rayCount, segments.length, sampling)` rows: ray end points. */
   endpoints: GraphDataView<'float32x2'>;
-  /** `float32`, `positions.length * rayCount` rows: ray lengths. */
+  /** `float32`, the same expanded per-ray row count as endpoints: ray lengths. */
   distances: GraphDataView<'float32'>;
-  /** `uint32`, `positions.length * rayCount` rows: hit obstacle segment rows, or 0xffffffff. */
+  /** `uint32`, the same expanded per-ray row count as endpoints: hit obstacle segment rows, or 0xffffffff. */
   segments: GraphDataView<'uint32'>;
-  /** `uint32`, `positions.length * rayCount` rows: one when the ray is valid. */
+  /** `uint32`, the same expanded per-ray row count as endpoints: one when the ray is valid. */
   validity: GraphDataView<'uint32'>;
   /** `float32x4`, one row per viewpoint: area, perimeter, maximum distance, validity. */
   measures: GraphDataView<'float32x4'>;
-  /** `float32`, `positions.length * rayCount` rows: ray angles, ascending per viewpoint. */
+  /** `float32`, the same expanded per-ray row count as endpoints: ray angles, ascending per viewpoint. */
   angles: GraphDataView<'float32'>;
   /** `uint32`, one row per viewpoint: 0 free, 1 blocked, 2 boundary, 3 non-finite. */
   viewpointClassifications: GraphDataView<'uint32'>;
@@ -56,6 +110,7 @@ export type GPUIsovistsProps = {
   /** Free-space viewpoints. Points inside opaque obstacle interiors are not meaningful viewpoints. */
   positions: GraphDataView<'float32x2'>;
   segments: GraphDataView<'float32x4'>;
+  /** Base uniform rays per viewpoint, an integer in [3, 65536]. Use getGPUIsovistRayCount for output sizing. */
   rayCount: number;
   /** Add rays just before/at/after each obstacle endpoint, then sort by angle on GPU. */
   sampling?: 'uniform' | 'vertices';
@@ -84,19 +139,21 @@ export function addIsovistsRecipe<Parameters>(
   props: GPUIsovistsProps
 ) {
   const id = props.id ?? 'isovists';
+  validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+  validateSinglePackedView(props.segments, ['float32x4'], `${id} segments`);
   const maximumDistance = props.maximumDistance;
   const vertexSampling = props.sampling === 'vertices';
+  const baseRayCount = props.rayCount;
   const angularEpsilon = props.angularEpsilon ?? 1e-5;
-  const rayCount =
-    props.rayCount + (vertexSampling ? 2 * ISOVISTS_RAYS_PER_ENDPOINT * props.segments.length : 0);
+  const rayCount = calculateIsovistRayCount(
+    id,
+    baseRayCount,
+    props.segments.length,
+    props.sampling ?? 'uniform'
+  );
   const tolerance = props.tolerance ?? 1e-6;
   const viewpointCount = props.positions.length;
   const segmentCount = props.segments.length;
-  validateRequirement(
-    id,
-    !vertexSampling || rayCount <= ISOVISTS_MAXIMUM_VERTEX_SAMPLED_RAY_COUNT,
-    `rayCount plus ${2 * ISOVISTS_RAYS_PER_ENDPOINT} rays per obstacle segment must be at most ${ISOVISTS_MAXIMUM_VERTEX_SAMPLED_RAY_COUNT} when sampling is 'vertices'`
-  );
   validateRequirement(
     id,
     Number.isFinite(angularEpsilon) &&
@@ -105,18 +162,6 @@ export function addIsovistsRecipe<Parameters>(
     `angularEpsilon must be a finite number in (0, ${ISOVISTS_MAXIMUM_ANGULAR_EPSILON})`
   );
   validateRequirement(id, viewpointCount > 0, 'positions must have at least 1 row');
-  validateRequirement(
-    id,
-    segmentCount > 0 && segmentCount <= URBAN_MAXIMUM_OBSTACLE_SEGMENT_COUNT,
-    `segments must have between 1 and ${URBAN_MAXIMUM_OBSTACLE_SEGMENT_COUNT} rows`
-  );
-  validateRequirement(
-    id,
-    Number.isSafeInteger(rayCount) &&
-      rayCount >= ISOVISTS_MINIMUM_RAY_COUNT &&
-      rayCount <= ISOVISTS_MAXIMUM_RAY_COUNT,
-    `rayCount must be an integer, and the total rays per viewpoint must be in [${ISOVISTS_MINIMUM_RAY_COUNT}, ${ISOVISTS_MAXIMUM_RAY_COUNT}]`
-  );
   validateRequirement(
     id,
     Number.isFinite(maximumDistance) && maximumDistance > 0,
@@ -129,68 +174,56 @@ export function addIsovistsRecipe<Parameters>(
   );
   const output = props.output;
   const rayRows = viewpointCount * rayCount;
-  const obstacleBVH =
-    resolveUrbanObstacleIndex(props.obstacleIndex, segmentCount) === 'bvh'
-      ? addUrbanObstacleBVH(graph, {
-          id: `${id}-obstacles`,
-          operation: id,
-          segments: props.segments,
-          tolerance
-        })
-      : undefined;
-  const viewpointClassifications = classifyUrbanViewpoints(graph, {
+  const inputs = {positions: props.positions, segments: props.segments};
+  validateUrbanLandscapeRecipeViews(
+    graph,
     id,
-    positions: props.positions,
-    segments: props.segments,
-    tolerance,
-    obstacleBVH,
-    region: props.region,
-    output: output?.viewpointClassifications
-  });
-  const angles = getRecipeView(graph, `${id}-angles`, 'float32', rayRows, output?.angles);
-  graph.add(
-    createRecipeKernelNode(graph, {
-      id: `${id}-angular-events`,
-      operation: id,
-      invocationCount: viewpointCount,
-      workgroupSize: 2,
-      bindings: [
-        {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-        {name: 'segments', view: props.segments, type: 'f32', access: 'read'},
-        {name: 'angles', view: angles, type: 'f32', access: 'read_write'}
-      ],
-      declarations: GUARDED_ATAN2_WGSL,
-      // Per-viewpoint loops run over the ray capacity (at most 4096 for 'vertices' sampling).
-      body: vertexSampling
-        ? `let origin=vec2<f32>(positions[positionsOffset+2u*index],positions[positionsOffset+2u*index+1u]);
-for(var ray=0u;ray<${props.rayCount}u;ray++){
-  angles[anglesOffset+index*${rayCount}u+ray]=6.283185307179586*f32(ray)/${props.rayCount}.0;
-}
-for(var endpoint=0u;endpoint<${props.segments.length * 2}u;endpoint++){
-  let point=vec2<f32>(segments[segmentsOffset+2u*endpoint],segments[segmentsOffset+2u*endpoint+1u])-origin;
-  // The second argument is a coordinate difference, which can be -0.0 (contract section 11).
-  let center=guardedAtan2(point.y,point.x);
-  for(var side=0u;side<3u;side++){
-    var angle=center+(f32(side)-1.0)*${angularEpsilon};
-    angle=angle-floor(angle/6.283185307179586)*6.283185307179586;
-    angles[anglesOffset+index*${rayCount}u+${props.rayCount}u+3u*endpoint+side]=angle;
-  }
-}
-for(var position=1u;position<${rayCount}u;position++){
-  let value=angles[anglesOffset+index*${rayCount}u+position];
-  var insertion=position;
-  loop{
-    if(insertion==0u||angles[anglesOffset+index*${rayCount}u+insertion-1u]<=value){break;}
-    angles[anglesOffset+index*${rayCount}u+insertion]=angles[anglesOffset+index*${rayCount}u+insertion-1u];
-    insertion--;
-  }
-  angles[anglesOffset+index*${rayCount}u+insertion]=value;
-}`
-        : `for(var ray=0u;ray<${rayCount}u;ray++){
-  angles[anglesOffset+index*${rayCount}u+ray]=6.283185307179586*f32(ray)/${rayCount}.0;
-}`
-    })
+    inputs,
+    {
+      endpoints: {view: output?.endpoints, format: 'float32x2', length: rayRows},
+      distances: {view: output?.distances, format: 'float32', length: rayRows},
+      segments: {view: output?.segments, format: 'uint32', length: rayRows},
+      validity: {view: output?.validity, format: 'uint32', length: rayRows},
+      measures: {view: output?.measures, format: 'float32x4', length: viewpointCount},
+      angles: {view: output?.angles, format: 'float32', length: rayRows},
+      viewpointClassifications: {
+        view: output?.viewpointClassifications,
+        format: 'uint32',
+        length: viewpointCount
+      }
+    },
+    [
+      {reads: inputs, writes: {viewpointClassifications: output?.viewpointClassifications}},
+      {reads: inputs, writes: {angles: output?.angles}},
+      {
+        reads: {...inputs, angles: output?.angles},
+        writes: {distances: output?.distances, segments: output?.segments}
+      },
+      {
+        reads: {
+          positions: props.positions,
+          angles: output?.angles,
+          viewpointClassifications: output?.viewpointClassifications
+        },
+        writes: {
+          endpoints: output?.endpoints,
+          distances: output?.distances,
+          segments: output?.segments,
+          validity: output?.validity
+        }
+      },
+      {
+        reads: {
+          positions: props.positions,
+          endpoints: output?.endpoints,
+          validity: output?.validity
+        },
+        writes: {measures: output?.measures}
+      }
+    ]
   );
+  // Resolve all overrides before classification or BVH construction appends any commands.
+  const angles = getRecipeView(graph, `${id}-angles`, 'float32', rayRows, output?.angles);
   const endpoints = getRecipeView(
     graph,
     `${id}-endpoints`,
@@ -207,6 +240,74 @@ for(var position=1u;position<${rayCount}u;position++){
     'float32x4',
     viewpointCount,
     output?.measures
+  );
+  const classificationOutput = getRecipeView(
+    graph,
+    `${id}-viewpoint-classifications`,
+    'uint32',
+    viewpointCount,
+    output?.viewpointClassifications
+  );
+  const obstacleBVH =
+    resolveUrbanObstacleIndex(props.obstacleIndex, segmentCount) === 'bvh'
+      ? addUrbanObstacleBVH(graph, {
+          id: `${id}-obstacles`,
+          operation: id,
+          segments: props.segments,
+          tolerance
+        })
+      : undefined;
+  const viewpointClassifications = classifyUrbanViewpoints(graph, {
+    id,
+    positions: props.positions,
+    segments: props.segments,
+    tolerance,
+    obstacleBVH,
+    region: props.region,
+    output: classificationOutput
+  });
+  graph.add(
+    createRecipeKernelNode(graph, {
+      id: `${id}-angular-events`,
+      operation: id,
+      invocationCount: viewpointCount,
+      workgroupSize: 2,
+      bindings: [
+        {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+        {name: 'segments', view: props.segments, type: 'f32', access: 'read'},
+        {name: 'angles', view: angles, type: 'f32', access: 'read_write'}
+      ],
+      declarations: GUARDED_ATAN2_WGSL,
+      // Per-viewpoint loops run over the ray capacity (at most 4096 for 'vertices' sampling).
+      body: vertexSampling
+        ? `let origin=vec2<f32>(positions[positionsOffset+2u*index],positions[positionsOffset+2u*index+1u]);
+for(var ray=0u;ray<${baseRayCount}u;ray++){
+  angles[anglesOffset+index*${rayCount}u+ray]=6.283185307179586*f32(ray)/${baseRayCount}.0;
+}
+for(var endpoint=0u;endpoint<${props.segments.length * 2}u;endpoint++){
+  let point=vec2<f32>(segments[segmentsOffset+2u*endpoint],segments[segmentsOffset+2u*endpoint+1u])-origin;
+  // The second argument is a coordinate difference, which can be -0.0 (contract section 11).
+  let center=guardedAtan2(point.y,point.x);
+  for(var side=0u;side<3u;side++){
+    var angle=center+(f32(side)-1.0)*${angularEpsilon};
+    angle=angle-floor(angle/6.283185307179586)*6.283185307179586;
+    angles[anglesOffset+index*${rayCount}u+${baseRayCount}u+3u*endpoint+side]=angle;
+  }
+}
+for(var position=1u;position<${rayCount}u;position++){
+  let value=angles[anglesOffset+index*${rayCount}u+position];
+  var insertion=position;
+  loop{
+    if(insertion==0u||angles[anglesOffset+index*${rayCount}u+insertion-1u]<=value){break;}
+    angles[anglesOffset+index*${rayCount}u+insertion]=angles[anglesOffset+index*${rayCount}u+insertion-1u];
+    insertion--;
+  }
+  angles[anglesOffset+index*${rayCount}u+insertion]=value;
+}`
+        : `for(var ray=0u;ray<${rayCount}u;ray++){
+  angles[anglesOffset+index*${rayCount}u+ray]=6.283185307179586*f32(ray)/${rayCount}.0;
+}`
+    })
   );
   // Raw nearest hit per ray. Segment finiteness is already part of the viewpoint classification
   // (a non-finite segment classifies every viewpoint as 3), so the rays do not re-check it.
@@ -304,8 +405,9 @@ output[outputOffset+4u*index+3u]=f32(valid);`
       positions: props.positions,
       obstacles: props.segments,
       rayCount,
+      baseRayCount,
       maximumDistance,
-      angularSpacing: (2 * Math.PI) / props.rayCount,
+      angularSpacing: (2 * Math.PI) / baseRayCount,
       sampling: props.sampling ?? 'uniform',
       angularEpsilon,
       tolerance,

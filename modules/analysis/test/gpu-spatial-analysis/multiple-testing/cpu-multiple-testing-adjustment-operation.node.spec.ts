@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {
   createTransientView,
   GPUCommandGraph,
@@ -16,6 +16,74 @@ import {
 } from '../../../src/gpu-spatial-analysis/multiple-testing/cpu-multiple-testing-adjustment-operation';
 import {GPUMultipleTestingAdjustmentOperation} from '../../../src/gpu-spatial-analysis/multiple-testing/gpu-multiple-testing-adjustment-operation';
 import {MULTIPLE_TESTING_FIXTURES} from './multiple-testing-fixtures';
+
+it('allocates only observed rows for a family above the GPU size boundary', async () => {
+  const OriginalFloat64Array = Float64Array;
+  vi.stubGlobal(
+    'Float64Array',
+    new Proxy(OriginalFloat64Array, {
+      construct(target, argumentsList) {
+        if (typeof argumentsList[0] === 'number' && argumentsList[0] > 16) {
+          throw new Error(`logical family allocation: ${argumentsList[0]} rows`);
+        }
+        return Reflect.construct(target, argumentsList);
+      }
+    })
+  );
+  try {
+    // Independent SciPy digamma(m+1) + Euler-gamma fixtures; no family-sized reference loops.
+    for (const [familySize, harmonic] of [
+      [2 ** 31 - 1, 22.06477826202701],
+      [2 ** 31, 22.06477826249267],
+      [2 ** 31 + 1, 22.06477826295833],
+      [0xffffffff, 22.757925442703367]
+    ]) {
+      for (const method of [
+        'none',
+        'bonferroni',
+        'holm',
+        'benjamini-hochberg',
+        'benjamini-yekutieli'
+      ] as const) {
+        const result = computeMultipleTestingAdjustmentOnCPU(
+          Float32Array.of(2 ** -40),
+          method,
+          familySize
+        );
+        const expected =
+          2 ** -40 *
+          (method === 'none' ? 1 : familySize) *
+          (method === 'benjamini-yekutieli' ? harmonic : 1);
+        expect(result.adjustedPValues).toEqual(Float32Array.of(expected));
+        expect(result.testedCount[0]).toBe(familySize);
+        const pValues = Float32Array.of(2 ** -40);
+        const operation = new CPUMultipleTestingAdjustmentOperation({
+          pValues: 'probabilities',
+          rowCount: 1,
+          method,
+          minimumFamilySize: familySize,
+          output: {adjustedPValues: 'adjusted', testedCount: 'family'}
+        });
+        const outputs = await operation.execute({
+          inputs: {
+            pValues: {
+              format: 'float32',
+              length: 1,
+              chunks: [{values: pValues, length: 1}],
+              pack: () => pValues
+            }
+          }
+        });
+        expect(outputs).toEqual({
+          adjusted: Float32Array.of(expected),
+          family: Uint32Array.of(familySize)
+        });
+      }
+    }
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
 
 it('delegates GPU method validation to contributor construction at lowering', () => {
   const device = createNullWebGPUDevice();

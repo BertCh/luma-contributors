@@ -39,7 +39,7 @@ import {dggs} from '@luma.gl/shaders';
 
 import {CELL_KEY_WGSL} from '../cell-aggregation/cell-keys';
 import type {GPUCellWordOrder} from '../cell-aggregation/gpu-cell-aggregation';
-import type {GPUCellFamily} from '../cell-indexing/cell-index-families';
+import type {GPUCellTopologyFamily} from '../cell-indexing/cell-index-families';
 import {
   getCellGridPathGridKernel,
   GPU_CELL_GRID_PATH_S2_MAXIMUM_RADIUS
@@ -97,7 +97,7 @@ export type GPUCellGridPathProps = {
   /** Prefix for generated node IDs. Defaults to `'cell-grid-path'`. */
   id?: string;
   /** Cell family: H3 local-grid paths, Quadbin Chebyshev paths, or S2 edge paths. */
-  family: GPUCellFamily;
+  family: GPUCellTopologyFamily;
   /** S2 only: optional distance bound, at most 0xfffffffe. Omit for every valid equal-level pair. */
   maximumSearchRadius?: number;
   /** Input `uint32x2` origin cells, one per pair. */
@@ -118,10 +118,12 @@ export type GPUCellGridPathProps = {
 };
 
 /**
- * H3 grid distance and grid path cells for arbitrary cell pairs (`gridDistance`, `gridPathCells`,
- * `are_neighbor_cells` as `distance == 1`).
+ * Grid distances and paths for H3, Quadbin and S2 cell pairs.
  *
- * One kernel; each thread converts both cells to H3 local IJK coordinates anchored at the origin
+ * Quadbin uses Chebyshev paths; S2 uses edge paths between equal-level cells at levels 0–30.
+ * H3 supplies `gridDistance`, `gridPathCells`, and `are_neighbor_cells` as `distance == 1`.
+ *
+ * For H3, one kernel converts both cells to local IJK coordinates anchored at the origin
  * (`cellToLocalIjk`, including the pentagon rotations) and takes the IJK distance, which equals
  * H3 `gridDistance` for every pair H3 accepts and is undefined exactly where H3 fails (checked
  * against h3-js on pentagon neighborhoods and random pairs at resolutions 1-15). Distances of any

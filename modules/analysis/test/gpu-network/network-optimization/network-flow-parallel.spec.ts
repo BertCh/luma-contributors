@@ -335,6 +335,34 @@ it('rewrites all state after per-frame capacities change on the same compiled gr
   expect(read(output.status.iterationLimitReached)).toEqual([0]);
 });
 
+it('keeps the validated reference shape and output binding after caller props mutate', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createOptimizationHarness(device);
+  const flow = harness.output('uint32', 1);
+  const cut = harness.output('uint32', 2);
+  const summary = harness.output('uint32', 8);
+  const replacementFlow = harness.output('uint32', 1);
+  const props: GPUNetworkFlowProps = {
+    solver: 'reference',
+    nodeCount: 2,
+    maximumAugmentations: 1,
+    edges: harness.input('uint32x2', Uint32Array.of(0, 1)),
+    capacities: harness.input('uint32', Uint32Array.of(3)),
+    parameters: harness.input('uint32', Uint32Array.of(0, 1, 0xffffffff)),
+    output: {flow, cut, summary}
+  };
+  const contributor = new GPUNetworkFlow(props);
+  props.nodeCount = 129;
+  props.maximumAugmentations = 65537;
+  props.output.flow = replacementFlow;
+  const read = await harness.run(contributor);
+  expect(read(flow)).toEqual([3]);
+  expect(read(replacementFlow)).toEqual([0]);
+  expect(read(cut)).toEqual([1, 0]);
+  expect(read(summary).slice(0, 5)).toEqual([1, 1, 3, 0, 1]);
+});
+
 it('accepts a full unsigned capacity and rejects overflowing capacity totals', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

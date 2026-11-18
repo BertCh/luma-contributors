@@ -147,6 +147,8 @@ it('GPUSolarPosition validates views and schedules one node', () => {
     )
   ).toThrow(/parameters/);
   const shared = createTransientView(graph, 'shared', 'float32', 10);
-  expect(() => create({}, {altitude: shared, azimuth: shared})).toThrow(/share buffers/);
+  expect(() => create({}, {altitude: shared, azimuth: shared})).toThrow(
+    /^solar-position output\[1\] chunk 0 logical byte ranges must not overlap \(writable storage\)$/
+  );
   device.destroy();
 });

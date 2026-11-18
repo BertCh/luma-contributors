@@ -31,15 +31,33 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
+import {TRIANGLE_CIRCUMCIRCLE_WGSL} from '../shared/triangle-circumcircle-wgsl';
 import {
   createTriangleEdgeAdjacencyNodes,
   TRIANGLE_ADJACENCY_NONE
 } from '../shared/triangle-edge-adjacency';
 
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {createPackedGroupHullNodes} from './packed-group-hull';
 
 /** Three edges of two uint32 words per reserved triangle use uint32 word addresses. */
 const CONCAVE_HULL_MAXIMUM_TRIANGLE_RESERVATION = Math.floor(0xffffffff / 6);
+
+function getConcaveHullOutputViews(
+  output: GPUConcaveHullProps['output'] | GPUGroupConcaveHullPackedOutput
+): GraphDataView[] {
+  return [
+    ...getGraphOutputViews(output),
+    ...('groups' in output
+      ? [
+          output.groups.triangleOffsets,
+          output.groups.triangleCounts,
+          output.groups.edgeOffsets,
+          output.groups.edgeCounts
+        ]
+      : [])
+  ];
+}
 
 function validateConcaveHullRadius(id: string, value: number): void {
   validateFiniteNumber(id, 'maximumCircumradius', value, 0);
@@ -100,7 +118,7 @@ function validateConcaveHullOutput(
     output.status.converged.length >= convergedRows,
     `output.status.converged must have at least ${convergedRows} rows`
   );
-  const outputViews = getGraphOutputViews(output);
+  const outputViews = getConcaveHullOutputViews(output);
   validateRequirement(
     id,
     new Set(outputViews.map(view => view.buffer)).size === outputViews.length,
@@ -114,6 +132,8 @@ function validateConcaveHullOutput(
  * This deliberately uses radius-based alpha-shape semantics, not GEOS's ratio-based concave hull.
  * Isolated points and lines produce no area boundary. Capacity is 2*n-5 triangles and three edges
  * per triangle. Boundary edges can be passed to ring assembly without geometric intersection work.
+ * A triangle-relative power-of-two-scaled circumcircle avoids intermediate overflow/underflow;
+ * unrepresentable radii and degenerate triangles are not retained.
  */
 export class GPUConcaveHull implements GPUCommandNodeProducer {
   readonly id: string;
@@ -237,6 +257,7 @@ function createRetainTrianglesNode<Parameters>(
     ],
     // The radius threshold is a pipeline override so changing it does not rebuild the module.
     declarations: `${EXACT_ORIENTATION_WGSL}
+${TRIANGLE_CIRCUMCIRCLE_WGSL}
 override MAXIMUM_CIRCUMRADIUS: f32;
 fn position(row: u32) -> vec2f { return vec2f(positions[positionsOffset + row * 2u], positions[positionsOffset + row * 2u + 1u]); }`,
     constants: {MAXIMUM_CIRCUMRADIUS: Math.fround(props.maximumCircumradius)},
@@ -248,18 +269,8 @@ if (index < count[countOffset]${
     }) {
   let triangle = vec3<u32>(triangles[trianglesOffset + index * 3u], triangles[trianglesOffset + index * 3u + 1u], triangles[trianglesOffset + index * 3u + 2u]);
   let first = position(triangle.x); let second = position(triangle.y); let third = position(triangle.z);
-  // Exact orientation rejects only truly collinear triangles; results 0 and 2 are degenerate.
-  let orientation = orientSign(first, second, third);
-  if (orientation != 0 && orientation != 2) {
-    // Circumcenter relative to the first vertex avoids cancellation far from the origin.
-    let firstEdge = second - first; let secondEdge = third - first;
-    let denominator = 2.0 * (firstEdge.x * secondEdge.y - firstEdge.y * secondEdge.x);
-    let firstLength = dot(firstEdge, firstEdge); let secondLength = dot(secondEdge, secondEdge);
-    let offset = vec2f((secondEdge.y * firstLength - firstEdge.y * secondLength) / denominator, (firstEdge.x * secondLength - secondEdge.x * firstLength) / denominator);
-    let radius = length(offset);
-    // NaN and infinite radii fail the comparison and are not retained.
-    retain = radius <= MAXIMUM_CIRCUMRADIUS;
-  }
+  let circle = getTriangleCircumcircle(first, second, third);
+  retain = circle.orientation != 0 && circle.radius <= MAXIMUM_CIRCUMRADIUS;
 }
 validity[validityOffset + index] = u32(retain);`
   });
@@ -301,26 +312,60 @@ edgeValidity[edgeValidityOffset + index] = u32(boundary);`
   });
 }
 
-export type GPUGroupConcaveHullProps = GPUConcaveHullProps & {
+/** Compact group-major alpha triangles and boundary edges, with ranges for every group. */
+export type GPUGroupConcaveHullPackedOutput = GPUConcaveHullProps['output'] & {
+  /** Boundary-edge count; requiredCount equals count and overflow is zero with the full reservation. */
+  status: GPUConcaveHullProps['output']['status'] & {
+    count: GraphDataView<'uint32'>;
+    requiredCount: GraphDataView<'uint32'>;
+    overflow: GraphDataView<'uint32'>;
+  };
+  groups: {
+    triangleOffsets: GraphDataView<'uint32'>;
+    triangleCounts: GraphDataView<'uint32'>;
+    edgeOffsets: GraphDataView<'uint32'>;
+    edgeCounts: GraphDataView<'uint32'>;
+  };
+};
+
+export type GPUGroupConcaveHullProps = Omit<GPUConcaveHullProps, 'output'> & {
   groupIds: GraphDataView<'uint32'>;
   /** Explicit group capacity; groups outside [0,groupCount) are omitted. */
   groupCount: number;
-};
+} & (
+    | {layout?: 'fixed'; output: GPUConcaveHullProps['output']}
+    | {layout: 'packed'; output: GPUGroupConcaveHullPackedOutput}
+  );
 
 /**
- * Independent alpha complexes for GPU-resident labels. Each group reserves 2*n-5 triangles and
- * three boundary slots per triangle; converged has one row per group. All groups are triangulated
+ * Independent alpha complexes for GPU-resident labels. The default fixed layout reserves 2*n-5
+ * triangles per group and three boundary slots per triangle; converged has one row per group. All groups are triangulated
  * by one group-aware {@link GPUDelaunayTessellation} (sites are keyed by group, so no triangle
  * mixes groups and one pipeline serves every group), then retained and outlined once in a packed
  * list and scattered into the per-group slots. Work is O(n log n) in the point count; only the
- * output reservation is O(groupCount*n), so callers should still bound cluster capacity.
- * Triangles of group `g` start at slot `g*(2*n-5)` in ascending canonical order, and its edges at
+ * fixed output reservation is O(groupCount*n). With layout 'packed', the reservation is only
+ * 2*n-5 triangles total and three edges per triangle; retained triangles and boundary edges are
+ * compact group-major prefixes, with group offsets/counts (including empty groups). Validity is
+ * one in each compact prefix and zero in padding. Nonconverged groups contribute no geometry.
+ * In the fixed layout, triangles of group `g` start at slot `g*(2*n-5)` in ascending canonical order, and its edges at
  * `3*` that slot.
  */
 export class GPUGroupConcaveHull implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUGroupConcaveHullProps;
   constructor(props: GPUGroupConcaveHullProps) {
+    // Keep validated topology and output maps independent of later caller mutations; borrow views.
+    props =
+      props.layout === 'packed'
+        ? {
+            ...props,
+            output: {
+              ...props.output,
+              status: {...props.output.status},
+              groups: {...props.output.groups}
+            }
+          }
+        : {...props, output: {...props.output, status: {...props.output.status}}};
     this.id = props.id ?? 'group-concave-hull';
     this.props = props;
     validateCapacity(this.id, 'groupCount', props.groupCount);
@@ -334,9 +379,48 @@ export class GPUGroupConcaveHull implements GPUCommandNodeProducer {
       props.groupIds.length === props.positions.length,
       `groupIds must have exactly ${props.positions.length} rows (one per position, as GPUDelaunayTessellation requires)`
     );
-    const capacity = getDelaunayMaximumTriangleCount(props.positions.length) * props.groupCount;
+    validateRequirement(
+      this.id,
+      props.layout === undefined || props.layout === 'fixed' || props.layout === 'packed',
+      "layout must be 'fixed' or 'packed'"
+    );
+    const capacity =
+      getDelaunayMaximumTriangleCount(props.positions.length) *
+      (props.layout === 'packed' ? 1 : props.groupCount);
+    if (props.layout === 'packed') {
+      validateRequirement(
+        this.id,
+        Boolean(props.output.groups),
+        'output.groups is required for packed layout'
+      );
+      for (const name of [
+        'triangleOffsets',
+        'triangleCounts',
+        'edgeOffsets',
+        'edgeCounts'
+      ] as const) {
+        const view: GraphDataView<'uint32'> = props.output.groups[name];
+        validateRequirement(
+          this.id,
+          Boolean(view),
+          `output.groups.${name} is required for packed layout`
+        );
+        validateSinglePackedView(view, ['uint32'], `${this.id} output.groups.${name}`);
+        validateViewLength(this.id, `output.groups.${name}`, view, props.groupCount);
+      }
+      for (const name of ['count', 'requiredCount', 'overflow'] as const) {
+        const view: GraphDataView<'uint32'> = props.output.status[name];
+        validateRequirement(
+          this.id,
+          Boolean(view),
+          `output.status.${name} is required for packed layout`
+        );
+        validateSinglePackedView(view, ['uint32'], `${this.id} output.status.${name}`);
+        validateViewLength(this.id, `output.status.${name}`, view, 1);
+      }
+    }
     validateConcaveHullOutput(this.id, props.output, capacity, props.groupCount);
-    validateGraphOutputsDisjointFromInputs(this.id, getGraphOutputViews(props.output), [
+    validateGraphOutputsDisjointFromInputs(this.id, getConcaveHullOutputViews(props.output), [
       props.positions,
       props.groupIds
     ]);
@@ -352,7 +436,7 @@ export class GPUGroupConcaveHull implements GPUCommandNodeProducer {
       positions: props.positions,
       groupIds: props.groupIds,
       ...Object.fromEntries(
-        getGraphOutputViews(output).map((view, index) => [`output ${index}`, view])
+        getConcaveHullOutputViews(output).map((view, index) => [`output ${index}`, view])
       )
     });
     validateDelaunayScratch(graph.device, id, pointCount, groupCount);
@@ -429,6 +513,23 @@ export class GPUGroupConcaveHull implements GPUCommandNodeProducer {
           edgeValidity: packedEdgeValidity
         })
       );
+    }
+    if (props.layout === 'packed') {
+      nodes.push(
+        ...createPackedGroupHullNodes(graph, {
+          id,
+          groupCount,
+          triangles: packedTriangles,
+          triangleValidity: packedValidity,
+          edges: packedEdges,
+          edgeValidity: packedEdgeValidity,
+          groupOffsets,
+          groupCounts,
+          groupConverged,
+          output: props.output
+        })
+      );
+      return nodes;
     }
     // Per-group slots: clear, then scatter the packed lists to `group * capacity + rank`.
     if (capacity > 0) {

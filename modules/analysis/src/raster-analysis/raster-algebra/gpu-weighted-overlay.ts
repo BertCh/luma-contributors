@@ -24,6 +24,7 @@ import {
   getRasterAlgebraStackNodeCount,
   getRasterAlgebraStackNodes,
   getRasterAlgebraStackViews,
+  getNamedRasterAlgebraStackViews,
   isRasterAlgebraBandStack,
   validateRasterAlgebraStack
 } from './raster-algebra-stack-input';
@@ -186,14 +187,18 @@ export class GPUWeightedOverlay implements GPUCommandNodeProducer {
     validateRasterAlgebraView(id, 'output.scoreRange', output.scoreRange, 'float32', 2);
     validateRasterAlgebraAliasing(
       id,
-      [output.score, output.validity, output.scoreRange],
-      [
-        ...getRasterAlgebraStackViews(props.stack),
-        props.mask,
-        props.parameters,
-        props.remapBreaks,
-        props.remapValues
-      ]
+      {
+        'output.score': output.score,
+        'output.validity': output.validity,
+        'output.scoreRange': output.scoreRange
+      },
+      {
+        ...getNamedRasterAlgebraStackViews(props.stack),
+        mask: props.mask,
+        parameters: props.parameters,
+        remapBreaks: props.remapBreaks,
+        remapValues: props.remapValues
+      }
     );
   }
 

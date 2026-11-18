@@ -4,6 +4,14 @@
 
 import type {Device} from '@luma.gl/core';
 import {
+  snapshotWeightsFields,
+  snapshotWeightsPort
+} from '../spatial-weights/weights-construction-snapshot';
+import {
+  createWeightsIncompleteNodes,
+  validateWeightsLossSources
+} from '../spatial-weights/spatial-weights-loss';
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -18,6 +26,7 @@ import {
 import {
   getStorageBindingElementLimit,
   validateCapacity,
+  validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
@@ -143,11 +152,15 @@ export type GPUSkaterRegionsProps = {
    * stays one region, `regionCount` is the tree count and every `cutEdges` entry is
    * `GPU_SKATER_NO_CUT`. Without it, a region that holds a non-finite attribute has no finite
    * cut gain and is never cut, while the other regions are cut as usual.
+   * Its `candidateOverflow` word instead suppresses the entire partition and cut log, just as
+   * either weights loss flag does. Allocate at least `GPU_MINIMUM_SPANNING_TREE_STATUS.length`
+   * words; attribute invalidity and incomplete adjacency are independent conditions.
    */
   treeStatus?: GraphDataView<'uint32'>;
   /**
    * Compile-time cap on the region count, and the number of unrolled greedy steps minus the
-   * islands: `maximumRegionCount - 1` steps are compiled. Must be at least 2.
+   * islands: at most `min(maximumRegionCount - 1, rows - 1)` steps are compiled. Must be at least
+   * 2. Optional cut logs still hold `maximumRegionCount - 1` entries; unused entries are sentinel/0.
    */
   maximumRegionCount: number;
   /**
@@ -163,10 +176,10 @@ export type GPUSkaterRegionsProps = {
 export type GPUSkaterRegionsOutput = {
   /**
    * Region label per row (`rows` entries): the smallest-depth row of the region, which is the
-   * row nearest its tree's root, so labels are row indices.
+   * row nearest its tree's root, so labels are row indices. Either weights loss flag makes all labels 0xffffffff.
    */
   labels: GraphDataView<'uint32'>;
-  /** Optional one-row count of regions after the greedy steps (trees plus cuts). */
+  /** Optional region count; zero/unavailable when weights are incomplete. */
   regionCount?: GraphDataView<'uint32'>;
   /**
    * Optional cut log with `maximumRegionCount - 1` entries: the edge slot (stable edge ID) of
@@ -229,8 +242,33 @@ export class GPUSkaterRegions implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUSkaterRegionsProps;
+  /** Upper bound of emitted nodes after limiting cuts to the attainable `rows - 1`. */
+  readonly estimatedCommandNodeCount: number;
+  private readonly stepCount: number;
 
   constructor(props: GPUSkaterRegionsProps) {
+    const captured = snapshotWeightsFields(props, [
+      'id',
+      'weights',
+      'treeEdgeFlags',
+      'componentLabels',
+      'treeStatus',
+      'values',
+      'columnCount',
+      'maximumRegionCount',
+      'parameters',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      weights: snapshotWeightsPort(captured.weights),
+      output: snapshotWeightsFields(captured.output, [
+        'labels',
+        'regionCount',
+        'cutEdges',
+        'cutGains'
+      ])
+    });
     const id = props.id ?? 'skater-regions';
     this.id = id;
     this.props = props;
@@ -239,6 +277,23 @@ export class GPUSkaterRegions implements GPUCommandNodeProducer {
     const {output} = props;
     validateCapacity(id, 'columnCount', columnCount, 1, GPU_SKATER_MAXIMUM_COLUMNS);
     validateCapacity(id, 'maximumRegionCount', props.maximumRegionCount, 2);
+    this.stepCount = Math.min(props.maximumRegionCount - 1, Math.max(0, rows - 1));
+    // Eleven fixed nodes, rank jumps, eight nodes per cut, and the optional loss fold/outputs.
+    const lossSources = validateWeightsLossSources(id, [props.weights]);
+    const lossInputCount = lossSources.length + Number(Boolean(props.treeStatus));
+    const lossNodeCount = lossInputCount
+      ? Math.ceil(lossInputCount / 7) +
+        1 +
+        Number(Boolean(output.regionCount)) +
+        Number(Boolean(output.cutEdges)) +
+        Number(Boolean(output.cutGains))
+      : 0;
+    this.estimatedCommandNodeCount =
+      11 +
+      Math.max(1, Math.ceil(Math.log2(Math.max(2, 2 * rows)))) +
+      8 * this.stepCount +
+      lossNodeCount;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateSinglePackedView(props.values, ['float32'], `${id} values`);
     if (props.values.length !== rows * columnCount) {
       throw new Error(`${id} values length must equal rows * columnCount`);
@@ -293,7 +348,8 @@ export class GPUSkaterRegions implements GPUCommandNodeProducer {
         props.treeEdgeFlags,
         props.componentLabels,
         props.weights.offsets,
-        props.weights.neighbors
+        props.weights.neighbors,
+        ...lossSources
       ]
     );
   }
@@ -316,7 +372,8 @@ export class GPUSkaterRegions implements GPUCommandNodeProducer {
       output.cutEdges,
       output.cutGains,
       weights.offsets,
-      weights.neighbors
+      weights.neighbors,
+      ...validateWeightsLossSources(id, [weights])
     ]);
     const rows = weights.offsets.length - 1;
     const capacity = weights.neighbors.length;
@@ -334,10 +391,22 @@ export class GPUSkaterRegions implements GPUCommandNodeProducer {
       rows * (2 + columnCount),
       maximumStatisticCount
     );
-    const stepCount = props.maximumRegionCount - 1;
+    const stepCount = this.stepCount;
     const statsStride = 2 + columnCount;
     const stateLength = STATE_LOG + 2 * stepCount;
 
+    const treeCandidateOverflow = props.treeStatus
+      ? graph.createDataView(props.treeStatus.buffer, {
+          format: 'uint32',
+          byteOffset:
+            props.treeStatus.byteOffset + 4 * GPU_MINIMUM_SPANNING_TREE_STATUS.candidateOverflow,
+          length: 1
+        })
+      : undefined;
+    const loss = createWeightsIncompleteNodes(graph, id, [
+      weights,
+      {status: {candidateOverflow: treeCandidateOverflow}}
+    ]);
     const twin = createTransientView(graph, `${id}-twin`, 'uint32', capacity);
     const arcFlags = createTransientView(graph, `${id}-arc-flags`, 'uint32', capacity);
     const arcInfo = createTransientView(graph, `${id}-arc-info`, 'uint32', capacity);
@@ -430,7 +499,7 @@ ${ADDITION_ROUNDING_ERROR_WGSL}`;
     const tourDeclarations = `${constants}\n${tourFunctions}`;
     const infoDeclarations = `${constants}\n${infoFunctions}`;
 
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const nodes: GPUCommandNode<Parameters>[] = [...loss.nodes];
 
     // 1. Twin slots and live-arc flags from the tree edge flags. Slots past the last row's end
     // (spare capacity) must read as dead arcs, so every flag is cleared first.
@@ -552,6 +621,16 @@ ${ADDITION_ROUNDING_ERROR_WGSL}`;
         bindings: [
           {name: 'parameters', view: props.parameters, type: 'u32', access: 'read'},
           {name: 'state', view: state, type: 'u32', access: 'read_write'},
+          ...(loss.view
+            ? [
+                {
+                  name: 'weightsLoss',
+                  view: loss.view,
+                  type: 'u32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : []),
           ...(props.treeStatus
             ? [
                 {
@@ -573,6 +652,7 @@ ${ADDITION_ROUNDING_ERROR_WGSL}`;
   if (index == STATE_TARGET) {
     // A nonzero invalid count from the tree sets the target to 0, so no step finds a candidate.
     word = ${props.treeStatus ? `select(min(parameters[parametersOffset + ${PARAMETER_REGION_COUNT}u], MAXIMUM_REGIONS), 0u, treeStatus[treeStatusOffset + ${GPU_MINIMUM_SPANNING_TREE_STATUS.invalidCount}u] > 0u)` : `min(parameters[parametersOffset + ${PARAMETER_REGION_COUNT}u], MAXIMUM_REGIONS)`};
+    ${loss.view ? 'if (weightsLoss[weightsLossOffset] != 0u) { word = 0u; }' : ''}
   } else if (index == STATE_MINIMUM_SIZE) {
     word = max(parameters[parametersOffset + ${PARAMETER_MINIMUM_REGION_SIZE}u], 1u);
   } else if (index >= STATE_LOG && ((index - STATE_LOG) % 2u) == 0u) {
@@ -1044,7 +1124,7 @@ ${ADDITION_ROUNDING_ERROR_WGSL}`;
           operation: OPERATION,
           variant: 'publish',
           bindings: publishBindings,
-          invocationCount: Math.max(stepCount, 1),
+          invocationCount: output.cutEdges || output.cutGains ? props.maximumRegionCount - 1 : 1,
           declarations,
           body: `${
             output.regionCount
@@ -1056,9 +1136,36 @@ ${ADDITION_ROUNDING_ERROR_WGSL}`;
     let key = state[stateOffset + STATE_LOG + 2u * index + 1u];
     ${output.cutEdges ? 'cutEdgesOut[cutEdgesOutOffset + index] = edge;' : ''}
     ${output.cutGains ? 'cutGainsOut[cutGainsOutOffset + index] = select(0.0, bitcast<f32>(key - 1u), key != 0u);' : ''}
+  } else {
+    ${output.cutEdges ? 'cutEdgesOut[cutEdgesOutOffset + index] = NONE;' : ''}
+    ${output.cutGains ? 'cutGainsOut[cutGainsOutOffset + index] = 0.0;' : ''}
   }`
         })
       );
+    }
+    if (loss.view) {
+      for (const [name, view, type, value, length] of [
+        ['labels', output.labels, 'u32', '0xffffffffu', rows],
+        ['region-count', output.regionCount, 'u32', '0u', 1],
+        ['cut-edges', output.cutEdges, 'u32', '0xffffffffu', props.maximumRegionCount - 1],
+        ['cut-gains', output.cutGains, 'f32', 'bitcast<f32>(nanBits)', props.maximumRegionCount - 1]
+      ] as const)
+        if (view)
+          nodes.push(
+            createWGSLKernelNode(graph, {
+              id: `${id}-incomplete-${name}`,
+              operation: OPERATION,
+              invocationCount: length,
+              bindings: [
+                {name: 'loss', view: loss.view, type: 'u32', access: 'read'},
+                {name: 'result', view, type, access: 'read_write'}
+              ],
+              body: `if (loss[lossOffset] != 0u) {
+                ${type === 'f32' ? 'var nanBits = 0x7fc00000u;' : ''}
+                result[resultOffset + index] = ${value};
+              }`
+            })
+          );
     }
     return nodes;
   }

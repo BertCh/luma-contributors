@@ -10,7 +10,7 @@ import {GPUTerrainStreamNetwork} from '../../../src/gpu-terrain/hydrology/gpu-te
 import {
   getRasterGridGeoreference,
   getRasterGroundCellSize
-} from '../../../src/analysis-core/raster-grid';
+} from '../../../src/analysis-core/contracts/raster-grid';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   createInputBuffer,

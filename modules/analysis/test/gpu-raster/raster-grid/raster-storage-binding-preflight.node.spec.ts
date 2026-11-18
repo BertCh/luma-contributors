@@ -442,7 +442,11 @@ cases.push(
         output: {
           positions: view('float32x2', 32),
           ringOffsets: view('uint32', 3),
-          status: {count: view('uint32', 1), overflow: view('uint32', 1)}
+          status: {
+            count: view('uint32', 1),
+            overflow: view('uint32', 1),
+            edgeOverflow: view('uint32', 1)
+          }
         }
       })
   },
@@ -715,7 +719,11 @@ it('preflights nested ring shell BVH padding before declaring boundary edges', (
         positions: view('float32x2', 8),
         ringOffsets: view('uint32', 6),
         ringShells: view('uint32', 5),
-        status: {count: view('uint32', 1), overflow: view('uint32', 1)}
+        status: {
+          count: view('uint32', 1),
+          overflow: view('uint32', 1),
+          edgeOverflow: view('uint32', 1)
+        }
       }
     });
     Object.defineProperty(device, 'limits', {

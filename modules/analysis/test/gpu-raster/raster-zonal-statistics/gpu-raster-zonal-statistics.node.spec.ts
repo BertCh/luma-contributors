@@ -389,9 +389,14 @@ it('GPURasterZonalStatistics zone-reduce kernel passes its workgroup size', () =
 });
 
 it('getGPURasterZonalStatisticsParameterValues writes the grid words', () => {
-  expect(GPU_RASTER_ZONAL_STATISTICS_PARAMETER_LENGTH).toBe(4);
+  expect(GPU_RASTER_ZONAL_STATISTICS_PARAMETER_LENGTH).toBe(7);
   const grid = makeGPURasterMetadata({width: 2, height: 3, cellSize: [10, 20], origin: [0, 60]});
-  expect(Array.from(getGPURasterZonalStatisticsParameterValues(grid))).toEqual([10, 20, 60, 0]);
+  expect(Array.from(getGPURasterZonalStatisticsParameterValues(grid))).toEqual([
+    10, 20, 60, 0, -20, 30, 1
+  ]);
+  expect(Array.from(getGPURasterZonalStatisticsParameterValues(grid, new Float32Array(4)))).toEqual(
+    [10, 20, 60, 0]
+  );
   expect(() => getGPURasterZonalStatisticsParameterValues(grid, new Float32Array(3))).toThrow(
     /4 values/
   );

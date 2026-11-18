@@ -35,11 +35,12 @@ import {
 
 /** Packed rows and getGPUTrajectoryThinningParameterValues layout. */
 export type CPUTrajectoryThinningInput = CPUTrajectoryRows & {parameters: Float32Array};
-/** GPU search budgets do not constrain the CPU walk. */
+/** An explicit search budget binds each anchor's forward search. */
 export type CPUTrajectoryThinningOptions = {
   mode: GPUTrajectoryThinningMode;
   capacity: number;
   spatialContext?: GPUSpatialContext;
+  maximumSearchRows?: number;
 };
 /** All ports, including pre-capacity keep flags and capacity-clamped per-track offsets. */
 export type CPUTrajectoryThinningResult = {
@@ -59,7 +60,8 @@ export type CPUTrajectoryThinningResult = {
  * track endpoints. Validity describes the full selection even when output capacity overflows.
  *
  * What differs from the GPU contributor:
- * - Searches are uncapped; maximumSearchRows is ignored and candidateOverflow is always zero.
+ * - Omitted maximumSearchRows leaves CPU searches uncapped; explicit caps split the chain and
+ *   set candidateOverflow exactly as on the GPU.
  * - Distances and time differences use float64 with one output rounding; Int64 subtraction is
  *   exact before conversion. Threshold decisions at float32 rounding boundaries can differ.
  * - Decreasing trackOffsets after clamping throw an Error.
@@ -75,6 +77,8 @@ export function computeTrajectoryThinningOnCPU(
 ): CPUTrajectoryThinningResult {
   const id = 'trajectory-thinning';
   validateCapacity(id, 'capacity', options.capacity);
+  const maximumSearchRows = options.maximumSearchRows ?? Number.MAX_SAFE_INTEGER;
+  validateCapacity(id, 'maximumSearchRows', maximumSearchRows, 1, Number.MAX_SAFE_INTEGER);
   validateRequirement(
     id,
     ['minimum-distance', 'minimum-time'].includes(options.mode),
@@ -125,17 +129,28 @@ export function computeTrajectoryThinningOnCPU(
     const end = trackOffsets[track + 1];
     if (start < end) {
       let anchor = start;
-      keepRow(anchor);
-      for (let row = start + 1; row < end; row++) {
-        const difference =
-          options.mode === 'minimum-time'
-            ? getTimeDifference(row, anchor)
-            : getCPUTrajectoryDistance(input.positions, row, anchor, radius);
-        if (difference >= tolerance || row === end - 1) {
-          keepRow(row);
-          anchor = row;
+      while (anchor < end) {
+        keepRow(anchor);
+        const searchEnd = Math.min(end, anchor + 1 + maximumSearchRows);
+        let successor = anchor;
+        for (let row = anchor + 1; row < searchEnd; row++) {
+          const difference =
+            options.mode === 'minimum-time'
+              ? getTimeDifference(row, anchor)
+              : getCPUTrajectoryDistance(input.positions, row, anchor, radius);
+          if (difference >= tolerance) {
+            successor = row;
+            break;
+          }
         }
+        if (successor === anchor && searchEnd < end) {
+          successor = searchEnd;
+          result.candidateOverflow[0] = 1;
+        }
+        if (successor === anchor) break;
+        anchor = successor;
       }
+      if (result.validity[end - 1] === 0) keepRow(end - 1);
     }
     result.outputTrackOffsets[track + 1] = Math.min(requiredCount, capacity);
   }
@@ -145,13 +160,21 @@ export function computeTrajectoryThinningOnCPU(
   return result;
 }
 
-/** CPU twin; drops maximumSearchRows and performs one sequential walk per track. */
+/** CPU twin; follows the same explicitly bounded anchor chain as the contributor. */
 export class CPUTrajectoryThinningOperation extends GPUCPUOperation {
   constructor(props: TrajectoryThinningOperationProps) {
     const id = props.id ?? 'trajectory-thinning';
     validateCapacity(id, 'rowCount', props.rowCount, 0);
     validateCapacity(id, 'trackCount', props.trackCount);
     validateCapacity(id, 'capacity', props.capacity);
+    if (props.maximumSearchRows !== undefined)
+      validateCapacity(
+        id,
+        'maximumSearchRows',
+        props.maximumSearchRows,
+        1,
+        Number.MAX_SAFE_INTEGER
+      );
     validateRequirement(
       id,
       ['minimum-distance', 'minimum-time'].includes(props.mode),

@@ -178,14 +178,15 @@ it('RTS-03 nearest pixels returns the NumPy top-k by cosine for each query', asy
     queries: harness.floats(reference.queries),
     resultCount: k,
     output: {
-      pixelIds: harness.output('ids', 'uint32', reference.queryCount * k),
+      pixelRows: harness.output('rows', 'uint32', reference.queryCount * k),
       scores: harness.output('scores', 'float32', reference.queryCount * k),
       resultCounts: harness.output('counts', 'uint32', reference.queryCount)
     }
   });
-  search.addToGraph(harness.graph);
+  expect(() => Array.prototype.pop.call(search.getCommandNodes(harness.graph))).toThrow(TypeError);
+  harness.graph.add(search);
   const output = await harness.run([]);
-  expect(output['ids']).toEqual(ids);
+  expect(output['rows']).toEqual(ids);
   expect(getMaximumAbsoluteDifference(output['scores'], scores)).toBeLessThan(3e-6);
   expect(output['counts']).toEqual(new Array(reference.queryCount).fill(k));
 });
@@ -250,7 +251,8 @@ it('RTS-03 k-means recovers the blobs and their means', async () => {
       status: harness.output('status', 'uint32', 3)
     }
   });
-  kmeans.addToGraph(harness.graph);
+  expect(() => Array.prototype.pop.call(kmeans.getCommandNodes(harness.graph))).toThrow(TypeError);
+  harness.graph.add(kmeans);
   const result = await harness.run([]);
   const blob = reference.blob;
   // Map each found cluster to the blob that holds most of its pixels, and require a bijection.

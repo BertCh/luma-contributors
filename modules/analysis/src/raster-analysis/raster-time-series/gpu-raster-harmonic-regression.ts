@@ -26,7 +26,6 @@ import {
   validateCommandNodeBudget,
   validateFiniteNumber,
   validateGPUStorageBindingByteLength,
-  validateGraphOutputsDisjointFromInputs,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -222,20 +221,32 @@ export class GPURasterHarmonicRegression<
     this.estimatedCommandNodeCount =
       this.chunkProps.length * (this.mode === 'storage' && props.output.fitted ? 2 : 1);
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
-    validateRasterTimeSeriesViews(id, this.getInputs(), this.getOutputs());
-    if (this.mode === 'storage') {
-      for (const chunk of this.chunkProps) {
-        if (!chunk.output.fitted) continue;
-        // Publication reads coefficients and summary while writing fitted. Disjoint ranges in
-        // one physical buffer still cannot mix read-only and writable bindings in that dispatch.
-        // validateRasterTimeSeriesViews has already required one handle per physical buffer.
-        validateGraphOutputsDisjointFromInputs(
-          `${id} output.fitted`,
-          [chunk.output.fitted],
-          [chunk.output.coefficients, chunk.output.summary]
-        );
-      }
-    }
+    const inputs = this.getInputs();
+    const outputs = this.getOutputs();
+    validateRasterTimeSeriesViews(id, inputs, outputs, [
+      {
+        inputs,
+        outputs:
+          this.mode === 'reference' ? outputs : outputs.filter(view => view !== props.output.fitted)
+      },
+      ...(this.mode === 'storage'
+        ? this.chunkProps.flatMap(chunk =>
+            chunk.output.fitted
+              ? [
+                  {
+                    inputs: [
+                      chunk.parameters,
+                      chunk.dateAxis.acquisitionTimes,
+                      chunk.output.coefficients,
+                      chunk.output.summary
+                    ],
+                    outputs: [chunk.output.fitted]
+                  }
+                ]
+              : []
+          )
+        : [])
+    ]);
   }
 
   private getInputs(): RasterTimeSeriesScalarView[] {

@@ -99,7 +99,8 @@ export function createCellRig(device: Device) {
       maximums: output(`${name}-maximums`, capacity, 'float32'),
       count: output(`${name}-count`, 1, 'uint32'),
       requiredCount: output(`${name}-required`, 1, 'uint32'),
-      overflow: output(`${name}-overflow`, 1, 'uint32')
+      overflow: output(`${name}-overflow`, 1, 'uint32'),
+      candidateOverflow: output(`${name}-candidate-overflow`, 1, 'uint32')
     };
     const view: GPUCellTable = {
       cells: columns.cells.view,
@@ -111,7 +112,8 @@ export function createCellRig(device: Device) {
       status: {
         count: columns.count.view,
         requiredCount: columns.requiredCount.view,
-        overflow: columns.overflow.view
+        overflow: columns.overflow.view,
+        candidateOverflow: columns.candidateOverflow.view
       }
     };
     return {columns, view, capacity};
@@ -134,7 +136,8 @@ export async function compareCellTable(
   label: string,
   reference: string,
   table: CellTableBuffers,
-  expected: CellTableFixture
+  expected: CellTableFixture,
+  candidateOverflow = 0
 ) {
   const compare = (
     metric: string,
@@ -143,8 +146,16 @@ export async function compareCellTable(
     absolute = 0,
     relative = 0
   ) => compareParity(className, label, reference, metric, actual, wanted, absolute, relative);
-  for (const field of ['count', 'requiredCount', 'overflow'] as const)
+  for (const field of ['count', 'requiredCount'] as const)
     compare(field, await readUint32(table.columns[field].buffer, 1), [expected[field]]);
+  // The stored fixtures predate the split: requiredCount still describes this destination,
+  // while their overflow includes finer-level loss. Assert each current flag independently.
+  compare('overflow', await readUint32(table.columns.overflow.buffer, 1), [
+    Number(expected.requiredCount > table.capacity)
+  ]);
+  compare('candidateOverflow', await readUint32(table.columns.candidateOverflow.buffer, 1), [
+    candidateOverflow
+  ]);
   for (const field of ['cells', 'counts', 'sums'] as const) {
     const components = field === 'counts' ? 1 : 2;
     const tail = Array((table.capacity - expected.count) * components).fill(
@@ -185,4 +196,5 @@ export function writeCellTable(
   table.columns.count.buffer.write(new Uint32Array([expected.count]));
   table.columns.requiredCount.buffer.write(new Uint32Array([expected.requiredCount]));
   table.columns.overflow.buffer.write(new Uint32Array([overflow]));
+  table.columns.candidateOverflow.buffer.write(new Uint32Array([0]));
 }

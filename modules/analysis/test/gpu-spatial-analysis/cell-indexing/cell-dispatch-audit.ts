@@ -4,7 +4,7 @@
 
 import {GraphDataView, type GPUCommandNode} from '@luma.gl/graph/gpu-core';
 import {expect} from 'vitest';
-import {getCoreDefaultBuffer} from '../../../src/analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../../src/analysis-core/contracts/network-topology';
 
 /** Checks Metal's physical-buffer usage scope, independently of logical/aligned byte overlap. */
 export function expectCellStorageScopes<Parameters>(

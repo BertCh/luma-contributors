@@ -1,6 +1,7 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
 
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
@@ -56,8 +57,9 @@ export class GPULineLoopRemoval implements GPUCommandNodeProducer {
   readonly props: GPULineLoopRemovalProps;
   constructor(props: GPULineLoopRemovalProps) {
     this.id = props.id ?? 'line-loop-removal';
-    this.props = props;
     resolveGPUSpatialContext(this.id, props.spatialContext);
+    props = {...props, lines: snapshotSinglePartGeometryPort(this.id, 'lines', props.lines)};
+    this.props = props;
     validateSinglePackedView(props.lines.positions, ['float32x2'], this.id);
     validateSinglePackedView(props.lines.lineOffsets, ['uint32'], this.id);
     validateCapacity(this.id, 'lines.lineOffsets.length', props.lines.lineOffsets.length, 2);

@@ -30,6 +30,80 @@ const HEIGHT = 5;
 const SLICES = 12;
 const CELLS = WIDTH * HEIGHT;
 
+it('H1 six identical hot slices classify persistent with finite trends on the first submission', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new RecipeTestFixture(device, 'space-time-initial-settings');
+  try {
+    // One event in cell 0 each month; the other 24 cells are empty in every slice.
+    // With radius/window zero its six Gi* scores are identical and significantly positive.
+    const words = Uint32Array.from(
+      Array.from({length: 6}, (_, month) => {
+        const time = Date.UTC(2023, month, 1);
+        return [time % 2 ** 32, Math.floor(time / 2 ** 32)];
+      }).flat()
+    );
+    const category = fixture.output('category', 'uint32', 25);
+    const trendZ = fixture.output('trend-z', 'float32', 25);
+    const trendP = fixture.output('trend-p', 'float32', 25);
+    const giZScores = fixture.output('gi-z', 'float32', 150);
+    const hotSliceCount = fixture.output('hot-count', 'uint32', 25);
+    addSpaceTimeHotSpotsRecipe(fixture.graph, {
+      timestamps: fixture.input('timestamps', words, 'uint32x2', 6),
+      calendarParameters: fixture.input(
+        'calendar',
+        getGPUCalendarBucketsParameterValues(0),
+        'sint32',
+        2
+      ),
+      slices: {step: 'month', origin: {year: 2023}, count: 6},
+      cells: {
+        kind: 'lattice',
+        positions: fixture.input('positions', new Float32Array(12).fill(0.5), 'float32x2', 6),
+        width: 5,
+        height: 5,
+        bounds: [0, 0, 5, 5]
+      },
+      settings: {
+        radius: 0,
+        temporalWindow: 0,
+        persistentFraction: 0.75,
+        minimumTrendSliceCount: 3,
+        sporadicRequiresFinalSlice: false
+      },
+      parameters: fixture.parameterBuffer(
+        'settings',
+        'float32',
+        GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH
+      ),
+      outputs: {
+        category: category.view,
+        trendZ: trendZ.view,
+        trendP: trendP.view,
+        giZScores: giZScores.view,
+        hotSliceCount: hotSliceCount.view
+      }
+    });
+    fixture.run();
+    expect((await fixture.readUint32(category, 25))[0]).toBe(4);
+    expect((await fixture.readUint32(hotSliceCount, 25))[0]).toBe(6);
+    const scores = (await fixture.readFloat32(giZScores, 150)).slice(0, 6);
+    for (const score of scores) {
+      expect(Number.isFinite(score)).toBe(true);
+      expect(score).toBeGreaterThan(3);
+      expect(score).toBe(scores[0]);
+    }
+    const z = (await fixture.readFloat32(trendZ, 25))[0];
+    const p = (await fixture.readFloat32(trendP, 25))[0];
+    expect(Number.isFinite(z)).toBe(true);
+    expect(Number.isFinite(p)).toBe(true);
+    expect(z).toBe(0);
+    expect(p).toBe(1);
+  } finally {
+    fixture.destroy();
+  }
+});
+
 /** Events on a 6x5 lattice over twelve months of 2023: a hot block with growing counts, a cold block. */
 function createEvents() {
   const random = createSeededRandom(31);
@@ -140,8 +214,8 @@ it('addSpaceTimeHotSpotsRecipe counts events into a cube and classifies emerging
       testedRowsDefinition: 'valid space-time bins'
     });
     expect(Object.getPrototypeOf(recipe.inference)).toBe(Object.prototype);
-    // Calendar, emerging hot spots and color scale: the atomic count path adds no contributor.
-    expect(recipe.contributors.length).toBe(3);
+    // Calendar, period index, four glue stages, emerging hot spots and color scale.
+    expect(recipe.contributors.length).toBe(8);
     fixture.run();
 
     // The dense cube equals the CPU histogram exactly.
@@ -334,11 +408,14 @@ it('addSpaceTimeHotSpotsRecipe atomic counts match the sorted GPUGroupStatistics
       height: HEIGHT,
       bounds: [0, 0, WIDTH, HEIGHT]
     } as const;
+    const candidateLoss = fixture.output('candidate-loss', 'uint32', 1);
+    const weightsLoss = fixture.output('weights-loss', 'uint32', 1);
     const ids = {
       kind: 'ids',
       cellIds: fixture.input('cell-ids', Uint32Array.from(cellIds), 'uint32', eventCount),
       cellCount: CELLS,
       weights: {
+        status: {candidateOverflow: candidateLoss.view, overflow: weightsLoss.view},
         offsets: fixture.input('offsets', Uint32Array.from(offsets), 'uint32', CELLS + 1),
         neighbors: fixture.input(
           'neighbors',
@@ -365,7 +442,13 @@ it('addSpaceTimeHotSpotsRecipe atomic counts match the sorted GPUGroupStatistics
         const cube = fixture.output(`${name}-cube`, 'uint32', binCount);
         const giZScores = fixture.output(`${name}-gi-z`, 'float32', binCount);
         const category = fixture.output(`${name}-category`, 'uint32', CELLS);
-        const groupOverflow = fixture.output(`${name}-overflow`, 'uint32', 1);
+        const groupOverflow = fixture.output(`${name}-overflow`, 'uint32', 4);
+        groupOverflow.buffer.write(Uint32Array.of(91, 92, 93, 94));
+        const groupOverflowView = fixture.graph.createDataView(groupOverflow.view.buffer, {
+          format: 'uint32',
+          length: 2,
+          byteOffset: 4
+        });
         const recipe = addSpaceTimeHotSpotsRecipe(fixture.graph, {
           id: name,
           timestamps,
@@ -380,12 +463,25 @@ it('addSpaceTimeHotSpotsRecipe atomic counts match the sorted GPUGroupStatistics
             giZScores: giZScores.view,
             category: category.view,
             // Asking for the overflow flag selects the sorted GPUGroupStatistics path.
-            ...(path === 'sorted' ? {status: {groupOverflow: groupOverflow.view}} : {})
+            ...(path === 'sorted' ? {status: {groupOverflow: groupOverflowView}} : {})
           }
         });
-        expect(recipe.contributors.length, name).toBe(path === 'sorted' ? 3 : 2);
+        expect(recipe.contributors.length, name).toBe(path === 'sorted' ? 9 : 7);
         // The slice-range stage is always present; the sorted path adds cube-counts.
-        expect(recipe.status.stages.length, name).toBe(path === 'sorted' ? 2 : 1);
+        expect(recipe.status.stages.length, name).toBe(
+          (path === 'sorted' ? 2 : 1) + (cellsName === 'ids' ? 1 : 0)
+        );
+        if (cellsName === 'ids') {
+          expect(recipe.status.stages.find(stage => stage.stage === 'weights')?.status).toEqual(
+            ids.weights.status
+          );
+          expect(recipe.status.stages.find(stage => stage.stage === 'weights')?.status).not.toBe(
+            ids.weights.status
+          );
+          expect(
+            recipe.status.stages.find(stage => stage.stage === 'weights')?.status.candidateOverflow
+          ).toBe(candidateLoss.view);
+        }
         runs.push({name, path, cube, giZScores, category, groupOverflow});
       }
     }
@@ -397,7 +493,9 @@ it('addSpaceTimeHotSpotsRecipe atomic counts match the sorted GPUGroupStatistics
       const atomicCube = await fixture.readUint32(atomic.cube, binCount);
       expect(atomicCube, atomic.name).toEqual([...expected]);
       expect(await fixture.readUint32(sorted.cube, binCount), sorted.name).toEqual(atomicCube);
-      expect(await fixture.readUint32(sorted.groupOverflow, 1), sorted.name).toEqual([0]);
+      expect(await fixture.readUint32(sorted.groupOverflow, 4), sorted.name).toEqual([
+        91, 0, 93, 94
+      ]);
       // Same cube, same downstream kernels: the float32 z-scores agree in every bit.
       expect(await fixture.readUint32(sorted.giZScores, binCount), sorted.name).toEqual(
         await fixture.readUint32(atomic.giZScores, binCount)
@@ -407,6 +505,16 @@ it('addSpaceTimeHotSpotsRecipe atomic counts match the sorted GPUGroupStatistics
       );
     }
     expect(expected[(3 * WIDTH + 2) * sliceCount + 4]).toBeGreaterThanOrEqual(160);
+    // Candidate-only loss stays visible without changing the independently binned cube.
+    candidateLoss.buffer.write(Uint32Array.of(1));
+    fixture.run();
+    expect(await fixture.readUint32(candidateLoss, 1)).toEqual([1]);
+    expect(await fixture.readUint32(weightsLoss, 1)).toEqual([0]);
+    for (const run of runs)
+      expect(await fixture.readUint32(run.cube, binCount)).toEqual([...expected]);
+    candidateLoss.buffer.write(Uint32Array.of(0));
+    fixture.run();
+    expect(await fixture.readUint32(candidateLoss, 1)).toEqual([0]);
   } finally {
     fixture.destroy();
   }

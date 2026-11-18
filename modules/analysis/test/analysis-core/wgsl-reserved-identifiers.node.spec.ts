@@ -4,6 +4,12 @@
 
 import {readFileSync} from 'node:fs';
 import {describe, expect, it} from 'vitest';
+import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUSkaterRegions} from '../../src/gpu-spatial-analysis/spatial-regionalization/gpu-skater-regions';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../src/testing/gpu-contributor-test-utils';
 // Share the showcase CLI's word list and checks so the two gates cannot drift.
 import {
   findNonFiniteBitcasts,
@@ -18,6 +24,37 @@ function makeTemplate(source: string): string {
 }
 
 describe('WGSL source safety', () => {
+  it('SKATER cut-gain suppression emits a runtime NaN without a constant non-finite bitcast', () => {
+    const device = createNullWebGPUDevice();
+    try {
+      const graph = new GPUCommandGraph(device);
+      let serial = 0;
+      const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
+        createTransientView(graph, `skater-nan-${serial++}`, format, length);
+      const contributor = new GPUSkaterRegions({
+        weights: {
+          offsets: view('uint32', 4),
+          neighbors: view('uint32', 4),
+          weights: view('float32', 4),
+          status: {candidateOverflow: view('uint32', 1)}
+        },
+        values: view('float32', 3),
+        treeEdgeFlags: view('uint32', 4),
+        componentLabels: view('uint32', 3),
+        maximumRegionCount: 2,
+        parameters: view('uint32', 2),
+        output: {labels: view('uint32', 3), cutGains: view('float32', 1)}
+      });
+      const kernels = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph)).filter(
+        kernel => kernel.id.endsWith('-incomplete-cut-gains')
+      );
+      expect(kernels).toHaveLength(1);
+      expect(findNonFiniteBitcasts(kernels[0].source)).toEqual([]);
+    } finally {
+      device.destroy();
+    }
+  });
+
   it('scans every module source directory and the showcase without a GPU', () => {
     const roots = getSourceRoots();
     expect(roots.some(root => root.endsWith('/modules/analysis/src'))).toBe(true);

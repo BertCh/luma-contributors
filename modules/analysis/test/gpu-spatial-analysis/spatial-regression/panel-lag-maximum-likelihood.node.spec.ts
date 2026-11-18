@@ -66,6 +66,104 @@ function createFixture(rows = 64) {
   return {device, graph, view, sur, panel};
 }
 
+it('tiled panel profile retains the variance minimum when a nonzero floor hides rho differences', () => {
+  const fixture = createFixture();
+  try {
+    recordWGSLKernelNodes(fixture.graph);
+    const contributor = new GPUSpatialPanelLagMaximumLikelihood({
+      ...fixture.panel,
+      effects: 'unit',
+      fitMode: 'tiled',
+      eigenvalues: fixture.view('float32', 4)
+    });
+    const node = contributor
+      .getCommandNodes(fixture.graph)
+      .find(node => node.id.endsWith('-profile-rho'))!;
+    const record = getWGSLKernelNodeRecord(fixture.graph, node.id)!;
+    const memory = createCPUGraphMemory();
+    const model = record.bindings.find(binding => binding.name === 'model')!.view;
+    const modelValues = new Float32Array(model.length);
+    // With a zero spectrum, 16 residual squares and 16 lag squares, the objective is
+    // 8*log(1 + (rho - 0.5)^2). Its unique minimizer is exactly 0.5. Evaluating the
+    // rounded variance first loses the squared offset whenever it is below half an ulp.
+    modelValues[1] = 0.5;
+    modelValues[2] = 16;
+    memory.write(model, modelValues);
+    memory.write(
+      record.bindings.find(binding => binding.name === 'partial')!.view,
+      Float32Array.of(16, 0)
+    );
+    const bindings = Object.fromEntries(
+      record.bindings.map((binding, index) => {
+        const range = getViewBindingRange(binding.view);
+        return [
+          index,
+          new Float32Array(
+            memory.getBuffer(binding.view.buffer).backing,
+            range.offset,
+            range.size / 4
+          ).slice()
+        ];
+      })
+    );
+    new WgslExec(
+      new WgslParser().parse(record.source.replace(/^\s*_\s*=[^;]*;/gm, ''))
+    ).dispatchWorkgroups(
+      'main',
+      [...record.workgroups],
+      {0: bindings},
+      {constants: record.constants}
+    );
+    const actual = bindings[record.bindings.findIndex(binding => binding.name === 'model')];
+    expect(Number.isFinite(actual[1])).toBe(true);
+    expect(Math.abs(actual[1] - 0.5)).toBeLessThan(1e-6);
+    expect(actual[2]).toBe(1);
+    expect(actual[3]).toBeCloseTo(-8 * (1 + Math.log(2 * Math.PI) + Math.log(16)), 4);
+  } finally {
+    fixture.device.destroy();
+  }
+});
+
+it('reference panel objective preserves the dense determinant likelihood and its constants', () => {
+  const fixture = createFixture();
+  try {
+    recordWGSLKernelNodes(fixture.graph);
+    const node = new GPUSpatialPanelLagMaximumLikelihood(fixture.panel)
+      .getCommandNodes(fixture.graph)
+      .find(node => node.id.endsWith('-random-fit'))!;
+    const record = getWGSLKernelNodeRecord(fixture.graph, node.id)!;
+    // Zero dense weights isolate the log-variance term. This checks the generated likelihood
+    // function without claiming these weights satisfy the full fitter's normalization checks.
+    const source =
+      record.source.slice(0, record.source.indexOf('@compute')) +
+      `
+@compute @workgroup_size(1) fn main() {
+  let direct = vec4<f32>(32.0, 16.0, 0.5, 0.0);
+  results[resultsOffset] = objective(0.5, direct);
+  results[resultsOffset + 1u] = objective(0.7, direct);
+  results[resultsOffset + 2u] = objective(0.5, vec4<f32>(16.0, 16.0, 0.5, 0.0));
+}`;
+    const bindings = Object.fromEntries(
+      record.bindings.map((binding, index) => {
+        const range = getViewBindingRange(binding.view);
+        return [index, new Float32Array(range.size / 4)];
+      })
+    );
+    new WgslExec(new WgslParser().parse(source)).dispatchWorkgroups(
+      'main',
+      [1, 1, 1],
+      {0: bindings},
+      {constants: record.constants}
+    );
+    const actual = bindings[record.bindings.findIndex(binding => binding.name === 'results')];
+    expect(actual[0]).toBeCloseTo(8 * Math.log(2), 5);
+    expect(actual[1]).toBeCloseTo(8 * Math.log(2 + (Math.fround(0.7) - 0.5) ** 2), 5);
+    expect(actual[2]).toBe(0);
+  } finally {
+    fixture.device.destroy();
+  }
+});
+
 it('panel-lag uses shared LU for its determinant and inverse and audits generated identifiers', () => {
   const fixture = createFixture();
   try {

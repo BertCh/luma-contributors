@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {Texture} from '@luma.gl/core';
 import {
   createTransientView,
   validatePackedView,
@@ -10,7 +11,7 @@ import {
   type GraphDataView,
   type GraphTextureView
 } from '@luma.gl/graph/gpu-core';
-import {GPURasterNeighborhood} from '@luma.gl/graph/gpu-raster';
+import {GPURaster, GPURasterNeighborhood} from '@luma.gl/graph/gpu-raster';
 import {GPURasterTextureToBuffer} from '@luma.gl/graph/gpu-raster';
 import type {
   GPURasterBand,
@@ -20,10 +21,14 @@ import type {
 } from '@luma.gl/graph/gpu-raster';
 import {
   captureGraphCommandNodes,
+  validateFiniteNumber,
+  validateRequirement,
   validateGraphViewsBelongToGraph
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_VALUE_WGSL} from '../analysis-core/kernels/wgsl-common';
-import type {GPURasterCellSizeMode} from '../analysis-core/raster-grid';
+import {snapshotConstructionFields} from '../analysis-core/kernels/construction-snapshot';
+import type {GPURasterCellSizeMode} from '../analysis-core/contracts/raster-grid';
+import {validateRasterWritableDispatches} from './raster-grid/raster-view-validation';
 
 /** WGSL helper shared by raster and terrain kernels. @internal */
 export const RASTER_WGSL_HELPERS = /* wgsl */ IS_FINITE_VALUE_WGSL;
@@ -82,7 +87,8 @@ export const RASTER_GRID_ORTHOGONALITY_TOLERANCE = 1e-6;
  * step lengths `[hypot(a, d), hypot(b, e), sqrt of their squares]` are the ground lengths of the
  * moves only when the column axis `(a, d)` and the row axis `(b, e)` are perpendicular; on a
  * sheared grid the two diagonals have different lengths, `hypot(a + b, d + e)` and
- * `hypot(a - b, d - e)`. Rotated grids pass.
+ * `hypot(a - b, d - e)`. Rotated grids pass. Both lengths must be positive finite float32
+ * values. The normalized-axis dot product avoids overflow/underflow from coordinate units.
  *
  * @internal
  */
@@ -90,11 +96,21 @@ export function validateRasterGridOrthogonal(id: string, grid: GPURasterMetadata
   const [a, b, , d, e] = grid.affine;
   const columnLength = Math.hypot(a, d);
   const rowLength = Math.hypot(b, e);
-  if (
-    !(Math.abs(a * b + d * e) <= RASTER_GRID_ORTHOGONALITY_TOLERANCE * columnLength * rowLength)
-  ) {
+  const packedColumnLength = Math.fround(columnLength);
+  const packedRowLength = Math.fround(rowLength);
+  validateRequirement(
+    id,
+    packedColumnLength > 0 &&
+      Number.isFinite(packedColumnLength) &&
+      packedRowLength > 0 &&
+      Number.isFinite(packedRowLength),
+    'grid.affine pixel-axis lengths must be positive and finite after float32 conversion'
+  );
+  const normalizedDotProduct =
+    (a / columnLength) * (b / rowLength) + (d / columnLength) * (e / rowLength);
+  if (!(Math.abs(normalizedDotProduct) <= RASTER_GRID_ORTHOGONALITY_TOLERANCE)) {
     throw new Error(
-      `${id} grid.affine must have orthogonal pixel axes (a * b + d * e = 0 within ${RASTER_GRID_ORTHOGONALITY_TOLERANCE} of the axis lengths): a sheared grid has two different diagonal step lengths; resample it to a rotated or axis-aligned grid`
+      `${id} grid.affine must have orthogonal pixel axes (normalized axis dot product within ${RASTER_GRID_ORTHOGONALITY_TOLERANCE} of zero): a sheared grid has two different diagonal step lengths; resample it to a rotated or axis-aligned grid`
     );
   }
 }
@@ -123,20 +139,17 @@ export function validateParameterTarget(
   }
 }
 
-/** Throws when output buffers repeat or alias an input buffer. @internal */
+/** Checks logical ranges and co-bound storage usage, resolving imported physical buffers. @internal */
 export function validateRasterBuffersDistinct(
   id: string,
   outputs: readonly (GraphDataView | undefined)[],
   inputs: readonly (GraphDataView | undefined)[]
 ): void {
-  const outputBuffers = outputs.filter(view => view !== undefined).map(view => view.buffer);
-  const inputBuffers = inputs.filter(view => view !== undefined).map(view => view.buffer);
-  if (
-    new Set(outputBuffers).size !== outputBuffers.length ||
-    outputBuffers.some(buffer => inputBuffers.includes(buffer))
-  ) {
-    throw new Error(`${id} outputs must not share buffers with each other or with inputs`);
-  }
+  validateRasterWritableDispatches(
+    id,
+    inputs.filter(view => view !== undefined),
+    outputs.filter(view => view !== undefined)
+  );
 }
 
 /** Returns the buffer views of a raster band (values for buffer bands, plus validity). @internal */
@@ -145,6 +158,46 @@ export function getRasterBandViews(band: GPURasterBand): GraphDataView[] {
     ...(band.storage.kind === 'buffer' ? [band.storage.values] : []),
     ...(band.validity ? [band.validity] : [])
   ];
+}
+
+/** Validates texture-backed analysis inputs through the public raster contract, without allocation. @internal */
+export function validateRasterTextureBand(
+  id: string,
+  band: GPURasterBand,
+  grid: GPURasterMetadata
+): void {
+  if (band.storage.kind === 'texture') {
+    validateRequirement(
+      id,
+      (band.storage.view.texture.usage & Texture.SAMPLE) !== 0,
+      'input.storage.view.texture.usage must include Texture.SAMPLE'
+    );
+    if (band.scale !== undefined) validateFiniteNumber(id, 'input.scale', band.scale);
+    if (band.offset !== undefined) validateFiniteNumber(id, 'input.offset', band.offset);
+    new GPURaster({id: `${id} input`, metadata: grid, bands: [band]});
+  }
+}
+
+/** Captures band metadata and bindings while retaining GPU view identities and per-frame contents. @internal */
+export function snapshotRasterBand(band: GPURasterBand): GPURasterBand {
+  const captured = snapshotConstructionFields(band, [
+    'id',
+    'format',
+    'storage',
+    'validity',
+    'noDataValue',
+    'scale',
+    'offset'
+  ]);
+  const storage = captured.storage;
+  // Read declared fields even when supplied by a prototype or non-enumerable getter.
+  return {
+    ...captured,
+    storage:
+      storage.kind === 'buffer'
+        ? snapshotConstructionFields(storage, ['kind', 'values'])
+        : snapshotConstructionFields(storage, ['kind', 'view', 'channel'])
+  } as GPURasterBand;
 }
 
 /** Throws when band storage or any texture belongs to a different graph. @internal */

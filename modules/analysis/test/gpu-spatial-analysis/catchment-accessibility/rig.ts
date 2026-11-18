@@ -8,7 +8,7 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
+import {getGPUVectorFormatInfo, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import type {GPUSpatialWeights} from '../../../src/gpu-spatial-analysis/spatial-weights/spatial-weights';
 import {
@@ -53,7 +53,11 @@ export class AnalysisRig {
 
   /** Imports a zero-filled output. */
   output<Format extends GPUVectorFormat>(format: Format, length: number): GraphDataView<Format> {
-    const buffer = createOutputBuffer(this.device, length);
+    const byteLength = length * getGPUVectorFormatInfo(format).byteLength;
+    const buffer = createOutputBuffer(
+      this.device,
+      Math.ceil(byteLength / Uint32Array.BYTES_PER_ELEMENT)
+    );
     buffer.write(new Uint32Array(buffer.byteLength / 4).fill(0x7f7f7f7f));
     this.buffers.push(buffer);
     const view = importGraphBuffer(this.graph, `output-${this.serial++}`, buffer, format, length);

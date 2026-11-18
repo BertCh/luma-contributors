@@ -1,6 +1,7 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
 
 import {
   createTransientView,
@@ -191,6 +192,7 @@ export class GPULineSplit implements GPUCommandNodeProducer {
   constructor(props: GPULineSplitProps) {
     this.id = props.id ?? 'line-split';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    props = {...props, lines: snapshotSinglePartGeometryPort(this.id, 'lines', props.lines)};
     this.props = props;
     const {id} = this;
     const {lines} = props;
@@ -351,8 +353,8 @@ ${IS_FINITE_BITS_WGSL}`,
         leafCapacity: props.leafCapacity,
         output: {
           pairs: {
-            leftIds: pairLeft,
-            rightIds: pairRight,
+            leftRows: pairLeft,
+            rightRows: pairRight,
             status: {count: pairCount, overflow: pairOverflow}
           },
           status: {uncertainCount},

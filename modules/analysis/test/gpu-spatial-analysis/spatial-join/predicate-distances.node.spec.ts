@@ -44,8 +44,8 @@ function createProps(graph: GPUCommandGraph, kind: GPUSpatialJoinGeometry['kind'
     candidateCapacity: 4,
     output: {
       pairs: {
-        leftIds: view('uint32', 4),
-        rightIds: view('uint32', 4),
+        leftRows: view('uint32', 4),
+        rightRows: view('uint32', 4),
         status: {count: view('uint32', 1), overflow: view('uint32', 1)}
       },
       relate: view('uint32', 4),
@@ -80,6 +80,7 @@ it('distance kernels parse for all geometry pairs with at most eight storage bin
       const withDistances = join.getCapacityPlan();
       const withoutDistances = new GPUSpatialPredicateJoin({
         ...props,
+        id: `${props.id}-without-distances`,
         output: {...props.output, weights: {...props.output.weights, distances: undefined}}
       }).getCapacityPlan();
       expect(
@@ -145,8 +146,8 @@ it('distance scratch checks the device binding limit before adding nodes', () =>
       ...props.output,
       pairs: {
         ...props.output.pairs,
-        leftIds: view('left', 'uint32'),
-        rightIds: view('right', 'uint32')
+        leftRows: view('left', 'uint32'),
+        rightRows: view('right', 'uint32')
       },
       relate: view('relate', 'uint32'),
       weights: {

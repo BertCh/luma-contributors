@@ -106,8 +106,8 @@ function createRun(
       prepared,
       distance: entry.radius,
       output: {
-        leftIds: pairLeft.view,
-        rightIds: pairRight.view,
+        leftRows: pairLeft.view,
+        rightRows: pairRight.view,
         status: {
           count: pairCount.view,
           requiredCount: pairRequired.view,

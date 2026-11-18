@@ -51,12 +51,12 @@ function getBoundBytes(nodes: readonly unknown[]): {id: string; bytes: number}[]
 function expectCoreLimits(nodes: readonly unknown[], device = createNullWebGPUDevice()): void {
   const sources = getGPUCommandNodeKernelSources(nodes);
   expect(sources.length).toBeGreaterThan(0);
-  for (const {id, source} of sources) {
+  for (const {id, source, constants} of sources) {
     expect(getStorageBindingCount(source), `${id} storage bindings`).toBeLessThanOrEqual(8);
-    expect(getPrivateMemoryBytes(source), `${id} private bytes`).toBeLessThanOrEqual(
+    expect(getPrivateMemoryBytes(source, constants), `${id} private bytes`).toBeLessThanOrEqual(
       CORE_PRIVATE_MEMORY_LIMIT_BYTES
     );
-    expect(getWorkgroupMemoryBytes(source), `${id} workgroup bytes`).toBeLessThanOrEqual(
+    expect(getWorkgroupMemoryBytes(source, constants), `${id} workgroup bytes`).toBeLessThanOrEqual(
       CORE_WORKGROUP_STORAGE_LIMIT_BYTES
     );
   }
@@ -141,7 +141,58 @@ function buildLocal(
   return {nodes: contributor.getCommandNodes(graph), device};
 }
 
+function createChunkedLocal(chunkCount: number) {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {
+    id: `limits-chunked-local-${serial++}`
+  });
+  const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
+    createTransientView(graph, `permutation-chunk-limits-${serial++}`, format, length);
+  const props = {
+    id: 'chunked-local-loss-budget',
+    statistic: 'localMoran' as const,
+    weights: {
+      rowCount: chunkCount,
+      chunks: Array.from({length: chunkCount}, (_, rowStart) => ({
+        rowStart,
+        rowCount: 1,
+        weights: {
+          offsets: view('uint32', 2),
+          neighbors: view('uint32', 1),
+          weights: view('float32', 1),
+          status: {overflow: view('uint32', 1), candidateOverflow: view('uint32', 1)}
+        }
+      }))
+    },
+    values: view('float32', chunkCount),
+    mask: view('uint32', chunkCount),
+    parameters: view('uint32', GPU_PERMUTATION_PARAMETER_LENGTH),
+    maximumPermutations: 7,
+    output: {
+      exceedances: view('uint32', chunkCount),
+      pseudoPValues: view('float32', chunkCount),
+      status: {overflow: view('uint32', 1)}
+    }
+  };
+  return {graph, props};
+}
+
 describe('GPULocalPermutationTest at core limits', () => {
+  it('bounds 96 chunks with distinct final and candidate loss processing', () => {
+    const {graph, props} = createChunkedLocal(96);
+    const contributor = new GPULocalPermutationTest(props);
+    const nodes = contributor.getCommandNodes(graph);
+    expect(nodes.filter(node => node.id.includes('-incomplete-analysis-'))).toHaveLength(192);
+    expect(nodes.filter(node => node.id.includes('-weights-overflow'))).toHaveLength(192);
+    expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
+  });
+
+  it('rejects 4100 chunks with distinct final and candidate loss words at construction', () => {
+    const {props} = createChunkedLocal(4100);
+    expect(() => new GPULocalPermutationTest(props)).toThrow(
+      /chunked-local-loss-budget estimated command node count.*32768/
+    );
+  });
+
   for (const statistic of LOCAL_STATISTICS) {
     it(`${statistic} at 64 neighbors, 999 permutations and every output`, () => {
       const {nodes, device} = buildLocal(statistic, 999);

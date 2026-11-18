@@ -356,29 +356,20 @@ export type WGSLFinding = {
   detail: string;
 };
 
-/** Removes `//` line comments and (possibly nested) block comments, keeping line breaks. */
-export function stripWGSLComments(source: string): string {
-  let output = '';
-  let depth = 0;
-  for (let index = 0; index < source.length; index++) {
-    const pair = source.slice(index, index + 2);
-    if (pair === '/*') {
-      depth++;
-      index++;
-    } else if (depth > 0 && pair === '*/') {
-      depth--;
-      index++;
-    } else if (depth > 0) {
-      if (source[index] === '\n') output += '\n';
-    } else if (pair === '//') {
-      while (index < source.length && source[index] !== '\n') index++;
-      output += '\n';
-    } else {
-      output += source[index];
-    }
-  }
-  return output;
-}
+import {
+  evaluateIntegerExpression,
+  getWGSLConstantValues,
+  getWGSLModuleUsage,
+  stripWGSLComments
+} from '../../../src/testing/wgsl-memory-usage';
+export {
+  evaluateIntegerExpression,
+  getWGSLConstantValues,
+  getWGSLModuleUsage,
+  stripWGSLComments,
+  WGSLTypeLayouts
+} from '../../../src/testing/wgsl-memory-usage';
+export type {WGSLModuleUsage} from '../../../src/testing/wgsl-memory-usage';
 
 /** Rejects reserved words used anywhere as identifiers, and keywords in declaration positions. */
 export function findReservedIdentifiers(code: string): WGSLFinding[] {
@@ -607,261 +598,6 @@ export function findUnusedBindings(
     .map(({name, attributes}) => ({check: 'unused binding', detail: `${name} (${attributes})`}));
 }
 
-// Memory and binding accounting.
-
-/** Values of module `const` and `override` declarations, with pipeline constants applied. */
-export function getWGSLConstantValues(
-  code: string,
-  pipelineConstants: Readonly<Record<string, number>> = {}
-): Map<string, number> {
-  const values = new Map<string, number>();
-  const declarations = /\b(const|override)\s+(\w+)\s*(?::\s*\w+\s*)?(?:=\s*([^;]+))?;/g;
-  for (const match of code.matchAll(declarations)) {
-    const [, kind, name, expression] = match;
-    if (kind === 'override' && name in pipelineConstants) {
-      values.set(name, pipelineConstants[name]);
-      continue;
-    }
-    const value =
-      expression === undefined ? undefined : evaluateIntegerExpression(expression, values);
-    if (value !== undefined) values.set(name, value);
-  }
-  return values;
-}
-
-/** Evaluates a small integer constant expression (`+ - * / % << >>`, parentheses, names). */
-export function evaluateIntegerExpression(
-  expression: string,
-  values: ReadonlyMap<string, number>
-): number | undefined {
-  const substituted = expression
-    .replace(/\b(?:u32|i32)\s*\(/g, '(')
-    .replace(/\b(0[xX][0-9a-fA-F]+|\d+)[iu]\b/g, '$1')
-    .replace(/\b[A-Za-z_]\w*\b/g, name => (values.has(name) ? String(values.get(name)) : name));
-  if (!/^[\s\dxXa-fA-F+\-*/%()<>]*$/.test(substituted) || /[g-wyzG-WYZ]/.test(substituted)) {
-    return undefined;
-  }
-  try {
-    // The text is digits and operators only (checked above).
-    // eslint-disable-next-line no-new-func
-    const value = Function(`"use strict"; return (${substituted});`)() as number;
-    return Number.isFinite(value) ? Math.trunc(value) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-type TypeLayout = {size: number; align: number};
-
-function roundUp(value: number, alignment: number): number {
-  return Math.ceil(value / alignment) * alignment;
-}
-
-/** Splits `a, b<c, d>, e` at top-level commas. */
-function splitTopLevel(text: string): string[] {
-  const parts: string[] = [];
-  let depth = 0;
-  let start = 0;
-  for (let index = 0; index < text.length; index++) {
-    const character = text[index];
-    if (character === '<' || character === '(') depth++;
-    else if (character === '>' || character === ')') depth--;
-    else if (character === ',' && depth === 0) {
-      parts.push(text.slice(start, index));
-      start = index + 1;
-    }
-  }
-  parts.push(text.slice(start));
-  return parts.map(part => part.trim()).filter(Boolean);
-}
-
-/** WGSL host-shareable size and alignment of the types of one module. */
-export class WGSLTypeLayouts {
-  private readonly structs = new Map<string, string[]>();
-  private readonly aliases = new Map<string, string>();
-  private readonly layouts = new Map<string, TypeLayout>();
-  /** Array lengths that could not be resolved, for diagnostics. */
-  readonly unresolvedLengths = new Set<string>();
-
-  constructor(
-    code: string,
-    private readonly constants: ReadonlyMap<string, number>
-  ) {
-    for (const match of code.matchAll(/\bstruct\s+(\w+)\s*\{([^}]*)\}/g)) {
-      const memberTypes = splitTopLevel(match[2])
-        .map(member => member.replace(/@\w+(?:\([^)]*\))?/g, '').trim())
-        .map(member => member.slice(member.indexOf(':') + 1).trim());
-      this.structs.set(match[1], memberTypes);
-    }
-    for (const match of code.matchAll(/\balias\s+(\w+)\s*=\s*([^;]+);/g)) {
-      this.aliases.set(match[1], match[2].trim());
-    }
-  }
-
-  /** Returns the layout of a WGSL type; unknown names count as one 4-byte word. */
-  getLayout(type: string): TypeLayout {
-    const key = type.replace(/\s+/g, '');
-    const cached = this.layouts.get(key);
-    if (cached) return cached;
-    const layout = this.computeLayout(key);
-    this.layouts.set(key, layout);
-    return layout;
-  }
-
-  private computeLayout(type: string): TypeLayout {
-    if (this.aliases.has(type)) return this.getLayout(this.aliases.get(type)!);
-    const struct = this.structs.get(type);
-    if (struct) {
-      let offset = 0;
-      let align = 1;
-      for (const member of struct) {
-        const layout = this.getLayout(member);
-        offset = roundUp(offset, layout.align) + layout.size;
-        align = Math.max(align, layout.align);
-      }
-      return {size: roundUp(offset, align), align};
-    }
-    if (/^(?:f16)$/.test(type)) return {size: 2, align: 2};
-    if (/^(?:bool|i32|u32|f32)$/.test(type) || /^atomic</.test(type)) return {size: 4, align: 4};
-    const vector = /^vec([234])(?:<(\w+)>|([ifuh]))$/.exec(type);
-    if (vector) {
-      const component = vector[2] === 'f16' || vector[3] === 'h' ? 2 : 4;
-      const count = Number(vector[1]);
-      const align = (count === 2 ? 2 : 4) * component;
-      return {size: count * component, align};
-    }
-    const matrix = /^mat([234])x([234])(?:<(\w+)>|([fh]))?$/.exec(type);
-    if (matrix) {
-      const column = this.getLayout(
-        `vec${matrix[2]}<${matrix[3] ?? (matrix[4] === 'h' ? 'f16' : 'f32')}>`
-      );
-      return {size: Number(matrix[1]) * roundUp(column.size, column.align), align: column.align};
-    }
-    const array = /^array<(.+)>$/.exec(type);
-    if (array) {
-      const [elementType, lengthExpression] = splitTopLevel(array[1]);
-      const element = this.getLayout(elementType);
-      const stride = roundUp(element.size, element.align);
-      if (lengthExpression === undefined) return {size: stride, align: element.align};
-      const length = evaluateIntegerExpression(lengthExpression, this.constants);
-      if (length === undefined) {
-        this.unresolvedLengths.add(lengthExpression);
-        return {size: stride, align: element.align};
-      }
-      return {size: stride * length, align: element.align};
-    }
-    return {size: 4, align: 4};
-  }
-}
-
-/** Finds the matching closing brace of the block opened at `open`. */
-function findBlockEnd(code: string, open: number): number {
-  let depth = 0;
-  for (let index = open; index < code.length; index++) {
-    if (code[index] === '{') depth++;
-    else if (code[index] === '}' && --depth === 0) return index;
-  }
-  return code.length;
-}
-
-/** Type text of a declaration `NAME : TYPE` up to `=` or `;` at depth zero. */
-function readDeclaredType(text: string): string | undefined {
-  const colon = /^\s*:\s*/.exec(text);
-  if (!colon) return undefined;
-  let depth = 0;
-  let index = colon[0].length;
-  for (; index < text.length; index++) {
-    const character = text[index];
-    if (character === '<') depth++;
-    else if (character === '>') depth--;
-    else if (depth === 0 && (character === '=' || character === ';')) break;
-  }
-  return text.slice(colon[0].length, index).trim();
-}
-
-/** Byte totals of one WGSL module against the core limits. */
-export type WGSLModuleUsage = {
-  /** `var<private>` bytes. */
-  privateBytes: number;
-  /** Largest function-address-space bytes of any one function, and that function. */
-  functionBytes: number;
-  functionName: string;
-  /** `var<workgroup>` bytes. */
-  workgroupBytes: number;
-  /** `var<storage, ...>` bindings. */
-  storageBuffers: number;
-  /** `var<uniform>` bindings. */
-  uniformBuffers: number;
-  /** Storage-texture bindings. */
-  storageTextures: number;
-  /** Sampled-texture bindings. */
-  sampledTextures: number;
-  /** Sampler bindings. */
-  samplers: number;
-  /** `@workgroup_size` of each entry point, resolved. */
-  workgroupSizes: number[][];
-  /** Array lengths the accounting could not resolve (counted as one element). */
-  unresolvedLengths: string[];
-};
-
-/** Accounts the private, function, workgroup memory and the bindings of one module. */
-export function getWGSLModuleUsage(
-  code: string,
-  pipelineConstants: Readonly<Record<string, number>> = {}
-): WGSLModuleUsage {
-  const constants = getWGSLConstantValues(code, pipelineConstants);
-  const layouts = new WGSLTypeLayouts(code, constants);
-  const sumModuleVars = (addressSpace: string): number => {
-    let total = 0;
-    const pattern = new RegExp(String.raw`var<\s*${addressSpace}\s*>\s*\w+`, 'g');
-    for (const match of code.matchAll(pattern)) {
-      const type = readDeclaredType(code.slice(match.index + match[0].length));
-      if (type) total += layouts.getLayout(type).size;
-    }
-    return total;
-  };
-  let functionBytes = 0;
-  let functionName = '';
-  for (const match of code.matchAll(/\bfn\s+(\w+)\s*\([^{]*\{/g)) {
-    const open = match.index + match[0].length - 1;
-    const body = code.slice(open, findBlockEnd(code, open));
-    let total = 0;
-    for (const variable of body.matchAll(/\bvar\s+\w+/g)) {
-      const rest = body.slice(variable.index + variable[0].length);
-      const type =
-        readDeclaredType(rest) ??
-        /^\s*=\s*((?:array|vec[234]|mat[234]x[234])<[^(]+>)\s*\(/.exec(rest)?.[1];
-      total += type ? layouts.getLayout(type).size : 4;
-    }
-    if (total > functionBytes) {
-      functionBytes = total;
-      functionName = match[1];
-    }
-  }
-  const workgroupSizes: number[][] = [];
-  for (const match of code.matchAll(/@workgroup_size\s*\(([^)]*)\)/g)) {
-    workgroupSizes.push(
-      splitTopLevel(match[1]).map(part => evaluateIntegerExpression(part, constants) ?? Number.NaN)
-    );
-  }
-  const count = (pattern: RegExp): number => (code.match(pattern) ?? []).length;
-  return {
-    privateBytes: sumModuleVars('private'),
-    functionBytes,
-    functionName,
-    workgroupBytes: sumModuleVars('workgroup'),
-    storageBuffers: count(/var<\s*storage\b/g),
-    uniformBuffers: count(/var<\s*uniform\s*>/g),
-    storageTextures: count(/:\s*texture_storage_\w+/g),
-    sampledTextures: count(
-      /:\s*texture_(?:1d|2d|2d_array|3d|cube|cube_array|multisampled_2d|depth_\w+|external)\b/g
-    ),
-    samplers: count(/:\s*sampler(?:_comparison)?\b/g),
-    workgroupSizes,
-    unresolvedLengths: [...layouts.unresolvedLengths]
-  };
-}
-
 /** Core WebGPU limits the audit checks every kernel against. */
 export const CORE_SHADER_LIMITS = {
   maxStorageBuffersPerShaderStage: 8,
@@ -891,6 +627,9 @@ export function auditWGSLModule(
     ...findUnusedBindings(code, declaredBindings, pipelineConstants)
   ];
   const usage = getWGSLModuleUsage(code, pipelineConstants);
+  for (const unresolved of [...usage.unresolvedLengths, ...usage.unresolvedTypes]) {
+    findings.push({check: 'unresolved memory layout', detail: unresolved});
+  }
   const limits = CORE_SHADER_LIMITS;
   const over = (check: string, value: number, limit: number, detail = '') => {
     if (value > limit) findings.push({check, detail: `${value} > ${limit}${detail}`});
@@ -915,7 +654,7 @@ export function auditWGSLModule(
     limits.maxFunctionBytes,
     ` in fn ${usage.functionName}`
   );
-  over('workgroup bytes', usage.workgroupBytes, limits.maxComputeWorkgroupStorageSize);
+  over('workgroup bytes', usage.workgroupStorageBytes, limits.maxComputeWorkgroupStorageSize);
   for (const size of usage.workgroupSizes) {
     const [x = 1, y = 1, z = 1] = size;
     if ([x, y, z].some(value => !Number.isFinite(value))) {

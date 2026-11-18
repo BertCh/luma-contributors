@@ -12,6 +12,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   validateGPUStatusPort,
+  type GPUCandidateStatusPort,
   type GPUInvalidStatusPort,
   type GPUOverflowStatusPort
 } from '../../analysis-core/contracts/status';
@@ -27,7 +28,8 @@ import type {GPUFloat32OrUint32Values} from '../spatial-weights/float32-values';
 
 /** Input diagnostics shared by the analytic local statistics. */
 export type GPUSpatialAutocorrelationStatusPort = GPUInvalidStatusPort &
-  Partial<GPUOverflowStatusPort>;
+  Partial<GPUOverflowStatusPort> &
+  GPUCandidateStatusPort;
 
 /** Validates optional scalar status outputs and rejects aliases with other result buffers. @internal */
 export function validateSpatialAutocorrelationStatus(
@@ -43,9 +45,12 @@ export function validateSpatialAutocorrelationStatus(
   if (status?.invalidCount) {
     validateViewLength(id, 'output.status.invalidCount', status.invalidCount, 1);
   }
+  if (status?.candidateOverflow) {
+    validateViewLength(id, 'output.status.candidateOverflow', status.candidateOverflow, 1);
+  }
   validateGraphOutputsDisjointFromInputs(id, views, outputs);
-  if (status?.invalidCount && status.overflow) {
-    validateGraphOutputsDisjointFromInputs(id, [status.invalidCount], [status.overflow]);
+  for (const [index, view] of views.entries()) {
+    validateGraphOutputsDisjointFromInputs(id, [view], views.slice(index + 1));
   }
 }
 
@@ -57,7 +62,7 @@ export function getSpatialAutocorrelationStatusNodes<Parameters>(
   props: {
     values: GPUFloat32OrUint32Values;
     mask?: GraphDataView<'uint32'>;
-    weights: {status?: Partial<GPUOverflowStatusPort>};
+    weights: {status?: Partial<GPUOverflowStatusPort> & GPUCandidateStatusPort};
     output: {status?: GPUSpatialAutocorrelationStatusPort};
   }
 ): GPUCommandNode<Parameters>[] {
@@ -65,7 +70,12 @@ export function getSpatialAutocorrelationStatusNodes<Parameters>(
   for (const [name, view] of [
     ['output.status.invalidCount', status?.invalidCount],
     ['output.status.overflow', status?.overflow],
-    ['weights.status.overflow', status?.overflow ? props.weights.status?.overflow : undefined]
+    ['output.status.candidateOverflow', status?.candidateOverflow],
+    ['weights.status.overflow', status?.overflow ? props.weights.status?.overflow : undefined],
+    [
+      'weights.status.candidateOverflow',
+      status?.candidateOverflow ? props.weights.status?.candidateOverflow : undefined
+    ]
   ] as const) {
     if (view) {
       validateGPUStorageBindingByteLength(
@@ -122,13 +132,16 @@ export function getSpatialAutocorrelationStatusNodes<Parameters>(
       }).getCommandNodes(graph)
     );
   }
-  if (status?.overflow) {
-    const overflow = props.weights.status?.overflow;
+  for (const name of ['overflow', 'candidateOverflow'] as const) {
+    const output = status?.[name];
+    if (!output) continue;
+    const overflow = props.weights.status?.[name];
+    const suffix = name === 'overflow' ? 'overflow-status' : 'candidate-overflow-status';
     nodes.push(
       createWGSLKernelNode(graph, {
-        id: `${id}-overflow-status`,
+        id: `${id}-${suffix}`,
         operation,
-        variant: 'overflow-status',
+        variant: suffix,
         invocationCount: 1,
         bindings: [
           ...(overflow
@@ -141,7 +154,7 @@ export function getSpatialAutocorrelationStatusNodes<Parameters>(
                 }
               ]
             : []),
-          {name: 'overflow', view: status.overflow, type: 'u32', access: 'read_write'}
+          {name: 'overflow', view: output, type: 'u32', access: 'read_write'}
         ],
         body: `overflow[overflowOffset] = ${overflow ? 'u32(inputOverflow[inputOverflowOffset] != 0u)' : '0u'};`
       })

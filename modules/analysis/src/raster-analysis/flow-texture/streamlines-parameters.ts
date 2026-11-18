@@ -9,12 +9,10 @@ import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
 export const STREAMLINES_SEED_PURPOSE = PHILOX_PURPOSES.streamlinesJitter.id;
 
 /**
- * Bit of `output.lines.overflow` set when the pruning rounds did not decide every seed, so the
- * published lines are an incomplete set (undecided lines are not published). Bit 0 (value 1) keeps
- * its meaning, a full line or point capacity; the flag is the OR of both, so it reads 0 only for a
- * complete result. A converged run never sets this bit.
+ * Boolean candidate-loss value when pruning rounds left undecided seeds. Final overflow reports
+ * only line or point capacity.
  */
-export const GPU_STREAMLINES_OVERFLOW_UNCONVERGED = 2;
+export const GPU_STREAMLINES_CANDIDATE_UNCONVERGED = 1;
 
 /** Number of float32 elements in a {@link GPUStreamlines} parameter view. */
 export const GPU_STREAMLINES_PARAMETER_LENGTH = 12;

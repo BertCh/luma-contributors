@@ -92,9 +92,9 @@ export class RecipeTestFixture {
     return parameterBuffer;
   }
 
-  /** Compiles the graph, encodes it once and submits it. Results stay readable until `destroy()`. */
+  /** Compiles once, then encodes and submits on each run. Results stay readable until `destroy()`. */
   run(): void {
-    this.compiled = this.graph.compile();
+    this.compiled ??= this.graph.compile();
     submitGraph(this.device, this.compiled, undefined);
   }
 

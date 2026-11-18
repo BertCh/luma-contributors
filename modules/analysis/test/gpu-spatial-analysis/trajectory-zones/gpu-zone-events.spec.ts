@@ -16,6 +16,8 @@ import {
   type ZoneOracleResult
 } from './zone-events-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {getZoneEventLossCaptures} from '../../../../lenses/src/computation-lenses/scenarios/gpu-spatial-analysis/zone-event-loss-captures';
+import {formatZoneEventReadout} from '../../../../../website/src/gpu/runs/entries/recipes-trajectories/lib/zone-event-readout';
 
 /** Zone 0 square with a hole, zone 1 beside it sharing an edge, zone 2 a triangle. Fractional coordinates avoid integer-track degeneracies. */
 const EDGES = createRingEdges([
@@ -256,7 +258,10 @@ it('GPUZoneEvents bounds events per track and flags overflow', async () => {
     return index < 2;
   });
   expect(expected.trackEventCounts.some(count => count > 2)).toBe(true);
-  expect(truncated.overflow).toBe(1);
+  expect(truncated.overflow).toBe(0);
+  expect(truncated.eventsCandidateOverflow).toBe(1);
+  expect(truncated.table.candidateOverflow).toBe(0);
+  expect(truncated.eventsCandidateOverflow).toBe(1);
   expect([truncated.candidateOverflow, truncated.trackOverflow, truncated.eventOverflow]).toEqual([
     0, 1, 0
   ]);
@@ -266,6 +271,22 @@ it('GPUZoneEvents bounds events per track and flags overflow', async () => {
   expect(truncated.trackEventCounts).toEqual(expected.trackEventCounts);
   // Dwell and visits still use every event.
   expect(truncated.visitCounts).toEqual(expected.visitCounts);
+  const truncatedCaptures = getZoneEventLossCaptures(
+    {overflow: truncated.overflow, candidateOverflow: truncated.eventsCandidateOverflow},
+    truncated.candidateOverflow
+  );
+  const truncatedReadout = formatZoneEventReadout(
+    'A',
+    truncated.count,
+    {
+      eventOverflow: truncatedCaptures.eventOverflow.view,
+      eventCandidateOverflow: truncatedCaptures.eventCandidateOverflow.view,
+      scratchCandidateOverflow: truncatedCaptures.scratchCandidateOverflow.view
+    },
+    Math.round(truncated.dwellTimes[0])
+  );
+  expect(truncatedReadout).toContain('crossings (incomplete)');
+  expect(truncatedReadout).toMatch(/dwell \d+ s$/);
   // A too-small output capacity clamps the count and reports the unclamped total.
   const clamped = await runZoneEvents(device, tracks, EDGES, {
     ...base,
@@ -284,13 +305,32 @@ it('GPUZoneEvents bounds events per track and flags overflow', async () => {
     trackEventCapacity: 1000,
     candidateCapacity: 16
   });
-  expect(starved.overflow).toBe(1);
+  expect(starved.overflow).toBe(0);
+  expect(starved.eventsCandidateOverflow).toBe(1);
+  expect(starved.table.candidateOverflow).toBe(1);
+  expect(starved.eventsCandidateOverflow).toBe(1);
   expect([starved.candidateOverflow, starved.trackOverflow, starved.eventOverflow]).toEqual([
     1, 0, 0
   ]);
   // The unclamped count is the capacity needed: rerunning with it is exact.
   expect(starved.candidateCount).toBeGreaterThan(16);
   expect(starved.candidateCount).toBe(truncated.candidateCount);
+  const starvedCaptures = getZoneEventLossCaptures(
+    {overflow: starved.overflow, candidateOverflow: starved.eventsCandidateOverflow},
+    starved.candidateOverflow
+  );
+  const starvedReadout = formatZoneEventReadout(
+    'A',
+    starved.count,
+    {
+      eventOverflow: starvedCaptures.eventOverflow.view,
+      eventCandidateOverflow: starvedCaptures.eventCandidateOverflow.view,
+      scratchCandidateOverflow: starvedCaptures.scratchCandidateOverflow.view
+    },
+    Math.round(starved.dwellTimes[0])
+  );
+  expect(starvedReadout).toContain('crossings (incomplete)');
+  expect(starvedReadout).toMatch(/dwell \d+ s \(incomplete\)$/);
   const sized = await runZoneEvents(device, tracks, EDGES, {
     ...base,
     trackEventCapacity: 1000,
@@ -298,6 +338,8 @@ it('GPUZoneEvents bounds events per track and flags overflow', async () => {
   });
   expect(sized.candidateOverflow).toBe(0);
   expect(sized.overflow).toBe(0);
+  expect(sized.eventsCandidateOverflow).toBe(0);
+  expect(sized.table.candidateOverflow).toBe(0);
   expect(sized.count).toBe(expected.events.length);
   device.destroy?.();
 });

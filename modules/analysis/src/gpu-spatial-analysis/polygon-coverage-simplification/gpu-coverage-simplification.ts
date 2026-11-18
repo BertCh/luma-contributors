@@ -1671,8 +1671,8 @@ function getTopologyRoundNodes<Parameters>(
       },
       output: {
         pairs: {
-          leftIds: pairLeft,
-          rightIds: pairRight,
+          leftRows: pairLeft,
+          rightRows: pairRight,
           status: {count: pairCount, overflow: pairOverflow}
         },
         kinds: pairKinds

@@ -12,7 +12,7 @@ import {GPUCellAggregation, type GPUCellAggregationProps} from './gpu-cell-aggre
 import {createCellLevelKernelNode} from './cell-level-kernel';
 import {getTiledKeyUnionNodes} from '../../analysis-core/kernels/tiled-key-union';
 import {getGraphViewChunks} from '../../analysis-core/kernels/gpu-contributor-utils';
-import {getFixedPointWGSL, ORDERED_KEY_WGSL} from '../../analysis-core/cell-key-wgsl';
+import {getFixedPointWGSL, ORDERED_KEY_WGSL} from '../../analysis-core/kernels/cell-key-wgsl';
 import {type GPUCellTable} from './cell-table';
 import type {
   WGSLKernelBinding,
@@ -25,7 +25,8 @@ export function getTiledCellAggregationNodes<Parameters>(
   props: GPUCellAggregationProps,
   id: string,
   tileLength: number,
-  sumScale: number
+  sumScale: number,
+  extraCounts: readonly GraphDataView<'uint32'>[] = []
 ): GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
   // Keep all caller columns out of read-only working bindings: disjoint columns may share
@@ -142,7 +143,8 @@ export function getTiledCellAggregationNodes<Parameters>(
         : {}),
       status: {
         count: createTransientView(graph, `${tileId}-count`, 'uint32', 1),
-        overflow: createTransientView(graph, `${tileId}-overflow`, 'uint32', 1)
+        overflow: createTransientView(graph, `${tileId}-overflow`, 'uint32', 1),
+        candidateOverflow: createTransientView(graph, `${tileId}-candidate-overflow`, 'uint32', 1)
       }
     };
     nodes.push(
@@ -152,8 +154,7 @@ export function getTiledCellAggregationNodes<Parameters>(
         id: tileId,
         scratchTileSize: undefined,
         scratchMode: 'packed',
-        output: table,
-        extraCounts: undefined
+        output: table
       }).getCommandNodes(graph)
     );
     tables.push(table);
@@ -163,8 +164,14 @@ export function getTiledCellAggregationNodes<Parameters>(
     `${id}-union`,
     tables.map(table => ({keys: table.cells, counts: table.counts, count: table.status.count})),
     {keys: props.output.cells, counts: props.output.counts},
-    props.output.status,
-    props.extraCounts
+    {
+      count: props.output.status.count,
+      overflow: props.output.status.overflow,
+      ...(props.output.status.requiredCount
+        ? {requiredCount: props.output.status.requiredCount}
+        : {})
+    },
+    extraCounts
   );
   nodes.push(...union.nodes);
   const output = props.output;
@@ -263,5 +270,12 @@ export function getTiledCellAggregationNodes<Parameters>(
       ).join('\n')
     });
   }
+  if (callerOutput.status.candidateOverflow)
+    kernel({
+      id: `${id}-candidate-status`,
+      invocationCount: 1,
+      bindings: [write('candidateOverflowOut', callerOutput.status.candidateOverflow)],
+      body: 'candidateOverflowOut[candidateOverflowOutOffset] = 0u;'
+    });
   return nodes;
 }

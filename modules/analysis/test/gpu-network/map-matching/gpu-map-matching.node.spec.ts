@@ -103,17 +103,17 @@ it('route search budget: eviction keeps more routes and every wrong one is count
   expect(tallyRouteBudget(1100, 128, 'reject').missed).toBe(25);
   expect(tallyRouteBudget(1100, 128, 'evict-worst').wrong).toBe(0);
   // Past the budget's reach it still misses routes, but never silently: each wrong route comes
-  // from a search that dropped nodes, which raises overflow and routeOverflow.
+  // from a search that dropped nodes, which raises candidateOverflow and routeOverflow.
   const beyond = tallyRouteBudget(1000, 64, 'evict-worst');
   expect(beyond).toEqual({missed: 80, wrong: 80, silent: 0, droppingSearches: 173});
 });
 
-it('GPUMapMatching reports route-search drops through overflow and routeOverflow', () => {
+it('GPUMapMatching reports route-search drops through candidateOverflow and routeOverflow', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'map-matching-status'});
   const overflow = createTransientView(graph, 'mm-overflow', 'uint32', 1);
   const routeOverflow = createTransientView(graph, 'mm-route-overflow', 'uint32', 1);
   const nodes = new GPUMapMatching(
-    createProps(graph, {status: {overflow, routeOverflow}})
+    createProps(graph, {status: {candidateOverflow: overflow, routeOverflow}})
   ).getCommandNodes(graph);
   const ids = nodes.map(node => node.id);
   const routes = ids.indexOf('map-matching-routes');
@@ -189,7 +189,25 @@ it('GPUMapMatching validates its topology', () => {
   ).toThrow(/topology\.nodePositions must contain one row per node/);
 });
 
-function createRouteTable(graph: GPUCommandGraph, withOverflow = true) {
+it('great-circle snapping compares local candidate terms before inverse trig rounding', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const props = createProps(graph);
+  const nodes = new GPUMapMatching({
+    ...props,
+    spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'},
+    bounds: {minimum: [-1, -1], maximum: [1, 2]},
+    cellSize: 1
+  }).getCommandNodes(graph);
+  const source = getParsedKernelSources(nodes).get('map-matching-candidates') ?? '';
+  const selector = source.slice(
+    source.indexOf('fn geodesicSegmentFraction'),
+    source.indexOf('fn geodesicSegmentDistance')
+  );
+  expect(selector).toContain('geodesicSegmentHaversineTerm(point, start, end, fraction)');
+  expect(selector).toContain('min(startTerm, endTerm) < projectedTerm');
+});
+
+function createRouteTable(graph: GPUCommandGraph, withComplete = true) {
   const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
     createTransientView(graph, `route-table-view-${serial++}`, format, length);
   return {
@@ -197,9 +215,22 @@ function createRouteTable(graph: GPUCommandGraph, withOverflow = true) {
     targets: view('uint32', 16),
     costs: view('float32', 16),
     costLimit: view('float32', 1),
-    ...(withOverflow ? {status: {overflow: view('uint32', 1)}} : {})
+    ...(withComplete ? {status: {complete: view('uint32', 1)}} : {})
   };
 }
+
+it('unfinished cost tables fall through to A* within eight storage bindings', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const complete = createTransientView(graph, 'table-complete', 'uint32', 1);
+  const routeTable = {...createRouteTable(graph), status: {complete}};
+  const nodes = new GPUMapMatching({...createProps(graph), routeTable}).getCommandNodes(graph);
+  const source = getParsedKernelSources(nodes).get('map-matching-route-bounds') ?? '';
+  expect(source).toContain('if (tableComplete[tableCompleteOffset] == 0u)');
+  expect(getStorageBindingCount(source)).toBe(8);
+  expect(
+    nodes.find(node => node.id === 'map-matching-route-bounds')?.resources?.map(getResourceBuffer)
+  ).toContain(complete);
+});
 
 it('GPUMapMatching without routeTable keeps its node list and routes WGSL', () => {
   const plainGraph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'map-matching-plain'});
@@ -231,20 +262,28 @@ it('GPUMapMatching without routeTable keeps its node list and routes WGSL', () =
 });
 
 it('GPUMapMatching routeTable kernels parse, bind the table and stay within 8 bindings', () => {
-  for (const withOverflow of [true, false]) {
+  for (const withComplete of [true, false]) {
     const graph = new GPUCommandGraph(createNullWebGPUDevice(), {
-      id: `map-matching-${withOverflow}`
+      id: `map-matching-${withComplete}`
     });
-    const routeTable = createRouteTable(graph, withOverflow);
+    const routeTable = createRouteTable(graph, withComplete);
     const nodes = new GPUMapMatching({...createProps(graph), routeTable}).getCommandNodes(graph);
     const sources = getParsedKernelSources(nodes);
-    for (const id of ['map-matching-route-bounds', 'map-matching-route-table']) {
-      expect(getStorageBindingCount(sources.get(id) ?? ''), id).toBeLessThanOrEqual(8);
+    if (!withComplete) {
+      expect(sources.has('map-matching-route-bounds')).toBe(false);
+      expect(sources.has('map-matching-route-table')).toBe(false);
+      expect(sources.get('map-matching-routes')).not.toContain(
+        'marks a row the route table resolved'
+      );
+      continue;
     }
-    expect(getStorageBindingCount(sources.get('map-matching-route-bounds') ?? '')).toBe(
-      withOverflow ? 8 : 7
-    );
-    expect(getStorageBindingCount(sources.get('map-matching-route-table') ?? '')).toBe(6);
+    for (const [id, bindingCount] of [
+      ['map-matching-route-bounds', 8],
+      ['map-matching-route-table', 6]
+    ] as const) {
+      for (const {source} of sources.getConfigurations(id))
+        expect(getStorageBindingCount(source), id).toBe(bindingCount);
+    }
     const byId = (id: string) =>
       nodes.find(node => node.id === id)?.resources?.map(resource => getResourceBuffer(resource)) ??
       [];
@@ -252,9 +291,7 @@ it('GPUMapMatching routeTable kernels parse, bind the table and stay within 8 bi
       expect.arrayContaining([routeTable.offsets, routeTable.targets, routeTable.costs])
     );
     expect(byId('map-matching-route-bounds')).toContain(routeTable.costLimit);
-    expect(byId('map-matching-route-bounds').includes(routeTable.status?.overflow)).toBe(
-      withOverflow
-    );
+    expect(byId('map-matching-route-bounds').includes(routeTable.status?.complete)).toBe(true);
     // The row search is a binary search of ascending targets.
     expect(sources.get('map-matching-route-table')).toContain('fn findTableCost');
     // The table answers only costs within the allowance, as the A* search does.
@@ -281,8 +318,8 @@ it('GPUMapMatching validates routeTable', () => {
   expect(make({costLimit: view('float32', 2)})).toThrow(
     /routeTable.costLimit must contain exactly one row/
   );
-  expect(make({status: {overflow: view('uint32', 2)}})).toThrow(
-    /routeTable.status.overflow must contain exactly one row/
+  expect(make({status: {complete: view('uint32', 2)}})).toThrow(
+    /routeTable.status.complete must contain exactly one row/
   );
   // A table written by the matcher's own outputs would alias; outputs may not share its buffers.
   const props = createProps(graph);
@@ -292,7 +329,7 @@ it('GPUMapMatching validates routeTable', () => {
       new GPUMapMatching({
         ...props,
         routeTable,
-        output: {...props.output, status: {overflow: routeTable.status?.overflow}}
+        output: {...props.output, status: {overflow: routeTable.status?.complete}}
       })
   ).toThrow(/outputs must not share buffers with inputs/);
 });

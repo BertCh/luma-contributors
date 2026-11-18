@@ -48,7 +48,7 @@ import {GPU_EARTH_AUTHALIC_RADIUS_METERS} from '../../analysis-core/contracts/ea
 import {
   getSphericalCellAreaWGSL,
   getSphericalRasterCellArea
-} from '../../analysis-core/spherical-cell-area';
+} from '../../analysis-core/kernels/spherical-cell-area';
 import {
   RASTER_GRID_PARAMETER_LENGTH,
   writeRasterGridPrefix
@@ -63,16 +63,19 @@ import {
  */
 export type GPURasterZonalStatisticsCellSizeMode = 'uniform' | 'geographic';
 
-/** Number of float32 values read from `GPURasterZonalStatisticsProps.parameters`. */
-export const GPU_RASTER_ZONAL_STATISTICS_PARAMETER_LENGTH = RASTER_GRID_PARAMETER_LENGTH;
+/** Version 2: legacy prefix, signed row step, origin distance from nearest pole, pole sign. */
+export const GPU_RASTER_ZONAL_STATISTICS_PARAMETER_LENGTH = 7;
 
 /**
  * Packs the grid words read by {@link GPURasterZonalStatistics} with `cellSizeMode:
- * 'geographic'`: `[cellSizeX, cellSizeY, northEdge, southEdge]` in degrees, with the cell size and
- * the row-edge latitudes taken from `grid`. There are no other settings.
+ * 'geographic'`: version 2 is `[cellSizeX, cellSizeY, northEdge, southEdge, signedRowStep,
+ * originPoleDistance, poleSign]` in degrees (poleSign is +1 or -1). Set parameterLayoutVersion: 2
+ * on the contributor; decoding defaults to legacy regardless of padding. The pole-relative
+ * latitude preserves thin polar cells when the absolute origin rounds to 90 degrees.
+ * A target shorter than seven elements requests only the legacy four-word prefix.
  *
  * @param grid The frame's grid; its width and height must match the contributor's.
- * @param target Optional destination of at least 4 elements.
+ * @param target Optional destination of at least 4 elements; defaults to version 2 (7 words).
  */
 export function getGPURasterZonalStatisticsParameterValues(
   grid: GPURasterMetadata,
@@ -81,9 +84,21 @@ export function getGPURasterZonalStatisticsParameterValues(
   validateParameterTarget(
     'getGPURasterZonalStatisticsParameterValues',
     target,
-    GPU_RASTER_ZONAL_STATISTICS_PARAMETER_LENGTH
+    RASTER_GRID_PARAMETER_LENGTH
+  );
+  validateRequirement(
+    'getGPURasterZonalStatisticsParameterValues',
+    grid.affine[1] === 0 && grid.affine[3] === 0,
+    'geographic cell areas need an axis-aligned grid'
   );
   writeRasterGridPrefix(target, grid);
+  if (target.length >= GPU_RASTER_ZONAL_STATISTICS_PARAMETER_LENGTH) {
+    target[4] = grid.affine[4];
+    const originLatitude =
+      grid.affine[5] + (grid.pixelInterpretation === 'point' ? -0.5 * grid.affine[4] : 0);
+    target[5] = 90 - Math.abs(originLatitude);
+    target[6] = originLatitude < 0 ? -1 : 1;
+  }
   return target;
 }
 
@@ -122,7 +137,7 @@ export type GPURasterZonalStatisticsDictionaryOutput = {
   /** With zoneDictionary: original sparse ID for each dense output row. */
   sourceZoneIds?: GraphDataView<'uint32'>;
   /** With zoneDictionary: zero-based dense row, or 0xffffffff for an invalid dictionary. */
-  denseZoneIds?: GraphDataView<'uint32'>;
+  denseZoneRows?: GraphDataView<'uint32'>;
   status?: GPURasterZonalStatisticsStatus & {
     /** Adjacent dictionary ordering violations plus unmapped non-ignored cells. */
     invalidCount?: GraphDataView<'uint32'>;
@@ -217,7 +232,7 @@ export type GPURasterZonalStatisticsProps = {
   /**
    * Optional strictly increasing uint32 source IDs, exactly zoneCapacity rows. Sparse source IDs
    * are looked up without float conversion; output row i belongs to zoneDictionary[i]. Requires
-   * output.sourceZoneIds, output.denseZoneIds and output.status.invalidCount. Unmapped cells are
+   * output.sourceZoneIds, output.denseZoneRows and output.status.invalidCount. Unmapped cells are
    * excluded and counted as invalid. An invalid dictionary excludes every cell. Contents may
    * change between encodings. Omitted preserves the original dense-ID interpretation.
    */
@@ -246,14 +261,17 @@ export type GPURasterZonalStatisticsProps = {
    * weighted. Compile-time.
    */
   cellSizeMode?: GPURasterZonalStatisticsCellSizeMode;
+  /** Compile-time layout discriminator. Default 1 preserves every legacy view, including padding. */
+  parameterLayoutVersion?: 1 | 2;
   /**
    * Grid words for `cellSizeMode: 'geographic'` (required then, rejected otherwise), see
    * {@link getGPURasterZonalStatisticsParameterValues}:
-   * `[cellSizeX, cellSizeY, northEdge, southEdge]` in degrees, the shared raster grid prefix of
-   * `GPUCostDistance`. `cellSizeX` is the cell width in longitude; `northEdge` and `southEdge` are the
-   * outer latitudes of the first and last rows, so row `r` spans `(southEdge - northEdge) / height`
-   * degrees of latitude from `northEdge + r * (southEdge - northEdge) / height`. `cellSizeY` is not
-   * read. Contents are per-frame.
+   * With parameterLayoutVersion: 2, seven words: `[cellSizeX, cellSizeY, northEdge, southEdge,
+   * signedRowStep, originPoleDistance, poleSign]`. The last two words preserve polar precision.
+   * An axis-aligned grid is required.
+   * Legacy version 1 (default, at least 4 words) retains `[cellSizeX, cellSizeY, northEdge, southEdge]`
+   * and derives the step from `(southEdge - northEdge) / height`, which can lose thin-cell area.
+   * `cellSizeY` is unused in both versions. Contents are per-frame.
    */
   parameters?: GraphDataView<'float32'>;
   /**
@@ -285,14 +303,28 @@ const MOMENT_COLUMNS = ['weightSums', 'variances', 'standardDeviations'] as cons
  * Area in square meters of one cell of row `row` of a geographic raster on the authalic sphere,
  * the CPU twin of the WGSL cell weight of {@link GPURasterZonalStatistics}.
  *
- * @param settings `[cellSizeX, cellSizeY, northEdge, southEdge]` in degrees.
+ * @param settings Version 1 prefix (at least 4 words) or explicit version 2 (at least 7 words).
+ * @param parameterLayoutVersion Explicit layout discriminator; defaults to legacy version 1.
  * @internal
  */
 export function getRasterZonalCellArea(
   settings: ArrayLike<number>,
   row: number,
-  height: number
+  height: number,
+  parameterLayoutVersion: 1 | 2 = 1
 ): number {
+  if (parameterLayoutVersion === 2) {
+    const radians = Math.PI / 180;
+    const middlePoleDistance = settings[5] - settings[6] * (row + 0.5) * settings[4];
+    return Math.abs(
+      2 *
+        GPU_EARTH_AUTHALIC_RADIUS_METERS ** 2 *
+        settings[0] *
+        radians *
+        Math.sin(middlePoleDistance * radians) *
+        Math.sin(0.5 * settings[4] * radians)
+    );
+  }
   const rowHeight = (settings[3] - settings[2]) / height;
   return Math.abs(getSphericalRasterCellArea(settings[2], settings[0], rowHeight, row));
 }
@@ -303,13 +335,22 @@ export function getRasterZonalCellArea(
  * `[originLongitude, originLatitude, cellWidth, cellHeight]` from `extent`). Non-finite or
  * non-positive areas weigh 0. Needs `isFiniteValue`.
  */
-function getCellWeightWGSL(width: number, height: number): string {
+function getCellWeightWGSL(width: number, height: number, parameterLayoutVersion: 1 | 2): string {
   return `const ZONAL_GRID_WIDTH: u32 = ${width}u;
 const ZONAL_GRID_HEIGHT: f32 = ${height}.0;
+const ZONAL_PARAMETER_LAYOUT_VERSION: u32 = ${parameterLayoutVersion}u;
 var<private> extent: array<f32, 4>;
 const extentOffset: u32 = 0u;
 ${getSphericalCellAreaWGSL(GPU_EARTH_AUTHALIC_RADIUS_METERS)}
 fn getCellWeight(cell: u32) -> f32 {
+  if (ZONAL_PARAMETER_LAYOUT_VERSION == 2u) {
+    let row = f32(cell / ZONAL_GRID_WIDTH);
+    let rowStep = settings[settingsOffset + 4u];
+    let middlePoleDistance = settings[settingsOffset + 5u] - settings[settingsOffset + 6u] * (row + 0.5) * rowStep;
+    let area = abs(2.0 * SPHERE_RADIUS * SPHERE_RADIUS * settings[settingsOffset] * DEGREES_TO_RADIANS *
+      sin(middlePoleDistance * DEGREES_TO_RADIANS) * sin(0.5 * rowStep * DEGREES_TO_RADIANS));
+    return select(0.0, area, isFiniteValue(area) && area > 0.0);
+  }
   let northEdge = settings[settingsOffset + 2u];
   // Signed row height: negative when rows advance south, which makes getCellArea negative.
   let rowHeight = (settings[settingsOffset + 3u] - northEdge) / ZONAL_GRID_HEIGHT;
@@ -413,14 +454,32 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
       throw new Error(`${id} ignoredZone must be a uint32 integer`);
     }
     const cellSizeMode = props.cellSizeMode ?? 'uniform';
+    validateRequirement(
+      id,
+      props.parameterLayoutVersion === undefined ||
+        props.parameterLayoutVersion === 1 ||
+        props.parameterLayoutVersion === 2,
+      'parameterLayoutVersion must be 1 or 2'
+    );
     if (cellSizeMode !== 'uniform' && cellSizeMode !== 'geographic') {
       throw new Error(`${id} cellSizeMode must be uniform or geographic`);
     }
     if (cellSizeMode === 'geographic') {
+      validateRequirement(
+        id,
+        props.grid.affine[1] === 0 && props.grid.affine[3] === 0,
+        'geographic cell areas need an axis-aligned grid'
+      );
       if (!props.parameters) {
         throw new Error(`${id} geographic cells need parameters`);
       }
-      validateRasterParameters(id, props.parameters, GPU_RASTER_ZONAL_STATISTICS_PARAMETER_LENGTH);
+      validateRasterParameters(
+        id,
+        props.parameters,
+        props.parameterLayoutVersion === 2
+          ? GPU_RASTER_ZONAL_STATISTICS_PARAMETER_LENGTH
+          : RASTER_GRID_PARAMETER_LENGTH
+      );
     } else if (props.parameters) {
       throw new Error(`${id} parameters need cellSizeMode geographic`);
     }
@@ -428,7 +487,7 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
     validateRequirement(
       id,
       Boolean(props.zoneDictionary) ===
-        Boolean(output.sourceZoneIds || output.denseZoneIds || output.status?.invalidCount),
+        Boolean(output.sourceZoneIds || output.denseZoneRows || output.status?.invalidCount),
       'zoneDictionary must be present exactly when dictionary outputs are requested'
     );
     if (props.zoneDictionary) {
@@ -440,7 +499,7 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
       );
       for (const [name, view] of [
         ['sourceZoneIds', output.sourceZoneIds],
-        ['denseZoneIds', output.denseZoneIds]
+        ['denseZoneRows', output.denseZoneRows]
       ] as const) {
         validateRequirement(id, Boolean(view), `output.${name} is required with zoneDictionary`);
         validateSinglePackedView(view!, ['uint32'], `${id} output.${name}`);
@@ -586,7 +645,7 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
             ]
           : []),
         {
-          writes: [output.sourceZoneIds, output.denseZoneIds, output.status?.invalidCount],
+          writes: [output.sourceZoneIds, output.denseZoneRows, output.status?.invalidCount],
           reads: [props.zoneDictionary]
         },
         {writes: [output.status?.invalidCount], reads: [props.zones, props.zoneDictionary]},
@@ -610,12 +669,12 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
         dictionary: props.zoneDictionary,
         ignoredZone: props.ignoredZone ?? GPU_RASTER_ZONAL_STATISTICS_NO_ZONE,
         sourceZoneIds: props.output.sourceZoneIds!,
-        denseZoneIds: props.output.denseZoneIds!,
+        denseZoneRows: props.output.denseZoneRows!,
         invalidCount: props.output.status!.invalidCount!
       });
       const {
         sourceZoneIds: _sourceZoneIds,
-        denseZoneIds: _denseZoneIds,
+        denseZoneRows: _denseZoneRows,
         status,
         ...columns
       } = props.output;
@@ -831,7 +890,7 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
           declarations: `const CAPACITY: u32 = ${zoneCapacity}u;
 const IGNORED: u32 = ${ignoredZone}u;
 ${IS_FINITE_VALUE_WGSL}
-${weighted && part.contributions ? getCellWeightWGSL(width, height) : ''}`,
+${weighted && part.contributions ? getCellWeightWGSL(width, height, props.parameterLayoutVersion ?? 1) : ''}`,
           body: `let zone = zones[zonesOffset + index];
   let inZone = zone < CAPACITY && zone != IGNORED;
   ${part.zoneMask ? 'zoneMask[zoneMaskOffset + index] = select(0u, 1u, inZone);' : ''}
@@ -1149,7 +1208,7 @@ ${weighted && part.contributions ? getCellWeightWGSL(width, height) : ''}`,
         declarations: `const CAPACITY: u32 = ${zoneCapacity}u;
 const IGNORED: u32 = ${ignoredZone}u;
 ${IS_FINITE_VALUE_WGSL}
-${weighted ? getCellWeightWGSL(width, height) : ''}`,
+${weighted ? getCellWeightWGSL(width, height, props.parameterLayoutVersion ?? 1) : ''}`,
         body: `let zone = zones[zonesOffset + index];
   let value = values[valuesOffset + index];
   let isValid = zone < CAPACITY && zone != IGNORED && validity[validityOffset + index] != 0u &&

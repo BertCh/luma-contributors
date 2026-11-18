@@ -16,19 +16,27 @@ import {
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 
-for (const scene of ['ordinary', 'varying', 'overflow', 'empty'] as const)
+for (const scene of [
+  'ordinary',
+  'varying',
+  'overflow',
+  'empty',
+  'bounded',
+  'bounded-inherited'
+] as const)
   it(`streamline operations agree on ${scene} traces`, async () => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
+    const bounded = scene.startsWith('bounded');
     const props: StreamlinesOperationProps = {
       fieldWidth: 8,
       fieldHeight: 8,
-      gridWidth: scene === 'varying' ? 1 : 8,
-      gridHeight: scene === 'varying' ? 1 : 8,
-      seedColumns: scene === 'varying' ? 1 : 8,
-      seedRows: scene === 'varying' ? 1 : 8,
+      gridWidth: scene === 'varying' || bounded ? 1 : 8,
+      gridHeight: scene === 'varying' || bounded ? 1 : 8,
+      seedColumns: bounded ? 4 : scene === 'varying' ? 1 : 8,
+      seedRows: bounded || scene === 'varying' ? 1 : 8,
       stepsPerDirection: scene === 'varying' ? 10 : 16,
-      maximumIterations: 64,
+      maximumIterations: bounded ? 1 : 64,
       lineCapacity: scene === 'overflow' ? 1 : 64,
       pointCapacity: 2112,
       velocities: 'velocities',
@@ -37,7 +45,12 @@ for (const scene of ['ordinary', 'varying', 'overflow', 'empty'] as const)
       output: {
         lines: {
           ids: 'ids',
-          status: {count: 'count', requiredCount: 'requiredCount', overflow: 'overflow'}
+          status: {
+            count: 'count',
+            requiredCount: 'requiredCount',
+            overflow: 'overflow',
+            candidateOverflow: 'candidateOverflow'
+          }
         },
         positions: 'positions',
         lineOffsets: 'lineOffsets',
@@ -50,13 +63,28 @@ for (const scene of ['ordinary', 'varying', 'overflow', 'empty'] as const)
       'count',
       'requiredCount',
       'overflow',
+      'candidateOverflow',
       'positions',
       'lineOffsets',
       'positionCount',
       'iterationLimitReached'
     ];
     const results = [];
-    for (const Operation of [GPUStreamlinesOperation, CPUStreamlinesOperation])
+    let budget = props.maximumIterations;
+    if (scene === 'bounded-inherited') {
+      delete props.maximumIterations;
+      Object.setPrototypeOf(props, {
+        get maximumIterations() {
+          return budget;
+        }
+      });
+    }
+    const operations = [new GPUStreamlinesOperation(props), new CPUStreamlinesOperation(props)];
+    if (bounded) {
+      budget = 64;
+      if (scene === 'bounded') props.maximumIterations = 64;
+    }
+    for (const operation of operations)
       results.push(
         await runOperationGraph(device, {
           inputs: {
@@ -72,7 +100,11 @@ for (const scene of ['ordinary', 'varying', 'overflow', 'empty'] as const)
               format: 'float32',
               values: getGPUStreamlinesParameterValues({
                 fieldExtent: [0, 0, 1, 1],
-                gridExtent: scene === 'varying' ? [0, 0, 4, 4] : [0, 0, 1, 1],
+                gridExtent: bounded
+                  ? [0, 0, 8, 8]
+                  : scene === 'varying'
+                    ? [0, 0, 4, 4]
+                    : [0, 0, 1, 1],
                 stepLength: scene === 'varying' ? 0.05 : 0.25,
                 seed: 1,
                 minimumPoints: 2
@@ -86,10 +118,18 @@ for (const scene of ['ordinary', 'varying', 'overflow', 'empty'] as const)
               })
             }
           },
-          operations: [new Operation(props)],
+          operations: [operation],
           outputs
         })
       );
+    if (bounded)
+      for (const rows of results)
+        expect([
+          rows['count'][0],
+          rows['overflow'][0],
+          rows['candidateOverflow'][0],
+          rows['iterationLimitReached'][0]
+        ]).toEqual([1, 0, 1, 1]);
     if (scene === 'ordinary') {
       expect(results[1]['count'][0]).toBeGreaterThan(1);
       expect(results[1]['count'][0]).toBeLessThan(64);

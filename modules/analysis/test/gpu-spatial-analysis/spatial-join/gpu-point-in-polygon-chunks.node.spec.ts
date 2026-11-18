@@ -92,7 +92,7 @@ for (const edgeSlabs of [false, true]) {
           getGPUCommandNodePipelineKeys(nodes, {idPattern: /^join-test-candidate-truncated-\d+$/})
             .size
         ).toBe(1);
-        for (const source of sources.values()) {
+        for (const {source} of sources.configurations) {
           expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
           expect(getReservedWGSLWords(source)).toEqual([]);
         }

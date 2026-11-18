@@ -8,12 +8,12 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import type {Buffer, Device} from '@luma.gl/core';
 import {expect, it} from 'vitest';
-import {GPULocalPermutationReplay} from '../../../src/gpu-spatial-analysis/permutation-inference/gpu-local-permutation-replay';
 import {
+  createLocalPermutationReplay,
   getGPUPermutationParameterValues,
   GPULocalPermutationTest,
   type GPULocalPermutationStatistic
-} from '../../../src/gpu-spatial-analysis/permutation-inference/index';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -23,6 +23,8 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {createGPUComputationCaptures} from '@luma-contributors/analysis/computation-record';
+import {createSpatialReplayCaptures} from '../../../../lenses/src/computation-lenses/scenarios/gpu-spatial-analysis/replay-captures';
 
 const ROWS = 12;
 const PERMUTATIONS = 99;
@@ -36,6 +38,7 @@ async function runReplay(
     statistic: GPULocalPermutationStatistic;
     alternative: Alternative;
     row: number;
+    permutationCount?: number;
     stopAfterExceedances?: number;
     values?: Float32Array;
   }
@@ -51,7 +54,7 @@ async function runReplay(
     Float32Array.from({length: ROWS}, (_, index) => Math.sin(index * 1.7) * 3 + index / 4);
   const parameters = getGPUPermutationParameterValues({
     seed: 11,
-    permutationCount: PERMUTATIONS,
+    permutationCount: options.permutationCount ?? PERMUTATIONS,
     significanceLevel: 0.05
   });
   const buffers = {
@@ -99,7 +102,7 @@ async function runReplay(
       status: {overflow: importView('overflow', buffers.overflow, 'uint32', 1)}
     }
   });
-  const replay = new GPULocalPermutationReplay({
+  const replay = createLocalPermutationReplay({
     test,
     row: importView('row', buffers.row, 'uint32', 1),
     output: {
@@ -129,6 +132,7 @@ async function runReplay(
     exceedances,
     permutationCounts,
     nullDistribution,
+    replayInfo: info,
     observed: info[0],
     count: info[1],
     pseudoPValues,
@@ -155,6 +159,52 @@ function countExceedances(
       ? lesser
       : Math.min(greater, lesser);
 }
+
+it('capture writer omits an invalid pin and publishes only five requested draws from capacity 99', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const row of [12, 0]) {
+    const result = await runReplay(device, {
+      statistic: 'localMoran',
+      alternative: 'greater',
+      row,
+      permutationCount: 5
+    });
+    expect(result.count).toBe(row === 12 ? 0 : 5);
+    const captures = createGPUComputationCaptures({
+      runId: 'replay-prefix',
+      executionId: 'replay-prefix-execution',
+      snapshots: [],
+      replays: createSpatialReplayCaptures(
+        [
+          {
+            id: 'distribution',
+            name: 'nullDistribution',
+            elementType: 'f32',
+            provenance: 'gpu-readback',
+            values: result.nullDistribution
+          },
+          {
+            id: 'info',
+            name: 'replayInfo',
+            elementType: 'f32',
+            provenance: 'gpu-readback',
+            values: result.replayInfo
+          }
+        ],
+        {
+          nullDistribution: {
+            keySpace: 'permutation',
+            meaning: `row ${row}`,
+            infoCapture: 'replayInfo'
+          }
+        }
+      )
+    });
+    expect(captures.replays?.map(capture => capture.values.length)).toEqual(row === 12 ? [] : [5]);
+    expect(captures.replays?.every(capture => capture.provenance === 'gpu-replay')).toBe(true);
+  }
+});
 
 for (const statistic of ['localMoran', 'localGeary'] as const) {
   it(`${statistic} replay reproduces the test's exceedance count for every row`, async () => {

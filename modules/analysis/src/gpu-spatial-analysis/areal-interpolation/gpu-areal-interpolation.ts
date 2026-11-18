@@ -40,7 +40,7 @@ import {
 import {
   createSphericalCellWeightsNode,
   validateGeographicRaster
-} from '../../analysis-core/spherical-cell-area';
+} from '../../analysis-core/kernels/spherical-cell-area';
 import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import type {GPUOverflowStatusPort, GPUStatusScalar} from '../../analysis-core/contracts/status';

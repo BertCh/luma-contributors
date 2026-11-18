@@ -27,6 +27,7 @@ export type PathExtractionOracleResult = {
   count: number;
   requiredCount: number;
   overflow: number;
+  candidateOverflow: number;
   /** `targets.length + 1` unclamped starts. */
   pathOffsets: number[];
   pathCosts: number[];
@@ -143,14 +144,15 @@ export function extractPathsOracle(input: PathExtractionOracleInput): PathExtrac
     ids: allIds.slice(0, count),
     count,
     requiredCount: allIds.length,
-    overflow: allIds.length > capacity || truncated ? 1 : 0,
+    overflow: allIds.length > capacity ? 1 : 0,
+    candidateOverflow: truncated ? 1 : 0,
     pathOffsets,
     pathCosts,
     found,
     edgeIds: allEdges.slice(0, edgeCount),
     edgeCount,
     edgeTotalCount: allEdges.length,
-    edgeOverflow: allEdges.length > edgeCapacity || truncated ? 1 : 0,
+    edgeOverflow: allEdges.length > edgeCapacity ? 1 : 0,
     edgePathOffsets,
     truncated
   };

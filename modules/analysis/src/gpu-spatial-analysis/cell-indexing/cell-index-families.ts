@@ -14,10 +14,10 @@
  *   bits, first character most significant.
  * - `'s2'`: standard S2CellId (face in bits 61..63, Hilbert position, trailing 1 marker bit).
  */
-export type GPUCellIndexFamily = GPUCellFamily | 'quadkey' | 'geohash';
+export type GPUCellIndexFamily = GPUCellTopologyFamily | 'quadkey' | 'geohash';
 
 /** Hierarchical cell families shared by cell topology, compaction and outlines. */
-export type GPUCellFamily = 'quadbin' | 'h3' | 's2';
+export type GPUCellTopologyFamily = 'quadbin' | 'h3' | 's2';
 
 /** Inclusive resolution range of one {@link GPUCellIndexFamily}. */
 export type GPUCellIndexResolutionRange = {

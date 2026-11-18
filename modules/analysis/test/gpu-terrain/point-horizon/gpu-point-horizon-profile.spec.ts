@@ -8,7 +8,7 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
-import {getRasterGridGeoreference} from '../../../src/analysis-core/raster-grid';
+import {getRasterGridGeoreference} from '../../../src/analysis-core/contracts/raster-grid';
 import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '../../../src/analysis-core/contracts/earth';
 import {
   GPUParameterBuffer,

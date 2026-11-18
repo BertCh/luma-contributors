@@ -14,6 +14,8 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {getGPUSpatialWeightsChunks} from '../spatial-weights/gpu-chunked-spatial-weights';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
@@ -23,22 +25,18 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getLocalPermutationKernelWGSL,
+  getLocalPermutationReplayInputs,
   type GPULocalPermutationTest
 } from './gpu-local-permutation-test';
 
-/** Recording-only inputs for one row's GPU replay. @internal */
-export type GPULocalPermutationReplayProps = {
+/** Recording-only inputs for one row's GPU replay. */
+export type LocalPermutationReplayProps = {
   /** Node prefix; defaults to `${test.id}-replay`. */
   id?: string;
-  /** Add this test to the same recording graph before adding the replay. */
+  /** Whole-CSR test (one chunk covering all rows); lower it on the same graph before the replay. */
   test: GPULocalPermutationTest;
   /** One packed uint32 row index, rewritable each frame. */
   row: GraphDataView<'uint32'>;
-  /**
-   * Key space of the test's rows in the caller's record (for example `tract`); the replay nodes'
-   * datum is the pinned row in it. Defaults to `row`, which the caller's record must then declare.
-   */
-  keySpace?: string;
   /** Caller-owned sinks. */
   output: {
     /** At least maximumPermutations floats; only the reported prefix is valid. */
@@ -57,8 +55,8 @@ export type GPULocalPermutationReplayProps = {
  *
  * Borrows the test's prepared views instead of rebuilding its compaction, moments or observed
  * statistic. Add the test first, then this producer, on a graph with `recording` enabled.
- * For post-run inspection, the scenario lists `test.replayInputs.bindings[*].view.buffer.id`
- * and `test.replayInputs.observedRaw.buffer.id` in `recording.retain`. Ordinary graph dependencies
+ * For post-run inspection, internal scenarios use `getLocalPermutationReplayInputs(test)` to list
+ * the bindings and observed-value buffer IDs in `recording.retain`. Ordinary graph dependencies
  * already preserve these inputs until replay finishes; retain additionally permits later captures.
  * Sequential tests still replay all P draws: compare only the first permutationCounts[row] terms
  * when explaining their stopping decision. Folded tests need only one replay sweep.
@@ -71,11 +69,24 @@ export class GPULocalPermutationReplay implements GPUCommandNodeProducer {
   /** Prefix for setup and draw nodes. */
   readonly id: string;
   /** Validated replay inputs and sinks. */
-  readonly props: GPULocalPermutationReplayProps;
+  readonly props: LocalPermutationReplayProps;
 
-  constructor(props: GPULocalPermutationReplayProps) {
+  constructor(props: LocalPermutationReplayProps) {
+    const snapshot = snapshotConstructionFields(props, ['id', 'test', 'row', 'output']);
+    props = Object.freeze({
+      ...snapshot,
+      output: snapshotConstructionFields(snapshot.output, ['nullDistribution', 'replayInfo'])
+    });
     this.id = props.id ?? `${props.test.id}-replay`;
     this.props = props;
+    const chunks = getGPUSpatialWeightsChunks(props.test.props.weights);
+    validateRequirement(
+      this.id,
+      chunks.length === 1 &&
+        chunks[0].rowStart === 0 &&
+        chunks[0].rowCount === props.test.props.values.length,
+      'test.weights must use whole-CSR weights (one chunk covering all test rows); multi-chunk replay is unsupported'
+    );
     validatePackedUint32View(props.row, `${this.id} row`);
     validateCapacity(this.id, 'row length', props.row.length, 1, 1);
     validateSinglePackedView(
@@ -100,7 +111,7 @@ export class GPULocalPermutationReplay implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const inputs = props.test.replayInputs;
+    const inputs = getLocalPermutationReplayInputs(props.test);
     validateRequirement(
       id,
       inputs !== undefined,
@@ -183,4 +194,19 @@ fn replayRow(index: u32) {
       })
     ];
   }
+}
+
+/**
+ * Creates a recording-only replay of one row's local permutation draws.
+ * Requires whole-CSR weights: one chunk covering all rows of the test. Multiple row chunks
+ * are unsupported and rejected at construction; lowering the test again cannot enable replay.
+ * Add the test first on the same recording graph. The returned producer borrows its prepared
+ * inputs; capture the output as `gpu-replay`, and suppress its distribution when replayInfo's
+ * count is zero. Sequential tests replay the full budget; use the test's permutationCounts
+ * to identify the prefix actually used for its stopping decision.
+ */
+export function createLocalPermutationReplay(
+  props: LocalPermutationReplayProps
+): GPUCommandNodeProducer {
+  return new GPULocalPermutationReplay(props);
 }

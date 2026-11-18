@@ -106,20 +106,38 @@ function createReachabilityFixture(
     ? createOutputBuffer(device, 1)
     : undefined;
   const parameters: GPUParameterBuffer[] = [];
-  const createParameter = <Format extends 'uint32' | 'float32'>(
+  function createParameter(
     name: string,
-    format: Format,
+    format: 'uint32',
     values: number[]
-  ) => {
-    const parameter = new GPUParameterBuffer(device, {
-      id: `${prefix}-${name}`,
-      format,
-      length: values.length,
-      values: format === 'uint32' ? Uint32Array.from(values) : Float32Array.from(values)
-    });
+  ): GPUParameterBuffer<'uint32'>;
+  function createParameter(
+    name: string,
+    format: 'float32',
+    values: number[]
+  ): GPUParameterBuffer<'float32'>;
+  function createParameter(
+    name: string,
+    format: 'uint32' | 'float32',
+    values: number[]
+  ): GPUParameterBuffer<'uint32'> | GPUParameterBuffer<'float32'> {
+    const parameter =
+      format === 'uint32'
+        ? new GPUParameterBuffer(device, {
+            id: `${prefix}-${name}`,
+            format,
+            length: values.length,
+            values: Uint32Array.from(values)
+          })
+        : new GPUParameterBuffer(device, {
+            id: `${prefix}-${name}`,
+            format,
+            length: values.length,
+            values: Float32Array.from(values)
+          });
     parameters.push(parameter);
     return parameter;
-  };
+  }
   const sources = createParameter('sources', 'uint32', options.sources);
   const sourceCosts = options.sourceCosts
     ? createParameter('source-costs', 'float32', options.sourceCosts)

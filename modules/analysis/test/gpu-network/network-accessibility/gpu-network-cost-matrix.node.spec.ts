@@ -157,7 +157,7 @@ it('GPUNetworkCostMatrix kernels parse and stay within eight storage bindings', 
   const sources = getParsedKernelSources(getNodeIds(5, 3).nodes);
   const gatherSources = [...sources.entries()].filter(([id]) => id.includes('gather'));
   expect(gatherSources.length).toBeGreaterThan(0);
-  for (const [, source] of sources) {
+  for (const {source} of sources.configurations) {
     expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
   }
 });

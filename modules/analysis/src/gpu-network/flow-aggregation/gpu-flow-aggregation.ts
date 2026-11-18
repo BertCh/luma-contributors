@@ -48,7 +48,7 @@ import {
   validateCommandNodeBudget,
   validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 import {createSpatialStatisticsParameterNodes} from '../../analysis-core/kernels/spatial-statistics-parameter-nodes';
 import {GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH} from '../../dataframe-analysis/time-window-filter/time-window-parameters';
 import {GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH} from '../../dataframe-analysis/time-window-filter/time-words';
@@ -295,7 +295,9 @@ export type GPUFlowAggregationOutput = GPUCompactOutput & {
  * Output: flows are sorted by weight descending, ties by pair key ascending (origin zone, then
  * destination zone); without `weights` the weight is the count. `output.status.requiredCount` is the number
  * of distinct pairs retained in the table, `output.status.count = min(requiredCount, K)`, and
- * `output.status.overflow` is 1 when `requiredCount > K` or `status.pairOverflow` is set. `requiredCount > K` alone means
+ * `output.status.overflow` is 1 when `requiredCount > K`. Optional `status.candidateOverflow`
+ * reports pair-table loss separately (the same condition as `status.pairOverflow`); then
+ * `requiredCount` is a lower bound on the full pair requirement. `requiredCount > K` alone means
  * the list is a top-K truncation but every aggregate is exact. `status.pairOverflow` means distinct pairs
  * exceeded `pairCapacity` (or the probe limit): aggregates are incomplete and which pairs were
  * retained is unspecified (the `GPUHashIndex` contract). Rows `k >= count` of every K-row output are
@@ -590,10 +592,16 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       }
     }
 
-    validateNetworkOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
-    const outputs = this.getOutputViews().filter((view): view is GraphDataView => Boolean(view));
+    validateNetworkOutputsDisjointFromInputs(
+      id,
+      getFlowAggregationOutputViews(this.props),
+      getFlowAggregationInputViews(this.props)
+    );
+    const outputs = getFlowAggregationOutputViews(this.props).filter(
+      (view): view is GraphDataView => Boolean(view)
+    );
     const inputCoreBuffers = new Set(
-      this.getInputViews().flatMap(view =>
+      getFlowAggregationInputViews(this.props).flatMap(view =>
         view
           ? getGraphViewChunks(view).flatMap(chunk =>
               chunk.buffer.defaultBuffer ? [getCoreDefaultBuffer(chunk.buffer.defaultBuffer)] : []
@@ -638,6 +646,7 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       [
         output.status.count,
         output.status.overflow,
+        output.status.candidateOverflow,
         output.status.requiredCount,
         output.drawInstanceCount
       ],
@@ -649,6 +658,7 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       [
         output.status.count,
         output.status.overflow,
+        output.status.candidateOverflow,
         output.status.requiredCount,
         output.drawInstanceCount
       ]
@@ -659,73 +669,6 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
         Object.fromEntries(group.map((view, index) => [`output[${index}]`, view])),
         {strictAlignedBindings: true}
       );
-    }
-  }
-
-  /** Checks caller bindings and every scratch bound before declaring any resources. @internal */
-  validateBindings<Parameters>(graph: GPUCommandGraph<Parameters>): void {
-    const {id, props, zoneCount, rowCount} = this;
-    const {weights, output} = props;
-    const capacity = props.pairCapacity;
-    validateNetworkViewBindings(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
-    for (const view of [...this.getInputViews(), ...this.getOutputViews()]) {
-      for (const chunk of view ? getGraphViewChunks(view) : []) {
-        validateMaximumCount(
-          id,
-          'packed view buffer byteLength',
-          chunk.buffer.byteLength,
-          graph.device.limits.maxBufferSize
-        );
-        validateGPUStorageBindingByteLength(
-          graph.device,
-          id,
-          'packed view',
-          getViewBindingRange(chunk).size,
-          'reduce the packed view length'
-        );
-      }
-    }
-    for (const [name, bytes] of [
-      ['row scratch', Math.max(rowCount, 1) * 4],
-      ['pair scratch', capacity * 4],
-      [
-        'zone sum offsets',
-        (output.zoneOutWeights || output.zoneInWeights) && weights && this.sumOrder === 'sorted'
-          ? (zoneCount + 1) * 4
-          : 0
-      ],
-      [
-        'zone extent counts',
-        output.zoneOutCountExtent || output.zoneInCountExtent ? zoneCount * 4 : 0
-      ],
-      ['chunk parameters', 20],
-      [
-        'statistics',
-        Math.max(GPU_HASH_INDEX_STATISTICS_LENGTH, GPU_HASH_QUERY_STATISTICS_LENGTH) * 4
-      ]
-    ] as const) {
-      validateMaximumCount(id, `${name} byteLength`, bytes, graph.device.limits.maxBufferSize);
-      validateGPUStorageBindingByteLength(
-        graph.device,
-        id,
-        name,
-        bytes,
-        'reduce row count, pairCapacity or zone count'
-      );
-    }
-
-    for (const [name, view] of [
-      ['origins', props.origins],
-      ['destinations', props.destinations],
-      ['weights', rowCount > 0 ? weights : undefined]
-    ] as const) {
-      if (view)
-        validateMaximumCount(
-          id,
-          `${name} chunk parameter buffer byteLength`,
-          Math.max(getGraphViewChunks(view).length, 1) * FLOW_CHUNK_PARAMETER_SLOT_BYTE_LENGTH,
-          graph.device.limits.maxBufferSize
-        );
     }
   }
 
@@ -741,7 +684,7 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
     const capacity = props.pairCapacity;
     const maxProbeCount = props.maximumProbeCount ?? capacity;
     const topCount = output.ids.length;
-    this.validateBindings(graph);
+    validateFlowAggregationBindings(graph, this);
     const usesLexicographicPairs = zoneCount > GPU_FLOW_AGGREGATION_MAXIMUM_PACKED_ZONE_COUNT;
     const nodes: GPUCommandNode<Parameters>[] = [];
     const createRowBases = (name: string, views: readonly GraphDataView[]) => {
@@ -1173,7 +1116,7 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
           byteOffset: buildStatistics.byteOffset
         }),
         output,
-        overflowSources: [pairOverflow],
+        candidateOverflowSources: output.status.candidateOverflow ? [pairOverflow] : [],
         extraCounts: output.drawInstanceCount ? [output.drawInstanceCount] : []
       })
     );
@@ -1251,49 +1194,126 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
     }
     return nodes;
   }
+}
 
-  private getInputViews(): (GraphDataView | GraphVectorView | undefined)[] {
-    const {props} = this;
-    const {zones} = props;
-    return [
-      props.origins,
-      props.destinations,
-      props.originZoneIds,
-      props.destinationZoneIds,
-      props.weights,
-      props.mask,
-      props.timeWindow?.timestamps,
-      props.timeWindow?.timestampsLow,
-      props.timeWindow?.window,
-      zones.kind !== 'ids' && !Array.isArray(zones.bounds)
-        ? (zones.bounds as GraphDataView)
-        : undefined,
-      zones.kind === 'hexagon' && typeof zones.radius !== 'number' ? zones.radius : undefined,
-      zones.kind !== 'ids' ? zones.activeGridSize : undefined
-    ];
+/** Checks bindings and scratch before allocation for internal flow composition. @internal */
+export function validateFlowAggregationBindings<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  contributor: GPUFlowAggregation
+): void {
+  const {id, props, zoneCount, rowCount, sumOrder} = contributor;
+  const {weights, output} = props;
+  const capacity = props.pairCapacity;
+  validateNetworkViewBindings(id, graph, [
+    ...getFlowAggregationInputViews(props),
+    ...getFlowAggregationOutputViews(props)
+  ]);
+  for (const view of [
+    ...getFlowAggregationInputViews(props),
+    ...getFlowAggregationOutputViews(props)
+  ]) {
+    for (const chunk of view ? getGraphViewChunks(view) : []) {
+      validateMaximumCount(
+        id,
+        'packed view buffer byteLength',
+        chunk.buffer.byteLength,
+        graph.device.limits.maxBufferSize
+      );
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'packed view',
+        getViewBindingRange(chunk).size,
+        'reduce the packed view length'
+      );
+    }
+  }
+  for (const [name, bytes] of [
+    ['row scratch', Math.max(rowCount, 1) * 4],
+    ['pair scratch', capacity * 4],
+    [
+      'zone sum offsets',
+      (output.zoneOutWeights || output.zoneInWeights) && weights && sumOrder === 'sorted'
+        ? (zoneCount + 1) * 4
+        : 0
+    ],
+    [
+      'zone extent counts',
+      output.zoneOutCountExtent || output.zoneInCountExtent ? zoneCount * 4 : 0
+    ],
+    ['chunk parameters', 20],
+    ['statistics', Math.max(GPU_HASH_INDEX_STATISTICS_LENGTH, GPU_HASH_QUERY_STATISTICS_LENGTH) * 4]
+  ] as const) {
+    validateMaximumCount(id, `${name} byteLength`, bytes, graph.device.limits.maxBufferSize);
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      name,
+      bytes,
+      'reduce row count, pairCapacity or zone count'
+    );
   }
 
-  private getOutputViews(): (GraphDataView | undefined)[] {
-    const {output} = this.props;
-    return [
-      output.ids,
-      output.status.count,
-      output.status.overflow,
-      output.status.requiredCount,
-      output.flowOriginZoneIds,
-      output.flowDestinationZoneIds,
-      output.flowCounts,
-      output.flowWeights,
-      output.status.pairOverflow,
-      output.zoneOutCounts,
-      output.zoneInCounts,
-      output.zoneOutWeights,
-      output.zoneInWeights,
-      output.drawInstanceCount,
-      output.zoneOutCountExtent,
-      output.zoneInCountExtent
-    ];
+  for (const [name, view] of [
+    ['origins', props.origins],
+    ['destinations', props.destinations],
+    ['weights', rowCount > 0 ? weights : undefined]
+  ] as const) {
+    if (view)
+      validateMaximumCount(
+        id,
+        `${name} chunk parameter buffer byteLength`,
+        Math.max(getGraphViewChunks(view).length, 1) * FLOW_CHUNK_PARAMETER_SLOT_BYTE_LENGTH,
+        graph.device.limits.maxBufferSize
+      );
   }
+}
+
+function getFlowAggregationInputViews(
+  props: GPUFlowAggregationProps
+): (GraphDataView | GraphVectorView | undefined)[] {
+  const {zones} = props;
+  return [
+    props.origins,
+    props.destinations,
+    props.originZoneIds,
+    props.destinationZoneIds,
+    props.weights,
+    props.mask,
+    props.timeWindow?.timestamps,
+    props.timeWindow?.timestampsLow,
+    props.timeWindow?.window,
+    zones.kind !== 'ids' && !Array.isArray(zones.bounds)
+      ? (zones.bounds as GraphDataView)
+      : undefined,
+    zones.kind === 'hexagon' && typeof zones.radius !== 'number' ? zones.radius : undefined,
+    zones.kind !== 'ids' ? zones.activeGridSize : undefined
+  ];
+}
+
+function getFlowAggregationOutputViews(
+  props: GPUFlowAggregationProps
+): (GraphDataView | undefined)[] {
+  const {output} = props;
+  return [
+    output.ids,
+    output.status.count,
+    output.status.overflow,
+    output.status.candidateOverflow,
+    output.status.requiredCount,
+    output.flowOriginZoneIds,
+    output.flowDestinationZoneIds,
+    output.flowCounts,
+    output.flowWeights,
+    output.status.pairOverflow,
+    output.zoneOutCounts,
+    output.zoneInCounts,
+    output.zoneOutWeights,
+    output.zoneInWeights,
+    output.drawInstanceCount,
+    output.zoneOutCountExtent,
+    output.zoneInCountExtent
+  ];
 }
 
 /** Validates literal or GPU-resident zone bounds. */

@@ -18,7 +18,7 @@ import {
   makeGPURasterBand,
   makeGPURasterMetadata
 } from '@luma-contributors/analysis/raster-analysis';
-import {getRasterGridGeoreference} from '../../../src/analysis-core/raster-grid';
+import {getRasterGridGeoreference} from '../../../src/analysis-core/contracts/raster-grid';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {getRasterPipelines} from '../../gpu-raster/raster-pipeline-count';
 

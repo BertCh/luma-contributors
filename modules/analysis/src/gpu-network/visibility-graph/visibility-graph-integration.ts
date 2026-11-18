@@ -8,7 +8,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPUNetworkTopology} from '../../analysis-core/network-topology';
+import type {GPUNetworkTopology} from '../../analysis-core/contracts/network-topology';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {createVisibilityGraphKernelNode} from '../../gpu-spatial-analysis/urban-morphology/visibility-graph-kernel';
 import {GPUNetworkReachability} from '../network-reachability/gpu-network-reachability';

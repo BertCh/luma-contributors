@@ -33,7 +33,7 @@ import {
   getStorageBindingCount
 } from '../../utils/gpu-contributor-test-utils';
 import {makeExtentGrid} from '../spatial-interpolation/extent-grid';
-import {getCoreDefaultBuffer} from '../../../src/analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../../src/analysis-core/contracts/network-topology';
 import {createPointDensityFinalizeNode} from '../../../src/gpu-spatial-analysis/point-density/point-density-kernels';
 import {getSharedOutputDensityFixture} from './shared-output-density-fixture';
 import {withDensityTestBindingLimit} from './density-test-device';

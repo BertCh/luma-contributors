@@ -5,13 +5,17 @@
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 import {validateCapacity, validateRequirement} from '../kernels/gpu-contributor-utils';
+import {GPU_POLYGON_TRIANGULATION_DEFAULT_MAXIMUM_WORK} from './gpu-polygon-triangulation';
 import {computeTriangulationOrientation as computePolygonOrientation} from './cpu-triangulation-predicates';
+import {triangulateMonotoneOnCPU} from './cpu-monotone-triangulation';
+import {GPU_POLYGON_TRIANGULATION_DEFAULT_MONOTONE_MINIMUM_VERTICES} from './polygon-triangulation-monotone';
 import {
   getCPUOperationFloat32Rows,
   getCPUOperationUint32Rows
 } from '../operations/cpu-operation-rows';
 import {
   GPUPolygonTriangulationOperation,
+  snapshotPolygonTriangulationOperationProps,
   type PolygonTriangulationOperationProps
 } from './gpu-polygon-triangulation-operation';
 
@@ -23,10 +27,18 @@ export type CPUPolygonTriangulationInput = {
   ringOffsets: Uint32Array;
 };
 
-/** CPU output allocation and coordinate context. GPU work/routing budgets are unnecessary. */
+/** CPU output allocation, coordinate context, Earcut budget and monotone routing options. */
 export type CPUPolygonTriangulationOptions = {
   indexCapacity: number;
   spatialContext?: GPUSpatialContext;
+  /** Positive elementary-step budget per polygon; defaults to the contributor's 4M steps. */
+  maximumWork?: number;
+  /** Routing method, as on the contributor; defaults to 'monotone'. */
+  largePolygonMethod?: 'monotone' | 'none';
+  /** Vertex threshold for the first monotone route; defaults to 4096. */
+  monotoneMinimumVertices?: number;
+  /** Total raw vertex capacity for routed polygons; defaults to all positions. */
+  monotoneMaximumVertices?: number;
 };
 
 /** Polygon slices, not a compact triangle stream; offsets count triangles, not index words. */
@@ -58,13 +70,23 @@ function containsPointInBox(first: PolygonPoint, point: PolygonPoint, last: Poly
   );
 }
 
-/** Domain implementation of the contributor's corrected Earcut walk, without GPU scratch/work caps. */
+/** Domain implementation of the contributor's corrected Earcut walk with a per-polygon budget. */
 class PolygonEarWalk {
   failed = false;
   filtered = false;
   readonly triangles: number[] = [];
+  private workDone = 0;
 
-  constructor(private readonly positions: Float32Array) {}
+  constructor(
+    private readonly positions: Float32Array,
+    private readonly maximumWork: number
+  ) {}
+
+  spendWork(): boolean {
+    this.workDone++;
+    if (this.workDone > this.maximumWork) this.failed = true;
+    return !this.failed;
+  }
 
   readPoint(vertex: number): PolygonPoint {
     return [this.positions[2 * vertex], this.positions[2 * vertex + 1]];
@@ -140,7 +162,7 @@ class PolygonEarWalk {
     const full = end === start;
     let node = start;
     do {
-      if (this.failed) break;
+      if (!this.spendWork()) break;
       let again = false;
       const following = node.next;
       if (
@@ -175,6 +197,7 @@ class PolygonEarWalk {
       Math.max(first.point[1], ear.point[1], last.point[1])
     ];
     while (node !== first) {
+      if (!this.spendWork()) return false;
       const point = node.point;
       if (
         containsPointInBox(low, point, high) &&
@@ -233,6 +256,7 @@ class PolygonEarWalk {
     let node = first;
     let inside = false;
     do {
+      if (!this.spendWork()) return false;
       const start = node.point;
       const end = node.next.point;
       if (start[1] >= middle[1] !== end[1] >= middle[1]) {
@@ -250,6 +274,7 @@ class PolygonEarWalk {
   intersectsPolygon(first: PolygonNode, second: PolygonNode): boolean {
     let node = first;
     do {
+      if (!this.spendWork()) return true;
       const following = node.next;
       if (
         node.vertex !== first.vertex &&
@@ -305,6 +330,7 @@ class PolygonEarWalk {
   hasLocalIntersection(start: PolygonNode): boolean {
     let node = start;
     do {
+      if (!this.spendWork()) return false;
       const before = node.previous;
       const after = node.next.next;
       if (
@@ -323,6 +349,7 @@ class PolygonEarWalk {
     do {
       let second = first.next.next;
       while (second !== first.previous) {
+        if (!this.spendWork()) return undefined;
         if (first.vertex !== second.vertex && this.isValidDiagonal(first, second))
           return [first, second];
         second = second.next;
@@ -339,6 +366,7 @@ class PolygonEarWalk {
       let stop = ear;
       let cured = false;
       while (!this.failed) {
+        if (!this.spendWork()) break;
         const before = ear.previous;
         const after = ear.next;
         if (before === after) break;
@@ -382,7 +410,10 @@ class PolygonEarWalk {
 
   findNextDistinct(node: PolygonNode): PolygonNode {
     let next = node.next;
-    while (next !== node && comparePoints(next.point, node.point)) next = next.next;
+    while (next !== node && comparePoints(next.point, node.point)) {
+      if (!this.spendWork()) break;
+      next = next.next;
+    }
     return next;
   }
 
@@ -452,6 +483,7 @@ class PolygonEarWalk {
     let hitEnd = point;
     if (comparePoints(point, node.point)) return node;
     do {
+      if (!this.spendWork()) return undefined;
       const following = node.next;
       const start = node.point;
       const end = following.point;
@@ -501,6 +533,7 @@ class PolygonEarWalk {
     let hasCandidate = false;
     node = candidate;
     do {
+      if (!this.spendWork()) return undefined;
       const current = node.point;
       if (point[0] >= current[0] && current[0] >= initialPoint[0] && point[0] !== current[0]) {
         const onRaySide = above ? current[1] >= point[1] : current[1] <= point[1];
@@ -535,10 +568,11 @@ class PolygonEarWalk {
   }
 
   eliminateHoles(outer: PolygonNode, holes: PolygonNode[]): PolygonNode {
-    const queue = holes.map(start => {
+    const queue: (PolygonNode | undefined)[] = holes.map(start => {
       let leftmost = start;
       let node = start;
       do {
+        if (!this.spendWork()) return leftmost;
         if (
           node.point[0] < leftmost.point[0] ||
           (node.point[0] === leftmost.point[0] && node.point[1] < leftmost.point[1])
@@ -549,12 +583,17 @@ class PolygonEarWalk {
       return leftmost;
     });
     // Stable selection order matches the shader even for coincident holes with equal slopes.
-    while (queue.length > 0 && !this.failed) {
-      let best = 0;
-      for (let slot = 1; slot < queue.length; slot++) {
-        if (this.isHoleBefore(queue[slot], queue[best])) best = slot;
+    for (let round = 0; round < queue.length && !this.failed; round++) {
+      let best = -1;
+      for (let slot = 0; slot < queue.length; slot++) {
+        if (!this.spendWork()) break;
+        const candidate = queue[slot];
+        if (candidate && (best < 0 || this.isHoleBefore(candidate, queue[best]!))) best = slot;
       }
-      const hole = queue.splice(best, 1)[0];
+      if (this.failed || best < 0) break;
+      const hole = queue[best]!;
+      // The shader scans the original queue length on every round, including vacated slots.
+      queue[best] = undefined;
       const bridge = this.findHoleBridge(hole, outer);
       if (!bridge) {
         this.failed = true;
@@ -580,15 +619,15 @@ function validatePolygonOffsets(name: string, offsets: Uint32Array, limit: numbe
 }
 
 /**
- * Triangulates each live shell and its holes with the contributor's corrected Earcut method.
+ * Triangulates each live shell and its holes with the contributor's Earcut/monotone routing.
  * Ring classification, winding, hole order, bridge ties, ear order, failure padding and polygon
  * slice offsets follow the current kernels, including uint32 layout prefixes and signed int32
  * slot arithmetic for clamped ring ends. Degenerate shells are empty, including their holes.
  *
  * What differs from the GPU contributor:
- * - Earcut runs without maximumWork or GPU scratch limits. GPU routing/hash/monotone budgets
- *   are ignored; this always uses Earcut. Polygons routed to the GPU monotone path can have
- *   different valid triangles, and a polygon only the monotone method can finish can fail here.
+ * - Earcut honors maximumWork (default 4M steps) per polygon, with no GPU scratch limit.
+ *   This reference uses un-hashed Earcut; its work count can differ from GPU hashing.
+ *   The selected monotone route and retry honor the same raw-vertex capacity and threshold.
  * - Midpoint placement and crossing arithmetic use float64. Exact orientation has an arbitrary
  *   precision fallback, so finite exponent spans that the GPU cannot certify are accepted.
  *   Diagonal choices at float32 midpoint rounding boundaries can differ.
@@ -612,6 +651,20 @@ export function computePolygonTriangulationOnCPU(
   validatePolygonOffsets('polygonOffsets', polygonOffsets, ringOffsets.length - 1);
   validatePolygonOffsets('featureOffsets', featureOffsets, polygonOffsets.length - 1);
   const polygonCount = polygonOffsets.length - 1;
+  const maximumWork = options.maximumWork ?? GPU_POLYGON_TRIANGULATION_DEFAULT_MAXIMUM_WORK;
+  validateCapacity('polygon-triangulation', 'maximumWork', maximumWork);
+  const monotone = (options.largePolygonMethod ?? 'monotone') === 'monotone';
+  validateRequirement(
+    'polygon-triangulation',
+    options.largePolygonMethod === undefined ||
+      ['none', 'monotone'].includes(options.largePolygonMethod),
+    "largePolygonMethod must be 'monotone' or 'none'"
+  );
+  const monotoneMinimumVertices =
+    options.monotoneMinimumVertices ?? GPU_POLYGON_TRIANGULATION_DEFAULT_MONOTONE_MINIMUM_VERTICES;
+  const monotoneCapacity = options.monotoneMaximumVertices ?? Math.max(1, vertexCount);
+  validateCapacity('polygon-triangulation', 'monotoneMinimumVertices', monotoneMinimumVertices);
+  validateCapacity('polygon-triangulation', 'monotoneMaximumVertices', monotoneCapacity);
   validateCapacity('polygon-triangulation', 'indexCapacity', options.indexCapacity, 0);
   const minimumIndexCount = Math.max(
     0,
@@ -646,14 +699,20 @@ export function computePolygonTriangulationOnCPU(
       }
     }
   }
+  let routedVertexCount = 0;
   for (let polygon = 0; polygon < polygonCount; polygon++) {
     const firstRing = polygonOffsets[polygon];
     const lastRing = polygonOffsets[polygon + 1];
     const live = firstRing < lastRing && liveRings[firstRing] !== 0;
     let triangleCapacity = 0;
+    let liveVertexCount = 0;
     if (live) {
       for (let ring = firstRing; ring < lastRing; ring++) {
-        if (liveRings[ring]) triangleCapacity += ringOffsets[ring + 1] - ringOffsets[ring] + 2;
+        if (liveRings[ring]) {
+          const count = ringOffsets[ring + 1] - ringOffsets[ring];
+          liveVertexCount += count;
+          triangleCapacity += count + 2;
+        }
       }
       triangleCapacity -= 4;
     }
@@ -677,43 +736,84 @@ export function computePolygonTriangulationOnCPU(
     const availableTriangles = Math.floor(slotCount / 3);
     let triangles: number[] = [];
     if (slotLimit <= (options.indexCapacity | 0) && availableTriangles > 0) {
-      const walk = new PolygonEarWalk(positions);
-      // Non-finite predicates cannot support a topology decision.
-      for (let ring = firstRing; ring < lastRing; ring++) {
-        if (!liveRings[ring]) continue;
-        for (
-          let vertex = ringOffsets[ring];
-          vertex < Math.min(ringOffsets[ring + 1], vertexCount);
-          vertex++
-        ) {
-          if (!readPoint(vertex).every(Number.isFinite)) walk.failed = true;
-        }
-      }
-      let outer = walk.createRing(
-        firstVertex,
-        Math.min(ringOffsets[firstRing + 1], vertexCount),
-        true
-      );
-      if (!outer || outer.next === outer.previous) walk.failed = true;
-      if (outer && !walk.failed) {
-        const holes: PolygonNode[] = [];
-        for (let ring = firstRing + 1; ring < lastRing; ring++) {
+      const routeFirst = monotone && liveVertexCount >= monotoneMinimumVertices;
+      const attemptEarcut = () => {
+        const walk = new PolygonEarWalk(positions, maximumWork);
+        // Non-finite predicates cannot support a topology decision.
+        for (let ring = firstRing; ring < lastRing; ring++) {
           if (!liveRings[ring]) continue;
-          const hole = walk.createRing(
-            ringOffsets[ring],
-            Math.min(ringOffsets[ring + 1], vertexCount),
-            false
-          );
-          if (hole) holes.push(hole);
+          for (
+            let vertex = ringOffsets[ring];
+            vertex < Math.min(ringOffsets[ring + 1], vertexCount);
+            vertex++
+          ) {
+            if (!readPoint(vertex).every(Number.isFinite)) walk.failed = true;
+          }
         }
-        if (holes.length) outer = walk.eliminateHoles(outer, holes);
-        if (!walk.failed) walk.clipEars(outer);
+        let outer = walk.createRing(
+          firstVertex,
+          Math.min(ringOffsets[firstRing + 1], vertexCount),
+          true
+        );
+        if (!outer || outer.next === outer.previous) walk.failed = true;
+        if (outer && !walk.failed) {
+          const holes: PolygonNode[] = [];
+          for (let ring = firstRing + 1; ring < lastRing; ring++) {
+            if (!liveRings[ring]) continue;
+            const hole = walk.createRing(
+              ringOffsets[ring],
+              Math.min(ringOffsets[ring + 1], vertexCount),
+              false
+            );
+            if (hole) holes.push(hole);
+          }
+          if (holes.length) outer = walk.eliminateHoles(outer, holes);
+          if (!walk.failed) walk.clipEars(outer);
+        }
+        if (!walk.failed && walk.triangles.length <= availableTriangles * 3) {
+          triangles = walk.triangles;
+          result.valid[polygon] = 1;
+          result.triangleCount[polygon] = triangles.length / 3;
+        }
+        return result.valid[polygon] === 0;
+      };
+      // Large polygons go straight to monotone; smaller polygons retry only after Earcut fails.
+      const needsMonotone = routeFirst || attemptEarcut();
+      const rawVertexCount = Math.max(
+        0,
+        Math.min(ringOffsets[lastRing], vertexCount) - Math.min(firstVertex, vertexCount)
+      );
+      if (monotone && needsMonotone) {
+        // The GPU scans all routed raw counts before rejecting over-capacity polygons. A
+        // rejected polygon still occupies its prefix, so later polygons cannot reuse it.
+        routedVertexCount += rawVertexCount;
+        if (routedVertexCount <= monotoneCapacity) {
+          const rings: PolygonPoint[][] = [];
+          const rows: number[] = [];
+          for (let ring = firstRing; ring < lastRing; ring++) {
+            if (!liveRings[ring]) continue;
+            const points: PolygonPoint[] = [];
+            for (
+              let vertex = ringOffsets[ring];
+              vertex < Math.min(ringOffsets[ring + 1], vertexCount);
+              vertex++
+            ) {
+              points.push(readPoint(vertex));
+              rows.push(vertex);
+            }
+            rings.push(points);
+          }
+          if (rings.every(ring => ring.every(point => point.every(Number.isFinite)))) {
+            const rescued = triangulateMonotoneOnCPU(rings);
+            if (rescued.valid && rescued.triangles.length <= availableTriangles) {
+              triangles = rescued.triangles.flatMap(triangle => triangle.map(row => rows[row]));
+              result.valid[polygon] = 1;
+              result.triangleCount[polygon] = triangles.length / 3;
+            }
+          }
+        }
       }
-      if (!walk.failed && walk.triangles.length <= availableTriangles * 3) {
-        triangles = walk.triangles;
-        result.valid[polygon] = 1;
-        result.triangleCount[polygon] = triangles.length / 3;
-      }
+      if (routeFirst && result.valid[polygon] === 0) attemptEarcut();
     }
     // Keep the signed slot origin; typed-array indexed writes clip to this output allocation.
     for (let word = 0; word < triangles.length; word++) {
@@ -729,9 +829,10 @@ export function computePolygonTriangulationOnCPU(
   return result;
 }
 
-/** CPU twin with uncapped Earcut, retaining only polygon slice/output shape limits. */
+/** CPU twin with budgeted un-hashed Earcut, monotone rescue and the same polygon slices. */
 export class CPUPolygonTriangulationOperation extends GPUCPUOperation {
   constructor(props: PolygonTriangulationOperationProps) {
+    props = snapshotPolygonTriangulationOperationProps(props);
     const operation = new GPUPolygonTriangulationOperation(props);
     const {id} = operation;
     validateCapacity(id, 'polygonCount', props.polygonCount, 1);

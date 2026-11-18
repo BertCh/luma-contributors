@@ -111,12 +111,15 @@ function polygons(context: KernelAuditContext, featureCount: number, ringSize = 
 }
 
 /** Compact output of `capacity` rows. */
-function compact(context: KernelAuditContext, capacity: number) {
+function compact(context: KernelAuditContext, capacity: number, includeCandidateOverflow = false) {
   return {
     ids: context.view('uint32', capacity, 'compact-ids'),
     status: {
       count: context.view('uint32', 1, 'compact-count'),
       overflow: context.view('uint32', 1, 'compact-overflow'),
+      ...(includeCandidateOverflow
+        ? {candidateOverflow: context.view('uint32', 1, 'compact-candidate-overflow')}
+        : {}),
       requiredCount: context.view('uint32', 1, 'compact-required')
     }
   };
@@ -484,38 +487,46 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
       );
     }
   },
-  {
-    exportName: 'GPUHuffTradeAreas',
-    name: 'rows and slots at the binding limit',
-    build: ({graph, view, maximumRows}) => {
-      const rows = maximumRows(4) - 1;
-      const slots = maximumRows(4);
-      graph.add(
-        new GPUHuffTradeAreas({
-          attractiveness: view('float32', rows),
-          demandWeights: {
-            offsets: view('uint32', rows + 1),
-            neighbors: view('uint32', slots),
-            weights: view('float32', slots),
-            distances: view('float32', slots)
-          },
-          facilityWeights: {
-            offsets: view('uint32', rows + 1),
-            neighbors: view('uint32', slots),
-            weights: view('float32', slots)
-          },
-          demand: view('float32', rows),
-          parameters: view('float32', GPU_HUFF_TRADE_AREAS_PARAMETER_LENGTH),
-          output: {
-            tradeArea: view('uint32', rows),
-            probabilities: view('float32', slots),
-            tradeAreaProbability: view('float32', rows),
-            expectedDemand: view('float32', rows)
-          }
-        })
-      );
-    }
-  },
+  ...[0, 1].map(
+    (extraDemandRows): KernelAuditCase => ({
+      exportName: 'GPUHuffTradeAreas',
+      name:
+        extraDemandRows === 0
+          ? 'rows and slots at the binding limit'
+          : 'normalization scratch one row above the binding limit',
+      build: ({graph, view, maximumRows}) => {
+        // Stable normalization keeps four float32 words per demand row. Facility offsets and
+        // probability slots retain their independent 4-byte binding maxima in both cases.
+        const demandRows = maximumRows(16) + extraDemandRows;
+        const facilityRows = maximumRows(4) - 1;
+        const slots = maximumRows(4);
+        graph.add(
+          new GPUHuffTradeAreas({
+            attractiveness: view('float32', facilityRows),
+            demandWeights: {
+              offsets: view('uint32', demandRows + 1),
+              neighbors: view('uint32', slots),
+              weights: view('float32', slots),
+              distances: view('float32', slots)
+            },
+            facilityWeights: {
+              offsets: view('uint32', facilityRows + 1),
+              neighbors: view('uint32', slots),
+              weights: view('float32', slots)
+            },
+            demand: view('float32', demandRows),
+            parameters: view('float32', GPU_HUFF_TRADE_AREAS_PARAMETER_LENGTH),
+            output: {
+              tradeArea: view('uint32', demandRows),
+              probabilities: view('float32', slots),
+              tradeAreaProbability: view('float32', demandRows),
+              expectedDemand: view('float32', facilityRows)
+            }
+          })
+        );
+      }
+    })
+  ),
   // Dot density
   {
     exportName: 'GPUDotDensity',
@@ -564,7 +575,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
           mask: {weights: view('float32', 4096 * 4096), width: 4096, height: 4096},
           output: {
             positions: view('float32x2', capacity),
-            dots: compact(context, capacity),
+            dots: compact(context, capacity, true),
             categories: view('uint32', capacity),
             slotCounts: view('uint32', features * categories),
             slotOffsets: view('uint32', features * categories),
@@ -590,7 +601,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
           parameters: view('uint32', GPU_DOT_DENSITY_PARAMETER_LENGTH),
           output: {
             positions: view('float32x2', capacity),
-            dots: compact(context, capacity),
+            dots: compact(context, capacity, true),
             categories: view('uint32', capacity)
           }
         })
@@ -712,7 +723,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
           parameters: view('uint32', GPU_DOT_DENSITY_PARAMETER_LENGTH),
           output: {
             positions: view('float32x2', capacity),
-            points: compact(context, capacity),
+            points: compact(context, capacity, true),
             fractions: view('float32', capacity)
           }
         })

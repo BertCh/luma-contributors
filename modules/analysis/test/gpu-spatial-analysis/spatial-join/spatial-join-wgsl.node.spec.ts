@@ -114,8 +114,8 @@ it('GPUSpatialPredicateJoin kernels parse for every kind pair, engine and metric
             candidateCapacity: 4096,
             output: {
               pairs: {
-                leftIds: view('left-ids'),
-                rightIds: view('right-ids'),
+                leftRows: view('left-ids'),
+                rightRows: view('right-ids'),
                 status: {count: view('pair-count'), overflow: view('pair-overflow')}
               },
               status: {overflow: createTransientView(graph, `${id}-overflow`, 'uint32', 1)}
@@ -150,8 +150,8 @@ it('great-circle dwithin kernels use the straight-segment distance and a longitu
       candidateCapacity: 64,
       output: {
         pairs: {
-          leftIds: createTransientView(graph, 'gc-left-ids', 'uint32', 64),
-          rightIds: createTransientView(graph, 'gc-right-ids', 'uint32', 64),
+          leftRows: createTransientView(graph, 'gc-left-ids', 'uint32', 64),
+          rightRows: createTransientView(graph, 'gc-right-ids', 'uint32', 64),
           status: {
             count: createTransientView(graph, 'gc-count', 'uint32', 1),
             overflow: createTransientView(graph, 'gc-pair-overflow', 'uint32', 1)
@@ -352,8 +352,8 @@ it('default spatial sorting supports prepared self joins within the eight-bindin
   expect(prepared.spatialSort).toBe(true);
   graph.add(prepared);
   const output = {
-    leftIds: createTransientView(graph, 'left-ids', 'uint32', 32),
-    rightIds: createTransientView(graph, 'right-ids', 'uint32', 32),
+    leftRows: createTransientView(graph, 'left-ids', 'uint32', 32),
+    rightRows: createTransientView(graph, 'right-ids', 'uint32', 32),
     status: {
       count: createTransientView(graph, 'count', 'uint32', 1),
       overflow: createTransientView(graph, 'overflow', 'uint32', 1)

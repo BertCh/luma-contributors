@@ -47,9 +47,12 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {TEMPORAL_REDUCTION_WORD_DIVISION_WGSL} from '../temporal-reduction/temporal-reduction-word-division';
 import {TIME_WORDS_WGSL} from '../time-window-filter/time-words';
+import {UINT64_WGSL} from '../../analysis-core/kernels/uint64-wgsl';
 import {
   getGPUPeriodIndexStepIndex,
   getGPUPeriodIndexStepsPerPeriod,
+  validateGPUPeriodIndexStepsPerPeriod,
+  validateGPUPeriodIndexOriginStep,
   type GPUPeriodIndexCalendarFields
 } from './period-index-calendar';
 
@@ -64,11 +67,6 @@ const TEMPORAL_CONTEXT_SUPPORT: GPUTemporalContextSupport = Object.freeze({
 const CALENDAR_UNITS = ['year', 'quarter', 'month', 'week', 'day', 'hour'] as const;
 const INT64_MAXIMUM = (1n << 63n) - 1n;
 const INT64_MINIMUM = -(1n << 63n);
-/** Calendar indices and division operands use signed 32-bit WGSL arithmetic. */
-const MINIMUM_CALENDAR_STEP_INDEX = -0x80000000;
-const MAXIMUM_CALENDAR_STEP_INDEX = 0x7fffffff;
-/** The positive divisor, including seven days per week, must fit a WGSL i32 literal. */
-const MAXIMUM_CALENDAR_STEPS_PER_PERIOD = 0x7fffffff;
 
 /** Period written for a row with no usable time: masked, or an invalid calendar decode. */
 export const GPU_PERIOD_INDEX_INVALID = 0xffffffff;
@@ -349,10 +347,15 @@ export class GPUPeriodIndex<
           month: 'year * 12 + month - 1',
           week: 'daysFromCivil(year, month, day)',
           day: 'daysFromCivil(year, month, day)',
-          hour: 'daysFromCivil(year, month, day) * 24 + hour'
+          hour: ''
         }[calendarUnit];
+        const stepWordsExpression = needsHour
+          ? 'addUint64(multiplyUint64ByUint32(calendarStepWords(daysFromCivil(year, month, day)), 24u), vec2<u32>(0u, u32(hour)))'
+          : `calendarStepWords(${stepExpression})`;
         const originStep = getGPUPeriodIndexStepIndex(calendarUnit, periods.origin);
-        declarations = CALENDAR_WGSL;
+        const [originLow, originHigh] = getWords(BigInt(originStep));
+        declarations = `${CALENDAR_WGSL}\n${UINT64_WGSL}
+const ORIGIN_STEP_WORDS = vec2<u32>(${originHigh}u, ${originLow}u);`;
         periodSource = `let year = calendarYear[calendarYearBase + index];
   ${needsMonth ? 'let month = i32(calendarMonth[calendarMonthBase + index]);' : ''}
   ${needsDay ? 'let day = i32(calendarDay[calendarDayBase + index]);' : ''}
@@ -360,12 +363,15 @@ export class GPUPeriodIndex<
   let isTimeValid = year != bitcast<i32>(0x80000000u);
   var period = ${GPU_PERIOD_INDEX_INVALID}u;
   if (isTimeValid${props.mask ? ' && rowMask[rowMaskBase + index] != 0u' : ''}) {
-    let stepOffset = ${stepExpression} - (${originStep});
-    let candidate = stepOffset / ${getGPUPeriodIndexStepsPerPeriod(periods.step)};
-    if (stepOffset >= 0 && candidate < ${Math.min(periods.count, 0x7fffffff)}) {
-      period = u32(candidate);
-    } else {
-      period = ${GPU_PERIOD_INDEX_OUT_OF_RANGE}u;
+    let stepWords = ${stepWordsExpression};
+    period = ${GPU_PERIOD_INDEX_OUT_OF_RANGE}u;
+    if (compareInt64(stepWords, ORIGIN_STEP_WORDS) >= 0i) {
+      let stepOffset = subtractUint64(stepWords, ORIGIN_STEP_WORDS);
+      let division = divideUint64ByUint32(stepOffset, ${getGPUPeriodIndexStepsPerPeriod(periods.step)}u);
+      let candidate = division.quotient;
+      if (candidate.x == 0u && candidate.y < ${periods.count}u) {
+        period = candidate.y;
+      }
     }
   }`;
       } else {
@@ -446,13 +452,7 @@ const WIDTH_WORDS = vec2<u32>(${widthLow}u, ${widthHigh}u);`;
       CALENDAR_UNITS.includes(calendarUnit) && Number.isInteger(interval) && interval >= 1,
       'periods.step needs a calendar unit and a positive integer interval'
     );
-    validateCapacity(
-      id,
-      'periods.step steps per period (MAXIMUM_CALENDAR_STEPS_PER_PERIOD)',
-      getGPUPeriodIndexStepsPerPeriod(periods.step),
-      1,
-      MAXIMUM_CALENDAR_STEPS_PER_PERIOD
-    );
+    validateGPUPeriodIndexStepsPerPeriod(id, periods.step);
     validateRequirement(id, columns !== undefined, 'calendar periods need columns');
     const required = {
       year: true,
@@ -489,13 +489,7 @@ const WIDTH_WORDS = vec2<u32>(${widthLow}u, ${widthHigh}u);`;
         `periods.origin.${name} must be an integer in ${minimum}..${maximum}`
       );
     }
-    validateCapacity(
-      id,
-      'periods.origin step index (MINIMUM_CALENDAR_STEP_INDEX..MAXIMUM_CALENDAR_STEP_INDEX)',
-      getGPUPeriodIndexStepIndex(calendarUnit, origin),
-      MINIMUM_CALENDAR_STEP_INDEX,
-      MAXIMUM_CALENDAR_STEP_INDEX
-    );
+    validateGPUPeriodIndexOriginStep(id, calendarUnit, origin);
     return rowCount;
   }
 
@@ -558,4 +552,9 @@ const CALENDAR_WGSL = /* wgsl */ `fn daysFromCivil(year: i32, month: i32, day: i
   let dayOfYear = (153 * shiftedMonth + 2) / 5 + day - 1;
   let dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear;
   return era * 146097 + dayOfEra - 719468;
+}
+
+// Shared uint64 arithmetic uses (high, low); sign-extend before multiplying hours or subtracting.
+fn calendarStepWords(step: i32) -> vec2<u32> {
+  return vec2<u32>(select(0u, 0xffffffffu, step < 0), bitcast<u32>(step));
 }`;

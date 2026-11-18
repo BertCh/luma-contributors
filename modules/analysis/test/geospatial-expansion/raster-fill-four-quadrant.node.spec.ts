@@ -37,8 +37,8 @@ it('four-quadrant maximum-radius kernels parse within the default binding limit'
   const {graph, props} = setup();
   const kernels = getParsedKernelSources(new GPURasterFillNoData(props).getCommandNodes(graph));
   expect(kernels.size).toBeGreaterThan(0);
-  for (const kernel of kernels.values())
-    expect(getStorageBindingCount(kernel)).toBeLessThanOrEqual(8);
+  for (const {source} of kernels.configurations)
+    expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
 });
 it('four-quadrant fill rejects invalid bounds and unknown method names', () => {
   const {props} = setup();

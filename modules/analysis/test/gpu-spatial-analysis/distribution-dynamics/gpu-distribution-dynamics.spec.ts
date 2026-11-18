@@ -4,6 +4,7 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
+import {expectNumericArrayClose} from '../../../src/testing/expect-numeric-array-close';
 import {getGPUClassBreaksParameterValues} from '../../../src/dataframe-analysis/column-classification/class-breaks-parameters';
 import {GPUClassBreaks} from '../../../src/dataframe-analysis/column-classification/gpu-class-breaks';
 import {
@@ -57,7 +58,7 @@ const digitizeFixture = decodeOracleFixture<{
 
 const NO_CLASS = 0xffffffff;
 
-/** Like `expectClose` but NaN must match NaN exactly. */
+/** Nonfinite expected values must match explicitly. */
 function expectCloseOrNaN(
   actual: number[],
   expected: number[],
@@ -65,30 +66,19 @@ function expectCloseOrNaN(
   relative = 1e-4,
   absolute = 1e-6
 ): void {
-  expect(actual.length, `${label} length`).toBe(expected.length);
-  for (let index = 0; index < expected.length; index++) {
-    if (Number.isNaN(expected[index]) || Number.isNaN(actual[index])) {
-      if (!(Number.isNaN(expected[index]) && Number.isNaN(actual[index]))) {
-        throw new Error(
-          `${label}: [${index}] ${actual[index]} != ${expected[index]} (NaN mismatch)`
-        );
-      }
-    } else if (
-      Math.abs(actual[index] - expected[index]) >
-      absolute + relative * Math.abs(expected[index])
-    ) {
-      throw new Error(`${label}: [${index}] ${actual[index]} != ${expected[index]}`);
-    }
-  }
+  expectNumericArrayClose(actual, expected, {
+    absoluteTolerance: absolute,
+    relativeTolerance: relative,
+    label
+  });
 }
 
 function expectClose(actual: number[], expected: number[], label: string, relative = 1e-5): void {
-  expect(actual.length, `${label} length`).toBe(expected.length);
-  for (let index = 0; index < expected.length; index++) {
-    if (Math.abs(actual[index] - expected[index]) > 1e-6 + relative * Math.abs(expected[index])) {
-      throw new Error(`${label}: [${index}] ${actual[index]} != ${expected[index]}`);
-    }
-  }
+  expectNumericArrayClose(actual, expected, {
+    absoluteTolerance: 1e-6,
+    relativeTolerance: relative,
+    label
+  });
 }
 
 it('GPUClassAssignment follows the shared class rule with ties, NaN, infinities and mask', async () => {

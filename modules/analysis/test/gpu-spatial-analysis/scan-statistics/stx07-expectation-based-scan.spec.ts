@@ -8,7 +8,6 @@ import {
   getGPUExpectationBasedScanParameterValues,
   getGPUScanRecurrenceInterval,
   getGPUSpatialScanStatisticParameterValues,
-  GPUExpectationBasedSpaceTimeScan,
   GPUSpatialScanStatistic,
   GPU_EXPECTATION_BASED_SCAN_CLUSTER,
   GPU_EXPECTATION_BASED_SCAN_NO_ZONE,
@@ -22,6 +21,7 @@ import {
   GPU_SPATIAL_SCAN_STATISTIC_SUMMARY,
   GPU_SPATIAL_SCAN_STATISTIC_SUMMARY_LENGTH
 } from '../../../src/gpu-spatial-analysis/scan-statistics/index';
+import {createExpectationBasedSpaceTimeScanForTesting} from '../../../src/gpu-spatial-analysis/scan-statistics/gpu-expectation-based-space-time-scan';
 import {EXPECTATION_BASED_SCAN_POISSON_WGSL} from '../../../src/gpu-spatial-analysis/scan-statistics/expectation-based-scan-poisson-wgsl';
 import {getPhiloxOpenUnitFloat} from '../../../src/analysis-core/kernels/philox-random';
 import {requireTestDevice} from '../../utils/require-test-device';
@@ -63,7 +63,7 @@ async function runEB(
   const summary = rig.output('uint32', GPU_EXPECTATION_BASED_SCAN_SUMMARY_LENGTH);
   const zoneStatistics = rig.output('float32', zones);
   rig.run(
-    new GPUExpectationBasedSpaceTimeScan({
+    createExpectationBasedSpaceTimeScanForTesting({
       positions: rig.input(scene.positions, 'float32x2', zones),
       cases: rig.input(scene.cases, 'uint32'),
       baseline: rig.input(scene.baseline, 'float32'),

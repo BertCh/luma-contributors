@@ -3,9 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createSaturatedCountScanNodes} from '../../analysis-core/kernels/scan-total';
+import {
+  snapshotWeightsFields,
+  snapshotWeightsPort
+} from '../spatial-weights/weights-construction-snapshot';
+import {validateSpatialStatisticsWritableDispatches} from '../spatial-weights/spatial-statistics-writable-dispatches';
 import {getGPUGreatCircleRadius} from '../../analysis-core/contracts/spatial-context';
 import {
   createTransientView,
+  getViewBindingRange,
   GPUScan,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -232,6 +238,8 @@ export type GPUNeighborSearchProps = {
    * Caller-owned output CSR: `offsets` has `queryRows + 1` entries; the slot capacity is
    * `neighbors.length`. `distances` is optional. Row `i` lists neighbor target IDs ascending.
    * `status.overflow` is 1 when the neighbors did not fit the capacity, else 0.
+   * A requested status.candidateOverflow is written as 0 on every submission: this search
+   * has no capacity-bounded intermediate candidate stage.
    * `status.requiredCount` is the optional unclamped total neighbor count. `status.invalidCount` is
    * the optional count of rows that took part by mask but were dropped because a coordinate is not
    * finite or lies outside the per-frame `bounds` (or, for great-circle search, has a latitude
@@ -375,6 +383,81 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
   readonly temporalContext?: GPUTemporalContext;
 
   constructor(props: GPUNeighborSearchProps) {
+    const captured = snapshotWeightsFields(props, [
+      'id',
+      'mode',
+      'searchStructure',
+      'spatialContext',
+      'temporalContext',
+      'positions',
+      'queryPositions',
+      'mask',
+      'queryMask',
+      'times',
+      'queryTimes',
+      'gridSize',
+      'k',
+      'parameters',
+      'rowTileSize',
+      'timeBucketCount',
+      'rowStandardize',
+      'weightTransform',
+      'output'
+    ]);
+    const capturedOutput = snapshotWeightsFields(captured.output, [
+      'offsets',
+      'neighbors',
+      'weights',
+      'distances',
+      'status',
+      'neighborCounts'
+    ]);
+    const temporal = captured.temporalContext
+      ? snapshotWeightsFields(captured.temporalContext, [
+          'unit',
+          'epoch',
+          'encoding',
+          'timeZone',
+          'axis'
+        ])
+      : undefined;
+    const axis = temporal?.axis
+      ? snapshotWeightsFields(temporal.axis, ['kind', 'step'])
+      : undefined;
+    props = Object.freeze({
+      ...captured,
+      output: Object.freeze({
+        ...capturedOutput,
+        status: snapshotWeightsFields(capturedOutput.status, [
+          'overflow',
+          'candidateOverflow',
+          'requiredCount',
+          'invalidCount'
+        ])
+      }),
+      ...(captured.gridSize
+        ? {gridSize: Object.freeze([...captured.gridSize]) as GPUNeighborSearchProps['gridSize']}
+        : {}),
+      ...(temporal && axis
+        ? {
+            temporalContext: Object.freeze({
+              ...temporal,
+              axis: Object.freeze({
+                ...axis,
+                ...('step' in axis && axis.step && typeof axis.step === 'object'
+                  ? {step: snapshotWeightsFields(axis.step, ['calendarUnit', 'interval'])}
+                  : {})
+              })
+            })
+          }
+        : {}),
+      ...(captured.spatialContext
+        ? {
+            spatialContext: snapshotWeightsPort({spatialContext: captured.spatialContext})
+              .spatialContext
+          }
+        : {})
+    });
     const id = props.id ?? 'neighbor-search';
     this.id = id;
     this.props = props;
@@ -479,12 +562,28 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
     }
     const {output} = props;
     const weightRows = validateGPUSpatialWeightsOutput(id, output);
+    validateSpatialStatisticsWritableDispatches(
+      id,
+      {
+        offsets: output.offsets,
+        neighbors: output.neighbors,
+        weights: output.weights,
+        distances: output.distances,
+        overflow: output.status.overflow,
+        candidateOverflow: output.status.candidateOverflow,
+        requiredCount: output.status.requiredCount,
+        invalidCount: output.status.invalidCount,
+        neighborCounts: output.neighborCounts
+      },
+      []
+    );
     if (weightRows !== queryRows) {
       throw new Error(`${id} output.offsets length must equal the query row count + 1`);
     }
     const {requiredCount, invalidCount} = output.status;
     for (const [name, view] of [
       ['output.status.overflow', output.status.overflow],
+      ['output.status.candidateOverflow', output.status.candidateOverflow],
       ['output.status.requiredCount', requiredCount],
       ['output.status.invalidCount', invalidCount]
     ] as const) {
@@ -546,6 +645,7 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
         output.weights,
         output.distances,
         output.status.overflow,
+        output.status.candidateOverflow,
         requiredCount,
         output.neighborCounts
       ],
@@ -585,6 +685,7 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
       weights.weights,
       weights.distances,
       weights.status.overflow,
+      weights.status.candidateOverflow,
       weights.status.requiredCount,
       weights.status.invalidCount,
       weights.neighborCounts
@@ -605,6 +706,15 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
     const targetRows = positions.length;
     const queryRows = this.getQueryRows();
     const capacity = weights.neighbors.length;
+    if (weights.status.candidateOverflow) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'output.status.candidateOverflow',
+        getViewBindingRange(weights.status.candidateOverflow).size,
+        'use a smaller packed status view'
+      );
+    }
     const k = props.k ?? 1;
     if (mode === 'knn') {
       validateGPUStorageBindingByteLength(
@@ -729,6 +839,24 @@ ${
     let queryCount: GraphDataView<'uint32'> = gridCount;
 
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...(weights.status.candidateOverflow
+        ? [
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-candidate-status`,
+              operation: OPERATION,
+              invocationCount: 1,
+              bindings: [
+                {
+                  name: 'candidateOverflow',
+                  view: weights.status.candidateOverflow,
+                  type: 'u32',
+                  access: 'read_write'
+                }
+              ],
+              body: 'candidateOverflow[candidateOverflowOffset] = 0u;'
+            })
+          ]
+        : []),
       // The grid index has no mask and its domain is wider than the valid extent, so excluded
       // targets become NaN points, which it ignores. The BVH build treats a NaN point as an empty
       // box, so this one array carries target validity (mask, finite, bounds) into both structures.

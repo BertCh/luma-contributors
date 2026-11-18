@@ -11,7 +11,7 @@ import {GPUS2CapCovering} from '../../../src/gpu-spatial-analysis/cell-topology/
 import {GPUSphericalConvexContains} from '../../../src/gpu-spatial-analysis/global-coordinates/gpu-spherical-convex-contains';
 import {WgslReflect} from 'wgsl_reflect';
 import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
-import {GPUDatumGridTransform} from '../../../src/geospatial-analysis/gpu-datum-grid-transform';
+import {GPUDatumGridTransform} from '../../../src/geospatial-analysis/datum-grid-transform/index';
 import {GPUS2CellHierarchy} from '../../../src/gpu-spatial-analysis/cell-topology/gpu-s2-cell-hierarchy';
 import {GPUSphericalConvexIntersection} from '../../../src/gpu-spatial-analysis/global-coordinates/gpu-spherical-convex-intersection';
 import {

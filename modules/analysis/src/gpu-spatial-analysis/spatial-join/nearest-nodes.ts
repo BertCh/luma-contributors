@@ -17,6 +17,7 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateSpatialJoinReadWriteBindings} from './spatial-join-binding-preflight';
 import type {GPUFloat32Positions} from '@luma.gl/graph/geospatial';
 import {
   getGraphViewChunks,
@@ -25,6 +26,7 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   NEAREST_COMMON_WGSL,
+  NEAREST_DISTANCE_RANK_WGSL,
   NEAREST_GEODESIC_WGSL,
   NEAREST_HEADER_WORDS,
   NEAREST_NODE_WORDS,
@@ -33,7 +35,10 @@ import {
   getNearestTraversalWGSL
 } from './nearest-wgsl';
 import type {GPUNearestFeatureGeometry, NearestSide} from './nearest-types';
-import {createBoundsNode as createSpatialJoinGeometryBoundsNode} from './spatial-join-geometry';
+import {
+  createBoundsNode as createSpatialJoinGeometryBoundsNode,
+  isMultipartJoinGeometry
+} from './spatial-join-geometry';
 import type {GPUSpatialJoinPrepared} from './gpu-spatial-join-prepared';
 import type {GPUSpatialJoinOnAttribute} from './spatial-join-types';
 import {
@@ -48,6 +53,7 @@ import {
 } from './spatial-join-passes';
 import type {
   GPULineGeometryPort,
+  GPUMultipartGeometryPort,
   GPUPackedGeometryPort,
   GPUPolygonGeometryPort
 } from '../../analysis-core/contracts/index';
@@ -93,7 +99,9 @@ export type NearestQuerySource =
   | {kind: 'points'; points: GPUFloat32Positions}
   | {
       kind: 'geometry';
-      geometry: GPUPackedGeometryPort<GPULineGeometryPort | GPUPolygonGeometryPort>;
+      geometry: GPUPackedGeometryPort<
+        GPULineGeometryPort | GPUPolygonGeometryPort | GPUMultipartGeometryPort
+      >;
     };
 
 /** The BVH facts the nearest kernels read; satisfied by `GPUBVH` and by prepared storage. @internal */
@@ -111,7 +119,7 @@ export type NearestBVH = Pick<
 /** Inputs of {@link getNearestNeighborNodes}. @internal */
 export type NearestNeighborNodeProps = {
   /** Prepared right-hand side whose BVH and ring ranges replace the per-encoding build. */
-  prepared?: GPUSpatialJoinPrepared;
+  prepared?: GPUSpatialJoinPrepared<never>;
   id: string;
   operation: string;
   queries: NearestQuerySource;
@@ -127,6 +135,8 @@ export type NearestNeighborNodeProps = {
   maxDistance?: GraphDataView<'float32'>;
   featureIds?: GraphDataView<'uint32'>;
   neighborIds: GraphDataView<'uint32'>;
+  /** Original feature rows before optional application-ID remapping. */
+  neighborRows?: GraphDataView<'uint32'>;
   neighborCounts: GraphDataView<'uint32'>;
   neighborDistances?: GraphDataView<'float32'>;
   neighborFootPoints?: GraphDataView<'float32x2'>;
@@ -166,6 +176,7 @@ export type NearestNeighborNodeProps = {
 
 /** Returns the number of feature rows of a nearest geometry. @internal */
 export function getNearestGeometryCount(geometry: GPUNearestFeatureGeometry): number {
+  if (isMultipartJoinGeometry(geometry)) return geometry.featureOffsets.length - 1;
   switch (geometry.kind) {
     case 'points':
       return geometry.positions.length;
@@ -182,11 +193,18 @@ export function getNearestGeometryCount(geometry: GPUNearestFeatureGeometry): nu
 export function getNearestGeometryViews(geometry: GPUNearestFeatureGeometry): GraphDataView[] {
   switch (geometry.kind) {
     case 'points':
-      return [geometry.positions];
+      return [
+        geometry.positions,
+        ...(isMultipartJoinGeometry(geometry) ? [geometry.featureOffsets] : [])
+      ];
     case 'segments':
       return [geometry.starts, geometry.ends];
     case 'lines':
-      return [geometry.positions, geometry.lineOffsets];
+      return [
+        geometry.positions,
+        geometry.lineOffsets,
+        ...(isMultipartJoinGeometry(geometry) ? [geometry.featureOffsets] : [])
+      ];
     case 'polygons':
       return [
         geometry.positions,
@@ -215,13 +233,21 @@ function getSideBindings(
   });
   switch (geometry.kind) {
     case 'points':
-      return [read('Positions', geometry.positions, 'f32')];
+      return [
+        read('Positions', geometry.positions, 'f32'),
+        ...(isMultipartJoinGeometry(geometry)
+          ? [read('FeatureOffsets', geometry.featureOffsets, 'u32')]
+          : [])
+      ];
     case 'segments':
       return [read('Starts', geometry.starts, 'f32'), read('Ends', geometry.ends, 'f32')];
     case 'lines':
       return [
         read('Positions', geometry.positions, 'f32'),
-        read('LineOffsets', geometry.lineOffsets, 'u32')
+        read('LineOffsets', geometry.lineOffsets, 'u32'),
+        ...(isMultipartJoinGeometry(geometry)
+          ? [read('FeatureOffsets', geometry.featureOffsets, 'u32')]
+          : [])
       ];
     case 'polygons':
       return [
@@ -276,15 +302,11 @@ function createBoundsNode<Parameters>(
   minima: GraphDataView<'float32x2'>,
   maxima: GraphDataView<'float32x2'>
 ): GPUCommandNode<Parameters> {
-  if (features.kind === 'lines') {
+  if (features.kind === 'lines' || isMultipartJoinGeometry(features)) {
     return createSpatialJoinGeometryBoundsNode<Parameters>(graph, id, {
       operation,
       featureCount,
-      geometry: {
-        kind: 'lines',
-        positions: features.positions,
-        lineOffsets: features.lineOffsets
-      },
+      geometry: features,
       minima,
       maxima
     });
@@ -315,7 +337,7 @@ export function getNearestBVHNodes<Parameters>(
     leafCapacity: number;
     spatialSort: boolean;
     spatialSortCurve?: SpatialSortCurve;
-    prepared?: GPUSpatialJoinPrepared;
+    prepared?: GPUSpatialJoinPrepared<never>;
   }
 ): {bvh: NearestBVH; nodes: readonly GPUCommandNode<Parameters>[]} {
   const {id, operation, features, featureCount, prepared} = props;
@@ -366,6 +388,17 @@ export function validateNearestNeighborBindings<Parameters>(
   props: NearestNeighborNodeProps
 ) {
   const {id, capacity, queryCount, featureCount} = props;
+  validateSpatialJoinReadWriteBindings(
+    id,
+    [props.writeFeatureRows ? undefined : props.featureIds],
+    [
+      props.neighborIds,
+      props.neighborRows,
+      props.neighborCounts,
+      props.neighborDistances,
+      props.overflow
+    ]
+  );
   const stride = NEAREST_HEADER_WORDS + 2 * capacity;
   const needsFootPass = Boolean(
     props.neighborFootPoints || props.neighborQueryPoints || props.neighborSegmentIndices
@@ -424,6 +457,7 @@ export function validateNearestNeighborBindings<Parameters>(
     props.onAttribute?.left,
     props.onAttribute?.right,
     props.neighborIds,
+    props.neighborRows,
     props.neighborCounts,
     props.neighborDistances,
     props.neighborFootPoints,
@@ -464,10 +498,17 @@ export function validateNearestNeighborBindings<Parameters>(
     [
       'query metadata',
       props.querySort &&
+      queryCount >= 2 &&
       props.queries.kind === 'geometry' &&
       props.queries.geometry.kind === 'polygons'
         ? queryCount * 2 + props.queries.geometry.ringOffsets.length
-        : 0
+        : props.querySort &&
+            queryCount >= 2 &&
+            props.queries.kind === 'geometry' &&
+            props.queries.geometry.kind === 'lines' &&
+            isMultipartJoinGeometry(props.queries.geometry)
+          ? props.queries.geometry.featureOffsets.length + props.queries.geometry.lineOffsets.length
+          : 0
     ]
   ] as const) {
     validateGPUStorageBindingByteLength(
@@ -475,7 +516,9 @@ export function validateNearestNeighborBindings<Parameters>(
       id,
       name,
       words * 4,
-      'reduce feature count, query count or neighborCapacity'
+      name === 'query metadata'
+        ? 'reduce query topology rows or disable querySort'
+        : 'reduce feature count, query count or neighborCapacity'
     );
   }
   validateCommandNodeBudget(
@@ -748,23 +791,24 @@ const FEATURE_COUNT: u32 = ${featureCount}u;`,
   if (props.maxDistance) {
     clearBindings.push({name: 'maxDistance', view: props.maxDistance, type: 'f32', access: 'read'});
   }
-  // Initial squared bound (central angle on the sphere) of every query.
-  const clearBoundWGSL = `// A NaN, negative or infinite maxDistance sets a negative bound that matches nothing.
+  // Initial distance rank (central angle on the sphere) of every query.
+  const clearBoundWGSL = `// A NaN, negative or infinite maxDistance sets a reserved finite rank that matches nothing.
     ${
       props.maxDistance
         ? `let limit = maxDistance[maxDistanceOffset];
-    var bound = -1.0;
+    var bound = NEAREST_INVALID_DISTANCE;
     if (limit >= 0.0 && limit <= FLOAT32_MAXIMUM) { bound = ${
       greatCircle
-        ? '// A central angle: the traversal compares angles, not squares.\n    limit / SPHERE_RADIUS'
-        : 'min(limit * limit, FLOAT32_MAXIMUM)'
+        ? '// Canonicalize negative zero before storing the central-angle rank.\n    abs(limit / SPHERE_RADIUS)'
+        : 'encodeNearestDistance(limit)'
     }; }`
-        : 'let bound = FLOAT32_MAXIMUM;'
+        : 'let bound = NEAREST_NO_DISTANCE;'
     }
     topk[header] = 0u;
     topk[header + 1u] = 0u;
     topk[header + 2u] = bitcast<u32>(bound);`;
-  const clearDeclarations = `const FLOAT32_MAXIMUM: f32 = 3.402823466e+38;
+  const clearDeclarations = `${NEAREST_DISTANCE_RANK_WGSL}
+const FLOAT32_MAXIMUM: f32 = 3.402823466e+38;
 const STRIDE: u32 = ${stride}u;${greatCircle ? `\nconst SPHERE_RADIUS: f32 = ${sphereRadiusLiteral};` : ''}`;
   if (isChunked) {
     // The overflow flag is initialized once; the per-chunk clears below only reset the scratch.
@@ -844,7 +888,12 @@ const QUERY_COUNT: u32 = ${queryCount}u;`,
     const side: NearestSide = {
       prefix: 'q',
       kind: geometry.kind,
-      vertexCount: getSideVertexCount(geometry)
+      vertexCount: getSideVertexCount(geometry),
+      partCount: isMultipartJoinGeometry(geometry)
+        ? geometry.kind === 'points'
+          ? geometry.positions.length
+          : geometry.lineOffsets.length - 1
+        : undefined
     };
     let bindings = getSideBindings('q', geometry, queryRings);
     let order: GraphDataView<'uint32'> | undefined;
@@ -888,6 +937,41 @@ const QUERY_COUNT: u32 = ${queryCount}u;`,
         bindings = [
           {name: 'qPositions', view: geometry.positions, type: 'f32', access: 'read'},
           {name: 'qFeatureRings', view: metadata, type: 'u32', access: 'read'}
+        ];
+      } else if (geometry.kind === 'lines' && isMultipartJoinGeometry(geometry)) {
+        const lineOffsetsBase = geometry.featureOffsets.length;
+        validateGPUStorageBindingByteLength(
+          graph.device,
+          id,
+          'multipart query metadata',
+          (lineOffsetsBase + geometry.lineOffsets.length) * 4,
+          'reduce query parts or disable querySort'
+        );
+        const metadata = createTransientView(
+          graph,
+          `${id}-query-metadata`,
+          'uint32',
+          lineOffsetsBase + geometry.lineOffsets.length
+        );
+        nodes.push(
+          createStorageTopKNode(graph, {
+            id: `${id}-query-metadata`,
+            operation,
+            variant: 'multipart-query-metadata',
+            bindings: [
+              {name: 'featureOffsets', view: geometry.featureOffsets, type: 'u32', access: 'read'},
+              {name: 'lineOffsets', view: geometry.lineOffsets, type: 'u32', access: 'read'},
+              {name: 'metadata', view: metadata, type: 'u32', access: 'read_write'}
+            ],
+            invocationCount: metadata.length,
+            body: `if (index < ${lineOffsetsBase}u) { metadata[metadataOffset + index] = featureOffsets[featureOffsetsOffset + index]; }
+  else { metadata[metadataOffset + index] = lineOffsets[lineOffsetsOffset + index - ${lineOffsetsBase}u]; }`
+          })
+        );
+        side.packedRingOffsetsBase = lineOffsetsBase;
+        bindings = [
+          {name: 'qPositions', view: geometry.positions, type: 'f32', access: 'read'},
+          {name: 'qFeatureOffsets', view: metadata, type: 'u32', access: 'read'}
         ];
       }
       const minima = createTransientView(graph, `${id}-query-minima`, 'float32x2', queryCount);
@@ -944,7 +1028,12 @@ const QUERY_COUNT: u32 = ${queryCount}u;`,
   const featureSide: NearestSide = {
     prefix: 'r',
     kind: features.kind,
-    vertexCount: getSideVertexCount(features)
+    vertexCount: getSideVertexCount(features),
+    partCount: isMultipartJoinGeometry(features)
+      ? features.kind === 'points'
+        ? features.positions.length
+        : features.lineOffsets.length - 1
+      : undefined
   };
   const featureBindings = getSideBindings('r', features, featureRings);
   const nodeDataBinding: WGSLKernelBinding = {
@@ -999,6 +1088,14 @@ const QUERY_COUNT: u32 = ${queryCount}u;`,
       {name: 'neighborCounts', view: props.neighborCounts, type: 'u32', access: 'read_write'},
       {name: 'overflow', view: props.overflow, type: 'atomic<u32>', access: 'read_write'}
     ];
+    if (props.neighborRows) {
+      columnBindings.push({
+        name: 'neighborRows',
+        view: props.neighborRows,
+        type: 'u32',
+        access: 'read_write'
+      });
+    }
     if (props.featureIds && !props.writeFeatureRows) {
       columnBindings.push({
         name: 'featureIds',
@@ -1034,7 +1131,8 @@ const QUERY_COUNT: u32 = ${queryCount}u;`,
         variant: `${greatCircle ? 'columns-great-circle' : 'columns'}${chunkOrder ? '-ordered' : ''}`,
         bindings: [...columnBindings, ...orderBinding],
         invocationCount: queryCountInChunk * capacity,
-        declarations: `const CAPACITY: u32 = ${capacity}u;
+        declarations: `${NEAREST_DISTANCE_RANK_WGSL}
+const CAPACITY: u32 = ${capacity}u;
 const STRIDE: u32 = ${stride}u;
 const NO_FEATURE: u32 = 0xffffffffu;${greatCircle ? `\nconst SPHERE_RADIUS: f32 = ${sphereRadiusLiteral};` : ''}${
           chunk
@@ -1052,14 +1150,17 @@ const NO_FEATURE: u32 = 0xffffffffu;${greatCircle ? `\nconst SPHERE_RADIUS: f32 
     neighborCounts[neighborCountsOffset + row] = count;
     if (topk[header + 1u] != 0u) { atomicOr(&overflow[overflowOffset], 1u); }
   }
+  var featureRow = NO_FEATURE;
   var featureId = NO_FEATURE;
   var distance = -1.0;
   if (slot < count) {
-    featureId = topk[header + 3u + slot * 2u];
+    featureRow = topk[header + 3u + slot * 2u];
+    featureId = featureRow;
     ${props.featureIds && !props.writeFeatureRows ? 'featureId = featureIds[featureIdsOffset + featureId];' : ''}
-    distance = ${greatCircle ? 'bitcast<f32>(topk[header + 4u + slot * 2u]) * SPHERE_RADIUS' : 'sqrt(bitcast<f32>(topk[header + 4u + slot * 2u]))'};
+    distance = ${greatCircle ? 'bitcast<f32>(topk[header + 4u + slot * 2u]) * SPHERE_RADIUS' : 'decodeNearestDistance(bitcast<f32>(topk[header + 4u + slot * 2u]))'};
   }
   neighborIds[neighborIdsOffset + outputIndex] = featureId;
+  ${props.neighborRows ? 'neighborRows[neighborRowsOffset + outputIndex] = featureRow;' : ''}
   ${props.neighborDistances ? 'neighborDistances[neighborDistancesOffset + outputIndex] = distance;' : ''}`
       })
     );

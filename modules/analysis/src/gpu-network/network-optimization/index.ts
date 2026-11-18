@@ -4,6 +4,7 @@
 
 export {GPUNetworkFlow, GPU_NETWORK_FLOW_WORD} from './gpu-network-flow';
 export type {GPUNetworkFlowProps, GPUNetworkFlowOutput} from './gpu-network-flow';
+export type {GPUNetworkFlowPathOutput, CPUNetworkFlowPaths} from './network-flow-paths';
 export {GPUNetworkLouvain, getGPUNetworkLouvainParameterValues} from './gpu-network-louvain';
 export type {
   GPUNetworkLouvainProps,
@@ -32,6 +33,7 @@ export type {
   GPUNetworkRationalAccessOutput
 } from './gpu-network-rational-access';
 export {prepareGPUNetworkFlowDemands} from './prepare-flow-demands';
+export {prepareGPUNetworkPointRoutingTurns} from './prepare-point-routing-turns';
 
 // GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
 export {

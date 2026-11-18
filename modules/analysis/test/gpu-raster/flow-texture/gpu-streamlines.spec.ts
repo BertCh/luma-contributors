@@ -31,6 +31,7 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {createUniformField, createVortexField, type TestField} from './flow-texture-scenes';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {computeStreamlinesOnCPU} from '../../../src/raster-analysis/flow-texture/cpu-streamlines-operation';
 
 type Result = {
   ids: number[];
@@ -38,6 +39,7 @@ type Result = {
   points: Float32Array;
   count: number;
   overflow: number;
+  candidateOverflow: number;
   requiredCount: number;
   pointCount: number;
   unconverged: number;
@@ -81,6 +83,7 @@ function createFixture(
     ids: output(config.lineCapacity),
     count: output(1),
     overflow: output(1),
+    candidateOverflow: output(1),
     total: output(1),
     pathOffsets: output(config.lineCapacity + 1),
     points: output(config.pointCapacity * 2),
@@ -115,6 +118,13 @@ function createFixture(
           status: {
             count: importGraphBuffer(graph, 'count', outputs.count, 'uint32', 1),
             overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1),
+            candidateOverflow: importGraphBuffer(
+              graph,
+              'candidate-overflow',
+              outputs.candidateOverflow,
+              'uint32',
+              1
+            ),
             requiredCount: importGraphBuffer(graph, 'total', outputs.total, 'uint32', 1)
           }
         },
@@ -174,6 +184,7 @@ function createFixture(
         count,
         pointCount,
         overflow: (await readUint32(outputs.overflow, 1))[0],
+        candidateOverflow: (await readUint32(outputs.candidateOverflow, 1))[0],
         requiredCount: (await readUint32(outputs.total, 1))[0],
         unconverged: (await readUint32(outputs.unconverged, 1))[0],
         ids: await readUint32(outputs.ids, count),
@@ -376,6 +387,21 @@ it('GPUStreamlines reports capacity overflow, non-convergence, replays and resee
   try {
     const actual = await oneRound.run(VORTEX_SETTINGS);
     expect(actual.unconverged).toBe(1);
+    expect(actual.overflow).toBe(0);
+    expect(actual.candidateOverflow).toBe(1);
+    const cpu = computeStreamlinesOnCPU(
+      {
+        velocities: field.velocities,
+        parameters: getGPUStreamlinesParameterValues(VORTEX_SETTINGS),
+        uint32Parameters: getGPUStreamlinesUint32ParameterValues(VORTEX_SETTINGS)
+      },
+      {...VORTEX_CONFIG, fieldWidth: field.width, fieldHeight: field.height, maximumIterations: 1}
+    );
+    expect([cpu.overflow[0], cpu.candidateOverflow[0], cpu.iterationLimitReached[0]]).toEqual([
+      0, 1, 1
+    ]);
+    expect(actual.overflow).toBe(0);
+    expect(actual.candidateOverflow).toBe(1);
     // Lines decided in the only round are a subset of the converged answer.
     const full = generateStreamlinesOnCPU(
       field,

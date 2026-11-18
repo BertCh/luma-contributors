@@ -102,7 +102,7 @@ function createBufferSelectionRun(
       spatialSortCurve: options.spatialSortCurve,
       output: {
         outputMask: mask.view,
-        nearestFeatureIds: nearest.view,
+        nearestFeatureRows: nearest.view,
         status: {overflow: overflow.view}
       }
     })

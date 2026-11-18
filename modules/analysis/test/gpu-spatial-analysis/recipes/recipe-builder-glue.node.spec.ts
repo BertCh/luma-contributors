@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {createWGSLKernelNode} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
 import {
   addRecipeCountNodes,
@@ -52,6 +52,44 @@ it('addRecipeCountNodes adds a row-parallel kernel and a reduction per count', (
     expect(builder.glueStages.map(entry => entry.stage)).toEqual(['count-test']);
     // One glue producer for the kernel plus one published GPUReduction for the count.
     expect(builder.contributors.length).toBe(2);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('deferred recipes expand every stage before scheduling nodes in declaration order', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const builder = new RecipeBuilder(graph, true);
+    const values = createTransientView(graph, 'deferred-values', 'uint32', 1);
+    const createNode = (id: string) =>
+      createWGSLKernelNode(graph, {
+        id,
+        operation: 'Test',
+        bindings: [{name: 'values', view: values, type: 'u32', access: 'read_write'}],
+        invocationCount: 1,
+        body: 'values[valuesOffset + index] = 1u;'
+      });
+    const first = createNode('first');
+    const second = createNode('second');
+    const add = vi.spyOn(graph, 'add');
+    builder.add({getCommandNodes: () => [first]});
+    builder.addGlue('second', second);
+    expect(add).not.toHaveBeenCalled();
+    builder.addDeferredStages();
+    expect(add.mock.calls[0][0]).toEqual([first, second]);
+
+    const invalid = new RecipeBuilder(graph, true);
+    invalid.addGlue('third', createNode('third'));
+    invalid.add({
+      getCommandNodes: () => {
+        throw new Error('invalid later stage');
+      }
+    });
+    add.mockClear();
+    expect(() => invalid.addDeferredStages()).toThrow('invalid later stage');
+    expect(add).not.toHaveBeenCalled();
   } finally {
     device.destroy();
   }

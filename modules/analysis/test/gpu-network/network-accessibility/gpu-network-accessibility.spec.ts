@@ -6,6 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
+import {expectNumericArrayClose} from '../../../src/testing/expect-numeric-array-close';
 import {
   GPUParameterBuffer,
   importGraphBuffer
@@ -49,12 +50,8 @@ function toOracleParameters(parameters: GPUNetworkAccessibilitySettings): Oracle
 }
 
 function expectClose(actual: readonly number[], expected: readonly number[]): void {
-  expect(actual.length).toBe(expected.length);
-  actual.forEach((value, index) => {
-    const tolerance = 2e-5 * Math.max(1, Math.abs(expected[index]));
-    if (Math.abs(value - expected[index]) > tolerance) {
-      throw new Error(`row ${index}: ${value} != ${expected[index]}`);
-    }
+  expectNumericArrayClose(actual, expected, {
+    absoluteTolerance: value => 2e-5 * Math.max(1, Math.abs(value))
   });
 }
 

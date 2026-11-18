@@ -20,14 +20,18 @@ export const MOB05_MOB09_AUDIT_CASES: readonly KernelAuditCase[] = [
         const flowCapacity = 256;
         graph.add(
           new GPUMapMatchedEdgeVolumes({
-            traversedEdges: {edges: view('uint32', 4096 * 64), counts: view('uint32', 4096)},
+            traversedEdges: {
+              edges: view('uint32', 4096 * 64),
+              counts: view('uint32', 4096),
+              completeness: 'known-complete'
+            },
             trackCount: 4096,
             traversedEdgeCapacity: 64,
             edgeCount,
             transitionPairCapacity: transitions ? 65536 : undefined,
             output: {
               edgeVolumes: view('uint32', edgeCount),
-              truncated: view('uint32', 1),
+              status: {candidateOverflow: view('uint32', 1)},
               transitions: transitions
                 ? {
                     ids: view('uint32', flowCapacity),

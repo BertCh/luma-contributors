@@ -4,7 +4,7 @@
 
 import type {GPUAnalysisLimit, GPUAnalysisTier} from '../spatial-analysis-ontology';
 
-/** Tier, limits and role of an operator, by export name. Operators not listed are `'scale'`. */
+/** Audited tier, limits and role; omitted fields carry no inference about unaudited operators. */
 export type OperatorAnnotation = {
   tier?: GPUAnalysisTier;
   limits?: readonly GPUAnalysisLimit[];
@@ -15,10 +15,63 @@ export type OperatorAnnotation = {
 /**
  * Limits and tiers confirmed against the source on 2026-11-15 (each `source` is the file that
  * enforces the maximum). A `reference` operator is a single-invocation, exhaustive or small-dense
- * design with a hard maximum size; every other operator is `scale`. Several of these contributors
+ * design with a hard maximum size. An omitted tier is unaudited for newer entry points. Several of these contributors
  * are being reworked, so a limit that disappears from its source must be removed here as well.
  */
 export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> = {
+  ...Object.fromEntries(
+    [
+      ['GPUSkaterRegions', 'gpu-skater-regions.ts'],
+      ['GPUWardRegions', 'gpu-ward-regions.ts'],
+      ['GPUAZPRegions', 'gpu-azp-regions.ts'],
+      ['GPUMaxPRegions', 'gpu-max-p-regions.ts']
+    ].map(([exportName, filename]) => [
+      exportName,
+      {
+        limits: [
+          {
+            name: 'estimatedCommandNodeCount',
+            maximum: 32768,
+            reason:
+              'GPU_MAXIMUM_COMMAND_NODE_COUNT: construction admission is checked by validateCommandNodeBudget for the selected rows, capacities and iteration/region budgets.',
+            source: `modules/analysis/src/gpu-spatial-analysis/spatial-regionalization/${filename}`
+          }
+        ],
+        limitation:
+          exportName === 'GPUSkaterRegions'
+            ? 'The construction estimate must be at most 32,768 command nodes. Compiles min(maximumRegionCount - 1, rows - 1) attainable cuts; optional cut logs retain maximumRegionCount - 1 entries with sentinel/zero padding.'
+            : 'The construction estimate must be at most 32,768 command nodes; admission depends on rows and the requested iteration/region budgets, not a universal row ceiling.'
+      }
+    ])
+  ),
+  GPURasterTileReprojection: {
+    limits: [
+      {
+        name: 'sources.length',
+        maximum: 16382,
+        reason:
+          'Derived from 3 + 2 * sources.length <= GPU_MAXIMUM_COMMAND_NODE_COUNT (32768); the validated source plan is snapshotted at construction.',
+        source: 'modules/analysis/src/raster-analysis/gpu-raster-tile-reprojection.ts'
+      },
+      {
+        name: 'estimatedCommandNodeCount',
+        maximum: 32768,
+        reason:
+          'GPU_MAXIMUM_COMMAND_NODE_COUNT: validateCommandNodeBudget enforces construction admission.',
+        source: 'modules/analysis/src/raster-analysis/gpu-raster-tile-reprojection.ts'
+      }
+    ],
+    limitation:
+      'estimatedCommandNodeCount = 3 + 2 * sources.length must fit the 32,768-node construction budget; source tiles and bounded mosaic scratch also remain subject to device storage bindings.'
+  },
+  GPUTerrainDerivatives: {
+    limitation:
+      'Orthogonal pixel axes are required: the constructor and parameter packer reject shear (normalized axis dot product tolerance 1e-6). Rotated orthogonal grids are supported only with uniform cell sizes; latitude-dependent ground modes require axis-aligned grids.'
+  },
+  GPURasterZonalStatistics: {
+    limitation:
+      'Geographic cell weighting requires an axis-aligned grid. Parameter layout version 2 explicitly carries signed row placement; spare parameter capacity does not select that layout.'
+  },
   GPUAnalysisContiguityStatistics: {
     tier: 'scale',
     limits: [
@@ -205,7 +258,7 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
       }
     ],
     limitation:
-      'WGS84 inverse within 0.02 radians of an antipode uses a sphere fallback with converged=0 and approximation=1. Spherical midpoints within 1e-6 radians of an antipode are NaN. See modules/analysis/docs/geodesic-precision.md for measured arithmetic envelopes and pending GPU certification. Aligned GraphVectorView origin, target and output rows support chunked pairs; iteration and precision limits remain per pair.'
+      'WGS84 inverse within 0.02 radians of an antipode uses a sphere fallback with converged=0 and approximation=1. Spherical midpoints within 1e-6 radians of an antipode are NaN. See docs/api/gpu-spatial-analysis/geodesic-precision.md for measured arithmetic envelopes and pending GPU certification. Aligned GraphVectorView origin, target and output rows support chunked pairs; iteration and precision limits remain per pair.'
   },
   GPUGeodesicDestination: {
     limits: [
@@ -218,7 +271,7 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
       }
     ],
     limitation:
-      'Float32 coordinates and bounded Vincenty iteration; unconverged results are published with iterationLimitReached=1. Nonzero-distance arrivals with abs(cos(latitude)) <= 0.03 report approximation=1 because azimuth is ill-conditioned. WGS84 and sphere envelopes are documented in modules/analysis/docs/geodesic-precision.md; arbitrary custom ellipsoids are outside those measurements. Aligned GraphVectorView origin, bearing, distance and output rows support chunked input; iteration and precision limits remain per row.'
+      'Float32 coordinates and bounded Vincenty iteration; unconverged results are published with iterationLimitReached=1. Nonzero-distance arrivals with abs(cos(latitude)) <= 0.03 report approximation=1 because azimuth is ill-conditioned. WGS84 and sphere envelopes are documented in docs/api/gpu-spatial-analysis/geodesic-precision.md; arbitrary custom ellipsoids are outside those measurements. Aligned GraphVectorView origin, bearing, distance and output rows support chunked input; iteration and precision limits remain per row.'
   },
   ...Object.fromEntries(
     [
@@ -276,7 +329,7 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
         ],
         limitation:
           exportName === 'GPUGeographicallyTemporallyWeightedRegression'
-            ? 'Planar native metric; default grid for finite support without bandwidthSearch, device-binding bound up to 16,777,216 rows. Explicit brute-force, untruncated Gaussian and bandwidth search retain the 32,768-row reference. Gaussian cutoff publishes approximation; profile search assumes unimodality and adaptive ties can be nonsmooth.'
+            ? 'Planar native metric; default grid for finite support without bandwidthSearch, device-binding bound up to 16,777,216 rows. Explicit brute-force, untruncated Gaussian and bandwidth search retain the 32,768-row reference. Gaussian cutoff truncates support; output.status reports profile-search convergence and requires bandwidthSearch. Profile search assumes unimodality and adaptive ties can be nonsmooth.'
             : 'Planar native metric; multiscale initialization explicitly retains the 32,768-row reference. searchStructure and gaussianCutoff are unsupported. Golden-section profile search assumes unimodality, tests endpoints and reports interval convergence; adaptive neighbour ties can make the objective nonsmooth.'
       }
     ])
@@ -553,6 +606,8 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
     ]
   },
   GPURasterEmbeddingPyramidLevel: {
+    limitation:
+      'Exactly one of vectors, quantized or aggregation is supplied. Chain aggregation.vectorSums and aggregation.validCount from output.vectorSums and output.validCount to preserve original-pixel support, including cancelling children. Vector validity requires nonempty, nonzero direction; sums/counts remain usable when direction is invalid. Caller-supplied aggregation counts must total at most 2^32 - 1 per output footprint (uint32); scale and dimensions also constrain each pass.',
     limits: [
       {
         name: 'scale',
@@ -907,19 +962,41 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
       {
         name: 'eventCount',
         maximum: 1024,
-        reason: 'Exhaustive all-pairs of events, so pairs grow with the square of the count.',
+        reason:
+          'MAXIMUM_EVENT_COUNT: exhaustive all-pairs of events; applies to every correction mode.',
         source: 'modules/analysis/src/gpu-network/gpu-network-inhomogeneous-k.ts'
       },
       {
         name: 'radiusCount',
         maximum: 256,
-        reason: 'Per-radius accumulators are sized for this maximum.',
+        reason: 'MAXIMUM_RADIUS_COUNT: per-radius accumulators; applies to every correction mode.',
         source: 'modules/analysis/src/gpu-network/gpu-network-inhomogeneous-k.ts'
       },
       {
         name: 'pairCount',
         maximum: 1048576,
-        reason: 'Storage and work envelope of the explicit all-pairs path.',
+        reason:
+          'MAXIMUM_PAIR_COUNT: eventCount squared must also fit the caller maximumPairCount budget in every correction mode.',
+        source: 'modules/analysis/src/gpu-network/gpu-network-inhomogeneous-k.ts'
+      },
+      {
+        name: 'nodeCount',
+        maximum: 65536,
+        reason:
+          'MAXIMUM_NODE_COUNT: bounds node-distance storage and shell scans in every correction mode.',
+        source: 'modules/analysis/src/gpu-network/gpu-network-inhomogeneous-k.ts'
+      },
+      {
+        name: 'edgeCount',
+        maximum: 65536,
+        reason:
+          'MAXIMUM_EDGE_COUNT: bounds edgeLengths rows and shell scans in every correction mode.',
+        source: 'modules/analysis/src/gpu-network/gpu-network-inhomogeneous-k.ts'
+      },
+      {
+        name: 'eventCount * nodeCount',
+        maximum: 16777216,
+        reason: 'MAXIMUM_DISTANCE_COUNT: bounds nodeDistances rows in every correction mode.',
         source: 'modules/analysis/src/gpu-network/gpu-network-inhomogeneous-k.ts'
       }
     ]
@@ -1350,7 +1427,7 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
   },
   GPURasterFractionalCoverage: {
     limitation:
-      'Default searchStructure bounds indexes zone pixel bounds and tiles candidate scratch; brute-force retains its dense pair cap. Candidate-budget exhaustion publishes saturated requiredCount and invalidates unvisited support; inspect candidateOverflow and output overflow.',
+      'Default searchStructure bounds indexes zone pixel bounds and tiles candidate scratch; brute-force retains its dense pair cap. Candidate-budget exhaustion publishes saturated requiredCount and invalidates unvisited support; inspect candidateOverflow and output overflow. Identity transforms are preserved; nonidentity snapping is capped at 1e-5 pixel per axis (four float32 steps at most).',
     limits: [
       {
         name: 'zoneCountTimesCellCount (searchStructure brute-force)',
@@ -1378,7 +1455,7 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
       }
     ],
     limitation:
-      'Consumes precomputed coverage with no inherited zone-times-cell cap. Coverage construction defaults to bounds-indexed tiled candidates; only explicit brute-force coverage has the 4,194,304 pair ceiling. The 16-byte zone summary permits at most 8,388,608 zones at a 128 MiB binding limit.'
+      'Consumes precomputed coverage with no inherited zone-times-cell cap. Uniform area uses planar coordinate units squared; geographic/web-mercator modes use ground square meters and require an axis-aligned grid. Explicit positive finite cellAreas require uniform cellSizeMode and exactly grid.width * grid.height rows, and cannot be combined with ground modes. Invalid support or unrepresentable aggregates suppress affected zones with NaNs and validity zero. Coverage construction defaults to bounds-indexed tiled candidates; only explicit brute-force coverage has the 4,194,304 pair ceiling. The 16-byte zone summary permits at most 8,388,608 zones at a 128 MiB binding limit.'
   },
   GPUTerrainBreach: {
     limitation:
@@ -1420,13 +1497,13 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
         name: 'capacity',
         maximum: 64,
         reason: 'Neighbor lists are held in per-query arrays.',
-        source: 'modules/analysis/src/pointcloud-analysis/pointcloud-limits.ts'
+        source: 'modules/analysis/src/pointcloud-analysis/operations/pointcloud-limits.ts'
       },
       {
         name: 'queriesTimesPositionsWithoutGrid',
         maximum: 134217728,
         reason: 'Without a grid every query tests every point.',
-        source: 'modules/analysis/src/pointcloud-analysis/pointcloud-limits.ts'
+        source: 'modules/analysis/src/pointcloud-analysis/operations/pointcloud-limits.ts'
       }
     ]
   },
@@ -1438,19 +1515,19 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
         name: 'radii.length',
         maximum: 32,
         reason: 'Three graph kernels per scale.',
-        source: 'modules/analysis/src/pointcloud-analysis/pointcloud-limits.ts'
+        source: 'modules/analysis/src/pointcloud-analysis/operations/pointcloud-limits.ts'
       },
       {
         name: 'capacity',
         maximum: 64,
         reason: 'Per-query neighbor arrays.',
-        source: 'modules/analysis/src/pointcloud-analysis/pointcloud-limits.ts'
+        source: 'modules/analysis/src/pointcloud-analysis/operations/pointcloud-limits.ts'
       },
       {
         name: 'queriesTimesPositionsWithoutGrid',
         maximum: 134217728,
         reason: 'Exhaustive search without a grid.',
-        source: 'modules/analysis/src/pointcloud-analysis/pointcloud-limits.ts'
+        source: 'modules/analysis/src/pointcloud-analysis/operations/pointcloud-limits.ts'
       }
     ]
   },
@@ -1460,13 +1537,13 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
         name: 'samplingCovariancePoints',
         maximum: 32768,
         reason: 'One thread visits every pair of in-cylinder points, quadratic per core.',
-        source: 'modules/analysis/src/pointcloud-analysis/pointcloud-limits.ts'
+        source: 'modules/analysis/src/pointcloud-analysis/operations/pointcloud-limits.ts'
       },
       {
         name: 'coresTimesPointsWithoutGrid',
         maximum: 134217728,
         reason: 'Without a grid every core scans both clouds.',
-        source: 'modules/analysis/src/pointcloud-analysis/pointcloud-limits.ts'
+        source: 'modules/analysis/src/pointcloud-analysis/operations/pointcloud-limits.ts'
       }
     ]
   },
@@ -1476,13 +1553,13 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
         name: 'iterations',
         maximum: 100,
         reason: 'Iterations are unrolled into the command graph.',
-        source: 'modules/analysis/src/pointcloud-analysis/pointcloud-limits.ts'
+        source: 'modules/analysis/src/pointcloud-analysis/operations/pointcloud-limits.ts'
       },
       {
         name: 'sourceTimesTargetWithoutGrid',
         maximum: 134217728,
         reason: 'Without a target grid every source point tests every target point.',
-        source: 'modules/analysis/src/pointcloud-analysis/pointcloud-limits.ts'
+        source: 'modules/analysis/src/pointcloud-analysis/operations/pointcloud-limits.ts'
       }
     ]
   },
@@ -1492,13 +1569,13 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
         name: 'windowCells',
         maximum: 64,
         reason: 'Morphology window radius in cells; cost grows with the window.',
-        source: 'modules/analysis/src/pointcloud-analysis/pointcloud-limits.ts'
+        source: 'modules/analysis/src/pointcloud-analysis/operations/pointcloud-limits.ts'
       },
       {
         name: 'cutCells',
         maximum: 32,
         reason: 'Cut radius in cells.',
-        source: 'modules/analysis/src/pointcloud-analysis/pointcloud-limits.ts'
+        source: 'modules/analysis/src/pointcloud-analysis/operations/pointcloud-limits.ts'
       }
     ]
   },
@@ -1508,7 +1585,7 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
         name: 'radiusCells',
         maximum: 32,
         reason: 'Largest morphology radius in cells.',
-        source: 'modules/analysis/src/pointcloud-analysis/pointcloud-limits.ts'
+        source: 'modules/analysis/src/pointcloud-analysis/operations/pointcloud-limits.ts'
       }
     ]
   },
@@ -2045,12 +2122,6 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
       }
     ]
   },
-  // Internal contributor (not a public operator): recorded here for contract rule 12, so its
-  // limits stay beside the others until it is exported.
-  GPUSnapRoundedNoding: {
-    limitation:
-      'Planar only. lines.positions rows, and 4 x (rows + intersectionCapacity), are at most the device segment-intersection vertex limit (getGPUSegmentIntersectionMaximumVertexCount); leafCapacity must be a power of two. Incomplete output sets candidateOverflow or overflow.'
-  },
   GPUNestedInterpolationValidation: {
     limitation:
       'Default mode tiled supports 4,096 rows; mode reference retains 256 rows and 32 neighbors. Both retain fold, candidate and device limits.',
@@ -2345,7 +2416,7 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
   },
   GPUNearestFeatureJoin: {
     limitation:
-      'Private top-k through 64 slots, storage-backed top-k above 64; total slots remain uint32-bounded and device storage bindings impose lower limits. Nearest-feature point queries and aligned outputs accept chunked GraphVectorView input; neighbors mode retains its own packed geometry and slot layout.',
+      'Private top-k through 64 slots, storage-backed top-k above 64; total slots remain uint32-bounded and device storage bindings impose lower limits. Nearest-feature point queries and aligned outputs accept chunked GraphVectorView input; neighbors mode retains its own packed geometry and slot layout. Optional neighborRows are original feature rows before sourceIds remapping; they require disjoint neighborIds output. Wire neighborRows into GPUPairGather.neighbors.rows; neighborIds may contain caller identities.',
     limits: [
       {
         name: 'k/neighborCapacity',
@@ -2358,7 +2429,7 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
   },
   GPUNearestFeatureWeights: {
     limitation:
-      'Private top-k through 64 slots, storage-backed top-k above 64; total slots remain uint32-bounded and device storage bindings impose lower limits.',
+      'Private top-k through 64 slots, storage-backed top-k above 64; total slots remain uint32-bounded and device storage bindings impose lower limits. Input neighborRows are feature row indices, never application-valued neighborIds.',
     limits: [
       {
         name: 'slotCapacity',
@@ -2368,6 +2439,10 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
         source: 'modules/analysis/src/gpu-spatial-analysis/spatial-join/nearest-types.ts'
       }
     ]
+  },
+  GPUPairGather: {
+    limitation:
+      'Dense neighbor input is neighbors.rows (original feature row indices), not neighbors.ids or application IDs. candidateOverflow reports inherited candidate-stage loss separately from final-capacity overflow. rowCount is clamped to output capacity; optional status.matchedCount counts matched rows. Supplied candidate loss requires an output candidateOverflow destination.'
   },
   GPURasterFractionalCategoricalStatistics: {
     limitation:
@@ -2440,10 +2515,15 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
       }
     ]
   },
-  addVisibilityGraphRecipe: {
+  '@luma-contributors/analysis/gpu-network:addVisibilityGraphRecipe': {
     tier: 'reference',
     limitation:
-      'The gpu-network recipe supports budgeted exact CSR all-source metrics or deterministic sampled estimates via metricsMode auto/exact. Auto samples when the exact command budget cannot fit; sampled maximum depth is a lower bound. Approximation, overflow and convergence are separate statuses; explicit exact rejects an insufficient budget. The gpu-spatial-analysis recipe retains adjacency/degree-only CSR output.',
+      'CSR metrics use budgeted exact all-source calculations or deterministic sampled estimates. Auto mode samples when the exact command budget cannot fit; explicit exact mode rejects an insufficient budget. Sampled maximum depth is a lower bound.'
+  },
+  '@luma-contributors/analysis/gpu-spatial-analysis:addVisibilityGraphRecipe': {
+    tier: 'reference',
+    limitation:
+      'CSR mode provides visibility adjacency and degree only. Dense reference mode provides all-pairs metrics through 256 viewpoints. Network metrics for CSR are supplied by the separate gpu-network recipe.',
     limits: [
       {
         name: 'positions.length (csr)',
@@ -2579,7 +2659,7 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
   },
   GPUBufferSelection: {
     limitation:
-      'GraphVectorView points, source IDs, masks and aligned distances support chunked queries; shared feature geometry remains resident and compact output retains global source-row order.'
+      'GraphVectorView points, source IDs, masks and aligned distances support chunked queries; shared feature geometry remains resident and compact output retains global source-row order. output.nearestFeatureRows always contains original feature rows, independent of feature sourceIds. The matches compact port exposes candidateOverflow separately from final-capacity overflow; top-level diagnostics retain their documented meanings.'
   },
   GPURegionMask: {
     limitation:
@@ -2999,6 +3079,18 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
       }
     ]
   },
+  GPUGroupConcaveHull: {
+    limits: [
+      {
+        name: 'triangle reservation',
+        maximum: 715827882,
+        reason: 'Six boundary words per triangle; total reservation must also fit device bindings.',
+        source: 'modules/analysis/src/gpu-spatial-analysis/concave-hull/gpu-concave-hull.ts'
+      }
+    ],
+    limitation:
+      'For n input positions, T=max(0,2*n-5). Fixed layout reserves groupCount*T triangles and three edges per triangle; packed layout reserves T triangles total and three edges per triangle, with separate compact lists and groupCount triangle/edge offset/count rows. Both layouts require groupCount convergence rows and suppress nonconverged groups. Packed count/requiredCount count boundary edges; overflow is zero with the required full reservation.'
+  },
   GPUVoronoiDiagram: {
     limits: [
       {
@@ -3343,5 +3435,13 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
           'modules/analysis/src/gpu-spatial-analysis/scan-statistics/gpu-spatial-scan-statistic.ts'
       }
     ]
+  }
+};
+
+/** Internal contributors have no public catalog identity and are audited separately. */
+export const INTERNAL_OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> = {
+  GPUSnapRoundedNoding: {
+    limitation:
+      'Planar only. lines.positions rows, and 4 x (rows + intersectionCapacity), are at most the device segment-intersection vertex limit (getGPUSegmentIntersectionMaximumVertexCount); leafCapacity must be a power of two. Incomplete output sets candidateOverflow or overflow.'
   }
 };

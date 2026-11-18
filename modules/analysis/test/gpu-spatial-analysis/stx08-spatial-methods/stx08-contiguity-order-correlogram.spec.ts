@@ -11,6 +11,59 @@ import {
 import fixture from '../../oracles/fixtures/stx08-spatial-methods.json';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {AnalysisRig} from '../catchment-accessibility/rig';
+import {WeightsRig} from '../spatial-weights/spatial-weights-harness';
+import {readFloat32, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
+
+it('final1 upstream candidate loss flags an ample-capacity order and suppresses Moran until cleared', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new WeightsRig(device);
+  try {
+    const candidate = rig.input(new Uint32Array([0]), 'uint32', 1);
+    const weights = {
+      ...rig.uploadWeights({
+        offsets: [0, 1, 3, 5, 6],
+        neighbors: [1, 0, 2, 1, 3, 2],
+        weights: [1, 1, 1, 1, 1, 1],
+        distances: []
+      }),
+      status: {candidateOverflow: candidate}
+    };
+    const table = rig.output('float32', GPU_CONTIGUITY_ORDER_CORRELOGRAM_COLUMNS.length);
+    const incomplete = rig.output('uint32', 1);
+    addContiguityOrderCorrelogramRecipe(rig.graph, {
+      weights,
+      values: rig.input(new Float32Array([1, 2, 4, 8]), 'float32', 4),
+      maximumOrder: 1,
+      slotCapacity: 8,
+      outputs: {correlogram: table.view, incompleteOrders: incomplete.view}
+    });
+    const compiled = rig.graph.compile();
+    try {
+      let baseline: number | undefined;
+      for (const flag of [0, 1, 0]) {
+        rig.bufferOf(candidate).write(new Uint32Array([flag]));
+        submitGraph(device, compiled, undefined);
+        expect(await readUint32(incomplete.buffer, 1)).toEqual([flag]);
+        const statistic = (
+          await readFloat32(table.buffer, GPU_CONTIGUITY_ORDER_CORRELOGRAM_COLUMNS.length)
+        )[GPU_CONTIGUITY_ORDER_CORRELOGRAM_COLUMNS.statistic];
+        if (flag) expect(Number.isNaN(statistic)).toBe(true);
+        else {
+          expect(Number.isFinite(statistic)).toBe(true);
+          // Row-standardized line: directed centered cross product 67/8, squares 115/4.
+          expect(statistic).toBeCloseTo(67 / 230, 5);
+          if (baseline !== undefined) expect(statistic).toBe(baseline);
+          baseline = statistic;
+        }
+      }
+    } finally {
+      compiled.destroy();
+    }
+  } finally {
+    rig.destroy();
+  }
+});
 
 const columns = GPU_CONTIGUITY_ORDER_CORRELOGRAM_COLUMNS;
 

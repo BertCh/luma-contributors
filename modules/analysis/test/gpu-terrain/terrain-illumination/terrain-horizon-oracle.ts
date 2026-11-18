@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getRasterPixelDirection} from '../../../src/analysis-core/raster-grid';
+import {getRasterPixelDirection} from '../../../src/analysis-core/contracts/raster-grid';
 import {getGPUTerrainHorizonDirection} from '../../../src/gpu-terrain/terrain-illumination/gpu-terrain-horizon';
 import {
   getRasterGroundCellSize,
   type GPURasterCellSizeMode
-} from '../../../src/analysis-core/raster-grid';
+} from '../../../src/analysis-core/contracts/raster-grid';
 import {createXorshiftRandom as createRandom} from '../terrain-oracle-utils';
 
 /** Inputs of the float64 horizon oracle. */

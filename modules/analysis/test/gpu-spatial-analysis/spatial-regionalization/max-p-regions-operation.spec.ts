@@ -5,9 +5,11 @@
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {CPUMaxPRegionsOperation} from '../../../src/gpu-spatial-analysis/spatial-regionalization/cpu-max-p-regions-operation';
+import {GPU_MAX_P_STATUS} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-max-p-regions';
 import {GPUMaxPRegionsOperation} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-max-p-regions-operation';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {createMaxPEnclaveBudgetPath} from './regionalization-final1-fixtures';
 import {
   createMaxPInput,
   createMaxPGrowthInput,
@@ -16,6 +18,81 @@ import {
   createMaxPRefinementInput,
   getRegionalizationOperationInputs
 } from './regionalization-operation-test-utils';
+
+it('spatial-3:F7 limits both Max-p operations to one growth and one enclave step', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props = {
+    ...createMaxPProps(),
+    rowCount: 8,
+    startCount: 1,
+    maximumGrowthSteps: 1,
+    maximumIterations: 0
+  };
+  for (const Operation of [GPUMaxPRegionsOperation, CPUMaxPRegionsOperation]) {
+    const result = await runOperationGraph(device, {
+      inputs: getRegionalizationOperationInputs(createMaxPGrowthInput()),
+      operations: [new Operation(props)],
+      outputs: Object.values(props.output)
+    });
+    // No row is eligible in the first seed wave; every unreached row becomes an infeasible singleton.
+    expect(Array.from(result['labels'])).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(Array.from(result['status'])).toEqual([8, 0, 8, 0, 0, 0]);
+    expect(result['objective'][0]).toBe(0);
+  }
+});
+
+it('spatial-3:F7 bounds enclave propagation separately from seed growth on both operations', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props = {
+    ...createMaxPProps(),
+    rowCount: 4,
+    columnCount: 1,
+    startCount: 1,
+    maximumGrowthSteps: 1,
+    maximumIterations: 0
+  };
+  for (const Operation of [GPUMaxPRegionsOperation, CPUMaxPRegionsOperation]) {
+    const result = await runOperationGraph(device, {
+      inputs: getRegionalizationOperationInputs(createMaxPEnclaveBudgetPath()),
+      operations: [new Operation(props)],
+      outputs: Object.values(props.output)
+    });
+    // Only row 0 has enough extensive mass; one synchronous enclave step reaches row 1, not row 2.
+    expect(result['labels'][1]).toBe(result['labels'][0]);
+    expect(result['labels'][2]).not.toBe(result['labels'][0]);
+    expect(result['status'][GPU_MAX_P_STATUS.feasible]).toBe(0);
+    expect(Number.isFinite(result['objective'][0])).toBe(true);
+  }
+});
+
+for (const maximumIterations of [1, 2]) {
+  it(`limits Max-p seed-four refinement to ${maximumIterations} rounds on both operations`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const input = createMaxPRefinementInput(4);
+    const props = {
+      ...createMaxPProps(),
+      rowCount: 9,
+      columnCount: 1,
+      startCount: 1,
+      standardize: false,
+      maximumIterations
+    };
+    for (const Operation of [GPUMaxPRegionsOperation, CPUMaxPRegionsOperation]) {
+      const result = await runOperationGraph(device, {
+        inputs: getRegionalizationOperationInputs(input),
+        operations: [new Operation(props)],
+        outputs: Object.values(props.output)
+      });
+      expect(result['status'][GPU_MAX_P_STATUS.improvementIterationCount]).toBe(maximumIterations);
+      expect(Array.from(result['labels'])).toEqual(
+        maximumIterations === 1 ? [1, 0, 0, 1, 1, 2, 1, 2, 2] : [0, 0, 0, 1, 1, 2, 1, 2, 2]
+      );
+    }
+  });
+}
 
 for (const scene of [
   'growth',

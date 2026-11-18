@@ -10,9 +10,11 @@ import type {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   getTrajectoryTimeBindings,
   getTrajectoryTimeMode,
@@ -32,8 +34,9 @@ export type AddTrajectorySortCheckProps = GPUTrajectoryGeometryFields & {
     status: {
       /**
        * One row: rows out of order. A row counts when its time is earlier than the previous row's
-       * in the same track (non-finite float times also count, since they cannot be ordered). A
-       * track whose end offset is before its start counts the rows of that reversed range.
+       * in the same track. Each non-finite float row counts once (either double-single part);
+       * the next finite row starts a new ordered run. A track whose end offset is before its
+       * start counts the rows of that reversed range.
        */
       invalidCount: GPUStatusScalar;
     };
@@ -55,6 +58,7 @@ export function addTrajectorySortCheck<Parameters>(
   validateSinglePackedView(props.timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
   validateSinglePackedView(props.trackOffsets, ['uint32'], `${id} trackOffsets`);
   validateSinglePackedView(invalidCount, ['uint32'], `${id} status.invalidCount`);
+  validateRequirement(id, invalidCount.length >= 1, 'status.invalidCount must have at least 1 row');
   if (props.timestampsLow) {
     validateSinglePackedView(props.timestampsLow, ['float32'], `${id} timestampsLow`);
   }
@@ -77,6 +81,15 @@ export function addTrajectorySortCheck<Parameters>(
   validateGraphViewsBelongToGraph(id, graph, [...inputs, invalidCount]);
   validateGraphOutputsDisjointFromInputs(id, [invalidCount], inputs);
   const rowCount = props.positions.length;
+  const timeMode = getTrajectoryTimeMode(props);
+  const finiteTime =
+    timeMode === 'words'
+      ? 'true'
+      : `isFiniteValue(timestamps[timestampsOffset + row])${
+          timeMode === 'double-single'
+            ? ' && isFiniteValue(timestampsLow[timestampsLowOffset + row])'
+            : ''
+        }`;
   graph.add(
     createFillNode<Parameters>(graph, {
       id: `${id}-clear`,
@@ -91,20 +104,26 @@ export function addTrajectorySortCheck<Parameters>(
     createWGSLKernelNode<Parameters>(graph, {
       id,
       operation: OPERATION,
-      variant: getTrajectoryTimeMode(props),
+      variant: timeMode,
       invocationCount: props.trackOffsets.length - 1,
       bindings: [
         ...getTrajectoryTimeBindings(props),
         {name: 'trackOffsets', view: props.trackOffsets, type: 'u32', access: 'read'},
         {name: 'invalidCount', view: invalidCount, type: 'atomic<u32>', access: 'read_write'}
       ],
-      declarations: getTrajectoryTimeSource(getTrajectoryTimeMode(props)),
+      declarations: `${getTrajectoryTimeSource(timeMode)}
+${IS_FINITE_VALUE_WGSL}
+fn isTimeFinite(row: u32) -> bool { return ${finiteTime}; }`,
       body: `let begin = min(trackOffsets[trackOffsetsOffset + index], ${rowCount}u);
   let end = min(trackOffsets[trackOffsetsOffset + index + 1u], ${rowCount}u);
   var disordered = 0u;
   if (end < begin) { disordered = begin - end; }
-  for (var row = begin + 1u; row < end; row++) {
-    if (!isTimeNonDecreasing(row, row - 1u)) { disordered++; }
+  for (var row = begin; row < end; row++) {
+    if (!isTimeFinite(row)) {
+      disordered++;
+    } else if (row > begin) {
+      if (isTimeFinite(row - 1u) && !isTimeNonDecreasing(row, row - 1u)) { disordered++; }
+    }
   }
   if (disordered > 0u) { atomicAdd(&invalidCount[invalidCountOffset], disordered); }`
     })

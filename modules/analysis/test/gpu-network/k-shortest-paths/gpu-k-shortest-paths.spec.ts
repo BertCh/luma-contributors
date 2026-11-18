@@ -7,6 +7,7 @@ import {expect, it} from 'vitest';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUKShortestPaths,
+  decodeGPUKShortestPaths,
   GPUKShortestPathsOperation,
   CPUKShortestPathsOperation,
   type KShortestPathsOperationProps,
@@ -25,7 +26,11 @@ import {
   type OperationGraphRows
 } from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
-import {getFixtureInput} from './k-shortest-paths-test-utils';
+import {
+  getFixtureInput,
+  getSpurInterruptionInput,
+  getCandidateSpurInterruptionInput
+} from './k-shortest-paths-test-utils';
 import reference from '../../oracles/fixtures/k-shortest-paths.json';
 
 const OUTPUT = {
@@ -49,6 +54,68 @@ const OUTPUT_NAMES = [
   'counts',
   ...Object.values(OUTPUT.status)
 ];
+
+it('network:H2 every spur certificate precedes local truncation on both backends', async () => {
+  for (const candidateStop of [false, true]) {
+    for (const reverse of [false, true])
+      for (const cpu of [false, true]) {
+        const input = candidateStop
+          ? getCandidateSpurInterruptionInput()
+          : getSpurInterruptionInput();
+        const maximumPathLength = candidateStop ? 4 : 3;
+        const firstCost = candidateStop ? 3 : 2;
+        if (reverse) {
+          input.sources.reverse();
+          input.targets.reverse();
+        }
+        const rows = await run(
+          input,
+          {
+            routeCount: 2,
+            maximumPathLength,
+            maximumIterations: 1,
+            candidateCapacity: candidateStop ? 1 : 256
+          },
+          cpu
+        );
+        expect(rows['counts']).toEqual(Uint32Array.of(1, 1));
+        expect(rows['lengths']).toEqual(
+          Uint32Array.from(reverse ? [2, 0, maximumPathLength, 0] : [maximumPathLength, 0, 2, 0])
+        );
+        expect(rows['costs']).toEqual(
+          Float32Array.from(
+            reverse ? [1, Infinity, firstCost, Infinity] : [firstCost, Infinity, 1, Infinity]
+          )
+        );
+        expect(rows['converged']).toEqual(Uint32Array.of(0));
+        expect(rows['iterationLimitReached']).toEqual(Uint32Array.of(1));
+        expect(rows['candidateOverflow']).toEqual(Uint32Array.of(0));
+        checkPadding(rows, 2, maximumPathLength);
+      }
+  }
+});
+
+it('network:G5 a shared shortest-search interruption vetoes every active query proposal', async () => {
+  const offsets = Uint32Array.from({length: 73}, (_, row) => Math.min(row, 69));
+  offsets[71] = 70;
+  offsets[72] = 70;
+  const neighbors = Uint32Array.from({length: 70}, (_, row) => (row < 69 ? row + 1 : 71));
+  for (const sources of [Uint32Array.of(0, 70), Uint32Array.of(70, 0)]) {
+    const targets = sources[0] === 0 ? Uint32Array.of(69, 71) : Uint32Array.of(71, 69);
+    for (const cpu of [false, true]) {
+      const rows = await run(
+        {topology: {offsets, neighbors, weights: new Float32Array(70).fill(1)}, sources, targets},
+        {routeCount: 1, maximumPathLength: 72, maximumIterations: 1},
+        cpu
+      );
+      expect(rows['counts']).toEqual(Uint32Array.of(0, 0));
+      expect(rows['converged']).toEqual(Uint32Array.of(0));
+      expect(rows['iterationLimitReached']).toEqual(Uint32Array.of(1));
+      expect(rows['candidateOverflow']).toEqual(Uint32Array.of(0));
+      checkPadding(rows, 1, 72);
+    }
+  }
+});
 
 async function run(
   input: CPUKShortestPathsInput,
@@ -169,6 +236,49 @@ for (const edgeCase of [false, true]) {
   });
 }
 
+it('decodes GPU readbacks for a route, a zero-edge query and an invalid endpoint', async () => {
+  const options = {queryCount: 3, routeCount: 2, maximumPathLength: 3};
+  const rows = await run(
+    {
+      topology: {
+        offsets: Uint32Array.of(0, 1, 1),
+        neighbors: Uint32Array.of(1),
+        weights: Float32Array.of(2)
+      },
+      sources: Uint32Array.of(0, 1, 99),
+      targets: Uint32Array.of(1, 1, 1)
+    },
+    options
+  );
+  const decoded = decodeGPUKShortestPaths(
+    {
+      vertices: rows['vertices'] as Uint32Array,
+      edges: rows['edges'] as Uint32Array,
+      lengths: rows['lengths'] as Uint32Array,
+      costs: rows['costs'] as Float32Array,
+      counts: rows['counts'] as Uint32Array,
+      status: {
+        converged: rows['converged'] as Uint32Array,
+        iterationLimitReached: rows['iterationLimitReached'] as Uint32Array,
+        candidateOverflow: rows['candidateOverflow'] as Uint32Array,
+        iterationCount: rows['iterationCount'] as Uint32Array
+      }
+    },
+    options
+  );
+  expect(decoded.queries).toEqual([
+    {count: 1, routes: [{length: 2, cost: 2, vertices: [0, 1], edges: [0]}]},
+    {count: 1, routes: [{length: 1, cost: 0, vertices: [1], edges: []}]},
+    {count: 0, routes: []}
+  ]);
+  expect(decoded.status).toEqual({
+    converged: true,
+    iterationLimitReached: false,
+    candidateOverflow: false,
+    iterationCount: 2
+  });
+});
+
 it('publishes retained paths and distinct path, shortest-search and candidate budget flags', async () => {
   const branching = getFixtureInput(reference.cases[1]);
   const overflow = await run(branching, {candidateCapacity: 1});
@@ -192,15 +302,21 @@ it('publishes retained paths and distinct path, shortest-search and candidate bu
   expect(Array.from(overlong['converged'])).toEqual([0]);
   expect(Array.from(overlong['candidateOverflow'])).toEqual([0]);
   checkPadding(overlong, 8, 3);
-  const limited = await run(getFixtureInput(reference.cases[6]), {
-    routeCount: 2,
-    maximumPathLength: 300,
-    maximumIterations: 1
-  });
-  expect(Array.from(limited['counts'])).toEqual([0]);
-  expect(Array.from(limited['iterationLimitReached'])).toEqual([1]);
-  expect(Array.from(limited['converged'])).toEqual([0]);
-  checkPadding(limited, 2, 300);
+  for (const cpu of [false, true]) {
+    const limited = await run(
+      getFixtureInput(reference.cases[6]),
+      {
+        routeCount: 2,
+        maximumPathLength: 300,
+        maximumIterations: 1
+      },
+      cpu
+    );
+    expect(Array.from(limited['counts'])).toEqual([0]);
+    expect(Array.from(limited['iterationLimitReached'])).toEqual([1]);
+    expect(Array.from(limited['converged'])).toEqual([0]);
+    checkPadding(limited, 2, 300);
+  }
 });
 
 it('skips impassable edges and unused CSR capacity across expanded lanes', async () => {

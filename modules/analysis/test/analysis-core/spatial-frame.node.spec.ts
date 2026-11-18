@@ -21,7 +21,7 @@ describe('GPUSpatialFrame facade', () => {
     ['EPSG:32733', 'meters', 'meters'],
     ['+proj=utm +zone=33 +units=us-ft +datum=NAD83', 'us-survey-feet', undefined],
     ['+proj=lcc +lat_1=40 +lat_2=60 +units=m', 'meters', 'meters'],
-    ['+proj=utm +zone=33 +units=km', 'kilometers', 'kilometers']
+    ['+proj=utm +zone=33 +units=km', 'kilometers', undefined]
   ])('resolves the unit of %s', (crs, unitName, contextUnits) => {
     const frame = createGPUSpatialFrameFromCRS(crs);
     expect(frame.kind).toBe('crs');

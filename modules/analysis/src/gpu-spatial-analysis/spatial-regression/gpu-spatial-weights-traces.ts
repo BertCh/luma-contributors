@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateRegressionOutputDispatches} from './regression-output-dispatches';
+import {snapshotRegressionConstructionProps} from './regression-construction-snapshot';
+import {getRegressionWeightsSuppressionNodes} from './regression-weights-completeness';
 
 import {
   getRegressionTraceAllocationLengths,
@@ -33,6 +35,7 @@ import {
 } from './spatial-maximum-likelihood-nodes';
 import {
   validateCapacity,
+  validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -66,6 +69,8 @@ const OPERATION = 'GPUSpatialWeightsTraces';
 const TILE_WORKGROUP_SIZE = 64;
 const MINIMUM_DEFAULT_TILE_ROWS = 32;
 const DEFAULT_TILE_COUNT = 1024;
+// Bounds the serial norm merge to the regression family's 4096-partial merge budget.
+const MAXIMUM_TILE_COUNT = 4096;
 
 /** Caller-owned outputs of {@link GPUSpatialWeightsTraces}. */
 export type GPUSpatialWeightsTracesOutput = {
@@ -227,6 +232,30 @@ export class GPUSpatialWeightsTraces implements GPUCommandNodeProducer {
   readonly includeGramTraces: boolean;
 
   constructor(props: GPUSpatialWeightsTracesProps) {
+    props = snapshotRegressionConstructionProps(
+      props,
+      [
+        'id',
+        'weights',
+        'maximumPower',
+        'mode',
+        'probeCount',
+        'parameters',
+        'includeGramTraces',
+        'tileRowCount',
+        'probeBatchSize',
+        'output'
+      ],
+      [
+        'powerTraces',
+        'powerSums',
+        'powerTraceStandardErrors',
+        'gramTraces',
+        'infinityNorm',
+        'status'
+      ],
+      'spatial-weights-traces'
+    );
     const id = props.id ?? 'spatial-weights-traces';
     this.id = id;
     this.props = props;
@@ -313,6 +342,7 @@ export class GPUSpatialWeightsTraces implements GPUCommandNodeProducer {
       Math.max(MINIMUM_DEFAULT_TILE_ROWS, Math.ceil(rows / DEFAULT_TILE_COUNT));
     // Tiles never span chunks, so a chunked matrix has at least one tile per chunk.
     this.tileCount = getGPUSpatialWeightsTilePlan(props.weights, this.tileRowCount).tileCount;
+    validateMaximumCount(id, 'tileCount', this.tileCount, MAXIMUM_TILE_COUNT);
     // The Gram traces need W', which has no chunked form yet.
     if (includeGram && isGPUChunkedSpatialWeights(props.weights)) {
       throw new Error(`${id} Gram traces need whole weights`); // chunked transpose is not available
@@ -910,6 +940,9 @@ const POWER_ROWS: u32 = ${powerRowCount}u;`,
         )
       );
     }
-    return nodes;
+    return [
+      ...nodes,
+      ...getRegressionWeightsSuppressionNodes<Parameters>(graph, id, props.weights, props.output)
+    ];
   }
 }

@@ -379,7 +379,14 @@ export class GPUTrajectoryThinning implements GPUCommandNodeProducer {
         id: `${id}-publish`,
         operation: OPERATION,
         requiredCount: keptTotal,
-        output: {ids: output.rowIds, status: output.status}
+        output: {
+          ids: output.rowIds,
+          status: {
+            count: output.status.count,
+            overflow: output.status.overflow,
+            requiredCount: output.status.requiredCount
+          }
+        }
       })
     ];
     if (output.status.candidateOverflow) {

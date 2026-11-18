@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import {snapshotWeightsAlgebraProps} from './weights-construction-snapshot';
 import {assertCompatibleGPUSpatialContexts} from '../../analysis-core/contracts/spatial-context';
 import {
   validateCapacity,
@@ -30,6 +31,7 @@ export type CPUSpatialWeightsAlgebraRows = {
   neighbors: Uint32Array;
   weights: Float32Array;
   distances?: Float32Array;
+  status?: {overflow?: Uint32Array; candidateOverflow?: Uint32Array};
 };
 /** Arrays read by the chosen operation. */
 export type CPUSpatialWeightsAlgebraInput = {
@@ -46,7 +48,7 @@ export type CPUSpatialWeightsAlgebraOptions = {capacity: number; distances?: boo
       operation: 'union' | 'intersection' | 'difference' | 'symmetricDifference';
       weightRule?: GPUSpatialWeightsCombineRule;
     }
-  | {operation: 'higherOrder'; order: number; cumulative?: boolean}
+  | {operation: 'higherOrder'; order: number; cumulative?: boolean; workCapacity?: number}
   | {operation: 'selfWeight'; selfWeight?: number}
   | {operation: 'subgraph'}
   | {operation: 'block'; groupCount: number}
@@ -58,9 +60,10 @@ export type CPUSpatialWeightsAlgebraOptions = {capacity: number; distances?: boo
     }
 );
 /** Output CSR and status scalars; unused capacity is zero. */
-export type CPUSpatialWeightsAlgebraResult = CPUSpatialWeightsAlgebraRows & {
+export type CPUSpatialWeightsAlgebraResult = Omit<CPUSpatialWeightsAlgebraRows, 'status'> & {
   overflow: Uint32Array;
   requiredCount: Uint32Array;
+  candidateOverflow: Uint32Array;
 };
 
 function validateOptions(id: string, options: CPUSpatialWeightsAlgebraOptions): void {
@@ -88,7 +91,11 @@ function validateOptions(id: string, options: CPUSpatialWeightsAlgebraOptions): 
       ),
       'weightRule must name a supported combination'
     );
-  if (options.operation === 'higherOrder') validateCapacity(id, 'order', options.order);
+  if (options.operation === 'higherOrder') {
+    validateCapacity(id, 'order', options.order);
+    if (options.workCapacity !== undefined)
+      validateCapacity(id, 'workCapacity', options.workCapacity);
+  }
   if (options.operation === 'selfWeight' && options.selfWeight !== undefined) {
     validateFiniteNumber(id, 'selfWeight', options.selfWeight);
     validateRequirement(id, options.selfWeight >= 0, 'selfWeight must be >= 0');
@@ -166,15 +173,66 @@ function getRow(rows: CPUSpatialWeightsAlgebraRows, row: number): Entry[] {
   return entries;
 }
 
+/** Mirror each GPU intermediate CSR's global prefix budget, including visited unions. */
+function computeBoundedHigherOrderRows(
+  source: CPUSpatialWeightsAlgebraRows,
+  order: number,
+  cumulative: boolean,
+  workCapacity: number,
+  candidateOverflow: Uint32Array
+): number[][] {
+  const rows = source.offsets.length - 1;
+  const base = Array.from({length: rows}, (_, row) =>
+    getRow(source, row)
+      .map(entry => entry.neighbor)
+      .filter(neighbor => neighbor !== row && neighbor < rows)
+  );
+  const clamp = (pattern: number[][]): number[][] => {
+    let remaining = workCapacity;
+    return pattern.map(neighbors => {
+      if (neighbors.length > remaining) candidateOverflow[0] = 1;
+      const retained = neighbors.slice(0, remaining).sort((first, second) => first - second);
+      remaining = Math.max(0, remaining - neighbors.length);
+      return retained;
+    });
+  };
+  if (order === 1) return base;
+  let frontier = clamp(base);
+  let visited = frontier;
+  for (let level = 2; level <= order; level++) {
+    const next = frontier.map((neighbors, row) => {
+      const seen = new Set(visited[row]);
+      seen.add(row);
+      const result: number[] = [];
+      for (const middle of neighbors)
+        for (const neighbor of base[middle]) {
+          if (!seen.has(neighbor)) {
+            seen.add(neighbor);
+            result.push(neighbor);
+          }
+        }
+      return result;
+    });
+    if (level === order && !cumulative) return next;
+    frontier = clamp(next);
+    const union = visited.map((neighbors, row) =>
+      [...new Set([...neighbors, ...frontier[row]])].sort((first, second) => first - second)
+    );
+    if (level === order) return union;
+    visited = clamp(union);
+  }
+  return frontier;
+}
+
 /**
  * Computes sparse set algebra, shortest-path neighborhoods and space-time products in float64,
  * rounding weights and distances once on output. Higher-order expansion follows ascending
  * frontier order; a capacity-limited final frontier is truncated before sorting, as on GPU.
  *
  * What differs from the GPU contributor:
- * - Higher-order searches use dynamic frontiers: workCapacity and the order-32 GPU cap are
- *   dropped. overflow reports only final output truncation; requiredCount is always exact
- *   (saturated at uint32 maximum), including when GPU intermediate sets would overflow.
+ * - Higher-order searches use dynamic frontiers when workCapacity is omitted. An explicit
+ *   workCapacity clamps each intermediate matrix in row order, exactly as on GPU, and sets
+ *   candidateOverflow. The order-32 GPU cap is dropped. requiredCount is a lower bound after loss.
  * - The GPU limit of 16 temporal lags is dropped. Index and output sizes remain uint32.
  *   Empty input slot arrays are accepted; output capacity remains at least one.
  * - Arithmetic is float64 with one output rounding; near rounding boundaries products/sums
@@ -230,8 +288,25 @@ export function computeSpatialWeightsAlgebraOnCPU(
     weights: new Float32Array(options.capacity),
     distances: options.distances ? new Float32Array(options.capacity) : undefined,
     overflow: new Uint32Array(1),
-    requiredCount: new Uint32Array(1)
+    requiredCount: new Uint32Array(1),
+    candidateOverflow: Uint32Array.of(
+      Number(
+        [left, right, source].some(rows =>
+          Boolean(rows?.status?.overflow?.[0] || rows?.status?.candidateOverflow?.[0])
+        )
+      )
+    )
   };
+  const boundedOrders =
+    options.operation === 'higherOrder' && options.workCapacity !== undefined
+      ? computeBoundedHigherOrderRows(
+          source!,
+          options.order,
+          options.cumulative ?? false,
+          options.workCapacity,
+          result.candidateOverflow
+        )
+      : undefined;
   let requiredCount = 0;
   for (let row = 0; row < rowCount; row++) {
     let entries: Entry[] = [];
@@ -281,24 +356,28 @@ export function computeSpatialWeightsAlgebraOnCPU(
           if (neighbor !== row && input.groupIds![neighbor] === group)
             entries.push({neighbor, weight: 1, distance: 0});
     } else if (options.operation === 'higherOrder') {
-      const visited = new Set([row]);
-      let frontier = [row];
-      for (let level = 1; level <= options.order && frontier.length; level++) {
-        const next: number[] = [];
-        for (const middle of frontier)
-          for (const entry of getRow(source!, middle))
-            if (entry.neighbor < rowCount && !visited.has(entry.neighbor)) {
-              visited.add(entry.neighbor);
-              next.push(entry.neighbor);
-            }
-        if (level === options.order)
-          entries = next.map(neighbor => ({neighbor, weight: 1, distance: 0}));
-        frontier = next.sort((first, second) => first - second);
+      if (boundedOrders) {
+        entries = boundedOrders[row].map(neighbor => ({neighbor, weight: 1, distance: 0}));
+      } else {
+        const visited = new Set([row]);
+        let frontier = [row];
+        for (let level = 1; level <= options.order && frontier.length; level++) {
+          const next: number[] = [];
+          for (const middle of frontier)
+            for (const entry of getRow(source!, middle))
+              if (entry.neighbor < rowCount && !visited.has(entry.neighbor)) {
+                visited.add(entry.neighbor);
+                next.push(entry.neighbor);
+              }
+          if (level === options.order)
+            entries = next.map(neighbor => ({neighbor, weight: 1, distance: 0}));
+          frontier = next.sort((first, second) => first - second);
+        }
+        if (options.cumulative)
+          entries = [...visited]
+            .filter(neighbor => neighbor !== row)
+            .map(neighbor => ({neighbor, weight: 1, distance: 0}));
       }
-      if (options.cumulative)
-        entries = [...visited]
-          .filter(neighbor => neighbor !== row)
-          .map(neighbor => ({neighbor, weight: 1, distance: 0}));
       // The GPU's exact-order emit pass sorts only its retained generation-order prefix.
       if (!options.cumulative) {
         const available = Math.max(0, options.capacity - requiredCount);
@@ -370,9 +449,10 @@ export function computeSpatialWeightsAlgebraOnCPU(
   return result;
 }
 
-/** CPU twin without GPU frontier, lag-count or order limits. */
+/** CPU twin honoring explicit frontier budgets, without GPU lag-count or order limits. */
 export class CPUSpatialWeightsAlgebraOperation extends GPUCPUOperation {
   constructor(props: SpatialWeightsAlgebraOperationProps) {
+    props = snapshotWeightsAlgebraProps(props);
     const id = props.id ?? 'spatial-weights-algebra';
     const options: CPUSpatialWeightsAlgebraOptions = {
       ...props,
@@ -455,7 +535,15 @@ export class CPUSpatialWeightsAlgebraOperation extends GPUCPUOperation {
           distances:
             operation.inputs[`${prefix}Distances`] === undefined
               ? undefined
-              : getCPUOperationFloat32Rows(id, inputs, `${prefix}Distances`)
+              : getCPUOperationFloat32Rows(id, inputs, `${prefix}Distances`),
+          status: {
+            overflow: operation.inputs[`${prefix}Overflow`]
+              ? getCPUOperationUint32Rows(id, inputs, `${prefix}Overflow`)
+              : undefined,
+            candidateOverflow: operation.inputs[`${prefix}CandidateOverflow`]
+              ? getCPUOperationUint32Rows(id, inputs, `${prefix}CandidateOverflow`)
+              : undefined
+          }
         });
         const result = computeSpatialWeightsAlgebraOnCPU(
           {

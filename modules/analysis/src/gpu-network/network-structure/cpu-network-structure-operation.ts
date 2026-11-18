@@ -15,6 +15,15 @@ import {
   GPUNetworkStructureOperation,
   type NetworkStructureOperationProps
 } from './gpu-network-structure-operation';
+import {
+  GPU_NETWORK_STRONGLY_CONNECTED_COMPONENTS_MAXIMUM_ITERATIONS,
+  GPU_NETWORK_STRONGLY_CONNECTED_COMPONENTS_DEFAULT_ITERATIONS
+} from './gpu-network-strongly-connected-components';
+import {
+  GPU_NETWORK_STRUCTURE_EXACT_MAXIMUM_NODE_COUNT,
+  GPU_NETWORK_STRUCTURE_EXACT_MAXIMUM_EDGE_COUNT
+} from './gpu-network-structure';
+import {computeBudgetedNetworkStrongComponents} from './network-strong-components-cpu-budget';
 
 const NONE = 0xffffffff;
 
@@ -27,6 +36,12 @@ export type CPUNetworkStructureInput = {
 /** Output layouts are identical to GPUNetworkStructure. */
 export type CPUNetworkStructureResult = {
   strongComponents: Uint32Array;
+  /** Exact traversal: one iteration. Budgeted SCC: executed trim/colour/backward/finalize steps. */
+  strongComponentsStatus: {
+    converged: Uint32Array;
+    iterationCount: Uint32Array;
+    iterationLimitReached: Uint32Array;
+  };
   bridges: Uint32Array;
   articulationPoints: Uint32Array;
   biconnectedComponents: Uint32Array;
@@ -38,18 +53,33 @@ export type CPUNetworkStructureResult = {
  * IDs are ignored. Without reverse slots only strongComponents is meaningful.
  *
  * What differs from the GPU contributor:
- * - SCC traversal takes O(vertices + slots) time and memory rather than mutual-reachability BFS.
+ * - Exact SCC traversal takes O(vertices + slots) time and memory rather than mutual-reachability BFS.
  * - GPU-only 1024-vertex and 65536-slot caps are dropped. Integer output layouts are unchanged.
  * - Malformed CSR offsets throw an Error on CPU; the GPU clamps offset bounds in its kernels.
+ *
+ * Supplying maximumIterations selects the budgeted trim/colour/backward/finalize SCC state machine.
+ * Exhaustion invalidates every SCC label while leaving resilience results valid. Within each phase,
+ * CPU vertex order is deterministic; GPU scheduling may change the number of propagation steps.
+ * Omit the budget for an exact Tarjan traversal and status [converged=1, iterationCount=1, limit=0].
  *
  * @throws If offsets or reverseEdgeSlots have inconsistent lengths or offsets are not valid CSR.
  */
 export function computeNetworkStructureOnCPU(
-  input: CPUNetworkStructureInput
+  input: CPUNetworkStructureInput,
+  options: {maximumIterations?: number} = {}
 ): CPUNetworkStructureResult {
   const {offsets, neighbors, reverseEdgeSlots} = input;
   const nodeCount = offsets.length - 1;
   const edgeCount = neighbors.length;
+  if (options.maximumIterations !== undefined) {
+    validateCapacity(
+      'computeNetworkStructureOnCPU',
+      'maximumIterations',
+      options.maximumIterations,
+      1,
+      GPU_NETWORK_STRONGLY_CONNECTED_COMPONENTS_MAXIMUM_ITERATIONS
+    );
+  }
   if (
     nodeCount < 1 ||
     offsets.some(
@@ -67,46 +97,58 @@ export function computeNetworkStructureOnCPU(
   const active = new Uint8Array(nodeCount);
   const members: number[] = [];
   let clock = 0;
-  for (let root = 0; root < nodeCount; root++) {
-    if (discovery[root] >= 0) continue;
-    const frames: {vertex: number; nextEdge: number}[] = [];
-    const discoverVertex = (vertex: number) => {
-      discovery[vertex] = lowLink[vertex] = clock++;
-      active[vertex] = 1;
-      members.push(vertex);
-      frames.push({vertex, nextEdge: offsets[vertex]});
-    };
-    discoverVertex(root);
-    while (frames.length) {
-      const frame = frames[frames.length - 1];
-      const vertex = frame.vertex;
-      if (frame.nextEdge < offsets[vertex + 1]) {
-        const destination = neighbors[frame.nextEdge++];
-        if (destination >= nodeCount) continue;
-        if (discovery[destination] < 0) discoverVertex(destination);
-        else if (active[destination])
-          lowLink[vertex] = Math.min(lowLink[vertex], discovery[destination]);
-      } else {
-        frames.pop();
-        if (frames.length) {
-          const parent = frames[frames.length - 1].vertex;
-          lowLink[parent] = Math.min(lowLink[parent], lowLink[vertex]);
-        }
-        if (lowLink[vertex] === discovery[vertex]) {
-          const component: number[] = [];
-          let label = vertex;
-          let member: number;
-          do {
-            member = members.pop()!;
-            active[member] = 0;
-            label = Math.min(label, member);
-            component.push(member);
-          } while (member !== vertex);
-          for (const entry of component) strongComponents[entry] = label;
+  if (options.maximumIterations === undefined) {
+    for (let root = 0; root < nodeCount; root++) {
+      if (discovery[root] >= 0) continue;
+      const frames: {vertex: number; nextEdge: number}[] = [];
+      const discoverVertex = (vertex: number) => {
+        discovery[vertex] = lowLink[vertex] = clock++;
+        active[vertex] = 1;
+        members.push(vertex);
+        frames.push({vertex, nextEdge: offsets[vertex]});
+      };
+      discoverVertex(root);
+      while (frames.length) {
+        const frame = frames[frames.length - 1];
+        const vertex = frame.vertex;
+        if (frame.nextEdge < offsets[vertex + 1]) {
+          const destination = neighbors[frame.nextEdge++];
+          if (destination >= nodeCount) continue;
+          if (discovery[destination] < 0) discoverVertex(destination);
+          else if (active[destination])
+            lowLink[vertex] = Math.min(lowLink[vertex], discovery[destination]);
+        } else {
+          frames.pop();
+          if (frames.length) {
+            const parent = frames[frames.length - 1].vertex;
+            lowLink[parent] = Math.min(lowLink[parent], lowLink[vertex]);
+          }
+          if (lowLink[vertex] === discovery[vertex]) {
+            const component: number[] = [];
+            let label = vertex;
+            let member: number;
+            do {
+              member = members.pop()!;
+              active[member] = 0;
+              label = Math.min(label, member);
+              component.push(member);
+            } while (member !== vertex);
+            for (const entry of component) strongComponents[entry] = label;
+          }
         }
       }
     }
   }
+  const bounded =
+    options.maximumIterations === undefined
+      ? undefined
+      : computeBudgetedNetworkStrongComponents(offsets, neighbors, options.maximumIterations);
+  if (bounded) strongComponents.set(bounded.strongComponents);
+  const strongComponentsStatus = bounded?.strongComponentsStatus ?? {
+    converged: Uint32Array.of(1),
+    iterationCount: Uint32Array.of(1),
+    iterationLimitReached: Uint32Array.of(0)
+  };
   const bridges = new Uint32Array(edgeCount);
   const articulationPoints = new Uint32Array(nodeCount);
   const biconnectedComponents = new Uint32Array(edgeCount).fill(NONE);
@@ -172,18 +214,47 @@ export function computeNetworkStructureOnCPU(
       }
     }
   }
-  return {strongComponents, bridges, articulationPoints, biconnectedComponents};
+  return {
+    strongComponents,
+    strongComponentsStatus,
+    bridges,
+    articulationPoints,
+    biconnectedComponents
+  };
 }
 
 /**
  * CPU twin preferred for reference structure analysis; GPU work and scratch caps are dropped.
  * As on GPU, reverse slots are ignored when only strongComponents is requested.
+ * With no mode or budget, SCCs always use exact Tarjan, including above the GPU exact-route caps.
+ * Exact SCC status reports one Tarjan traversal. Explicit parallel mode, or explicit auto/budget
+ * selecting the large-graph route, uses the phase budget and invalidates labels on exhaustion. Step counts may differ
+ * with GPU vertex scheduling, but the explicit maximum always binds both forms.
  */
 export class CPUNetworkStructureOperation extends GPUCPUOperation {
   constructor(props: NetworkStructureOperationProps) {
     const id = props.id ?? 'network-structure';
     validateCapacity(id, 'nodeCount', props.nodeCount);
     validateCapacity(id, 'edgeCount', props.edgeCount, 0);
+    validateRequirement(
+      id,
+      props.mode === undefined || ['auto', 'parallel', 'exact'].includes(props.mode),
+      'mode must be auto, parallel or exact'
+    );
+    if (props.strongComponentsMaximumIterations !== undefined) {
+      validateCapacity(
+        id,
+        'strongComponentsMaximumIterations',
+        props.strongComponentsMaximumIterations,
+        1,
+        GPU_NETWORK_STRONGLY_CONNECTED_COMPONENTS_MAXIMUM_ITERATIONS
+      );
+    }
+    validateRequirement(
+      id,
+      !props.strongComponentsStatus || props.output.strongComponents !== undefined,
+      'strongComponentsStatus requires output.strongComponents'
+    );
     validateRequirement(
       id,
       Object.values(props.output).some(value => value !== undefined),
@@ -226,19 +297,35 @@ export class CPUNetworkStructureOperation extends GPUCPUOperation {
             props.nodeCount * 2
         )
           throw new Error(`${id} nodePositions length must equal nodeCount * 2`);
-        const result = computeNetworkStructureOnCPU({
-          offsets,
-          neighbors,
-          reverseEdgeSlots: hasResilienceOutput
-            ? getCPUOperationUint32Rows(id, inputs, 'reverseEdgeSlots')
-            : undefined
-        });
+        const parallelStrongComponents =
+          props.output.strongComponents !== undefined &&
+          (props.mode === 'parallel' ||
+            ((props.mode === 'auto' || props.strongComponentsMaximumIterations !== undefined) &&
+              props.mode !== 'exact' &&
+              (props.nodeCount > GPU_NETWORK_STRUCTURE_EXACT_MAXIMUM_NODE_COUNT ||
+                props.edgeCount > GPU_NETWORK_STRUCTURE_EXACT_MAXIMUM_EDGE_COUNT)));
+        const result = computeNetworkStructureOnCPU(
+          {
+            offsets,
+            neighbors,
+            reverseEdgeSlots: hasResilienceOutput
+              ? getCPUOperationUint32Rows(id, inputs, 'reverseEdgeSlots')
+              : undefined
+          },
+          {
+            maximumIterations: parallelStrongComponents
+              ? (props.strongComponentsMaximumIterations ??
+                GPU_NETWORK_STRONGLY_CONNECTED_COMPONENTS_DEFAULT_ITERATIONS)
+              : undefined
+          }
+        );
+        const {strongComponentsStatus, ...primaryRows} = result;
+        const outputRows = {...primaryRows, ...strongComponentsStatus};
         return Object.fromEntries(
-          Object.entries(props.output)
-            .filter(
-              (entry): entry is [keyof CPUNetworkStructureResult, string] => entry[1] !== undefined
-            )
-            .map(([port, value]) => [value, result[port]])
+          Object.entries(operation.outputs).map(([port, output]) => [
+            output.value,
+            outputRows[port as keyof typeof outputRows]
+          ])
         );
       }
     });

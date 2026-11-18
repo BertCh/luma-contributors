@@ -48,7 +48,13 @@ export type SpatialAutocorrelationScene = {
  * search in the same graph over `positions`.
  */
 export type SpatialAutocorrelationWeightsSource =
-  | {kind: 'csr'; offsets: Uint32Array; neighbors: Uint32Array; weights: Float32Array}
+  | {
+      kind: 'csr';
+      offsets: Uint32Array;
+      neighbors: Uint32Array;
+      weights: Float32Array;
+      status?: {overflow: number; candidateOverflow: number};
+    }
   | {
       kind: 'neighbor-search';
       positions: Float32Array;
@@ -59,6 +65,7 @@ export type SpatialAutocorrelationWeightsSource =
 
 /** Every output of one encoding, read back. */
 export type SpatialAutocorrelationReadback = {
+  status: {overflow: number; candidateOverflow: number};
   zScores: number[];
   pValues: number[];
   adjustedPValues: number[];
@@ -87,6 +94,7 @@ export type SpatialAutocorrelationHarness = {
   ): Promise<SpatialAutocorrelationReadback>;
   writeValues(values: Float32Array): void;
   writeMask(mask: Uint32Array): void;
+  writeWeightsStatus(status: {overflow: number; candidateOverflow: number}): void;
   destroy(): void;
 };
 
@@ -141,7 +149,10 @@ export function createSpatialAutocorrelationHarness(
     | 'offsets'
     | 'neighbors'
     | 'weights'
-    | 'overflow',
+    | 'overflow'
+    | 'candidateOverflow'
+    | 'statisticOverflow'
+    | 'statisticCandidateOverflow',
     Buffer
   > = {
     zScores: createOutputBuffer(device, rows),
@@ -156,22 +167,40 @@ export function createSpatialAutocorrelationHarness(
     offsets: createOutputBuffer(device, rows + 1),
     neighbors: createOutputBuffer(device, capacity),
     weights: createOutputBuffer(device, capacity),
-    overflow: createOutputBuffer(device, 1)
+    overflow: createOutputBuffer(device, 1),
+    candidateOverflow: createOutputBuffer(device, 1),
+    statisticOverflow: createOutputBuffer(device, 1),
+    statisticCandidateOverflow: createOutputBuffer(device, 1)
   };
   // Hand-built CSR inputs are uploaded into the same buffers the search would write.
   if (source.kind === 'csr') {
     outputs.offsets.write(source.offsets);
     outputs.neighbors.write(source.neighbors);
     outputs.weights.write(source.weights);
+    outputs.overflow.write(new Uint32Array([source.status?.overflow ?? 0]));
+    outputs.candidateOverflow.write(new Uint32Array([source.status?.candidateOverflow ?? 0]));
   }
   const graph = new GPUCommandGraph(device, {id: `${options.contributor}-test`});
-  const weights: GPUSpatialWeights = {
+  let weights: GPUSpatialWeights = {
     offsets: importGraphBuffer(graph, 'offsets', outputs.offsets, 'uint32', rows + 1),
     neighbors: importGraphBuffer(graph, 'neighbors', outputs.neighbors, 'uint32', capacity),
     weights: importGraphBuffer(graph, 'weights', outputs.weights, 'float32', capacity),
     information: options.rowStandardized
       ? {rowCount: rows, transform: 'row', symmetric: 'unknown'}
-      : undefined
+      : undefined,
+    status:
+      source.kind === 'csr' && source.status
+        ? {
+            overflow: importGraphBuffer(graph, 'weights-overflow', outputs.overflow, 'uint32', 1),
+            candidateOverflow: importGraphBuffer(
+              graph,
+              'weights-candidate-overflow',
+              outputs.candidateOverflow,
+              'uint32',
+              1
+            )
+          }
+        : undefined
   };
   const positionsBuffer = source.kind === 'neighbor-search' ? createBuffer(source.positions) : null;
   const neighborParameterBuffer =
@@ -184,18 +213,20 @@ export function createSpatialAutocorrelationHarness(
         })
       : null;
   if (source.kind === 'neighbor-search' && positionsBuffer && neighborParameterBuffer) {
-    graph.add(
-      new GPUNeighborSearch({
-        mode: 'radius',
-        gridSize: options.gridSize ?? [32, 32],
-        positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rows),
-        parameters: neighborParameterBuffer.importToGraph(graph),
-        output: {
-          ...weights,
-          status: {overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1)}
-        }
-      })
-    );
+    const search = new GPUNeighborSearch({
+      mode: 'radius',
+      gridSize: options.gridSize ?? [32, 32],
+      positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rows),
+      parameters: neighborParameterBuffer.importToGraph(graph),
+      weightTransform: options.rowStandardized ? 'row' : undefined,
+      output: {
+        ...weights,
+        status: {overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1)}
+      }
+    });
+    graph.add(search);
+    // Keep the producer's metadata and completeness signals together with its CSR buffers.
+    weights = search.outputWeights;
   }
   const common = {
     weights,
@@ -207,6 +238,22 @@ export function createSpatialAutocorrelationHarness(
     minimumNeighbors: options.minimumNeighbors
   };
   const commonOutput = {
+    status: {
+      overflow: importGraphBuffer(
+        graph,
+        'statistic-overflow',
+        outputs.statisticOverflow,
+        'uint32',
+        1
+      ),
+      candidateOverflow: importGraphBuffer(
+        graph,
+        'statistic-candidate-overflow',
+        outputs.statisticCandidateOverflow,
+        'uint32',
+        1
+      )
+    },
     zScores: importGraphBuffer(graph, 'z-scores', outputs.zScores, 'float32', rows),
     pValues: importGraphBuffer(graph, 'p-values', outputs.pValues, 'float32', rows),
     adjustedPValues: importGraphBuffer(
@@ -281,7 +328,10 @@ export function createSpatialAutocorrelationHarness(
       }
       for (const [name, buffer] of Object.entries(outputs)) {
         // A hand-built CSR is an input and must survive between frames.
-        if (source.kind === 'csr' && ['offsets', 'neighbors', 'weights'].includes(name)) {
+        if (
+          source.kind === 'csr' &&
+          ['offsets', 'neighbors', 'weights', 'overflow', 'candidateOverflow'].includes(name)
+        ) {
           continue;
         }
         buffer.write(new Uint32Array(buffer.byteLength / 4).fill(GARBAGE));
@@ -292,6 +342,10 @@ export function createSpatialAutocorrelationHarness(
       const offsets = await readUint32(outputs.offsets, rows + 1);
       const used = offsets[rows];
       return {
+        status: {
+          overflow: (await readUint32(outputs.statisticOverflow, 1))[0],
+          candidateOverflow: (await readUint32(outputs.statisticCandidateOverflow, 1))[0]
+        },
         zScores: Array.from(new Float32Array(Uint32Array.from(zScoreBits).buffer)),
         zScoreBits,
         pValues: await readFloat32(outputs.pValues, rows),
@@ -317,6 +371,13 @@ export function createSpatialAutocorrelationHarness(
         throw new Error('harness was created without a mask');
       }
       maskBuffer.write(mask);
+    },
+    writeWeightsStatus(status) {
+      if (source.kind !== 'csr' || !source.status) {
+        throw new Error('harness was created without writable CSR status');
+      }
+      outputs.overflow.write(new Uint32Array([status.overflow]));
+      outputs.candidateOverflow.write(new Uint32Array([status.candidateOverflow]));
     },
     destroy() {
       compiled.destroy();

@@ -67,8 +67,8 @@ function getLongitudeDelta(source: number, destination: number): number {
  * strict gap test, distinct-coordinate centroid and exclusive end rows.
  *
  * What differs from the GPU contributor:
- * - Searches are uncapped: maximumSearchRows is ignored and candidateOverflow is always zero.
- *   Long stays remain one window instead of being split at the GPU search cap.
+ * - Omitted maximumSearchRows leaves CPU searches uncapped; explicit caps split windows and
+ *   report candidateOverflow as on the GPU.
  * - Arithmetic uses float64, rounded once to float32 outputs; threshold decisions near rounding
  *   boundaries can differ. Int64 timestamps are subtracted exactly before conversion to float64.
  * - No GPU row-count or search-budget limit is imposed. Output capacity still clamps count.
@@ -79,7 +79,7 @@ function getLongitudeDelta(source: number, destination: number): number {
  */
 export function computeTrajectoryStaypointsOnCPU(
   input: CPUTrajectoryStaypointsInput,
-  options: {capacity: number; spatialContext?: GPUSpatialContext}
+  options: {capacity: number; spatialContext?: GPUSpatialContext; maximumSearchRows?: number}
 ): CPUTrajectoryStaypointsResult {
   const {positions, parameters} = input;
   const {rowCount, trackOffsets, getTimeDifference} = getCPUTrajectoryRows(input);
@@ -87,6 +87,14 @@ export function computeTrajectoryStaypointsOnCPU(
     throw new Error('parameters must hold the staypoint parameter layout');
   }
   validateCapacity('trajectory-staypoints', 'capacity', options.capacity);
+  const maximumSearchRows = options.maximumSearchRows ?? Number.MAX_SAFE_INTEGER;
+  validateCapacity(
+    'trajectory-staypoints',
+    'maximumSearchRows',
+    maximumSearchRows,
+    1,
+    Number.MAX_SAFE_INTEGER
+  );
   const context = resolveGPUSpatialContext('trajectory-staypoints', options.spatialContext, {
     ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
     measure: 'distance'
@@ -165,16 +173,34 @@ export function computeTrajectoryStaypointsOnCPU(
     const end = trackOffsets[track + 1];
     let anchor = trackOffsets[track];
     if (anchor === end) continue;
-    for (let row = anchor + 1; row < end; row++) {
-      if (maximumGap > 0 && getTimeDifference(row, row - 1) > maximumGap) {
-        anchor = row;
-      } else if (getDistance(anchor, row) >= distanceThreshold) {
-        if (getTimeDifference(row, anchor) >= timeThreshold) emitStaypoint(track, anchor, row, row);
-        anchor = row;
+    while (anchor < end) {
+      const searchEnd = Math.min(end, anchor + 1 + maximumSearchRows);
+      let successor = anchor;
+      for (let row = anchor + 1; row < searchEnd; row++) {
+        if (maximumGap > 0 && getTimeDifference(row, row - 1) > maximumGap) {
+          successor = row;
+          break;
+        } else if (getDistance(anchor, row) >= distanceThreshold) {
+          if (getTimeDifference(row, anchor) >= timeThreshold)
+            emitStaypoint(track, anchor, row, row);
+          successor = row;
+          break;
+        }
       }
-    }
-    if (includeLast !== 0 && getTimeDifference(end - 1, anchor) >= timeThreshold) {
-      emitStaypoint(track, anchor, end, end - 1);
+      if (successor !== anchor) {
+        anchor = successor;
+        continue;
+      }
+      if (searchEnd < end) {
+        result.candidateOverflow[0] = 1;
+        if (getTimeDifference(searchEnd, anchor) >= timeThreshold)
+          emitStaypoint(track, anchor, searchEnd, searchEnd);
+        anchor = searchEnd;
+        continue;
+      }
+      if (includeLast !== 0 && getTimeDifference(end - 1, anchor) >= timeThreshold)
+        emitStaypoint(track, anchor, end, end - 1);
+      break;
     }
   }
   result.requiredCount[0] = requiredCount;
@@ -184,13 +210,21 @@ export function computeTrajectoryStaypointsOnCPU(
   return result;
 }
 
-/** CPU twin; drops maximumSearchRows, retaining only the output capacity limit. */
+/** CPU twin; explicit search budgets and output capacities have the contributor's meanings. */
 export class CPUTrajectoryStaypointsOperation extends GPUCPUOperation {
   constructor(props: TrajectoryStaypointsOperationProps) {
     const operation = new GPUTrajectoryStaypointsOperation(props);
     const {id} = operation;
     validateCapacity(id, 'rowCount', props.rowCount, 0);
     validateCapacity(id, 'capacity', props.capacity);
+    if (props.maximumSearchRows !== undefined)
+      validateCapacity(
+        id,
+        'maximumSearchRows',
+        props.maximumSearchRows,
+        1,
+        Number.MAX_SAFE_INTEGER
+      );
     validateRequirement(
       id,
       props.timestampFormat === undefined ||

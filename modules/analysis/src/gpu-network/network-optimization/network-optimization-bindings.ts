@@ -8,7 +8,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 
 /** Checks every bound caller range and STORAGE usage without declaring resources. @internal */
 export function validateNetworkOptimizationBindings<Parameters>(

@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {addPreparedRecipe} from './prepared-recipe';
+
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {GPUClassBreaks, GPUColorScale} from '../../dataframe-analysis/column-classification/index';
 import {GPUCellAggregation} from '../cell-aggregation/index';
-import type {GPUCellFamily, GPUCellTable} from '../cell-aggregation/index';
+import type {GPUCellAggregationFamily, GPUCellTable} from '../cell-aggregation/index';
 import {GPUCellTableCompare} from '../cell-table-compare/index';
 import type {
   GPUCellTableCompareMeasure,
@@ -63,7 +65,7 @@ export type GPUPeriodComparisonRecipeProps = GPURecipeOverrides<
   /** Prefix for every node and transient ID. Defaults to `'period-comparison'`. */
   id?: string;
   /** Grid family shared by both periods. */
-  family: GPUCellFamily;
+  family: GPUCellAggregationFamily;
   /** Cell resolution shared by both periods. */
   resolution: number;
   /** Rows of each period's cell table. */
@@ -76,6 +78,8 @@ export type GPUPeriodComparisonRecipeProps = GPURecipeOverrides<
   after: GPUPeriodRows;
   /** Compared column. Defaults to `'count'`. */
   measure?: GPUCellTableCompareMeasure;
+  /** Fixed-point scale shared by both aggregations and the comparison. Defaults to 65536. */
+  sumScale?: number;
   /**
    * Score written to `zScore`. Both choices are descriptive scores of the change, not hypothesis
    * tests: `'poisson'` is `delta / sqrt(before + after)`, a Poisson-difference score, and
@@ -117,7 +121,25 @@ export type GPUPeriodComparisonRecipeProps = GPURecipeOverrides<
 };
 
 /** Named outputs of {@link addPeriodComparisonRecipe}. */
-export type GPUPeriodComparisonRecipeResult = GPURecipeResult & {
+export type GPUPeriodComparisonRecipeOutputs = Pick<
+  GPUPeriodComparisonRecipeViews,
+  'comparison' | 'breaks' | 'classCount' | 'colors' | 'classIndices'
+>;
+
+/** Ports between period-comparison stages. */
+export type GPUPeriodComparisonRecipeIntermediates = Pick<
+  GPUPeriodComparisonRecipeViews,
+  'before' | 'after' | 'mask'
+>;
+
+/** Period-comparison outputs, intermediates and top-level convenience fields. */
+export type GPUPeriodComparisonRecipeResult = GPURecipeResult<
+  GPUPeriodComparisonRecipeOutputs,
+  GPUPeriodComparisonRecipeIntermediates
+> &
+  GPUPeriodComparisonRecipeViews;
+
+type GPUPeriodComparisonRecipeViews = {
   unionCapacity: number;
   before: GPUCellTable;
   after: GPUCellTable;
@@ -150,6 +172,13 @@ export type GPUPeriodComparisonRecipeResult = GPURecipeResult & {
  * overflow and the unclamped required count.
  */
 export function addPeriodComparisonRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUPeriodComparisonRecipeProps
+): GPUPeriodComparisonRecipeResult {
+  return addPreparedRecipe(graph, props, declarePeriodComparisonRecipe);
+}
+
+function declarePeriodComparisonRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUPeriodComparisonRecipeProps
 ): GPUPeriodComparisonRecipeResult {
@@ -196,6 +225,9 @@ export function addPeriodComparisonRecipe<Parameters>(
         : provided.sums,
       status: {
         count: getOrCreateView(graph, `${id}-${period}-count`, 'uint32', 1, provided.status?.count),
+        ...(provided.status?.candidateOverflow
+          ? {candidateOverflow: provided.status.candidateOverflow}
+          : {}),
         overflow: getOrCreateView(
           graph,
           `${id}-${period}-overflow`,
@@ -221,6 +253,7 @@ export function addPeriodComparisonRecipe<Parameters>(
         cells: rows.cells,
         values: rows.values,
         mask: rows.mask,
+        sumScale: props.sumScale,
         output: table
       })
     );
@@ -240,6 +273,13 @@ export function addPeriodComparisonRecipe<Parameters>(
     zScore: given.zScore,
     status: {
       count: getOrCreateView(graph, `${id}-union-count`, 'uint32', 1, given.status?.count),
+      candidateOverflow: getOrCreateView(
+        graph,
+        `${id}-union-candidate-overflow`,
+        'uint32',
+        1,
+        given.status?.candidateOverflow
+      ),
       overflow: getOrCreateView(graph, `${id}-union-overflow`, 'uint32', 1, given.status?.overflow),
       requiredCount: getOrCreateView(
         graph,
@@ -277,6 +317,7 @@ export function addPeriodComparisonRecipe<Parameters>(
       before,
       after,
       measure,
+      sumScale: props.sumScale,
       zScore: props.zScore,
       output: comparison
     })

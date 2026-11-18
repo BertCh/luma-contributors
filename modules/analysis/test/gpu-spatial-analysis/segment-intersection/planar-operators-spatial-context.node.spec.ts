@@ -53,6 +53,74 @@ const PLANAR_OPERATORS: Record<string, unknown> = {
 // GPULineMerge and GPURectangleClip also accept longitude-latitude contexts (linear edges).
 const LONGITUDE_LATITUDE_OPERATORS = new Set(['GPULineMerge', 'GPURectangleClip']);
 
+it('GPUPolygonTriangulation rejects unsupported contexts before evaluating output getters', () => {
+  for (const metric of ['none', 'great-circle'] as const) {
+    let outputReadCount = 0;
+    expect(
+      () =>
+        new GPUPolygonTriangulation({
+          spatialContext: {coordinateSpace: 'longitude-latitude', metric},
+          get output() {
+            outputReadCount++;
+            throw new Error('output getter must not run for an unsupported context');
+          }
+        } as never)
+    ).toThrow(/does not support longitude-latitude coordinates; project positions/);
+    expect(outputReadCount).toBe(0);
+  }
+});
+
+it('GPUSegmentIntersection rejects unsupported contexts before evaluating geometry or output getters', () => {
+  for (const metric of ['none', 'great-circle'] as const) {
+    let contextReadCount = 0;
+    let geometryReadCount = 0;
+    let outputReadCount = 0;
+    expect(
+      () =>
+        new GPUSegmentIntersection({
+          get spatialContext() {
+            contextReadCount++;
+            return {coordinateSpace: 'longitude-latitude', metric};
+          },
+          get left() {
+            geometryReadCount++;
+            throw new Error('geometry getter must not run for an unsupported context');
+          },
+          get output() {
+            outputReadCount++;
+            throw new Error('output getter must not run for an unsupported context');
+          }
+        } as never)
+    ).toThrow(/does not support longitude-latitude coordinates; project positions/);
+    expect(contextReadCount).toBe(1);
+    expect(geometryReadCount).toBe(0);
+    expect(outputReadCount).toBe(0);
+  }
+});
+
+it('GPUGeometryPredicates rejects unsupported contexts before evaluating geometry getters', () => {
+  for (const metric of ['none', 'great-circle'] as const) {
+    let geometryReadCount = 0;
+    let otherReadCount = 0;
+    expect(
+      () =>
+        new GPUGeometryPredicates({
+          spatialContext: {coordinateSpace: 'longitude-latitude', metric},
+          get geometry() {
+            geometryReadCount++;
+            throw new Error('geometry getter must not run for an unsupported context');
+          },
+          get other() {
+            otherReadCount++;
+            throw new Error('other getter must not run for an unsupported context');
+          }
+        } as never)
+    ).toThrow(/does not support longitude-latitude coordinates; project positions/);
+    expect(geometryReadCount).toBe(0);
+    expect(otherReadCount).toBe(0);
+  }
+});
+
 for (const [name, operator] of Object.entries(PLANAR_OPERATORS)) {
   const acceptsLongitudeLatitude = LONGITUDE_LATITUDE_OPERATORS.has(name);
   it(`${name} ${acceptsLongitudeLatitude ? 'accepts planar and longitude-latitude' : 'rejects longitude-latitude'} spatial contexts${name === 'GPURectangleClip' ? ' and rejects the great-circle edge model' : ''}`, () => {

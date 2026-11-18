@@ -113,7 +113,11 @@ it('GPUEnsembleScores kernels fit the core limits at large sizes and use no atom
     const source = sources.get(id);
     expect(source, id).toBeDefined();
     expect(getStorageBindingCount(source!), id).toBeLessThanOrEqual(8);
-    expect(getWorkgroupMemoryBytes(source!), id).toBeLessThanOrEqual(16384);
+    for (const kernel of sources.getConfigurations(id)) {
+      expect(getWorkgroupMemoryBytes(kernel.source, kernel.constants), id).toBeLessThanOrEqual(
+        16384
+      );
+    }
   }
   for (const [id, source] of sources) {
     expect(source, id).not.toMatch(/atomic/);

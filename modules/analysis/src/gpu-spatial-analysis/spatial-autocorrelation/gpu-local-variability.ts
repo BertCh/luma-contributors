@@ -15,6 +15,14 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
+import {
+  snapshotWeightsFields,
+  snapshotWeightsPort
+} from '../spatial-weights/weights-construction-snapshot';
+import {
+  createWeightsIncompleteNodes,
+  validateWeightsLossSources
+} from '../spatial-weights/spatial-weights-loss';
 import {createSpatialStatisticsRowNode} from '../spatial-weights/spatial-statistics-row-dispatch';
 import {validateSpatialStatisticsWritableDispatches} from '../spatial-weights/spatial-statistics-writable-dispatches';
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
@@ -75,6 +83,31 @@ type LocalVariabilityProps = {
   };
 };
 
+function snapshotLocalVariabilityProps<T extends LocalVariabilityProps>(value: T): T {
+  const props = snapshotWeightsFields(value, [
+    'id',
+    'weights',
+    'values',
+    'mask',
+    'output',
+    'residualPower',
+    'variableCount',
+    'mode'
+  ]);
+  return Object.freeze({
+    ...props,
+    weights: snapshotWeightsPort(props.weights),
+    output: snapshotWeightsFields(props.output, [
+      'statistic',
+      'status',
+      'normalizedResiduals',
+      'residualCount',
+      'includedCount',
+      'count'
+    ])
+  });
+}
+
 /** LOSH inputs. Positive weights are normalized over included neighbors. Islands are excluded. */
 export type GPULocalSpatialHeteroscedasticityProps = LocalVariabilityProps & {
   /**
@@ -100,12 +133,16 @@ export type GPULocalSpatialHeteroscedasticityProps = LocalVariabilityProps & {
  * and a residual-power parameter view. Numeric powers are uploaded defaults.
  *
  * Masked rows are removed before local means; neighbors whose residual is undefined are removed
- * before the final weighted mean. An incomplete upstream weights graph invalidates every result.
+ * before the final weighted mean. Either upstream loss flag, including chunk-local flags,
+ * invalidates every statistic and normalized residual with NaN, writes INCOMPLETE status,
+ * and publishes residualCount 0. Clearing the flags restores normal computation on resubmission.
  */
 export class GPULocalSpatialHeteroscedasticity implements GPUCommandNodeProducer {
   readonly id: string;
   private readonly residualPowerValues?: Float32Array;
   constructor(readonly props: GPULocalSpatialHeteroscedasticityProps) {
+    props = snapshotLocalVariabilityProps(props);
+    this.props = props;
     this.id = props.id ?? 'local-spatial-heteroscedasticity';
     validateProps(this.id, props, 1);
     const outputs = [
@@ -182,7 +219,10 @@ export class GPULocalSpatialHeteroscedasticity implements GPUCommandNodeProducer
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {props, id} = this;
+    const {id} = this;
+    validateSpatialStatisticsBindings(graph, id, this.props);
+    const loss = createWeightsIncompleteNodes(graph, id, [this.props.weights]);
+    const props = {...this.props, weights: {...this.props.weights, status: {overflow: loss.view}}};
     const rows = getRowCount(props);
     validateSpatialStatisticsBindings(graph, id, props, {
       'row scratch': rows * 4,
@@ -223,6 +263,7 @@ export class GPULocalSpatialHeteroscedasticity implements GPUCommandNodeProducer
       this.residualPowerValues ?? (props.residualPower as GraphDataView<'float32'>)
     );
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...loss.nodes,
       ...runtime.nodes,
       ...dispatches.map(dispatch =>
         createSpatialStatisticsRowNode(graph, {
@@ -434,6 +475,8 @@ export class GPUMultivariateLocalGeary implements GPUCommandNodeProducer {
   readonly id: string;
   private readonly populationCount?: GraphDataView<'uint32'>;
   constructor(readonly props: GPUMultivariateLocalGearyProps) {
+    props = snapshotLocalVariabilityProps(props);
+    this.props = props;
     this.id = props.id ?? 'multivariate-local-geary';
     this.populationCount = resolveStatisticsPopulationCount(this.id, props.output);
     validateProps(this.id, props, props.variableCount);
@@ -474,7 +517,10 @@ export class GPUMultivariateLocalGeary implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props} = this;
+    const {id} = this;
+    validateSpatialStatisticsBindings(graph, id, this.props);
+    const loss = createWeightsIncompleteNodes(graph, id, [this.props.weights]);
+    const props = {...this.props, weights: {...this.props.weights, status: {overflow: loss.view}}};
     const rows = getRowCount(props);
     validateSpatialStatisticsBindings(graph, id, props, {
       'row scratch': rows * 4,
@@ -499,6 +545,7 @@ export class GPUMultivariateLocalGeary implements GPUCommandNodeProducer {
       ['values', 'mask', 'overflow'].includes(binding.name)
     );
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...loss.nodes,
       ...(props.mode === 'reference'
         ? [
             createWGSLKernelNode<Parameters>(graph, {
@@ -657,7 +704,7 @@ function getAllInputViews(
   return [
     props.values,
     props.mask,
-    props.weights.status?.overflow,
+    ...validateWeightsLossSources(props.id ?? 'local-variability', [props.weights]),
     ...getGPUSpatialWeightsOrChunksViews(props.weights)
   ];
 }

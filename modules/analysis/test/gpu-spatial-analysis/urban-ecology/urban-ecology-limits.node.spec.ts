@@ -110,9 +110,7 @@ it('urban morphology recipes name the limit they reject', () => {
     ).toThrow(/^isovists rayCount plus 6 rays per obstacle segment must be at most 4096/);
     expect(() =>
       addIsovistsRecipe(graph, {positions, segments, rayCount: 2, maximumDistance: 1})
-    ).toThrow(
-      /^isovists rayCount must be an integer, and the total rays per viewpoint must be in \[3, 65536\]$/
-    );
+    ).toThrow(/^isovists rayCount must be an integer in \[3, 65536\]$/);
     expect(() =>
       addStreetProfilesRecipe(graph, {
         positions,

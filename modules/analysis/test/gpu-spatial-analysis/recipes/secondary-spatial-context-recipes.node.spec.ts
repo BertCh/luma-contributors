@@ -149,7 +149,7 @@ for (const [recipe, side] of CASES) {
       const secondary = {...PRIMARY, edgeModel: 'great-circle' as const};
       const result = createResult(secondary, true, {...PRIMARY, edgeModel});
       const preparation = result.preparations[side === 'target' ? 1 : 0];
-      expect(preparation.props.spatialContext).toBe(secondary);
+      expect(preparation.props.spatialContext).toEqual(secondary);
       expect(preparation.spatialContext.edgeModel).toBe('linear');
       expect(result.nodeIds).toEqual(
         createResult(undefined, true, {...PRIMARY, edgeModel}).nodeIds

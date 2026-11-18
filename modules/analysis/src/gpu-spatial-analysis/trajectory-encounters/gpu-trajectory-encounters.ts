@@ -361,6 +361,7 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
         pairs.ids,
         pairs.status.count,
         pairs.status.overflow,
+        pairs.status.candidateOverflow,
         pairs.status.requiredCount,
         status.candidateOverflow,
         pairs.partners,
@@ -388,6 +389,7 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
       pairs.ids,
       pairs.status.count,
       pairs.status.overflow,
+      pairs.status.candidateOverflow,
       pairs.status.requiredCount,
       status.candidateOverflow,
       pairs.partners,
@@ -664,7 +666,7 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
         operation: OPERATION,
         requiredCount: runCount,
         output: pairs,
-        overflowSources: []
+        candidateOverflowSources: pairs.status.candidateOverflow ? [status.candidateOverflow] : []
       })
     );
     return nodes;

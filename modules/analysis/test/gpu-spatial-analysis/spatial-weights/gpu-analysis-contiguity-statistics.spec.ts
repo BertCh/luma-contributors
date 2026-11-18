@@ -21,6 +21,17 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {flattenFeatures, flattenPolygons, type PolygonLayout} from './spatial-weights-oracle';
+import {createPairStarvedContiguityFixture} from './contiguity-loss.test-utils';
+
+it('final1 profile agrees with direct and CPU contiguity on pair-only loss', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = createPairStarvedContiguityFixture();
+  const [result] = await runProfile(device, fixture.input, fixture.options);
+  expect(result.summary).toMatchObject({exact: false, overflow: false, candidateOverflow: true});
+  expect(result.requiredCount).toBe(1);
+  expect(result.validity).toBe(0);
+});
 
 function square(left: number, bottom: number, size = 1): [number, number][] {
   return [

@@ -7,6 +7,7 @@ import {afterAll, expect, it, vi} from 'vitest';
 import {WgslReflect} from 'wgsl_reflect';
 import {
   GPULocalKriging,
+  createLocalKrigingForTesting,
   type GPULocalKrigingProps
 } from '../../../src/gpu-spatial-analysis/spatial-interpolation/gpu-local-kriging';
 import {expectValidQueryShaderLiterals} from '../linear-referencing/gpu-linear-referencing-chunks.test-utils';
@@ -24,7 +25,7 @@ type ChunkedProps = GPULocalKrigingProps<
   GraphVectorView<'uint32'>,
   GraphVectorView<'float32'>,
   GraphVectorView<'float32' | 'float32x4'>
->;
+> & {sampleIndexChunkQueryCount?: number};
 
 const device = createNullWebGPUDevice();
 afterAll(() => device.destroy());
@@ -45,7 +46,7 @@ for (const candidates of ['fixed', 'csr'] as const) {
       props.neighborhoodCapacity = 2;
       if (candidates === 'csr')
         props.neighborhoodOffsets = createTransientView(graph, 'offsets', 'uint32', total + 1);
-      const nodes = new GPULocalKriging(props)
+      const nodes = createLocalKrigingForTesting(props)
         .getCommandNodes(graph)
         .filter(node => node.workload?.variant === 'ordinary');
       expect(nodes.map(node => node.workload?.maximumWorkgroupCount)).toEqual(
@@ -151,7 +152,7 @@ it('prechecks derived observation/covariance packing before graph mutation', () 
   props.positions = createTransientView(graph, 'many-positions', 'float32x2', 8_388_608);
   props.observations = createTransientView(graph, 'many-observations', 'float32x4', 8_388_608);
   props.sampleDrift = createTransientView(graph, 'many-drift', 'float32', 8_388_608 * 3);
-  const contributor = new GPULocalKriging(props);
+  const contributor = createLocalKrigingForTesting(props);
   const allocate = vi.spyOn(graph, 'createTransientBuffer');
   const createView = vi.spyOn(graph, 'createDataView');
   expect(() => contributor.getCommandNodes(graph)).toThrow(/observations plus covariance needs/);
@@ -164,7 +165,7 @@ it('accepts 30 million query rows without a combined samples-plus-queries target
   const props = createProps(graph, Array(10).fill(3_000_000));
   props.supportCount = 2;
   props.sampleIndexChunkQueryCount = undefined;
-  const contributor = new GPULocalKriging(props);
+  const contributor = createLocalKrigingForTesting(props);
   const nodes = contributor.getCommandNodes(graph);
   expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
   expect(nodes.filter(node => node.id.endsWith('-index-prepare'))).toHaveLength(1);
@@ -180,7 +181,7 @@ for (const sampleIndex of ['grid', 'brute-force'] as const)
     for (const count of [1, 3, 100]) {
       const graph = new GPUCommandGraph(device);
       const lengths = Array.from({length: count}, (_, index) => [1, 65, 129][index % 3]);
-      const contributor = new GPULocalKriging(createProps(graph, lengths, sampleIndex));
+      const contributor = createLocalKrigingForTesting(createProps(graph, lengths, sampleIndex));
       const nodes = contributor.getCommandNodes(graph);
       expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
       const keys = getGPUCommandNodePipelineKeys(nodes);
@@ -225,7 +226,7 @@ it('chooses the shared grid using the actual device binding limit above default-
     props.observations = createTransientView(graph, 'large-observations', 'float32x4', 10_000_000);
     props.sampleDrift = createTransientView(graph, 'large-drift', 'float32', 30_000_000);
     props.sampleIndex = 'auto';
-    const contributor = new GPULocalKriging(props);
+    const contributor = createLocalKrigingForTesting(props);
     expect(contributor.sampleIndex).toBe('grid');
     expect(contributor.getCommandNodes(graph).length).toBeLessThanOrEqual(
       contributor.estimatedCommandNodeCount

@@ -59,3 +59,17 @@ export function mapNodeId(input: RoutingInput, row: number): number {
 export function mapEdgeId(input: RoutingInput, row: number): number {
   return 5 * (input.neighbors.length - 1 - row) + 11;
 }
+
+/** Expected compact status from reference path lengths: count, required, final loss, walk loss. */
+export function getPathExtractionExpectedStatus(
+  requiredCount: number,
+  capacity: number,
+  truncated: boolean
+): [number, number, number, number] {
+  return [
+    Math.min(requiredCount, capacity),
+    requiredCount,
+    Number(requiredCount > capacity),
+    Number(truncated)
+  ];
+}

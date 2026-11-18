@@ -93,6 +93,7 @@ export {
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SEARCH_STATE,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SEARCH_STATE_LENGTH,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS,
+  decodeGPUGeographicallyWeightedRegressionStatus,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH,
   type GPUGeographicallyWeightedRegressionBandwidthMode,
@@ -341,7 +342,11 @@ export {
   GPU_LOCAL_REGRESSION_MAXIMUM_ROW_COUNT
 } from './gpu-generalized-geographically-weighted-regression';
 export type {GPUGeneralizedGeographicallyWeightedRegressionProps} from './gpu-generalized-geographically-weighted-regression';
-export {GPUMultiscaleGeographicallyWeightedRegression} from './gpu-multiscale-geographically-weighted-regression';
+export {
+  GPUMultiscaleGeographicallyWeightedRegression,
+  GPU_MULTISCALE_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS,
+  decodeGPUMultiscaleGeographicallyWeightedRegressionStatus
+} from './gpu-multiscale-geographically-weighted-regression';
 export type {GPUMultiscaleGeographicallyWeightedRegressionProps} from './gpu-multiscale-geographically-weighted-regression';
 export {GPUSpatialPanelRegression} from './gpu-spatial-panel-regression';
 export type {GPUSpatialPanelRegressionProps} from './gpu-spatial-panel-regression';

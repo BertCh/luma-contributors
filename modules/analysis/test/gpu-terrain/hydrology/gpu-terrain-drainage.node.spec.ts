@@ -177,7 +177,7 @@ it('GPUTerrainHeightAboveDrainage validates its props', () => {
   const output = view('uint32');
   const aliased = graph.createDataView(output.buffer, {format: 'float32', length: CELLS});
   expect(() => hand({output: {drainageCells: output, heightAboveDrainage: aliased}})).toThrow(
-    /share buffers/
+    /^terrain-height-above-drainage output\[1\] chunk 0 logical byte ranges must not overlap \(writable storage\)$/
   );
   const foreign = new GPUCommandGraph(device);
   expect(() =>

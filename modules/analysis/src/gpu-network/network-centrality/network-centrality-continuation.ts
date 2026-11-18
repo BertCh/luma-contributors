@@ -12,7 +12,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateCommandNodeBudget
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   createReachabilityInitializeNode,
@@ -39,7 +39,11 @@ import {
   createCentralityClosenessNode,
   getCentralityAdjacencyLayout
 } from './network-centrality-passes';
-import {GPUNetworkCentrality, type GPUNetworkCentralityProps} from './gpu-network-centrality';
+import {
+  createNetworkCentralityForComposition,
+  validateNetworkCentralityBindings,
+  type GPUNetworkCentralityProps
+} from './gpu-network-centrality';
 
 /** Reserve a boundary round while retaining the existing 1024-round per-window validation envelope. */
 const CENTRALITY_CONTINUATION_MAXIMUM_ROUNDS_PER_STEP = 1023;
@@ -134,16 +138,13 @@ export function createCentralityContinuationGraphs(
   const phaseLayout = getFrontierPhaseLayout(phase.maxRounds);
   const device = originalGraph.device;
   const hasBetweenness = Boolean(props.output.betweenness || props.output.edgeBetweenness);
-  const validator = new GPUNetworkCentrality(
-    {
-      ...props,
-      id,
-      laneCount,
-      maximumIterations: phase.maxRounds
-    },
-    true
-  );
-  validator.validateGraphBindings(originalGraph);
+  const validator = createNetworkCentralityForComposition({
+    ...props,
+    id,
+    laneCount,
+    maximumIterations: phase.maxRounds
+  });
+  validateNetworkCentralityBindings(originalGraph, validator);
   const externalViews = [
     props.pivotNodes,
     props.costLimit,
@@ -646,7 +647,8 @@ export function createCentralityContinuationGraphs(
  * of roundsPerStep. Distances, sigma/exponents, counters, dependencies and frontier queues persist
  * on the GPU. Each window reads only one uint32 boundary-queue count. Completed phases stop;
  * exhausted phases publish incumbent values with iterationLimitReached=1. Zero cycles remain a
- * separate failure. reset=true starts a new run; reset=false adds totals/merges status. Per-pivot
+ * separate failure. reset=true or 1 starts a new run (the default); reset=false or 0 adds totals
+ * and merges status. A planner descriptor can be passed directly to runBatch. Per-pivot
  * outputs are overwritten by each batch. Changing topology/pivots mid-batch is unsupported.
  * The runner explicitly submits to the device queue; it is a host scheduler, not a contributor.
  */
@@ -674,12 +676,13 @@ export function createNetworkCentralityContinuation(
   };
   return {
     estimatedCommandNodeCount: schedule.estimatedCommandNodeCount,
-    async runBatch(options: {reset?: boolean} = {}) {
+    async runBatch(options: {reset?: boolean | 0 | 1} = {}) {
       validateRequirement(
         props.id ?? 'network-centrality-continuation',
         !busy && !destroyed,
         'runner must be idle and not destroyed'
       );
+      const reset = Number(Boolean(options.reset ?? true));
       busy = true;
       try {
         const completed = await runCentralityContinuationPhases({
@@ -693,10 +696,7 @@ export function createNetworkCentralityContinuation(
             return new Uint32Array(bytes.buffer, bytes.byteOffset, 1)[0];
           }
         });
-        schedule.parameters.write(
-          Uint32Array.of(...completed.map(Number), Number(options.reset !== false)),
-          1
-        );
+        schedule.parameters.write(Uint32Array.of(...completed.map(Number), reset), 1);
         submit('publish');
       } finally {
         busy = false;

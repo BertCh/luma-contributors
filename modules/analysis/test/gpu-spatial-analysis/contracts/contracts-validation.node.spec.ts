@@ -216,14 +216,14 @@ describe('ports and status', () => {
 
   it('validates compact pair port formats, capacities and scalars', () => {
     const status = {count: view('uint32', 1), overflow: view('uint32', 1)};
-    const pairs = {leftIds: view('uint32', 4), rightIds: view('uint32', 4), status};
+    const pairs = {leftRows: view('uint32', 4), rightRows: view('uint32', 4), status};
     expect(() => validateGPUCompactPairPort('pairs', pairs)).not.toThrow();
     expect(() =>
-      validateGPUCompactPairPort('pairs', {...pairs, rightIds: view('uint32', 5)})
+      validateGPUCompactPairPort('pairs', {...pairs, rightRows: view('uint32', 5)})
     ).toThrow(/capacities must match/);
     expect(() =>
-      validateGPUCompactPairPort('pairs', {...pairs, leftIds: view('float32', 4)} as never)
-    ).toThrow(/leftIds must use uint32/);
+      validateGPUCompactPairPort('pairs', {...pairs, leftRows: view('float32', 4)} as never)
+    ).toThrow(/leftRows must use uint32/);
     expect(() =>
       validateGPUCompactPairPort('pairs', {
         ...pairs,

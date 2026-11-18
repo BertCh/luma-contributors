@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import {snapshotNetworkReachabilityConstructionProps} from './network-reachability-construction';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   validateCapacity,
   validateRequirement
@@ -26,8 +28,13 @@ const NONE = 0xffffffff;
 
 /** Packed routing inputs. Offsets are clamped per row exactly as in the GPU kernels. */
 export type CPUNetworkReachabilityInput = CPUNetworkRoutingInput;
-/** Layout options. GPU round and workgroup budgets are deliberately absent. */
-export type CPUNetworkReachabilityOptions = {laneCount?: number};
+/** Explicit round budgets bind the deterministic CPU frontier too; omitted budgets are uncapped. */
+export type CPUNetworkReachabilityOptions = {
+  laneCount?: number;
+  maximumIterations?: number;
+  localIterations?: number;
+  maximumTieIterations?: number;
+};
 /** Every output port, including optional diagnostics, in the contributor's packed layout. */
 export type CPUNetworkReachabilityResult = {
   costs: Float32Array;
@@ -43,17 +50,19 @@ export type CPUNetworkReachabilityResult = {
 };
 
 /**
- * Computes uncapped shortest paths and the contributor's cycle-safe predecessor and band rules.
+ * Computes shortest paths and the contributor's cycle-safe predecessor and band rules.
  * Overlapping CSR rows share slot-indexed tie flags exactly as on the GPU; predecessors can then
  * follow an edge that is not tight for that source, outside the valid-CSR cycle-safety guarantee.
  *
  * What differs from the GPU contributor:
  * - Float64 costs and tight-edge tests precede one float32 output rounding. Near ties, cutoff
  *   decisions, subnormal weights and sums overflowing float32 can differ from GPU arithmetic.
- * - All searches and tie levels finish exactly; GPU round, local-hop, device and activeIterations
- *   limits are ignored. converged is 1, iterationLimitReached and unresolvedCount are 0.
- * - iterationCount is 1 for the single completed CPU search. relaxationCount counts CSR slots
- *   scanned once per settled node, rather than GPU visits. reachedEdgeCount counts in-range edges
+ * - With explicit round budgets or activeIterations, a synchronous CPU frontier consumes at most
+ *   localIterations hops per round (default 32). GPU workgroup scheduling can finish fewer hops.
+ *   Without explicit budgets, searches and tie levels run to completion. Device limits are dropped.
+ * - iterationCount counts bounded frontier rounds, or 1 for an uncapped CPU search.
+ *   relaxationCount counts CPU edge visits (bounded frontiers can revisit nodes).
+ *   reachedEdgeCount counts in-range edges
  *   from finite float64 labels; labels that round to float32 infinity can therefore contribute.
  * - Negative/NaN weights and starts are ignored; NaN costLimit disables the cutoff, like the GPU.
  *   Out-of-range or decreasing offsets retain the GPU's per-row clamping interpretation.
@@ -64,15 +73,43 @@ export function computeNetworkReachabilityOnCPU(
   input: CPUNetworkReachabilityInput,
   options: CPUNetworkReachabilityOptions = {}
 ): CPUNetworkReachabilityResult {
+  options = snapshotConstructionFields(options, [
+    'laneCount',
+    'maximumIterations',
+    'localIterations',
+    'maximumTieIterations'
+  ]);
   const laneCount = options.laneCount ?? 1;
-  const {distances, scannedEdges, reachedEdges} = computeNetworkRoutingDistances(
+  const localIterations = options.localIterations ?? 32;
+  for (const [name, value] of Object.entries(options))
+    if (value !== undefined) validateCapacity('computeNetworkReachabilityOnCPU', name, value);
+  const bounded = options.maximumIterations !== undefined || input.activeIterations !== undefined;
+  const roundLimit = Math.min(
+    options.maximumIterations ?? 64,
+    input.activeIterations?.[0] ?? Infinity
+  );
+  const {
+    distances,
+    scannedEdges,
+    reachedEdges,
+    converged: costsConverged,
+    hopCount
+  } = computeNetworkRoutingDistances(
     'computeNetworkReachabilityOnCPU',
     input,
-    laneCount
+    laneCount,
+    bounded ? roundLimit * localIterations : Infinity
   );
   const predecessors =
     laneCount === 1
-      ? computeNetworkRoutingPredecessors(input, distances)
+      ? computeNetworkRoutingPredecessors(
+          input,
+          distances,
+          undefined,
+          options.maximumTieIterations === undefined
+            ? Infinity
+            : options.maximumTieIterations * localIterations
+        )
       : new Uint32Array(distances.length).fill(NONE);
   const bands = new Uint32Array(distances.length).fill(NONE);
   const bandCounts = new Uint32Array(input.costBreaks?.length ?? 0);
@@ -89,27 +126,50 @@ export function computeNetworkReachabilityOnCPU(
     }
   }
   const getWords = (value: number) => Uint32Array.of(value % 2 ** 32, Math.floor(value / 2 ** 32));
+  const roots = new Set<number>();
+  const startCount = Math.min(
+    typeof input.startCount === 'number'
+      ? input.startCount
+      : (input.startCount?.[0] ?? input.startNodes.length),
+    input.startNodes.length
+  );
+  for (let start = 0; start < startCount; start++) {
+    const node = input.startNodes[start];
+    if (node < distances.length && distances[node] === (input.startCosts?.[start] ?? 0))
+      roots.add(node);
+  }
+  let unresolvedCount = 0;
+  if (laneCount === 1)
+    for (let node = 0; node < distances.length; node++)
+      if (Number.isFinite(distances[node]) && predecessors[node] === NONE && !roots.has(node))
+        unresolvedCount++;
+  const converged = costsConverged && unresolvedCount === 0 && (!bounded || roundLimit > 0);
   return {
     costs: Float32Array.from(distances),
     predecessors,
     bands,
     bandCounts,
-    unresolvedCount: Uint32Array.of(0),
-    converged: Uint32Array.of(1),
-    iterationCount: Uint32Array.of(1),
-    iterationLimitReached: Uint32Array.of(0),
+    unresolvedCount: Uint32Array.of(unresolvedCount),
+    converged: Uint32Array.of(Number(converged)),
+    iterationCount: Uint32Array.of(
+      bounded ? (roundLimit === 0 ? 0 : Math.max(1, Math.ceil(hopCount / localIterations))) : 1
+    ),
+    iterationLimitReached: Uint32Array.of(Number(!converged)),
     relaxationCount: getWords(scannedEdges),
     reachedEdgeCount: getWords(reachedEdges)
   };
 }
 
-/** CPU twin; GPU-only iteration and storage limits are dropped. */
+/** CPU twin with explicit round limits; GPU storage limits are dropped. */
 export class CPUNetworkReachabilityOperation extends GPUCPUOperation {
   constructor(props: NetworkReachabilityOperationProps) {
+    props = snapshotNetworkReachabilityConstructionProps(props);
     const id = props.id ?? 'network-reachability';
     validateCapacity(id, 'nodeCount', props.nodeCount);
     validateCapacity(id, 'laneCount', props.laneCount ?? 1);
     validateCapacity(id, 'nodeCount * laneCount', props.nodeCount * (props.laneCount ?? 1));
+    for (const name of ['maximumIterations', 'localIterations', 'maximumTieIterations'] as const)
+      if (props[name] !== undefined) validateCapacity(id, name, props[name]);
     validateRequirement(
       id,
       (props.laneCount ?? 1) === 1 || (!props.output.predecessors && !props.output.unresolvedCount),
@@ -182,7 +242,13 @@ export class CPUNetworkReachabilityOperation extends GPUCPUOperation {
                 ? undefined
                 : getCPUOperationFloat32Rows(id, inputs, 'costBreaks')
           },
-          {laneCount: props.laneCount}
+          {
+            laneCount: props.laneCount,
+            maximumIterations: props.maximumIterations,
+            localIterations: props.localIterations,
+            maximumTieIterations:
+              props.output.predecessors === undefined ? undefined : props.maximumTieIterations
+          }
         );
         if (props.costBreakCount !== undefined && result.bandCounts.length !== props.costBreakCount)
           throw new Error(`${id} costBreaks length must equal costBreakCount`);

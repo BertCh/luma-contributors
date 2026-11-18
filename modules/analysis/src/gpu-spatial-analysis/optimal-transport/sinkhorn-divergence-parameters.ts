@@ -5,7 +5,7 @@
 /** Number of float32 elements in a {@link GPUSinkhornDivergence} parameter view. */
 export const GPU_SINKHORN_DIVERGENCE_PARAMETER_LENGTH = 6;
 
-/** Default largest L1 error of the target marginal that counts as converged. */
+/** Default largest L1 marginal error allowed in each of the three transport plans at convergence. */
 export const GPU_SINKHORN_DIVERGENCE_DEFAULT_TOLERANCE = 1e-4;
 
 /** Per-frame settings of {@link GPUSinkhornDivergence}. */
@@ -22,8 +22,8 @@ export type GPUSinkhornDivergenceSettings = {
    */
   epsilon: number;
   /**
-   * Largest L1 distance between the target marginal of the plan and the target masses that counts
-   * as converged. Defaults to {@link GPU_SINKHORN_DIVERGENCE_DEFAULT_TOLERANCE}.
+   * Largest L1 marginal error allowed in each of the cross plan and both symmetric self plans
+   * before their updates at the final epsilon. Defaults to {@link GPU_SINKHORN_DIVERGENCE_DEFAULT_TOLERANCE}.
    */
   tolerance?: number;
   /** First regularization of the epsilon schedule, at least `epsilon`. Defaults to `epsilon` (no scaling). */

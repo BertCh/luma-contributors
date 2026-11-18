@@ -22,6 +22,7 @@ import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
 import {
   getStorageBindingElementLimit,
   validateCapacity,
+  validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
   validateMaximumCount,
   validateGraphViewsBelongToGraph,
@@ -42,6 +43,7 @@ import {
   validateRegionalizationSlotCount,
   validateSymmetricAdjacencyScratch
 } from './regionalization-inputs';
+import {estimateAZPCommandNodeCount} from './regionalization-command-budget';
 
 /** Published auto sort uses a local workgroup through 256 rows, then 16 radix buckets. */
 const AZP_SORT_WORKGROUP_SIZE = 256;
@@ -240,12 +242,15 @@ export type GPUAZPRegionsOutput = {
  * undirected union of the weights and their transpose.
  */
 export class GPUAZPRegions implements GPUCommandNodeProducer {
+  /** Upper bound including adjacency, contiguity, sort and objective nodes. */
+  readonly estimatedCommandNodeCount: number;
   readonly id: string;
   readonly props: GPUAZPRegionsProps;
   readonly rowCount: number;
   readonly columnCount: number;
 
   constructor(props: GPUAZPRegionsProps) {
+    props = Object.freeze({...props});
     this.id = props.id ?? 'azp-regions';
     this.props = props;
     this.rowCount = validateGPUSpatialWeights(this.id, props.weights);
@@ -261,6 +266,8 @@ export class GPUAZPRegions implements GPUCommandNodeProducer {
       1,
       GPU_AZP_MAXIMUM_ITERATIONS
     );
+    this.estimatedCommandNodeCount = estimateAZPCommandNodeCount(rowCount, props.maximumIterations);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateCapacity(id, 'minimumRegionSize', props.minimumRegionSize ?? 1);
     validateRegionalizationParameters(id, props.parameters, GPU_AZP_REGIONS_PARAMETER_LENGTH);
     validateSinglePackedView(props.values, ['float32'], `${id} values`);

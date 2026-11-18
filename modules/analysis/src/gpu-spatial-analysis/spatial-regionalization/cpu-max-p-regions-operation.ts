@@ -18,6 +18,7 @@ import {
   GPU_MAX_P_DEFAULT_START_COUNT,
   GPU_MAX_P_DEFAULT_MAXIMUM_ROUNDS,
   GPU_MAX_P_REGIONS_PARAMETER_LENGTH,
+  getGPUMaxPRoundCounts,
   GPU_MAX_P_STATUS
 } from './gpu-max-p-regions';
 import {
@@ -39,7 +40,7 @@ export type CPUMaxPRegionsInput = CPURegionInput & {
   extensiveValues: Float32Array;
   threshold: Float32Array;
 };
-/** GPU round budgets are accepted for interchangeability; only zero improvement disables AZP. */
+/** Construction and improvement round budgets match the contributor. */
 export type CPUMaxPRegionsOptions = Pick<
   MaxPRegionsOperationProps,
   'columnCount' | 'standardize' | 'startCount' | 'maximumGrowthSteps' | 'maximumIterations'
@@ -85,6 +86,10 @@ function constructStart(
   const rowCount = adjacency.length;
   const columnCount = options.columnCount ?? 1;
   const [seed] = input.parameters; // getGPUMaxPRegionsParameterValues: [seed].
+  const {growthRounds, enclaveRounds} = getGPUMaxPRoundCounts(
+    rowCount,
+    options.maximumGrowthSteps ?? GPU_MAX_P_DEFAULT_MAXIMUM_ROUNDS
+  );
   const threshold = input.threshold[0];
   const purpose = PHILOX_PURPOSES.maxPRegionsSeedOrder.id;
   const salt = getPhilox4x32([NONE, start, 0, 0], [seed, purpose])[1];
@@ -118,8 +123,7 @@ function constructStart(
   let growing = 0;
   const compareOffers = (first: GrowthOffer, second: GrowthOffer) =>
     first.priority - second.priority || first.distance - second.distance || first.tie - second.tie;
-  // No construction round cap: finite keys all become eligible once the fraction reaches one.
-  while (growing > 0 || unassigned > 0) {
+  while (round < growthRounds && (growing > 0 || unassigned > 0)) {
     if (unassigned > 0 && (growing === 0 || round >= nextWave)) {
       const cut = fraction >= 1 ? NONE : Math.floor(fraction * 4294967040);
       fraction = Math.min(1, fraction * 1.3);
@@ -198,7 +202,7 @@ function constructStart(
     }
   }
   // Enclave distances deliberately use the frozen growth-phase means, as in the GPU.
-  while (true) {
+  for (let enclaveRound = 0; enclaveRound < enclaveRounds; enclaveRound++) {
     const proposals = new Map<number, number>();
     for (let row = 0; row < rowCount; row++) {
       if (labels[row] !== NONE && phases[labels[row]] === COMPLETE) continue;
@@ -236,7 +240,7 @@ function constructStart(
 }
 
 /**
- * Completes every seeded parallel Max-P growth and enclave assignment, selects by infeasible
+ * Runs budgeted seeded parallel Max-P growth and enclave assignment, selects by infeasible
  * regions, region count, grown-region SSD and start index, and optionally refines with two-hop AZP.
  * This is the documented multistart heuristic, not a global maximum-P optimizer. Seed rows and
  * ties use the contributor's registered Philox stream and bijective order. Enclave means stay
@@ -246,13 +250,13 @@ function constructStart(
  * - Float64 standardization, means, distances, growth scores and objective round only at output.
  *   Compare objectives with relative tolerance 1e-4; near ties or extensive-sum threshold
  *   boundaries can change labels and selectedStart.
- * - Growth and enclaves run to completion, ignoring maximumGrowthSteps. The expected-size cap,
+ * - Growth and enclaves honor maximumGrowthSteps independently, as on GPU. The expected-size cap,
  *   63-neighbor priority cap and truncated float32 distance keys are removed; priorities then
  *   exact distances then the same seeded ties order offers. Wave arithmetic also uses float64.
  * - Drops GPU column, start-count, storage and command-node limits; uint32 layouts remain.
  *   Empty neighbor-slot arrays are accepted.
- * - Positive maximumIterations enables AZP to convergence with two-hop admissibility and
- *   no round cap. improvementMoveCount remains the number of successful batched rounds, as on GPU.
+ * - Positive maximumIterations bounds AZP refinement rounds with two-hop admissibility.
+ *   improvementIterationCount is the number of successful batched rounds, as on GPU.
  *   Its neighborhood storage/degree caps are dropped. Refinement extensive sums and departing-
  *   value subtraction use float64, so near-threshold feasibility decisions can differ as in AZP.
  * - Finite distances above float32 range remain eligible. Final objective may round to Infinity.
@@ -329,11 +333,13 @@ export function computeMaxPRegionsOnCPU(
       seed,
       1,
       input.extensiveValues,
-      input.threshold[0]
+      input.threshold[0],
+      0,
+      options.maximumIterations
     );
     labels = improvement.labels;
     invalidCount = improvement.invalidCount;
-    status[GPU_MAX_P_STATUS.improvementMoveCount] = improvement.iterationCount;
+    status[GPU_MAX_P_STATUS.improvementIterationCount] = improvement.iterationCount;
   }
   status[GPU_MAX_P_STATUS.regionCount] = invalidCount > 0 ? 0 : construction.regionCount;
   status[GPU_MAX_P_STATUS.feasible] = Number(
@@ -350,9 +356,10 @@ export function computeMaxPRegionsOnCPU(
   };
 }
 
-/** CPU twin with uncapped completed construction and optional two-hop AZP. */
+/** CPU twin with budgeted construction and optional budgeted two-hop AZP. */
 export class CPUMaxPRegionsOperation extends GPUCPUOperation {
   constructor(props: MaxPRegionsOperationProps) {
+    props = Object.freeze({...props});
     const id = props.id ?? 'max-p-regions';
     validateOptions(id, props);
     validateCapacity(id, 'rowCount', props.rowCount);

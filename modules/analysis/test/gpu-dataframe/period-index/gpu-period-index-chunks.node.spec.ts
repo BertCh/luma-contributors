@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph, type GraphVectorView} from '@luma.gl/graph/gpu-core';
+import {readFileSync} from 'node:fs';
 import {expect, it, vi} from 'vitest';
 import {
   GPUPeriodIndex,
@@ -59,6 +60,33 @@ function createFixture(lengths: number[], kind: 'calendar' | 'fixed' = 'calendar
   };
   return {device, graph, props, column};
 }
+
+it('documents aligned chunk limits instead of refusing total rows', () => {
+  const {device, graph, props} = createFixture([1, 2], 'fixed');
+  try {
+    // Three timestamp rows need 24 bytes in total, but each chunk fits a 20-byte binding.
+    // The second chunk starts four bytes into its backing buffer and needs 16 bytes of data.
+    Object.defineProperty(device.limits, 'maxStorageBufferBindingSize', {value: 20});
+    const contributor = new GPUPeriodIndex(props);
+    expect(contributor.rowCount).toBe(3);
+    expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
+      'periods-clear-invalid-count',
+      'periods-periods-chunk-0',
+      'periods-periods-chunk-1'
+    ]);
+    const guide = readFileSync(
+      new URL('../../../../../docs/api/gpu-dataframe-analysis.md', import.meta.url),
+      'utf8'
+    )
+      .split('## `GPUPeriodIndex`')[1]
+      .split('## `GPUCubeLayoutTranspose`')[0];
+    expect(guide).not.toContain('Inputs must be single packed views');
+    expect(guide).toContain('matching ordered chunk lengths');
+    expect(guide).toContain('per chunk');
+  } finally {
+    device.destroy();
+  }
+});
 
 it('validates row topology and every writable field and chunk', () => {
   const {device, graph, props, column} = createFixture([1, 3, 2]);

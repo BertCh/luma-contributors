@@ -78,8 +78,9 @@ const OPERATION = 'GPUHotSpotAnalysis';
 export type GPUHotSpotAnalysisOutput = {
   /**
    * Optional input diagnostics. invalidCount counts unmasked nonfinite values (not islands or
-   * undefined analytic tests); overflow is one when the input weights report capacity overflow.
-   * Both scalars are overwritten on every encoding. Masked rows do not count as invalid.
+   * undefined analytic tests); overflow and candidateOverflow forward the input producer's
+   * final-capacity and intermediate-loss flags independently.
+   * Scalars are overwritten on every encoding. Masked rows do not count as invalid.
    */
   status?: GPUSpatialAutocorrelationStatusPort;
   /** Caller-owned Gi* z-score per row; quiet NaN for excluded or undefined rows. */
@@ -104,7 +105,8 @@ export type GPUHotSpotAnalysisOutput = {
   adjustedPValues?: GraphDataView<'float32'>;
   /**
    * Optional caller-owned count of active neighbors per row, the row itself not included even when
-   * `selfWeight` is nonzero; 0 for rows outside the analysis.
+   * `selfWeight` is nonzero; 0 for rows outside the analysis. When either weights loss flag is
+   * set, all entries are 0 meaning unavailable, not no neighbors.
    */
   neighborCounts?: GraphDataView<'uint32'>;
   /** Optional caller-owned `[n, mean, variance, standardDeviation, islandCount]` actually used this frame. */
@@ -130,7 +132,10 @@ export type GPUHotSpotAnalysisProps = {
    * `weights.information.transform` is `'row'` each row's weights are re-standardized over the neighbors
    * that remain after masking. The caller applies any other transform (binary, kernel). Each packed row view and CSR chunk must fit a device storage binding. The focal row's own weight is not read from the matrix (`w_ii = 0` by
    * invariant); see `selfWeight`. A neighbor is a slot with a positive weight that points at
-   * another included row. If `weights.status.overflow` is nonzero every output is NaN.
+   * another included row. If `weights.status.overflow` or `candidateOverflow` is nonzero,
+   * floating statistic and inference outputs are NaN and significance bins are 0.
+   * Chunked inputs must put aggregate loss flags on outer weights.status; chunk-local flags
+   * are rejected at construction.
    */
   weights: GPUSpatialWeights | GPUChunkedSpatialWeights;
   /**
@@ -326,6 +331,7 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
       [
         ...getGPUSpatialWeightsOrChunksViews(props.weights),
         props.weights.status?.overflow,
+        props.weights.status?.candidateOverflow,
         props.values,
         props.parameters,
         typeof props.selfWeight === 'object' ? props.selfWeight : undefined,
@@ -379,6 +385,7 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [
       ...getGPUSpatialWeightsOrChunksViews(weights),
       weights.status?.overflow,
+      weights.status?.candidateOverflow,
       props.values,
       parameters,
       typeof props.selfWeight === 'object' ? props.selfWeight : undefined,

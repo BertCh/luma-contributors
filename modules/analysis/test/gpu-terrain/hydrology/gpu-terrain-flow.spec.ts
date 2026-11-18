@@ -3,10 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
+import {createTerrainFlowAccumulationNodes} from '../../../src/gpu-terrain/hydrology/terrain-flow-passes';
+import {createRasterTimeSeriesHarness} from '../../gpu-raster/raster-time-series/raster-time-series-test-utils';
 import hydrologyReference from '../../oracles/fixtures/terrain-hydrology.json';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
+
 import {
   makeGPURasterBand,
   makeGPURasterMetadata
@@ -41,6 +44,41 @@ import {toBits} from '../terrain-test-utils';
 import {getOracleWebMercatorY} from '../terrain-oracle-utils';
 import {createSerpentineDEM, fillDepressionsPriorityFlood} from './terrain-flow-corridors';
 import {requireTestDevice} from '../../utils/require-test-device';
+
+it('R1 writes exact unresolved words only inside an offset accumulation view', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createRasterTimeSeriesHarness(device);
+  const words = harness.output('words', 'uint32', 130);
+  const accumulation = harness.graph.createDataView(words.buffer, {
+    format: 'float32',
+    byteOffset: 256,
+    length: 2
+  });
+  const elevation = harness.floats([1, 0]);
+  const receivers = harness.integers([1, 0xffffffff]);
+  const runoff = harness.floats([1, 1]);
+  const settings = harness.floats(new Float32Array(16));
+  const result = await harness.run({
+    getCommandNodes: graph =>
+      createTerrainFlowAccumulationNodes(graph, {
+        id: 'offset-fill',
+        width: 2,
+        height: 1,
+        cellSizeMode: 'uniform',
+        maxIterations: 1,
+        elevation,
+        receivers,
+        accumulation,
+        settings,
+        runoff,
+        area: false
+      }).filter(node => node.id === 'offset-fill-accumulate-init')
+  });
+  expect(result['words'].slice(0, 64)).toEqual(new Array(64).fill(0));
+  expect(result['words'].slice(64, 66)).toEqual([0xffffffff, 0xffffffff]);
+  expect(result['words'].slice(66)).toEqual(new Array(64).fill(0));
+});
 
 type FlowOptions = {
   /** Packed settings; the cell size and latitude band come from `cellSize` and `origin`. */

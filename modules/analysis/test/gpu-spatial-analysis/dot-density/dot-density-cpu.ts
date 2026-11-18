@@ -44,8 +44,10 @@ export type DotDensityCPUResult = {
   requiredCount: number;
   /** `min(requiredCount, capacity)`. */
   count: number;
-  /** 1 when the total exceeds the capacity or a slot count was clamped. */
+  /** 1 when the retained total exceeds final capacity. */
   overflow: number;
+  /** 1 when a per-slot limit discarded requests before final publication. */
+  candidateOverflow: number;
   /** Feature row per dot. */
   featureIds: Uint32Array;
   /** Category per dot. */
@@ -117,7 +119,8 @@ export function generateDotCountsOnCPU(input: DotDensityCPUInput): DotDensityCPU
     slotOffsets,
     requiredCount,
     count,
-    overflow: requiredCount > input.capacity || clamped ? 1 : 0,
+    overflow: requiredCount > input.capacity ? 1 : 0,
+    candidateOverflow: clamped ? 1 : 0,
     featureIds,
     categories
   };

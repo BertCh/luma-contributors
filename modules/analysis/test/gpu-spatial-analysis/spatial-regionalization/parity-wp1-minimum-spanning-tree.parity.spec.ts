@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {it} from 'vitest';
+import {expect, it} from 'vitest';
 import {GPUSpatialWeightsMinimumSpanningTree} from '../../../src/gpu-spatial-analysis/spatial-regionalization/index';
 import fixture from '../../oracles/fixtures/parity-wp1-round6-forest.json';
 import {decodeRound4Fixture} from '../../oracles/parity-wp1-round4-fixture';
@@ -13,6 +13,45 @@ import {compareParity} from '../../oracles/parity-wp1-compare';
 import {requireTestDevice} from '../../utils/require-test-device';
 
 const decoded = decodeRound4Fixture<{cases: ForestCase[]}>(fixture);
+
+it('final2 suppresses a flagged missing-link forest and publishes compact candidate loss', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createRound4Harness(device);
+  try {
+    harness.graph.add(
+      new GPUSpatialWeightsMinimumSpanningTree({
+        weights: {
+          offsets: harness.input('missing-offsets', [0, 1, 2, 2], 'uint32'),
+          neighbors: harness.input('missing-neighbors', [1, 0], 'uint32'),
+          weights: harness.input('missing-weights', [1, 1], 'float32'),
+          status: {candidateOverflow: harness.input('candidate-loss', [1], 'uint32')}
+        },
+        values: harness.input('values', [0, 1, 2], 'float32'),
+        output: {
+          treeEdgeFlags: harness.output('flags', 2, 'uint32'),
+          componentLabels: harness.output('components', 3, 'uint32'),
+          edges: {
+            ids: harness.output('edges', 2, 'uint32'),
+            status: {
+              count: harness.output('count', 1, 'uint32'),
+              overflow: harness.output('overflow', 1, 'uint32'),
+              candidateOverflow: harness.output('candidate-output', 1, 'uint32')
+            }
+          }
+        }
+      })
+    );
+    harness.run();
+    expect(await harness.read('flags')).toEqual([0, 0]);
+    expect(await harness.read('components')).toEqual([0xffffffff, 0xffffffff, 0xffffffff]);
+    expect(await harness.read('count')).toEqual([0]);
+    expect(await harness.read('overflow')).toEqual([0]);
+    expect(await harness.read('candidate-output')).toEqual([1]);
+  } finally {
+    harness.destroy();
+  }
+});
 
 /** Generic graph feasibility only; the independent SciPy fixture supplies optimal costs. */
 function inspectForest(rows: number, endpoints: number[]) {

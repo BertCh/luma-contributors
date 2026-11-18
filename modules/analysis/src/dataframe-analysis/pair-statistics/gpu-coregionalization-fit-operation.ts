@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {GPUCoregionalizationFit} from './gpu-coregionalization-fit';
 import type {CoregionalizationFitOptions} from './coregionalization-parameters';
 
@@ -27,12 +28,49 @@ export type CoregionalizationFitOperationProps = CoregionalizationFitOptions & {
   };
 };
 
+/** @internal Keep both operation forms on the same construction-time shape and port contract. */
+export function snapshotCoregionalizationFitOperationProps(
+  props: CoregionalizationFitOperationProps
+): CoregionalizationFitOperationProps {
+  const snapshot = snapshotConstructionFields(props, [
+    'id',
+    'variableCount',
+    'structureCount',
+    'maximumIterations',
+    'distances',
+    'semivariances',
+    'pairCounts',
+    'parameters',
+    'output'
+  ]);
+  const output = snapshotConstructionFields(snapshot.output, [
+    'matrices',
+    'loadings',
+    'diagnostics',
+    'status'
+  ]);
+  return Object.freeze({
+    ...snapshot,
+    output: Object.freeze({
+      ...output,
+      status: snapshotConstructionFields(output.status, [
+        'validity',
+        'iterationCount',
+        'converged',
+        'iterationLimitReached',
+        'invalidCount'
+      ])
+    })
+  });
+}
+
 /**
  * LMC fitter as a GPUGraph operation; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING.
  * Compile-time: shape and sweep budget. Per-frame: input graph values.
  */
 export class GPUCoregionalizationFitOperation extends GPUContributorOperation {
   constructor(props: CoregionalizationFitOperationProps) {
+    props = snapshotCoregionalizationFitOperationProps(props);
     const id = props.id ?? 'coregionalization-fit';
     const length = props.structureCount * props.variableCount ** 2;
     super({

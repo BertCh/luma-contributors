@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {Buffer} from '@luma.gl/core';
+import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {expect, it} from 'vitest';
 import {
   getGPURasterProfileParameterValues,
@@ -10,7 +12,10 @@ import {
   GPURasterProfile,
   GPURasterSampling
 } from '../../../src/raster-analysis/raster-sampling/index';
-import {makeGPURasterMetadata} from '../../../src/raster-analysis/raster-grid/index';
+import {
+  makeGPURasterBand,
+  makeGPURasterMetadata
+} from '../../../src/raster-analysis/raster-grid/index';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {
   getCubicWeightsOnCPU,
@@ -287,6 +292,108 @@ it('GPURasterSampling and GPURasterProfile validate their inputs', () => {
         }
       })
     ).toThrow(/share/);
+  });
+});
+
+it.each([
+  'bare values',
+  'band values',
+  'band validity'
+] as const)('sampling and profile alias errors name the exact ports for %s', inputKind => {
+  withGraph(graph => {
+    const values = view(graph, 'float32', 4);
+    const validity = view(graph, 'uint32', 4);
+    const grid = makeGPURasterMetadata({width: 2, height: 2});
+    const input =
+      inputKind === 'bare values' ? values : makeGPURasterBand(values, grid, {validity});
+    const inputPort =
+      inputKind === 'bare values'
+        ? 'values'
+        : inputKind === 'band values'
+          ? 'values.storage.values'
+          : 'values.validity';
+    const positions = view(graph, 'float32x2', 2);
+    const parameters = view(graph, 'float32', 12);
+    const sampleOutputPort =
+      inputKind === 'band validity' ? 'output.outputValidity' : 'output.values';
+    expect(
+      () =>
+        new GPURasterSampling({
+          id: 'sampling-pair',
+          grid,
+          values: input,
+          positions,
+          parameters,
+          output: {
+            values: inputKind === 'band validity' ? view(graph, 'float32', 2) : values,
+            outputValidity: inputKind === 'band validity' ? validity : undefined
+          }
+        })
+    ).toThrow(
+      `sampling-pair outputs must not share buffers with inputs: ${sampleOutputPort} conflicts with ${inputPort}`
+    );
+    const profileOutputPort =
+      inputKind === 'band validity' ? 'output.status.count' : 'output.sampleValues';
+    const count =
+      inputKind === 'band validity'
+        ? graph.createDataView(validity.buffer, {format: 'uint32', length: 1})
+        : view(graph, 'uint32', 1);
+    expect(
+      () =>
+        new GPURasterProfile({
+          id: 'profile-pair',
+          grid,
+          values: input,
+          positions,
+          parameters,
+          lineOffsets: view(graph, 'uint32', 2),
+          sampleCapacity: 4,
+          output: {
+            status: {count, overflow: view(graph, 'uint32', 1)},
+            sampleValues: inputKind === 'band validity' ? view(graph, 'float32', 4) : values
+          }
+        })
+    ).toThrow(
+      `profile-pair outputs must not share buffers with inputs: ${profileOutputPort} conflicts with ${inputPort}`
+    );
+  });
+});
+
+it('raster alias diagnostics recognise separate handles for one physical buffer', () => {
+  withGraph(graph => {
+    const buffer = graph.device.createBuffer({byteLength: 64, usage: Buffer.STORAGE});
+    try {
+      const values = importGraphBuffer(graph, 'raster-input', buffer, 'float32', 4);
+      const output = importGraphBuffer(graph, 'raster-output', buffer, 'float32', 4);
+      const props = {
+        grid: makeGPURasterMetadata({width: 2, height: 2}),
+        values,
+        positions: view(graph, 'float32x2', 2),
+        parameters: view(graph, 'float32', 12)
+      };
+      expect
+        .soft(
+          () => new GPURasterSampling({id: 'sampling-physical', ...props, output: {values: output}})
+        )
+        .toThrow('output.values conflicts with values');
+      expect
+        .soft(
+          () =>
+            new GPURasterProfile({
+              id: 'profile-physical',
+              ...props,
+              lineOffsets: view(graph, 'uint32', 2),
+              sampleCapacity: 4,
+              output: {
+                sampleValues: output,
+                status: {count: view(graph, 'uint32', 1), overflow: view(graph, 'uint32', 1)}
+              }
+            })
+        )
+        .toThrow('output.sampleValues conflicts with values');
+    } finally {
+      buffer.destroy();
+    }
   });
 });
 

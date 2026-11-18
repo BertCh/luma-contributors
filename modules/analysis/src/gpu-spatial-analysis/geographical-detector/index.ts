@@ -12,5 +12,6 @@ export type {
 } from './gpu-geographical-detector';
 export {
   getGeographicalDetectorPValue,
+  readGeographicalDetectorPValue,
   getNonCentralFUpperTail
 } from './geographical-detector-p-value';

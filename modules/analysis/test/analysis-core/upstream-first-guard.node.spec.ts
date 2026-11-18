@@ -3,11 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {spawnSync} from 'node:child_process';
-import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
+import {mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
+import {findNonPublicLumaImports} from '../../../../scripts/check-upstream-first.mjs';
 
 // The guard is a script with side effects (it walks the tree and prints), so it is run as a child
 // process. `UPSTREAM_FIRST_SCRATCH_FILE` makes it also check one file outside the repository tree.
@@ -65,6 +66,70 @@ function runGuard(fixtureName: string, fixtureText: string): GuardRun {
 }
 
 describe('scripts/check-upstream-first.mjs', () => {
+  it('discovers a production JavaScript engine import in ordinary package traversal', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'upstream-first-javascript-'));
+    try {
+      mkdirSync(join(directory, 'modules/analysis/src'), {recursive: true});
+      mkdirSync(join(directory, 'modules/lenses/src'), {recursive: true});
+      symlinkSync(join(REPOSITORY_ROOT, 'node_modules'), join(directory, 'node_modules'), 'dir');
+      writeFileSync(join(directory, 'modules/analysis/src/index.ts'), 'export {};');
+      writeFileSync(
+        join(directory, 'modules/lenses/src/embedded-dataset-loaders.js'),
+        "import {Model} from '@luma.gl/engine';"
+      );
+      const result = spawnSync(process.execPath, [join(REPOSITORY_ROOT, GUARD_SCRIPT)], {
+        cwd: directory,
+        encoding: 'utf8'
+      });
+      expect(result.status, result.stdout + result.stderr).toBe(1);
+      expect(result.stdout).toContain('embedded-dataset-loaders.js: engine is restricted');
+    } finally {
+      rmSync(directory, {recursive: true, force: true});
+    }
+  });
+  it('rejects installed but disallowed luma.gl packages and production engine imports', () => {
+    expect(
+      findNonPublicLumaImports(
+        "import {WebGPUDevice} from '@luma.gl/webgpu';",
+        'modules/analysis/src/analysis-core/fixture.ts'
+      )
+    ).toHaveLength(1);
+    expect(
+      findNonPublicLumaImports(
+        "import {Model} from '@luma.gl/engine';",
+        'modules/analysis/src/analysis-core/fixture.ts'
+      )
+    ).toHaveLength(1);
+    expect(
+      findNonPublicLumaImports(
+        "import {Model} from '@luma.gl/engine';",
+        'modules/analysis/test/fixture.node.spec.ts'
+      )
+    ).toEqual([]);
+    expect(
+      findNonPublicLumaImports(
+        "import {Model} from '@luma.gl/engine';",
+        'examples/deck/fixture/src/scene.ts'
+      )
+    ).toEqual([]);
+  });
+  it('rejects a loose source file while permitting only the root index barrel', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'upstream-first-layout-'));
+    try {
+      mkdirSync(join(directory, 'modules/analysis/src'), {recursive: true});
+      symlinkSync(join(REPOSITORY_ROOT, 'node_modules'), join(directory, 'node_modules'), 'dir');
+      writeFileSync(join(directory, 'modules/analysis/src/index.ts'), 'export {};');
+      writeFileSync(join(directory, 'modules/analysis/src/loose.ts'), 'export const value = 1;');
+      const result = spawnSync(process.execPath, [join(REPOSITORY_ROOT, GUARD_SCRIPT)], {
+        cwd: directory,
+        encoding: 'utf8'
+      });
+      expect(result.status, result.stdout + result.stderr).toBe(1);
+      expect(result.stdout).toContain('modules/analysis/src/loose.ts');
+    } finally {
+      rmSync(directory, {recursive: true, force: true});
+    }
+  });
   beforeAll(() => {
     fixtureDirectory = mkdtempSync(join(tmpdir(), 'upstream-first-guard-'));
   });

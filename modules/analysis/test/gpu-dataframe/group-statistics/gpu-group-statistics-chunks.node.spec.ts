@@ -131,7 +131,7 @@ it('dispatches nonempty key and value chunks separately into shared accumulators
     // Parse the generated WGSL without a GPU and verify the core eight-binding limit.
     const sources = getParsedKernelSources(nodes);
     expect(sources.size).toBeGreaterThan(0);
-    for (const source of sources.values()) {
+    for (const {source} of sources.configurations) {
       expect(findConstantNonFiniteBitcasts(stripWGSLComments(source))).toEqual([]);
       expect((source.match(/var<storage/g) ?? []).length).toBeLessThanOrEqual(8);
       const tokens =
@@ -635,7 +635,7 @@ it('checks all generated statistic branches against the full W3C reserved-word l
       });
       const kernels = getParsedKernelSources(contributor.getCommandNodes(graph));
       expect(kernels.size).toBeGreaterThan(0);
-      for (const source of kernels.values()) {
+      for (const {source} of kernels.configurations) {
         expect(findConstantNonFiniteBitcasts(stripWGSLComments(source))).toEqual([]);
         const tokens =
           source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, ' ').match(/[A-Za-z_][A-Za-z_0-9]*/g) ??

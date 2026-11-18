@@ -20,6 +20,7 @@ import {
   validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   GPU_COREGIONALIZATION_MAXIMUM_BIN_COUNT,
   validateCoregionalizationFitOptions,
@@ -72,11 +73,43 @@ export type GPUCoregionalizationFitProps = CoregionalizationFitOptions & {
  * Reference: Goulard & Voltz (1992), doi:10.1007/BF00893750.
  */
 export class GPUCoregionalizationFit implements GPUCommandNodeProducer {
+  readonly props: GPUCoregionalizationFitProps;
   readonly id: string;
   readonly maximumIterations: number;
   readonly estimatedCommandNodeCount: number;
 
-  constructor(readonly props: GPUCoregionalizationFitProps) {
+  constructor(props: GPUCoregionalizationFitProps) {
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'variableCount',
+      'structureCount',
+      'maximumIterations',
+      'distances',
+      'semivariances',
+      'pairCounts',
+      'parameters',
+      'output'
+    ]);
+    const output = snapshotConstructionFields(snapshot.output, [
+      'matrices',
+      'loadings',
+      'diagnostics',
+      'status'
+    ]);
+    props = Object.freeze({
+      ...snapshot,
+      output: Object.freeze({
+        ...output,
+        status: snapshotConstructionFields(output.status, [
+          'validity',
+          'iterationCount',
+          'converged',
+          'iterationLimitReached',
+          'invalidCount'
+        ])
+      })
+    });
+    this.props = props;
     this.id = props.id ?? 'coregionalization-fit';
     this.maximumIterations = props.maximumIterations ?? 128;
     validateCoregionalizationFitOptions(this.id, props, true);

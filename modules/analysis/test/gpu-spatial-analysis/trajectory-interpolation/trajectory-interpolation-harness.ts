@@ -187,7 +187,7 @@ export function createPlayheadFixture(
   const compiled = graph.compile();
   return {
     async run(playhead, maximumGap = 0) {
-      if (isWordMode) {
+      if (parameterBuffer.format === 'uint32') {
         parameterBuffer.write(getGPUTrajectoryPlayheadWordParameterValues({playhead, maximumGap}));
       } else {
         parameterBuffer.write(getGPUTrajectoryPlayheadParameterValues({playhead, maximumGap}));

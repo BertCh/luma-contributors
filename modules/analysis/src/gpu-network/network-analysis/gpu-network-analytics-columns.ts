@@ -20,7 +20,7 @@ import {
 import {
   validateGPUNetworkTopology,
   type GPUNetworkAdjacency
-} from '../../analysis-core/network-topology';
+} from '../../analysis-core/contracts/network-topology';
 import type {GPUIterationStatusPort} from '../../analysis-core/contracts/index';
 
 /** Published GPUReduction emits one extent partial per 256 input rows. */

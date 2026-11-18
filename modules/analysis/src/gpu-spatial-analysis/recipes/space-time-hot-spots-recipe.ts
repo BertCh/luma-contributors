@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {addPreparedRecipe, writeRecipeParameters} from './prepared-recipe';
+
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   GPUCalendarBuckets,
@@ -22,7 +24,6 @@ import type {
 } from '../../analysis-core/contracts/inference';
 import {
   GPU_EMERGING_HOT_SPOTS_CATEGORIES,
-  GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH,
   GPUEmergingHotSpots,
   type GPUEmergingHotSpotsSettings
 } from '../emerging-hot-spots/index';
@@ -41,6 +42,10 @@ import {
   getWGSLFloatLiteral
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUSpatialWeights} from '../spatial-weights/index';
+import {
+  validateSpaceTimeHotSpotsRecipe,
+  snapshotSpaceTimeHotSpotsRecipe
+} from './space-time-hot-spots-preflight';
 import {
   assertRecipe,
   getOrCreateView,
@@ -128,7 +133,7 @@ export function getSpaceTimeSliceIndex(
 /** Cells given as a precomputed index per event. Spatial neighbors then come from `weights`. */
 export type GPUSpaceTimeCellIds = {
   kind: 'ids';
-  /** Cell index per event (`0xffffffff` or `>= cellCount` skips the event). */
+  /** Packed cell index per timestamp, with equal row count (`0xffffffff` or `>= cellCount` skips the event). */
   cellIds: GraphDataView<'uint32'>;
   /** Number of cells (rows of `weights`). */
   cellCount: number;
@@ -141,7 +146,7 @@ export type GPUSpaceTimeCellIds = {
 /** Cells given as a regular lattice over planar event positions (lattice neighborhood). */
 export type GPUSpaceTimeLattice = {
   kind: 'lattice';
-  /** Planar position per event in the coordinates of `spatialContext`. */
+  /** Packed planar position per timestamp, with equal row count, in the coordinates of `spatialContext`. */
   positions: GraphDataView<'float32x2'>;
   /** Planar context of positions and bounds. Omitted means native planar. */
   spatialContext?: GPUSpatialContext;
@@ -253,7 +258,8 @@ export type GPUSpaceTimeHotSpotsRecipeProps = GPURecipeOverrides<
   settings: GPUSpaceTimeHotSpotsRecipeSettings;
   /**
    * A `GPUParameterBuffer` of at least `GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH` float32 values
-   * that the recipe fills from `settings`.
+   * that the recipe fills from `settings` after successful scheduling. Rejected construction does
+   * not write this buffer.
    */
   parameters: GPUParameterBuffer<'float32'>;
   /**
@@ -282,7 +288,44 @@ export type GPUSpaceTimeHotSpotsRecipeProps = GPURecipeOverrides<
 };
 
 /** Named outputs of {@link addSpaceTimeHotSpotsRecipe}. */
-export type GPUSpaceTimeHotSpotsRecipeResult = GPURecipeResult & {
+export type GPUSpaceTimeHotSpotsRecipeOutputs = Pick<
+  GPUSpaceTimeHotSpotsRecipeViews,
+  | 'cube'
+  | 'giZScores'
+  | 'trendZ'
+  | 'trendP'
+  | 'trendS'
+  | 'category'
+  | 'hotSliceCount'
+  | 'coldSliceCount'
+  | 'pValues'
+  | 'adjustedPValues'
+  | 'lastValidSlice'
+  | 'colors'
+>;
+
+/** Calendar and optional sorted-counting ports between space-time stages. */
+export type GPUSpaceTimeHotSpotsRecipeIntermediates = {
+  calendarYear: GraphDataView<'sint32'>;
+  calendarMonth?: GraphDataView<'uint32'>;
+  calendarDayOfMonth?: GraphDataView<'uint32'>;
+  calendarHour?: GraphDataView<'uint32'>;
+  periods: GraphDataView<'uint32'>;
+  keys?: GraphDataView<'uint32'>;
+  keyMask?: GraphDataView<'uint32'>;
+  groupKeys?: GraphDataView<'uint32'>;
+  groupCounts?: GraphDataView<'uint32'>;
+  groupCount?: GraphDataView<'uint32'>;
+};
+
+/** Space-time outputs, intermediates and top-level convenience fields. */
+export type GPUSpaceTimeHotSpotsRecipeResult = GPURecipeResult<
+  GPUSpaceTimeHotSpotsRecipeOutputs,
+  GPUSpaceTimeHotSpotsRecipeIntermediates
+> &
+  GPUSpaceTimeHotSpotsRecipeViews;
+
+type GPUSpaceTimeHotSpotsRecipeViews = {
   /** Resolved lattice context, or the supplied weights context when it is declared. */
   spatialContext?: GPUSpatialContext;
   cellCount: number;
@@ -344,13 +387,21 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUSpaceTimeHotSpotsRecipeProps
 ): GPUSpaceTimeHotSpotsRecipeResult {
+  return addPreparedRecipe(graph, props, declareSpaceTimeHotSpotsRecipe);
+}
+
+function declareSpaceTimeHotSpotsRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUSpaceTimeHotSpotsRecipeProps
+): GPUSpaceTimeHotSpotsRecipeResult {
+  props = snapshotSpaceTimeHotSpotsRecipe(props);
   assertRecipe(
     ID,
     props.utcOffsets === undefined || props.timeZone === undefined,
     'pass utcOffsets or timeZone, not both'
   );
   const id = props.id ?? 'space-time-hot-spots';
-  const builder = new RecipeBuilder(graph);
+  const builder = new RecipeBuilder(graph, true);
   const outputOverrides = props.outputs ?? {};
   const scratch = props.scratch ?? {};
   const {slices, cells} = props;
@@ -360,11 +411,6 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
       : cells.weights.spatialContext;
   const eventCount = props.timestamps.length;
   const sliceCount = slices.count;
-  assertRecipe(
-    ID,
-    !('field' in slices),
-    'slices.field is no longer accepted: cyclic calendar fields cannot carry a trend, use slices.step with an origin'
-  );
   assertRecipe(
     ID,
     Number.isInteger(sliceCount) && sliceCount >= 1,
@@ -414,6 +460,7 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
     cubeLength * 4,
     'reduce cells or slices.count'
   );
+  const initialParameterValues = validateSpaceTimeHotSpotsRecipe(graph, id, props);
 
   // 1. Calendar columns of the event times: only the ones the step needs.
   const needsMonth = slices.step !== 'year';
@@ -476,7 +523,7 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
   let cell = select(0u, u32(fy) * ${cells.width}u + u32(fx), cellValid);`;
   // Slice per event from the calendar columns (`GPUPeriodIndex`), an integer or a sentinel.
   const periods = getOrCreateView(graph, `${id}-periods`, 'uint32', eventCount, scratch.periods);
-  graph.add(
+  builder.add(
     new GPUPeriodIndex({
       id: `${id}-period-index`,
       temporalContext: {
@@ -514,7 +561,8 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
     1,
     outputOverrides.status?.skippedEventCount
   );
-  graph.add(
+  builder.addGlue(
+    'skipped-count-clear',
     createFillNode<Parameters>(graph, {
       id: `${id}-skipped-count-clear`,
       operation: 'GPUSpaceTimeHotSpotsCube',
@@ -523,7 +571,8 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
       value: '0u'
     })
   );
-  graph.add(
+  builder.addGlue(
+    'skipped-count',
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-skipped-count`,
       operation: 'GPUSpaceTimeHotSpotsCube',
@@ -543,7 +592,8 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
 
   // 3. Dense cube of event counts, zeroed first: both paths only write bins that hold events.
   const cube = getOrCreateView(graph, `${id}-cube`, 'uint32', cubeLength, outputOverrides.cube);
-  graph.add(
+  builder.addGlue(
+    'cube-clear',
     createFillNode<Parameters>(graph, {
       id: `${id}-cube-clear`,
       operation: 'GPUSpaceTimeHotSpotsCube',
@@ -574,10 +624,16 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
     ...(calendarHour ? {calendarHour} : {})
   };
   let status: GPUSpaceTimeHotSpotsRecipeResult['status'] = {
-    stages: [{stage: 'slice-range', status: {invalidCount: skippedCount}}]
+    stages: [
+      {stage: 'slice-range', status: {invalidCount: skippedCount}},
+      ...(cells.kind === 'ids' && cells.weights.status
+        ? [{stage: 'weights', status: cells.weights.status}]
+        : [])
+    ]
   };
   if (!useGroupStatistics) {
-    graph.add(
+    builder.addGlue(
+      'cube-count',
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-cube-count`,
         operation: 'GPUSpaceTimeHotSpotsCube',
@@ -598,7 +654,8 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
     // Sorted path: key `cell * sliceCount + slice` per event, sparse counts per key, scatter.
     const keys = getOrCreateView(graph, `${id}-keys`, 'uint32', eventCount, scratch.keys);
     const keyMask = getOrCreateView(graph, `${id}-key-mask`, 'uint32', eventCount, scratch.keyMask);
-    graph.add(
+    builder.addGlue(
+      'cube-keys',
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-keys`,
         operation: 'GPUSpaceTimeHotSpotsKeys',
@@ -656,7 +713,8 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
         }
       })
     );
-    graph.add(
+    builder.addGlue(
+      'cube-scatter',
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-cube-scatter`,
         operation: 'GPUSpaceTimeHotSpotsCube',
@@ -690,11 +748,6 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
   }
 
   // 4. Emerging hot spots.
-  assertRecipe(
-    ID,
-    props.parameters.length >= GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH,
-    `parameters needs ${GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH} values`
-  );
   const parameterView = props.parameters.importToGraph(graph, `${id}-parameters`);
   const outputs = {
     giZScores: getOrCreateView(
@@ -761,7 +814,7 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
   const writeSettings = (settings: GPUSpaceTimeHotSpotsRecipeSettings): GPUInferenceMetadata => {
     const values = emerging.getParameterValues(settings);
     const metadata = emerging.getInferenceMetadata(settings);
-    props.parameters.write(values);
+    writeRecipeParameters(graph, props.parameters, values);
     return metadata;
   };
 
@@ -776,7 +829,7 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
     outputs: {cube, ...outputs, ...optionalOutputs},
     intermediates,
     status,
-    inference: writeSettings(props.settings),
+    inference: emerging.getInferenceMetadata(props.settings),
     setSettings: settings => {
       result.inference = writeSettings(settings);
     }
@@ -809,5 +862,7 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
     result.colors = colors;
     result.outputs['colors'] = colors;
   }
+  builder.addDeferredStages();
+  writeRecipeParameters(graph, props.parameters, initialParameterValues);
   return result;
 }

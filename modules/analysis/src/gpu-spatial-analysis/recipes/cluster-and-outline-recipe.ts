@@ -1,6 +1,9 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
+
+import {addPreparedRecipe} from './prepared-recipe';
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {
@@ -106,7 +109,32 @@ export type GPUClusterAndOutlineRecipeProps = GPURecipeOverrides<
 };
 
 /** Named outputs of {@link addClusterAndOutlineRecipe}. */
-export type GPUClusterAndOutlineRecipeResult = GPURecipeResult & {
+export type GPUClusterAndOutlineRecipeOutputs = Pick<
+  GPUClusterAndOutlineRecipeViews,
+  | 'labels'
+  | 'clusterCount'
+  | 'hullPositions'
+  | 'hullOffsets'
+  | 'areas'
+  | 'perimeters'
+  | 'centroids'
+  | 'concaveHull'
+>;
+
+/** Ports between cluster-and-outline stages. */
+export type GPUClusterAndOutlineRecipeIntermediates = Pick<
+  GPUClusterAndOutlineRecipeViews,
+  'counts' | 'bounds' | 'meanCenters' | 'hullVertexIndices' | 'hullCounts'
+>;
+
+/** Cluster-and-outline outputs, intermediates and top-level convenience fields. */
+export type GPUClusterAndOutlineRecipeResult = GPURecipeResult<
+  GPUClusterAndOutlineRecipeOutputs,
+  GPUClusterAndOutlineRecipeIntermediates
+> &
+  GPUClusterAndOutlineRecipeViews;
+
+type GPUClusterAndOutlineRecipeViews = {
   /** Resolved coordinate and metric context shared by all spatial stages. */
   spatialContext: GPUSpatialContext;
   /** Cluster capacity: the row count of every per-cluster output. */
@@ -157,12 +185,20 @@ export function addClusterAndOutlineRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUClusterAndOutlineRecipeProps
 ): GPUClusterAndOutlineRecipeResult {
+  return addPreparedRecipe(graph, props, declareClusterAndOutlineRecipe);
+}
+
+function declareClusterAndOutlineRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUClusterAndOutlineRecipeProps
+): GPUClusterAndOutlineRecipeResult {
   const id = props.id ?? 'cluster-outline-recipe';
   const spatialContext = resolveGPUSpatialContext(
     id,
     props.spatialContext,
     SPATIAL_CONTEXT_SUPPORT
   );
+  props = {...props, points: snapshotSinglePartGeometryPort(id, 'points', props.points)};
   const positions = props.points.positions;
   const pointCount = positions.length;
   const groupCount = props.maximumClusterCount;

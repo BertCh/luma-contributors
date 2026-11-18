@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import type {GPUSolverStatusPort} from '../../analysis-core/contracts/index';
 import {
   createTransientView,
@@ -216,6 +217,58 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
   readonly tileCount: number;
 
   constructor(props: GPUSpatialRegressionDiagnosticsProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'weights',
+      'predictors',
+      'response',
+      'residuals',
+      'mask',
+      'predictorCount',
+      'restandardizeRows',
+      'tileRowCount',
+      'output'
+    ]);
+    const weights = snapshotConstructionFields(captured.weights, [
+      'offsets',
+      'neighbors',
+      'weights',
+      'distances',
+      'spatialContext',
+      'information',
+      'status'
+    ]);
+    const capturedOutput = snapshotConstructionFields(captured.output, [
+      'tests',
+      'summary',
+      'status'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      weights: Object.freeze({
+        ...weights,
+        ...(weights.status
+          ? {
+              status: snapshotConstructionFields(weights.status, [
+                'count',
+                'requiredCount',
+                'overflow',
+                'candidateOverflow',
+                'invalidCount',
+                'uncertainCount',
+                'iterationCount',
+                'converged',
+                'iterationLimitReached',
+                'approximation'
+              ])
+            }
+          : {})
+      }),
+      output: Object.freeze({
+        ...capturedOutput,
+        status: snapshotConstructionFields(capturedOutput.status, ['code'])
+      })
+    });
     const id = props.id ?? 'spatial-regression-diagnostics';
     this.id = id;
     this.props = props;
@@ -280,7 +333,9 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
         props.mask,
         props.weights.offsets,
         props.weights.neighbors,
-        props.weights.weights
+        props.weights.weights,
+        props.weights.status?.overflow,
+        props.weights.status?.candidateOverflow
       ]
     );
   }
@@ -303,6 +358,8 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
       weights.offsets,
       weights.neighbors,
       weights.weights,
+      weights.status?.overflow,
+      weights.status?.candidateOverflow,
       output.tests,
       output.summary,
       output.status.code
@@ -584,13 +641,35 @@ ${getRowAccumulationWGSL()}`,
           {name: 'moments', view: moments, type: 'f32', access: 'read'},
           {name: 'testsOut', view: output.tests, type: 'f32', access: 'read_write'},
           {name: 'summaryOut', view: output.summary, type: 'f32', access: 'read_write'},
-          {name: 'statusOut', view: output.status.code, type: 'u32', access: 'read_write'}
+          {name: 'statusOut', view: output.status.code, type: 'u32', access: 'read_write'},
+          ...(weights.status?.overflow
+            ? [
+                {
+                  name: 'weightsOverflow',
+                  view: weights.status.overflow,
+                  type: 'u32',
+                  access: 'read'
+                } as const
+              ]
+            : []),
+          ...(weights.status?.candidateOverflow
+            ? [
+                {
+                  name: 'weightsCandidateOverflow',
+                  view: weights.status.candidateOverflow,
+                  type: 'u32',
+                  access: 'read'
+                } as const
+              ]
+            : [])
         ],
         invocationCount: 1,
         declarations: `${constants}
 const PP: u32 = ${p * p}u;
 ${getFinishWGSL(p)}`,
-        body: 'finish();'
+        body: `${weights.status?.overflow ? 'if (weightsOverflow[weightsOverflowOffset] != 0u) { fail(3u, moments[momentsOffset + 5u * PP + 7u + P]); return; }' : ''}
+${weights.status?.candidateOverflow ? 'if (weightsCandidateOverflow[weightsCandidateOverflowOffset] != 0u) { fail(3u, moments[momentsOffset + 5u * PP + 7u + P]); return; }' : ''}
+finish();`
       })
     ];
   }

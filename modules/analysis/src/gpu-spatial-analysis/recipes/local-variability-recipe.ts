@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {addPreparedRecipe} from './prepared-recipe';
+import {
+  snapshotWeightsFields,
+  snapshotWeightsPort
+} from '../spatial-weights/weights-construction-snapshot';
+
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPUMultipleTestingMethod} from '../../analysis-core/contracts/index';
 import {getRecipeView as getOrCreateView, validateRecipeBoundary} from './recipe-utils';
@@ -57,6 +63,42 @@ export function addLocalVariabilityRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPULocalVariabilityRecipeProps
 ): GPULocalVariabilityRecipeResult {
+  return addPreparedRecipe(graph, props, declareLocalVariabilityRecipe);
+}
+
+function declareLocalVariabilityRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPULocalVariabilityRecipeProps
+): GPULocalVariabilityRecipeResult {
+  const captured = snapshotWeightsFields(props, [
+    'id',
+    'weights',
+    'values',
+    'mask',
+    'parameters',
+    'residualPower',
+    'minimumNeighbors',
+    'multipleTesting',
+    'outputs'
+  ]);
+  props = Object.freeze({
+    ...captured,
+    weights: snapshotWeightsPort(captured.weights),
+    ...(captured.outputs
+      ? {
+          outputs: snapshotWeightsFields(captured.outputs, [
+            'losh',
+            'loshStatus',
+            'localI',
+            'zScores',
+            'pValues',
+            'adjustedPValues',
+            'quadrants',
+            'moranStatus'
+          ])
+        }
+      : {})
+  });
   const id = props.id ?? 'local-variability';
   const rows = props.values.length;
   const supplied = props.outputs;
@@ -82,6 +124,7 @@ export function addLocalVariabilityRecipe<Parameters>(
       props.weights.neighbors,
       props.weights.weights,
       props.weights.status?.overflow,
+      props.weights.status?.candidateOverflow,
       props.values,
       props.mask,
       props.parameters

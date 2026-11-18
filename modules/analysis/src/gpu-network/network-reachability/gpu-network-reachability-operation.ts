@@ -7,6 +7,7 @@ import {
   type GPUContributorOperationOutput
 } from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUNetworkReachability} from './gpu-network-reachability';
+import {snapshotNetworkReachabilityConstructionProps} from './network-reachability-construction';
 
 /** Graph values and explicit output dimensions shared by the GPU and CPU operations. */
 export type NetworkReachabilityOperationProps = {
@@ -43,6 +44,7 @@ export type NetworkReachabilityOperationProps = {
 /** Vector operation form. Compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUNetworkReachabilityOperation extends GPUContributorOperation {
   constructor(props: NetworkReachabilityOperationProps) {
+    props = snapshotNetworkReachabilityConstructionProps(props);
     const inputs: Record<string, string> = {
       offsets: props.topology.offsets,
       neighbors: props.topology.neighbors,

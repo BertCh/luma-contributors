@@ -19,7 +19,12 @@ import {
   GPU_SPACE_TIME_SUMMARY,
   GPU_SPACE_TIME_SUMMARY_LENGTH
 } from './space-time-parameters';
-import {GPUMantelTestOperation, type MantelTestOperationProps} from './gpu-mantel-test-operation';
+import {
+  GPUMantelTestOperation,
+  snapshotMantelOperationProps,
+  type MantelTestOperationProps
+} from './gpu-mantel-test-operation';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 /** CSR slots past the final offset are unused capacity; weights do not affect inference. */
 export type CPUMantelTestInput = {
@@ -30,6 +35,8 @@ export type CPUMantelTestInput = {
   times: Float32Array;
   /** Packed by getGPUSpaceTimeParameterValues. */
   parameters: Uint32Array;
+  /** Per-frame loss words from the pair producer. Either nonzero word suppresses inference. */
+  status?: {overflow?: Uint32Array; candidateOverflow?: Uint32Array};
 };
 /** Compile-time inference settings. */
 export type CPUMantelTestOptions = Pick<
@@ -103,6 +110,13 @@ export function computeMantelTestOnCPU(
   const {offsets, neighbors, weights, distances, times, parameters} = input;
   const rows = times.length;
   validateOptions('mantel-test', rows, options);
+  const inputStatus = input.status;
+  const status =
+    inputStatus && snapshotConstructionFields(inputStatus, ['overflow', 'candidateOverflow']);
+  for (const name of ['overflow', 'candidateOverflow'] as const) {
+    const flag = status?.[name];
+    if (flag) validateCapacity('mantel-test', `status.${name}.length`, flag.length, 1);
+  }
   if (offsets.length !== rows + 1 || offsets[0] !== 0)
     throw new Error('offsets must have times.length + 1 words and start at zero');
   if (weights.length !== neighbors.length)
@@ -115,6 +129,12 @@ export function computeMantelTestOnCPU(
   for (let row = 0; row < rows; row++)
     if (offsets[row + 1] < offsets[row] || offsets[row + 1] > neighbors.length)
       throw new Error('offsets must be nondecreasing and within neighbors capacity');
+  if ((status?.overflow?.[0] ?? 0) !== 0 || (status?.candidateOverflow?.[0] ?? 0) !== 0)
+    return {
+      statistics: new Float32Array(options.maximumPermutations + 1).fill(NaN),
+      summary: new Float32Array(GPU_SPACE_TIME_SUMMARY_LENGTH).fill(NaN),
+      permutationCount: Uint32Array.of(0)
+    };
   // Ascending row visitation makes the lower-row entry win even for asymmetric lists.
   const seen = new Set<bigint>();
   const firstRows: number[] = [];
@@ -232,6 +252,7 @@ export function computeMantelTestOnCPU(
 /** CPU twin; no GPU-only population, partial-table or permutation-budget limits. */
 export class CPUMantelTestOperation extends GPUCPUOperation {
   constructor(props: MantelTestOperationProps) {
+    props = snapshotMantelOperationProps(props);
     const operation = new GPUMantelTestOperation(props);
     const {id} = operation;
     validateOptions(id, props.rowCount, props);
@@ -260,7 +281,17 @@ export class CPUMantelTestOperation extends GPUCPUOperation {
             neighbors: getCPUOperationUint32Rows(id, inputs, 'neighbors'),
             weights: getCPUOperationFloat32Rows(id, inputs, 'weights'),
             distances: getCPUOperationFloat32Rows(id, inputs, 'distances'),
-            parameters: getCPUOperationUint32Rows(id, inputs, 'parameters')
+            parameters: getCPUOperationUint32Rows(id, inputs, 'parameters'),
+            status: {
+              overflow:
+                props.pairs.status?.overflow !== undefined
+                  ? getCPUOperationUint32Rows(id, inputs, 'pairsOverflow')
+                  : undefined,
+              candidateOverflow:
+                props.pairs.status?.candidateOverflow !== undefined
+                  ? getCPUOperationUint32Rows(id, inputs, 'pairsCandidateOverflow')
+                  : undefined
+            }
           },
           props
         );

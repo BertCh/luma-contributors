@@ -21,6 +21,7 @@ import type {ZoneEdges} from './zone-events-oracle';
 export type ZoneGPUResult = {
   count: number;
   overflow: number;
+  eventsCandidateOverflow: number;
   requiredCount: number;
   tracks: number[];
   zones: number[];
@@ -31,6 +32,7 @@ export type ZoneGPUResult = {
   table: {
     count: number;
     overflow: number;
+    candidateOverflow: number;
     requiredCount: number;
     tracks: number[];
     zones: number[];
@@ -107,9 +109,11 @@ export async function runZoneEvents(
     tableLast: output(tableCapacity),
     tableCount: output(1),
     tableOverflow: output(1),
+    tableCandidateOverflow: output(1),
     tableTotal: output(1),
     count: output(1),
     overflow: output(1),
+    eventsCandidateOverflow: output(1),
     total: output(1),
     dwell: output(cellCount),
     visits: output(cellCount),
@@ -197,6 +201,13 @@ export async function runZoneEvents(
           status: {
             count: importGraphBuffer(graph, 'o-count', out.count, 'uint32', 1),
             overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1),
+            candidateOverflow: importGraphBuffer(
+              graph,
+              'o-candidate-overflow',
+              out.eventsCandidateOverflow,
+              'uint32',
+              1
+            ),
             requiredCount: importGraphBuffer(graph, 'o-total', out.total, 'uint32', 1)
           },
           eventZones: importGraphBuffer(graph, 'o-zones', out.zones, 'uint32', eventCapacity),
@@ -216,6 +227,13 @@ export async function runZoneEvents(
           status: {
             count: importGraphBuffer(graph, 't-count', out.tableCount, 'uint32', 1),
             overflow: importGraphBuffer(graph, 't-overflow', out.tableOverflow, 'uint32', 1),
+            candidateOverflow: importGraphBuffer(
+              graph,
+              't-candidate',
+              out.tableCandidateOverflow,
+              'uint32',
+              1
+            ),
             requiredCount: importGraphBuffer(graph, 't-total', out.tableTotal, 'uint32', 1)
           },
           zones: importGraphBuffer(graph, 't-zones', out.tableZones, 'uint32', tableCapacity),
@@ -276,6 +294,7 @@ export async function runZoneEvents(
   const result: ZoneGPUResult = {
     count,
     overflow,
+    eventsCandidateOverflow: (await readUint32(out.eventsCandidateOverflow, 1))[0],
     requiredCount,
     tracks: await readUint32(out.ids, eventCapacity),
     zones: await readUint32(out.zones, eventCapacity),
@@ -286,6 +305,7 @@ export async function runZoneEvents(
     table: {
       count: tableCount,
       overflow: (await readUint32(out.tableOverflow, 1))[0],
+      candidateOverflow: (await readUint32(out.tableCandidateOverflow, 1))[0],
       requiredCount: (await readUint32(out.tableTotal, 1))[0],
       tracks: await readUint32(out.tableIds, tableCapacity),
       zones: await readUint32(out.tableZones, tableCapacity),

@@ -15,6 +15,7 @@ import {
   GPU_SPACE_TIME_SUMMARY_LENGTH,
   GPUJacquezTest,
   GPUKnoxTest,
+  GPUMantelTest,
   GPULocalKnox,
   GPUNearRepeatKnox
 } from '../../../src/gpu-spatial-analysis/space-time-tests/index';
@@ -23,6 +24,106 @@ import {AnalysisRig, createSeededRandom} from '../catchment-accessibility/rig';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {buildBand, createEvents, uploadPairs} from './space-time-scenes';
 import {computeSequentialStop} from './space-time-oracle';
+import {GPUParameterBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
+import {submitGraph, readFloat32} from '../../utils/gpu-contributor-test-utils';
+
+for (const kind of ['knox', 'mantel', 'jacquez'] as const) {
+  it(`${kind} suppresses either pair loss flag and recovers on the next encoding`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const rig = new AnalysisRig(device);
+    const loss = new GPUParameterBuffer(device, {
+      id: 'pair-loss',
+      format: 'uint32',
+      length: 1,
+      values: Uint32Array.of(0)
+    });
+    const candidateLoss = new GPUParameterBuffer(device, {
+      id: 'pair-candidate-loss',
+      format: 'uint32',
+      length: 1,
+      values: Uint32Array.of(0)
+    });
+    const auxiliary = new GPUParameterBuffer(device, {
+      id: 'unrelated-output',
+      format: 'float32',
+      length: 1,
+      values: Float32Array.of(42)
+    });
+    let compiled: ReturnType<typeof rig.graph.compile> | undefined;
+    try {
+      const pairs = {
+        offsets: rig.input(Uint32Array.of(0, 2, 3, 3), 'uint32'),
+        neighbors: rig.input(Uint32Array.of(1, 2, 2), 'uint32'),
+        weights: rig.input(Float32Array.of(1, 1, 1), 'float32'),
+        distances: rig.input(Float32Array.of(1, 2, 4), 'float32'),
+        status: {
+          overflow: loss.importToGraph(rig.graph),
+          candidateOverflow: candidateLoss.importToGraph(rig.graph)
+        }
+      };
+      const times = rig.input(Float32Array.of(0, 1, 3), 'float32');
+      const parameters = rig.input(
+        getGPUSpaceTimeParameterValues({seed: 17, permutationCount: 3, timeThreshold: 1}),
+        'uint32'
+      );
+      const summary = rig.output('float32', 12);
+      const statistics = rig.output(kind === 'mantel' ? 'float32' : 'uint32', 4);
+      let summaryTarget = summary;
+      const output = Object.assign(
+        Object.create({
+          get summary() {
+            return summaryTarget;
+          }
+        }),
+        {statistics, auxiliary: auxiliary.importToGraph(rig.graph)}
+      );
+      const common = {times, parameters, maximumPermutations: 3};
+      rig.graph.add(
+        kind === 'mantel'
+          ? new GPUMantelTest({
+              ...common,
+              pairs,
+              output
+            })
+          : kind === 'knox'
+            ? new GPUKnoxTest({
+                ...common,
+                pairs,
+                output
+              })
+            : new GPUJacquezTest({
+                ...common,
+                neighbors: pairs,
+                k: 1,
+                output
+              })
+      );
+      summaryTarget = rig.output('float32', 12);
+      compiled = rig.graph.compile();
+      for (const [overflow, candidateOverflow] of [
+        [1, 0],
+        [0, 0],
+        [0, 1],
+        [0, 0]
+      ]) {
+        loss.write(Uint32Array.of(overflow));
+        candidateLoss.write(Uint32Array.of(candidateOverflow));
+        submitGraph(device, compiled, undefined);
+        const result = await rig.readFloat(summary);
+        expect(await readFloat32(auxiliary.buffer, 1)).toEqual([42]);
+        if (overflow || candidateOverflow) expect(result.every(Number.isNaN)).toBe(true);
+        else expect(result[0]).toBeCloseTo(kind === 'mantel' ? Math.sqrt(3 / 28) : 1, 5);
+      }
+    } finally {
+      compiled?.destroy();
+      rig.destroy();
+      loss.destroy();
+      candidateLoss.destroy();
+      auxiliary.destroy();
+    }
+  });
+}
 import {
   computeJacquezOracle,
   computeLocalKnoxOracle,

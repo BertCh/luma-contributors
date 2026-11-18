@@ -1,6 +1,8 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {createSpatialWeightsSuppressionNodes} from '../spatial-weights/spatial-weights-suppression';
+import {snapshotSpaceTimeTestProps} from './space-time-construction';
 
 import {
   validateTrajectoryBindings,
@@ -16,7 +18,8 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import type {GPUInferenceMetadata, GPUTemporalContext} from '../../analysis-core/contracts/index';
+import type {GPUTemporalContext} from '../../analysis-core/contracts/index';
+import type {GPUSpaceTimeInferenceMetadata} from './space-time-parameters';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
@@ -164,6 +167,21 @@ export class GPUJacquezTest implements GPUCommandNodeProducer {
   readonly temporalContext?: GPUTemporalContext;
 
   constructor(props: GPUJacquezTestProps) {
+    props = snapshotSpaceTimeTestProps(
+      props,
+      [
+        'id',
+        'neighbors',
+        'times',
+        'temporalContext',
+        'parameters',
+        'k',
+        'maximumPermutations',
+        'stopAfterExceedances',
+        'output'
+      ],
+      'neighbors'
+    );
     const id = props.id ?? 'jacquez-test';
     this.id = id;
     this.props = props;
@@ -217,7 +235,9 @@ export class GPUJacquezTest implements GPUCommandNodeProducer {
         props.parameters,
         props.neighbors.offsets,
         props.neighbors.neighbors,
-        props.neighbors.weights
+        props.neighbors.weights,
+        props.neighbors.status?.overflow,
+        props.neighbors.status?.candidateOverflow
       ]
     );
     if (
@@ -233,12 +253,19 @@ export class GPUJacquezTest implements GPUCommandNodeProducer {
   /**
    * CPU-side description of how the `output.summary` p-values are produced: alternative
    * `'greater'`, Monte Carlo, no multiple-testing correction.
+   * With stopping enabled, only `requestedPermutationCount` is known. Decode final metadata with
+   * `decodeGPUSpaceTimeInferenceMetadata(metadata, publishedPermutationCount)` after caller readback.
    *
    * @param settings The per-frame settings packed into `parameters`.
    */
-  getInferenceMetadata(settings: GPUSpaceTimeSettings): GPUInferenceMetadata {
+  getInferenceMetadata(settings: GPUSpaceTimeSettings): GPUSpaceTimeInferenceMetadata {
     return {
-      ...getGPUSpaceTimeInferenceMetadata('knox', settings, this.props.maximumPermutations),
+      ...getGPUSpaceTimeInferenceMetadata(
+        'knox',
+        settings,
+        this.props.maximumPermutations,
+        this.props.stopAfterExceedances
+      ),
       testedRowsDefinition: 'all listed (event, spatial neighbor) entries, counted once each'
     };
   }
@@ -518,7 +545,23 @@ const NEAREST: u32 = ${k}u;`,
   let timeClosePairs = f32(ROWS) * ${k}.0;
   let expected = observedPairs * ${k}.0 / f32(ROWS - 1u);
   ${getSpaceTimeSummaryBodyWGSL('u32', stopAfterExceedances)}`
-      })
+      }),
+      ...createSpatialWeightsSuppressionNodes(
+        graph,
+        id,
+        OPERATION,
+        props.neighbors,
+        {
+          statistics: props.output.statistics,
+          summary: props.output.summary,
+          permutationCount: props.output.permutationCount
+        },
+        {
+          summary: GPU_SPACE_TIME_SUMMARY_LENGTH,
+          permutationCount: 1,
+          statistics: props.maximumPermutations + 1
+        }
+      )
     ];
   }
 }

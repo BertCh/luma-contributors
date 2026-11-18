@@ -4,8 +4,8 @@
 
 import {expect, it} from 'vitest';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {getPointCloudDiamondMorphologyNodes} from '../../src/pointcloud-analysis/pointcloud-diamond-morphology';
-import {getPointCloudKernelNodes} from '../../src/pointcloud-analysis/pointcloud-kernel-nodes';
+import {getPointCloudDiamondMorphologyNodes} from '../../src/pointcloud-analysis/operations/pointcloud-diamond-morphology';
+import {getPointCloudKernelNodes} from '../../src/pointcloud-analysis/operations/pointcloud-kernel-nodes';
 import {makeSpatialFixture, readFloats} from '../spatial-test-utils';
 import {requireTestDevice} from '../utils/require-test-device';
 import {createSeededRandom} from '../utils/wgsl-module-harness';

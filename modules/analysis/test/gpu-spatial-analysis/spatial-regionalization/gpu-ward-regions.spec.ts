@@ -29,6 +29,102 @@ import {
   standardizeColumns
 } from './spatial-regionalization-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {createWardLossPath} from './regionalization-final1-fixtures';
+
+for (const mergeSchedule of ['sequential', 'mutual-nearest'] as const) {
+  it(`spatial-3:F8 suppresses incomplete Ward adjacency and clears suppression next frame: ${mergeSchedule}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const graph = new GPUCommandGraph(device);
+    const complete = createWardLossPath(false);
+    const inputs = {
+      offsets: createInputBuffer(device, complete.offsets),
+      neighbors: createInputBuffer(device, complete.neighbors),
+      weights: createInputBuffer(device, complete.weights),
+      values: createInputBuffer(device, complete.values),
+      parameters: createInputBuffer(device, complete.parameters),
+      overflow: createInputBuffer(device, Uint32Array.of(0)),
+      candidateOverflow: createInputBuffer(device, Uint32Array.of(0))
+    };
+    const outputs = {
+      labels: createOutputBuffer(device, 3),
+      objective: createOutputBuffer(device, 1),
+      status: createOutputBuffer(device, 4)
+    };
+    graph.add(
+      new GPUWardRegions({
+        weights: {
+          offsets: importGraphBuffer(graph, 'offsets', inputs.offsets, 'uint32', 4),
+          neighbors: importGraphBuffer(graph, 'neighbors', inputs.neighbors, 'uint32', 4),
+          weights: importGraphBuffer(graph, 'weights', inputs.weights, 'float32', 4),
+          status: Object.defineProperty(
+            {
+              overflow: importGraphBuffer(graph, 'overflow', inputs.overflow, 'uint32', 1)
+            },
+            'candidateOverflow',
+            {
+              enumerable: false,
+              get: () =>
+                importGraphBuffer(
+                  graph,
+                  'candidate-overflow',
+                  inputs.candidateOverflow,
+                  'uint32',
+                  1
+                )
+            }
+          )
+        },
+        values: importGraphBuffer(graph, 'values', inputs.values, 'float32', 3),
+        parameters: importGraphBuffer(graph, 'parameters', inputs.parameters, 'uint32', 1),
+        targetRegionCount: 2,
+        maximumIterations: 1,
+        standardize: false,
+        mergeSchedule,
+        output: {
+          labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', 3),
+          objective: importGraphBuffer(graph, 'objective', outputs.objective, 'float32', 1),
+          status: importGraphBuffer(graph, 'status', outputs.status, 'uint32', 4)
+        }
+      })
+    );
+    const compiled = graph.compile();
+    try {
+      for (const [missingEdge, overflow, candidateOverflow] of [
+        [false, 0, 0],
+        [true, 1, 0],
+        [false, 0, 0],
+        [true, 0, 1],
+        [true, 0, 0]
+      ] as const) {
+        const scene = createWardLossPath(missingEdge);
+        const neighbors = new Uint32Array(4);
+        neighbors.set(scene.neighbors);
+        inputs.offsets.write(scene.offsets);
+        inputs.neighbors.write(neighbors);
+        inputs.overflow.write(Uint32Array.of(overflow));
+        inputs.candidateOverflow.write(Uint32Array.of(candidateOverflow));
+        submitGraph(device, compiled, undefined);
+        const labels = await readUint32(outputs.labels, 3);
+        const objective = (await readFloat32(outputs.objective, 1))[0];
+        const status = await readUint32(outputs.status, 4);
+        if (overflow || candidateOverflow) {
+          expect(labels).toEqual([0xffffffff, 0xffffffff, 0xffffffff]);
+          expect(Number.isNaN(objective)).toBe(true);
+          expect(status).toEqual([0, 0, 0, 0]);
+        } else {
+          expect(labels).toEqual(missingEdge ? [0, 1, 1] : [0, 0, 2]);
+          expect(objective).toBe(missingEdge ? 40.5 : 0.5);
+          expect(status).toEqual([1, 1, 0, 0]);
+        }
+      }
+    } finally {
+      compiled.destroy();
+      Object.values(inputs).forEach(buffer => buffer.destroy());
+      Object.values(outputs).forEach(buffer => buffer.destroy());
+    }
+  });
+}
 
 it('GPUWardRegions merges the least-cost adjacent regions to its target', async () => {
   const device = await getWebGPUTestDevice();

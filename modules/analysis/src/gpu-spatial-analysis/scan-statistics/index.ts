@@ -47,3 +47,5 @@ export type {
   GPUExpectationBasedSpaceTimeScanProps
 } from './gpu-expectation-based-space-time-scan';
 export {getGPUScanRecurrenceInterval} from './scan-statistic-parameters';
+export {GPU_SCAN_MAXIMUM_INDEXED_NEIGHBOR_COUNT} from './scan-statistic-nearest-index';
+export type {GPUScanNearestZoneSearch} from './scan-statistic-nearest-index';

@@ -32,3 +32,5 @@ export {
   GPU_PERMUTATION_PARAMETER_LENGTH
 } from './permutation-parameters';
 export type {GPUPermutationSettings} from './permutation-parameters';
+export {createLocalPermutationReplay} from './gpu-local-permutation-replay';
+export type {LocalPermutationReplayProps} from './gpu-local-permutation-replay';

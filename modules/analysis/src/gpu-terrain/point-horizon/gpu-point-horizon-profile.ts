@@ -136,7 +136,7 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
   /** Validated properties. */
   readonly props: GPUPointHorizonProfileProps;
   /** Resolved model: lattice, segments and pyramid layout. @internal */
-  readonly model: ResolvedPointHorizonModel;
+  private readonly model: ResolvedPointHorizonModel;
 
   constructor(props: GPUPointHorizonProfileProps) {
     this.id = props.id ?? 'point-horizon-profile';

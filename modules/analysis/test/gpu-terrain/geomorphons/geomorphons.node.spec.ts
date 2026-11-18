@@ -4,7 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
-import {getRasterGridGeoreference} from '../../../src/analysis-core/raster-grid';
+import {getRasterGridGeoreference} from '../../../src/analysis-core/contracts/raster-grid';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {
   GPU_GEOMORPHON_FORMS,
@@ -36,7 +36,7 @@ it('GPUGeomorphons schedules elevation canonicalization and one classify kernel'
   };
   const contributor = create();
   // Nominal row-based search radius; per-frame anisotropic cells can reach farther east/west.
-  expect(contributor.requiredHalo).toBe(4);
+  expect(contributor.searchRadius).toBe(4);
   const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids[ids.length - 1]).toBe('geomorphons-classify');
   expect(ids.length).toBe(2);
@@ -113,7 +113,9 @@ it('GPUGeomorphons validates radii, outputs, and buffers', () => {
   );
   expect(() => create({grid: {...GRID, width: 0}})).toThrow(/dimensions/);
   const shared = createTransientView(graph, 'shared', 'uint32', 120);
-  expect(() => create({output: {forms: shared, ternary: shared}})).toThrow(/share buffers/);
+  expect(() => create({output: {forms: shared, ternary: shared}})).toThrow(
+    /^geomorphons output\[1\] chunk 0 logical byte ranges must not overlap \(writable storage\)$/
+  );
   const otherGraph = new GPUCommandGraph(device);
   expect(() =>
     new GPUGeomorphons({

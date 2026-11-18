@@ -21,8 +21,6 @@ import {
   type LocationAllocationOperationProps
 } from './gpu-location-allocation-operation';
 
-// Match the kernel's rounded sentinel, including its final dense equality branch.
-const LARGE_COST = Math.fround(1e30);
 const NONE = 0xffffffff;
 
 /** Input arrays; exactly one cost representation is required. */
@@ -40,7 +38,7 @@ export type CPULocationAllocationResult = {
   objective: Float32Array;
   status: Uint32Array;
 };
-/** Dimensions and greedy objective. A positive swap budget enables convergence on CPU. */
+/** Dimensions, greedy objective and the maximum number of applied swap iterations. */
 export type CPULocationAllocationOptions = {
   facilityCount: number;
   demandCount: number;
@@ -77,17 +75,15 @@ function validateOptions(id: string, options: CPULocationAllocationOptions): voi
  * Greedy location-allocation followed, when enabled, by best improving single-facility swaps.
  * Reachable weight precedes reachable cost in p-median; ties select the lowest facility, and
  * swaps the lowest removed facility then lowest candidate. Set covering counts rows, including
- * zero-weight demand. Costs at/above the kernel's 1e30 sentinel follow its reachability rule.
+ * zero-weight demand. Every finite nonnegative cost is reachable; positive infinity is unreachable.
  *
  * What differs from the GPU contributor:
- * - Positive maximumSwapIterations enables an uncapped search to a single-swap local optimum;
- *   zero still disables swaps. iterationLimitReached is always zero. The 1000-iteration,
- *   command-node and selected-count times candidate-count GPU limits are dropped.
+ * - The explicit or default swap budget binds both forms; zero disables swaps. The CPU drops
+ *   the GPU's 1000-iteration admission cap, command-node and swap-pair storage limits.
  * - Swaps accept every strictly positive lexicographic improvement, without the GPU's 1e-6
  *   noise tolerance. This can change selected facilities, swap counts and convergence evidence.
  * - Scores, gains and objectives use float64 with one float32 output rounding. Near ties may
- *   differ. Candidate score searches have no 1e30 initial score bound, so finite weighted
- *   totals above that GPU bound can still select a facility. Nonfinite demand weights use IEEE
+ *   differ. Nonfinite demand weights use IEEE
  *   arithmetic and may produce NaN objectives.
  * - Inconsistent lengths throw. Invalid costs, weights, thresholds and sparse structure retain
  *   invalidCount status instead of throwing. Sparse row validation walks clamped row ranges;
@@ -170,7 +166,7 @@ export function computeLocationAllocationOnCPU(
     return lower < end && sparse!.facilities[lower] === facility ? sparse!.costs[lower] : Infinity;
   };
   const getWeight = (demand: number) => input.demandWeights?.[demand] ?? 1;
-  const nearest = new Float64Array(demandCount).fill(LARGE_COST);
+  const nearest = new Float64Array(demandCount).fill(Infinity);
   const selected = result.selectedFacilities;
   for (let step = 0; step < maximumFacilityCount; step++) {
     let chosen = NONE;
@@ -184,9 +180,13 @@ export function computeLocationAllocationOnCPU(
         const cost = getCost(demand, facility);
         if (operation === 'p-median') {
           const next = Math.min(nearest[demand], cost);
-          if (next < LARGE_COST) secondary += getWeight(demand) * next;
+          if (Number.isFinite(next)) secondary += getWeight(demand) * next;
           else primary += getWeight(demand);
-        } else if (nearest[demand] > threshold && cost <= threshold)
+        } else if (
+          (!Number.isFinite(nearest[demand]) || nearest[demand] > threshold) &&
+          Number.isFinite(cost) &&
+          cost <= threshold
+        )
           primary += operation === 'set-covering' ? 1 : getWeight(demand);
       }
       if (
@@ -205,18 +205,18 @@ export function computeLocationAllocationOnCPU(
     for (let demand = 0; demand < demandCount; demand++)
       nearest[demand] = Math.min(nearest[demand], getCost(demand, chosen));
   }
-  const hasSwaps =
-    operation !== 'set-covering' &&
-    (options.maximumSwapIterations ?? GPU_LOCATION_ALLOCATION_DEFAULT_MAXIMUM_SWAP_ITERATIONS) > 0;
+  const maximumSwapIterations =
+    options.maximumSwapIterations ?? GPU_LOCATION_ALLOCATION_DEFAULT_MAXIMUM_SWAP_ITERATIONS;
+  const hasSwaps = operation !== 'set-covering' && maximumSwapIterations > 0;
   if (hasSwaps)
-    for (;;) {
+    for (let iteration = 0; iteration < maximumSwapIterations; iteration++) {
       let bestPrimary = 0;
       let bestSecondary = 0;
       let removedFacility = NONE;
       let addedFacility = NONE;
       for (let removed = 0; removed < facilityCount; removed++) {
         if (!selected[removed]) continue;
-        const fallback = new Float64Array(demandCount).fill(LARGE_COST);
+        const fallback = new Float64Array(demandCount).fill(Infinity);
         for (let facility = 0; facility < facilityCount; facility++)
           if (selected[facility] && facility !== removed)
             for (let demand = 0; demand < demandCount; demand++)
@@ -230,10 +230,16 @@ export function computeLocationAllocationOnCPU(
             const after = Math.min(fallback[demand], getCost(demand, candidate));
             const weight = getWeight(demand);
             if (operation === 'p-median') {
-              primary += weight * (Number(after < LARGE_COST) - Number(before < LARGE_COST));
+              primary +=
+                weight * (Number(Number.isFinite(after)) - Number(Number.isFinite(before)));
               secondary +=
-                weight * ((before < LARGE_COST ? before : 0) - (after < LARGE_COST ? after : 0));
-            } else primary += weight * (Number(after <= threshold) - Number(before <= threshold));
+                weight *
+                ((Number.isFinite(before) ? before : 0) - (Number.isFinite(after) ? after : 0));
+            } else
+              primary +=
+                weight *
+                (Number(Number.isFinite(after) && after <= threshold) -
+                  Number(Number.isFinite(before) && before <= threshold));
           }
           if (primary > bestPrimary || (primary === bestPrimary && secondary > bestSecondary)) {
             bestPrimary = primary;
@@ -250,22 +256,28 @@ export function computeLocationAllocationOnCPU(
       selected[removedFacility] = 0;
       selected[addedFacility] = 1;
       status[fields.swapIterationCount]++;
-      nearest.fill(LARGE_COST);
+      nearest.fill(Infinity);
       for (let facility = 0; facility < facilityCount; facility++)
         if (selected[facility])
           for (let demand = 0; demand < demandCount; demand++)
             nearest[demand] = Math.min(nearest[demand], getCost(demand, facility));
     }
+  if (
+    hasSwaps &&
+    !status[fields.converged] &&
+    status[fields.swapIterationCount] >= maximumSwapIterations
+  )
+    status[fields.iterationLimitReached] = 1;
   let objective = 0;
   status[fields.uncoveredDemandCount] = 0;
   for (let demand = 0; demand < demandCount; demand++) {
-    let assignedCost = LARGE_COST;
+    let assignedCost = Infinity;
     for (let facility = 0; facility < facilityCount; facility++)
       if (selected[facility]) {
         const cost = getCost(demand, facility);
         if (
-          cost < assignedCost ||
-          (!sparse && cost === assignedCost && facility < result.assignments[demand])
+          Number.isFinite(cost) &&
+          (cost < assignedCost || (cost === assignedCost && facility < result.assignments[demand]))
         ) {
           result.assignments[demand] = facility;
           assignedCost = cost;
@@ -288,7 +300,7 @@ export function computeLocationAllocationOnCPU(
   return result;
 }
 
-/** CPU twin with uncapped, zero-tolerance best-swap improvement when the phase is enabled. */
+/** CPU twin with budgeted, zero-tolerance best-swap improvement when the phase is enabled. */
 export class CPULocationAllocationOperation extends GPUCPUOperation {
   constructor(props: LocationAllocationOperationProps) {
     const id = props.id ?? 'location-allocation';

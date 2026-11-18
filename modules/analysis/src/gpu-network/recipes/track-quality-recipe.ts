@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {addPreparedRecipe} from '../../gpu-spatial-analysis/recipes/prepared-recipe';
+
 import {getRecipeView as getOrCreateView} from '../../gpu-spatial-analysis/recipes/expansion-recipe-utils';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
@@ -18,6 +20,9 @@ import {
   type GPUTrackSimilarityProps
 } from '../../gpu-spatial-analysis/track-similarity/gpu-track-similarity';
 import {GPUMapMatching, type GPUMapMatchingProps} from '../map-matching/gpu-map-matching';
+import {snapshotMapMatchingConstructionProps} from '../map-matching/map-matching-construction';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {resolveGPUTrajectoryTemporalContext} from '../../gpu-spatial-analysis/trajectory-analysis/trajectory-common';
 import type {GPURecipeStageStatusPort} from '../../analysis-core/contracts/index';
 import {createRecipeKernelNode as createWGSLKernelNode} from '../../gpu-spatial-analysis/recipes/expansion-recipe-utils';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -65,9 +70,45 @@ export function addTrackQualityRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUTrackQualityRecipeProps
 ) {
+  return addPreparedRecipe(graph, props, declareTrackQualityRecipe);
+}
+
+function declareTrackQualityRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUTrackQualityRecipeProps
+) {
+  const snapshot = snapshotConstructionFields(props, [
+    'id',
+    'trajectory',
+    'thresholds',
+    'speedOutlierMode',
+    'similarity',
+    'mapMatching'
+  ]);
+  props = Object.freeze({
+    ...snapshot,
+    trajectory: snapshotConstructionFields(snapshot.trajectory, [
+      'positions',
+      'trackOffsets',
+      'timestamps',
+      'timestampsLow',
+      'temporalContext',
+      'spatialContext',
+      'parameters'
+    ]),
+    ...(snapshot.mapMatching
+      ? {mapMatching: snapshotMapMatchingConstructionProps(snapshot.mapMatching)}
+      : {})
+  });
   const id = props.id ?? 'track-quality-recipe';
   const builder = new RecipeBuilder(graph);
   const trajectory = props.trajectory;
+  resolveGPUTrajectoryTemporalContext(
+    `${id}-metrics`,
+    trajectory.timestamps,
+    trajectory.temporalContext,
+    trajectory.timestampsLow
+  );
   const count = trajectory.positions.length;
   const trackCount = trajectory.trackOffsets.length - 1;
   const timeMode = getTrajectoryTimeMode(trajectory);
@@ -82,7 +123,8 @@ export function addTrackQualityRecipe<Parameters>(
   const isPointCentred = props.speedOutlierMode === 'point-centred';
   const flags = getOrCreateView(graph, `${id}-flags`, 'uint32', count);
   const flaggedCounts = getOrCreateView(graph, `${id}-flagged-counts`, 'uint32', trackCount);
-  graph.add(
+  builder.addGlue(
+    'reset-flags',
     createWGSLKernelNode(graph, {
       id: `${id}-reset-flags`,
       operation: id,
@@ -92,7 +134,8 @@ export function addTrackQualityRecipe<Parameters>(
     })
   );
   // One invocation per track avoids a row-to-track join and keeps original row IDs unchanged.
-  graph.add(
+  builder.addGlue(
+    'quality',
     createWGSLKernelNode(graph, {
       id: `${id}-quality`,
       operation: id,
@@ -139,7 +182,8 @@ for (var row = begin; row < end; row++) {
 }`
     })
   );
-  graph.add(
+  builder.addGlue(
+    'flag-counts',
     createWGSLKernelNode(graph, {
       id: `${id}-flag-counts`,
       operation: id,
@@ -206,7 +250,7 @@ for (var row = begin; row < end; row++) {
         breaks: getOrCreateView(graph, `${id}-breaks`, 'uint32', count),
         matchedCount: getOrCreateView(graph, `${id}-matched-count`, 'uint32', 1),
         status: {
-          overflow: getOrCreateView(graph, `${id}-match-overflow`, 'uint32', 1),
+          candidateOverflow: getOrCreateView(graph, `${id}-match-candidate-overflow`, 'uint32', 1),
           routeOverflow: getOrCreateView(graph, `${id}-route-overflow`, 'uint32', 1)
         }
       }
@@ -223,8 +267,11 @@ for (var row = begin; row < end; row++) {
       })
     );
     stages.push(
-      {stage: 'map-matching-candidates', status: {overflow: matching.status.overflow}},
-      {stage: 'map-matching-routes', status: {overflow: matching.status.routeOverflow}}
+      {
+        stage: 'map-matching-candidates',
+        status: {candidateOverflow: matching.status.candidateOverflow}
+      },
+      {stage: 'map-matching-routes', status: {candidateOverflow: matching.status.routeOverflow}}
     );
   }
   return {

@@ -53,13 +53,14 @@ it('updates viewpoint on one compiled graph, preserving empty, truncated and pad
         counts: fixture.view('uint32', new Uint32Array([4, 0, 5, 2])).view,
         capacity: 4,
         parameters: parameters.importToGraph(fixture.graph),
-        // Runtime parameters take precedence over this constructor orientation.
         viewpoint: [0, 0, -10],
-        normals: normals.view,
-        eigenvalues: eigenvalues.view,
-        covariance: fixture.view('float32', new Float32Array(24)).view,
-        shapes: fixture.view('float32x3', new Float32Array(12)).view,
-        status: status.view
+        output: {
+          normals: normals.view,
+          eigenvalues: eigenvalues.view,
+          covariance: fixture.view('float32', new Float32Array(24)).view,
+          shapes: fixture.view('float32x3', new Float32Array(12)).view,
+          status: status.view
+        }
       })
     );
     const expectedValues = [0.5, 0.5, 0, 0, 0, 0, 0.5, 0.5, 0, 0, 0, 0];
@@ -78,6 +79,43 @@ it('updates viewpoint on one compiled graph, preserving empty, truncated and pad
   } finally {
     fixture.destroy();
     parameters.destroy();
+  }
+});
+
+it('retains an inherited zero deviation multiplier and getter-backed output bindings', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = makeSpatialFixture(device);
+  try {
+    const meanDistances = fixture.view('float32', new Float32Array(3));
+    const validity = fixture.view('uint32', new Uint32Array(3));
+    const output = Object.create({
+      get meanDistances() {
+        return meanDistances.view;
+      },
+      get validity() {
+        return validity.view;
+      }
+    });
+    const props = Object.assign(
+      Object.create({
+        get standardDeviations() {
+          return 0;
+        }
+      }),
+      {
+        counts: fixture.view('uint32', Uint32Array.of(1, 1, 1)).view,
+        squaredDistances: fixture.view('float32', Float32Array.of(1, 4, 9)).view,
+        capacity: 1,
+        output
+      }
+    );
+    fixture.graph.add(new GPUPointCloudStatisticalFilter(props));
+    await fixture.run();
+    expect(await readFloats(meanDistances.buffer)).toEqual([1, 2, 3]);
+    expect(await readIntegers(validity.buffer)).toEqual([1, 1, 0]);
+  } finally {
+    fixture.destroy();
   }
 });
 
@@ -103,8 +141,7 @@ it('updates the population deviation multiplier with empty and padded neighbor l
         capacity: 2,
         parameters: parameters.view,
         standardDeviations: 0,
-        meanDistances: meanDistances.view,
-        validity: validity.view
+        output: {meanDistances: meanDistances.view, validity: validity.view}
       })
     );
     for (const multiplier of [0, 2, 0]) {
@@ -153,9 +190,11 @@ it('updates progressive ground thresholds at inclusive float32 boundaries', asyn
         parameters: parameters.view,
         minimumSurface: fixture.view('float32', new Float32Array(81)).view,
         coverage: fixture.view('uint32', new Uint32Array(81).fill(1)).view,
-        groundMask: groundMask.view,
-        status: status.view,
-        outputClassifications: fixture.view('uint32', new Uint32Array(4)).view
+        output: {
+          groundMask: groundMask.view,
+          status: status.view,
+          outputClassifications: fixture.view('uint32', new Uint32Array(4)).view
+        }
       })
     );
     for (const {values, expected} of [
@@ -209,10 +248,12 @@ it('updates SMRF scalar on one compiled graph against the independent PDAL/SciPy
         threshold: 0,
         scalar: 0,
         parameters: parameters.view,
-        groundSurface: fixture.view('float32', new Float32Array(grid.width * grid.height)).view,
-        groundMask: fixture.view('uint32', new Uint32Array(scenario.classifications.length)).view,
-        outputClassifications: outputClassifications.view,
-        status: fixture.view('uint32', new Uint32Array(scenario.classifications.length)).view
+        output: {
+          groundSurface: fixture.view('float32', new Float32Array(grid.width * grid.height)).view,
+          groundMask: fixture.view('uint32', new Uint32Array(scenario.classifications.length)).view,
+          outputClassifications: outputClassifications.view,
+          status: fixture.view('uint32', new Uint32Array(scenario.classifications.length)).view
+        }
       })
     );
     for (const settings of [scenario, zeroScalar, scenario]) {
@@ -253,10 +294,12 @@ it('updates SMRF slope and threshold over a flat grid with a single raised cell'
         grid,
         window: 1,
         parameters: parameters.view,
-        groundSurface: fixture.view('float32', new Float32Array(81)).view,
-        groundMask: groundMask.view,
-        outputClassifications: fixture.view('uint32', new Uint32Array(81)).view,
-        status: fixture.view('uint32', new Uint32Array(81)).view
+        output: {
+          groundSurface: fixture.view('float32', new Float32Array(81)).view,
+          groundMask: groundMask.view,
+          outputClassifications: fixture.view('uint32', new Uint32Array(81)).view,
+          status: fixture.view('uint32', new Uint32Array(81)).view
+        }
       })
     );
     // The opening removes the bump. Slope 0 rejects it as an anchor (inpainted terrain 0);
@@ -336,10 +379,12 @@ for (const metric of ['point-to-point', 'point-to-plane'] as const) {
           rotationTolerance: 0,
           iterations: 1,
           parameters: parameters.view,
-          status: status.view,
-          transform: transform.view,
-          inlierMask: fixture.view('uint32', new Uint32Array(9)).view,
-          history: fixture.view('float32x3', new Float32Array(3)).view
+          output: {
+            status: status.view,
+            transform: transform.view,
+            inlierMask: fixture.view('uint32', new Uint32Array(9)).view,
+            history: fixture.view('float32x3', new Float32Array(3)).view
+          }
         })
       );
       for (const {values, expectedStatus, expectedTranslation} of [
@@ -399,10 +444,12 @@ it('updates M3C2 support and correlated uncertainty with a closed-form duplicate
         halfDepth: 1,
         parameters: parameters.view,
         samplingCovariance: {referenceVariance: 0, comparisonVariance: 0, correlationLength: 1},
-        changes: changes.view,
-        roughness: roughness.view,
-        counts: counts.view,
-        status: status.view
+        output: {
+          changes: changes.view,
+          roughness: roughness.view,
+          counts: counts.view,
+          status: status.view
+        }
       })
     );
     for (const {values, detection, expectedStatus} of [
@@ -464,16 +511,17 @@ for (const indexed of [false, true]) {
           radius: 2,
           halfDepth: 1,
           parameters: parameters.view,
-          // Deliberately differs from both runtime lengths, so a baked value cannot pass.
           samplingCovariance: {referenceVariance: 1, comparisonVariance: 1, correlationLength: 1},
           confidenceMultiplier: 1,
           ...(indexed
             ? {grid: {origin: [-2, -2, -2] as const, cellSize: 1, dimensions: [6, 6, 6] as const}}
             : {}),
-          changes: changes.view,
-          roughness: roughness.view,
-          counts: counts.view,
-          status: status.view
+          output: {
+            changes: changes.view,
+            roughness: roughness.view,
+            counts: counts.view,
+            status: status.view
+          }
         })
       );
       // Each epoch has three diagonal pairs, four ordered pairs at distance 1, and two at
@@ -548,10 +596,12 @@ it('updates Huber ICP scales outside the float32 square range on one compiled gr
         iterations: 1,
         translationTolerance: 1,
         rotationTolerance: 1,
-        transform: transform.view,
-        history: history.view,
-        inlierMask: inlierMask.view,
-        status: status.view
+        output: {
+          transform: transform.view,
+          history: history.view,
+          inlierMask: inlierMask.view,
+          status: status.view
+        }
       })
     );
     fixture.graph.add(
@@ -563,10 +613,12 @@ it('updates Huber ICP scales outside the float32 square range on one compiled gr
         iterations: 1,
         translationTolerance: 1,
         rotationTolerance: 1,
-        transform: referenceTransform.view,
-        status: referenceStatus.view,
-        history: fixture.view('float32x3', new Float32Array(3)).view,
-        inlierMask: fixture.view('uint32', new Uint32Array(4)).view
+        output: {
+          transform: referenceTransform.view,
+          status: referenceStatus.view,
+          history: fixture.view('float32x3', new Float32Array(3)).view,
+          inlierMask: fixture.view('uint32', new Uint32Array(4)).view
+        }
       })
     );
     // All four correspondences have distance 1/8, so Huber gives equal weights at every scale.

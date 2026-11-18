@@ -14,6 +14,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   GPUNetworkFlow,
+  GPU_NETWORK_FLOW_WORD,
   type GPUNetworkFlowProps
 } from '../../../src/gpu-network/network-optimization/gpu-network-flow';
 import {GPUNetworkFlowOperation} from '../../../src/gpu-network/network-optimization/gpu-network-flow-operation';
@@ -76,7 +77,9 @@ it('parallel flow kernels parse and stay within eight bindings without private v
     for (const kernel of getGPUCommandNodeKernelSources(nodes)) {
       expect(() => new WgslReflect(kernel.source), kernel.id).not.toThrow();
       expect(getStorageBindingCount(kernel.source), kernel.id).toBeLessThanOrEqual(8);
-      expect(getPrivateMemoryBytes(kernel.source), kernel.id).toBeLessThanOrEqual(64);
+      expect(getPrivateMemoryBytes(kernel.source, kernel.constants), kernel.id).toBeLessThanOrEqual(
+        64
+      );
     }
     for (const node of nodes.filter(node =>
       /-(relax-\d+|double-\d+|mark-\d+|augment)$/.test(node.id)
@@ -116,12 +119,12 @@ it('keeps reference caps, selects large graphs automatically and rejects unsafe 
   const large = createContributor(100_000, 200_000, {solver: 'auto'});
   expect(large.contributor.solver).toBe('parallel');
   large.device.destroy();
-  expect(() => createContributor(129, 8, {solver: 'reference'})).toThrow(
-    /parallel-flow nodeCount.*128/
-  );
-  expect(() => createContributor(6, 1025, {solver: 'reference'})).toThrow(
-    /parallel-flow edges rows.*1024/
-  );
+  expect(() =>
+    createContributor(129, 8, {solver: 'reference', maximumRelaxationRounds: undefined})
+  ).toThrow(/parallel-flow nodeCount.*128/);
+  expect(() =>
+    createContributor(6, 1025, {solver: 'reference', maximumRelaxationRounds: undefined})
+  ).toThrow(/parallel-flow edges rows.*1024/);
   expect(() => createContributor(30_000_001, 0)).toThrow(/parallel-flow nodeCount.*30000000/);
   expect(() => createContributor(6, 8, {maximumRelaxationRounds: 8193})).toThrow(
     /parallel-flow maximumRelaxationRounds.*8192/
@@ -525,7 +528,7 @@ it('rejects every pair of overlapping writable output fields at construction', (
         for (const name of [fields[first], fields[second]]) {
           const original = statusFields.has(name)
             ? output.status[name as keyof typeof output.status]!
-            : output[name as keyof Omit<typeof output, 'status'>]!;
+            : output[name as keyof Omit<typeof output, 'status' | 'paths'>]!;
           const overlap = graph.createDataView(shared.buffer, {
             format: original.format,
             length: original.length,
@@ -938,7 +941,10 @@ it('primal-dual sources/pipelines stay constant across phase/round budgets and m
       for (const kernel of kernels) {
         expect(() => new WgslReflect(kernel.source), kernel.id).not.toThrow();
         expect(getStorageBindingCount(kernel.source), kernel.id).toBeLessThanOrEqual(8);
-        expect(getPrivateMemoryBytes(kernel.source), kernel.id).toBeLessThanOrEqual(64);
+        expect(
+          getPrivateMemoryBytes(kernel.source, kernel.constants),
+          kernel.id
+        ).toBeLessThanOrEqual(64);
         const code = kernel.source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
         expect(
           [...new Set(code.match(/[A-Za-z_][A-Za-z_0-9]*/g))].filter(word =>
@@ -1127,3 +1133,81 @@ it('default costed parallel flow and CPU reference complete all 12 new NetworkX 
     expectNetworkFlowFeasible(scene, result.flow, scene.expectedValue);
   }
 });
+
+it('network:G4 interpreted parallel modes and CPU use the controlling phase budget', () => {
+  for (const costed of [false, true])
+    for (const budget of [0, 1]) {
+      const options = {
+        nodeCount: 2,
+        edges: [0, 1, 0, 1],
+        capacities: [1, 1],
+        costs: costed ? [2, 2] : undefined,
+        required: 2,
+        uncosted: !costed,
+        solver: 'parallel' as const,
+        mode: costed ? ('primal-dual' as const) : undefined,
+        maximumAugmentations: 0,
+        maximumRelabels: costed ? undefined : budget,
+        maximumCostPhases: costed ? budget : undefined
+      };
+      const interpreted = executeScene(options);
+      const cpu = computeNetworkFlowOnCPU(
+        {
+          edges: Uint32Array.from(options.edges),
+          capacities: Uint32Array.from(options.capacities),
+          costs: options.costs && Uint32Array.from(options.costs),
+          parameters: Uint32Array.of(0, 1, 2)
+        },
+        options
+      );
+      const expectedFlow = [budget, budget];
+      expect(interpreted.flow).toEqual(expectedFlow);
+      expect(Array.from(cpu.flow)).toEqual(expectedFlow);
+      expect([interpreted.converged, interpreted.limited]).toEqual([budget, 1 - budget]);
+      expect([cpu.status.converged[0], cpu.status.iterationLimitReached[0]]).toEqual([
+        budget,
+        1 - budget
+      ]);
+      expect(interpreted.summary[GPU_NETWORK_FLOW_WORD.augmentations]).toBe(budget);
+      expect(cpu.status.iterationCount[0]).toBe(budget);
+    }
+});
+
+for (const costed of [false, true])
+  for (const scene of ['asymmetric-diamond', 'source-dead-end'] as const)
+    it(`R1/R2 CPU phase work matches interpreted ${costed ? 'primal-dual' : 'uncosted'} WGSL (${scene})`, () => {
+      const diamond = scene === 'asymmetric-diamond';
+      const edges = diamond ? [0, 1, 0, 2, 1, 3, 2, 3, 4, 0, 3, 5] : [0, 1, 0, 2, 2, 3];
+      const capacities = diamond ? [2, 2, 1, 1, 2, 2] : [1, 1, 1];
+      for (const budget of diamond ? [1, 2] : [1]) {
+        const options = {
+          nodeCount: diamond ? 6 : 4,
+          edges,
+          capacities,
+          costs: costed ? new Array(capacities.length).fill(0) : undefined,
+          uncosted: !costed,
+          mode: costed ? ('primal-dual' as const) : undefined,
+          maximumCostPhases: costed ? budget : undefined,
+          maximumRelabels: costed ? undefined : budget,
+          maximumRelaxationRounds: diamond ? 6 : 2,
+          required: diamond ? 2 : 1,
+          source: diamond ? 4 : 0,
+          sink: diamond ? 5 : 1
+        };
+        const interpreted = executeScene(options);
+        const cpu = computeNetworkFlowOnCPU(
+          {
+            edges: Uint32Array.from(edges),
+            capacities: Uint32Array.from(capacities),
+            costs: options.costs && Uint32Array.from(options.costs),
+            parameters: Uint32Array.of(options.source, options.sink, options.required)
+          },
+          {...options, solver: 'parallel', pathCapacity: 2}
+        );
+        expect(interpreted.summary[2]).toBe(diamond ? budget : 1);
+        expect(Array.from(cpu.summary)).toEqual(interpreted.summary);
+        expect(Array.from(cpu.cut)).toEqual(interpreted.cut);
+        expect(Array.from(cpu.flow)).toEqual(interpreted.flow);
+        expect(cpu.paths?.status.count[0]).toBe(diamond ? budget : 1);
+      }
+    });

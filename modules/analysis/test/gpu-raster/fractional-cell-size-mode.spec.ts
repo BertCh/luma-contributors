@@ -13,7 +13,8 @@ import {
 } from '../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPURasterFractionalCoverageParameterValues,
-  GPURasterFractionalCoverage
+  GPURasterFractionalCoverage,
+  GPURasterFractionalZonalStatistics
 } from '../../src/raster-analysis/gpu-raster-fractional-coverage';
 import {GPURasterFractionalCategoricalStatistics} from '../../src/raster-analysis/gpu-raster-fractional-categorical-statistics';
 import {GPURasterFractionalZonalDistribution} from '../../src/raster-analysis/gpu-raster-fractional-zonal-distribution';
@@ -22,9 +23,11 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
+  readUint32,
   submitGraph
 } from '../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../utils/require-test-device';
+import {createParityGraph} from '../oracles/parity-wp2-geodesic-harness';
 
 // A 2 x 2 grid of one-degree cells whose rows are centred at 60.5 and 59.5 degrees north; the zone
 // is the whole grid, so every coverage fraction is 1 and each area is a sum of ground cell areas.
@@ -35,9 +38,90 @@ const GEOGRAPHIC_GRID: GPURasterMetadata = {
   pixelInterpretation: 'area'
 };
 
+it('R4 suppresses scalar results when the same graph is repacked with a geographic cross axis', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = createParityGraph(device);
+  const grid: GPURasterMetadata = {
+    width: 2,
+    height: 1,
+    affine: [1, 0, 0, 0, -1, 61],
+    pixelInterpretation: 'area'
+  };
+  const parameters = new GPUParameterBuffer(device, {
+    id: 'review-georeference',
+    format: 'float32',
+    length: 8
+  });
+  parameters.write(getGPURasterFractionalCoverageParameterValues(grid));
+  const output = {
+    totals: rig.output('totals', 2, 'float32'),
+    means: rig.output('means', 2, 'float32'),
+    coveredArea: rig.output('covered', 2, 'float32'),
+    validArea: rig.output('valid', 2, 'float32'),
+    validity: rig.output('validity', 2, 'uint32')
+  };
+  rig.graph.add(
+    new GPURasterFractionalZonalStatistics({
+      grid,
+      zoneCount: 2,
+      quantity: 'density',
+      cellSizeMode: 'geographic',
+      parameters: parameters.importToGraph(rig.graph),
+      input: {
+        id: 'values',
+        format: 'float32',
+        storage: {kind: 'buffer', values: rig.input('values', [2, 2], 'float32').view}
+      },
+      coverage: {
+        zoneIds: rig.input('zones', [0, 1], 'uint32').view,
+        cellIds: rig.input('cells', [0, 1], 'uint32').view,
+        fractions: rig.input('fractions', [1, 1], 'float32').view,
+        zoneValidity: rig.input('zones-valid', [1, 1], 'uint32').view,
+        status: {
+          count: rig.input('count', [2], 'uint32').view,
+          requiredCount: rig.input('required', [2], 'uint32').view,
+          overflow: rig.input('overflow', [0], 'uint32').view
+        }
+      },
+      output: {
+        totals: output.totals.view,
+        means: output.means.view,
+        coveredArea: output.coveredArea.view,
+        validArea: output.validArea.view,
+        validity: output.validity.view
+      }
+    })
+  );
+  const compiled = rig.graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    expect(await readUint32(output.validity.buffer, 2)).toEqual([1, 1]);
+    for (const value of await readFloat32(output.coveredArea.buffer, 2)) {
+      expect(Number.isFinite(value)).toBe(true);
+      expect(value).toBeGreaterThan(6e9);
+    }
+    parameters.write(
+      getGPURasterFractionalCoverageParameterValues({...grid, affine: [1, 0, 0, 10, -1, 61]})
+    );
+    submitGraph(device, compiled, undefined);
+    expect(await readUint32(output.validity.buffer, 2)).toEqual([0, 0]);
+    for (const column of [output.totals, output.means, output.coveredArea, output.validArea])
+      for (const value of await readFloat32(column.buffer, 2)) expect(value).toBeNaN();
+  } finally {
+    compiled.destroy();
+    parameters.destroy();
+    rig.destroy();
+  }
+});
+
 async function runCellSizeMode(
   mode: 'uniform' | 'geographic' | 'web-mercator' | 'explicit-areas',
-  options: {withParameters?: boolean; parameterGrid?: GPURasterMetadata} = {}
+  options: {
+    withParameters?: boolean;
+    parameterGrid?: GPURasterMetadata;
+    shearAndRecover?: boolean;
+  } = {}
 ) {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
@@ -155,6 +239,43 @@ async function runCellSizeMode(
     })
   );
   const rowScales = [0, 1].map(row => getRasterRowAreaScale(GEOGRAPHIC_GRID, 'geographic', row));
+  const scalar = {
+    totals: output(1, 'float32'),
+    means: output(1, 'float32'),
+    coveredArea: output(1, 'float32'),
+    validArea: output(1, 'float32'),
+    validity: output(1, 'uint32')
+  };
+  graph.add(
+    new GPURasterFractionalZonalStatistics({
+      id: 'scalar',
+      grid: GEOGRAPHIC_GRID,
+      zoneCount: 1,
+      quantity: 'density',
+      coverage,
+      input: {
+        id: 'scalar-values',
+        format: 'float32',
+        storage: {
+          kind: 'buffer',
+          values: input([1, 2, 3, 4], 'float32')
+        }
+      },
+      cellSizeMode,
+      parameters: aggregatorParameters,
+      cellAreas:
+        mode === 'explicit-areas'
+          ? input([rowScales[0], rowScales[0], rowScales[1], rowScales[1]], 'float32')
+          : undefined,
+      output: {
+        totals: scalar.totals.view,
+        means: scalar.means.view,
+        coveredArea: scalar.coveredArea.view,
+        validArea: scalar.validArea.view,
+        validity: scalar.validity.view
+      }
+    })
+  );
   const distribution = {
     means: output(1, 'float32'),
     populationVariances: output(1, 'float32'),
@@ -206,6 +327,28 @@ async function runCellSizeMode(
   const compiled = graph.compile();
   try {
     submitGraph(device, compiled, undefined);
+    if (options.shearAndRecover) {
+      const validities = [categorical.validity, distribution.validity, scalar.validity];
+      const areas = [
+        categorical.coveredArea,
+        categorical.validArea,
+        distribution.coveredArea,
+        distribution.validArea,
+        scalar.coveredArea,
+        scalar.validArea
+      ];
+      for (const column of validities) expect(await readUint32(column.buffer, 1)).toEqual([1]);
+      parameterBuffers[0].write(Float32Array.of(0, 70, 1, 0, 5, -1, -1, 0));
+      submitGraph(device, compiled, undefined);
+      for (const column of validities) expect(await readUint32(column.buffer, 1)).toEqual([0]);
+      for (const column of areas) expect((await readFloat32(column.buffer, 1))[0]).toBeNaN();
+      expect((await readUint32(distribution.status.buffer, 1))[0] & 1).toBe(1);
+      parameterBuffers[0].write(getGPURasterFractionalCoverageParameterValues(GEOGRAPHIC_GRID));
+      submitGraph(device, compiled, undefined);
+      for (const column of validities) expect(await readUint32(column.buffer, 1)).toEqual([1]);
+      for (const column of areas)
+        expect((await readFloat32(column.buffer, 1))[0]).toBeGreaterThan(2e10);
+    }
     const read = async (buffer: Buffer, length: number) =>
       Array.from(await readFloat32(buffer, length));
     return {
@@ -214,6 +357,8 @@ async function runCellSizeMode(
       proportions: await read(categorical.proportions.buffer, 2),
       distributionCovered: await read(distribution.coveredArea.buffer, 1),
       distributionMean: await read(distribution.means.buffer, 1),
+      scalarCovered: await read(scalar.coveredArea.buffer, 1),
+      scalarTotal: await read(scalar.totals.buffer, 1),
       rowScales
     };
   } finally {
@@ -237,12 +382,20 @@ const expectRelative = (actual: number[], expected: number[]) => {
   }
 };
 
+it('F2 scalar categorical and distribution agree on aligned/sheared/aligned frames of one graph', async () => {
+  const result = await runCellSizeMode('geographic', {withParameters: true, shearAndRecover: true});
+  expectRelative(result.scalarCovered, result.categoricalCovered);
+  expectRelative(result.scalarCovered, result.distributionCovered);
+});
+
 it('fractional aggregators keep planar areas by default and use ground areas with cellSizeMode', async () => {
   const uniform = await runCellSizeMode('uniform');
   // One-degree cells: category 0 is cells 0 and 2, category 1 is cells 1 and 3.
   expectRelative(uniform.classAreas, [2, 2]);
   expectRelative(uniform.categoricalCovered, [4]);
   expectRelative(uniform.distributionCovered, [4]);
+  expectRelative(uniform.scalarCovered, [4]);
+  expectRelative(uniform.scalarTotal, [10]);
 
   const geographic = await runCellSizeMode('geographic');
   const [north, south] = geographic.rowScales;
@@ -254,11 +407,15 @@ it('fractional aggregators keep planar areas by default and use ground areas wit
   expectRelative(geographic.categoricalCovered, [2 * (north + south)]);
   expectRelative(geographic.proportions, [0.5, 0.5]);
   expectRelative(geographic.distributionCovered, [2 * (north + south)]);
+  expectRelative(geographic.scalarCovered, [2 * (north + south)]);
+  expectRelative(geographic.scalarTotal, [3 * north + 7 * south]);
 
   // The same ground areas passed as explicit per-cell areas give the same distribution result.
   const explicit = await runCellSizeMode('explicit-areas');
   expectRelative(explicit.distributionCovered, geographic.distributionCovered);
   expectRelative(explicit.distributionMean, geographic.distributionMean);
+  expectRelative(explicit.scalarCovered, geographic.scalarCovered);
+  expectRelative(explicit.scalarTotal, geographic.scalarTotal);
 });
 
 // Independent reference, not the library's scale formula: geodesic areas of the two one-degree
@@ -273,7 +430,11 @@ it('fractional aggregator ground areas match geodesic cell areas', async () => {
   for (const withParameters of [false, true]) {
     const geographic = await runCellSizeMode('geographic', {withParameters});
     const total = GEODESIC_NORTH_CELL_AREA + GEODESIC_SOUTH_CELL_AREA;
-    for (const covered of [geographic.categoricalCovered[0], geographic.distributionCovered[0]]) {
+    for (const covered of [
+      geographic.categoricalCovered[0],
+      geographic.distributionCovered[0],
+      geographic.scalarCovered[0]
+    ]) {
       expect(Math.abs(covered / (2 * total) - 1)).toBeLessThan(5e-5);
     }
     expect(Math.abs(geographic.classAreas[0] / total - 1)).toBeLessThan(5e-5);
@@ -298,4 +459,6 @@ it('fractional aggregators read the row edges from parameters on every encoding'
   expectRelative(parameterized.classAreas, [northScale + southScale, northScale + southScale]);
   expectRelative(parameterized.categoricalCovered, [2 * (northScale + southScale)]);
   expectRelative(parameterized.distributionCovered, [2 * (northScale + southScale)]);
+  expectRelative(parameterized.scalarCovered, [2 * (northScale + southScale)]);
+  expectRelative(parameterized.scalarTotal, [3 * northScale + 7 * southScale]);
 });

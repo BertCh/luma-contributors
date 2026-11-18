@@ -3,8 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   GPUSpatialPanelLagMaximumLikelihood,
+  snapshotPanelLagWeights,
   type GPUSpatialPanelLagMaximumLikelihoodProps
 } from './gpu-spatial-panel-lag-maximum-likelihood';
 
@@ -52,12 +54,52 @@ export type SpatialPanelLagMaximumLikelihoodOperationProps = Pick<
   hausman?: {tests: string; status: string};
 };
 
+/** Copies compile-time settings and port maps; graph values are still read on every run. @internal */
+export function snapshotSpatialPanelLagOperationProps(
+  props: SpatialPanelLagMaximumLikelihoodOperationProps
+): SpatialPanelLagMaximumLikelihoodOperationProps {
+  const snapshot = snapshotConstructionFields(props, [
+    'id',
+    'fitMode',
+    'entityCount',
+    'eigenvalues',
+    'periodCount',
+    'predictorCount',
+    'effects',
+    'maximumIterations',
+    'maximumSearchIterations',
+    'tolerance',
+    'weights',
+    'predictors',
+    'response',
+    'output',
+    'hausman'
+  ]);
+  return Object.freeze({
+    ...snapshot,
+    weights: snapshotPanelLagWeights(snapshot.weights),
+    output: snapshotConstructionFields(snapshot.output, [
+      'coefficients',
+      'covariance',
+      'summary',
+      'status',
+      'fitted',
+      'residuals'
+    ]),
+    hausman: snapshot.hausman
+      ? snapshotConstructionFields(snapshot.hausman, ['tests', 'status'])
+      : undefined
+  });
+}
+
 /** GPU panel lag ML operation. Compile with GPU_CONTRIBUTOR_OPERATION_LOWERING.
  * Compile-time: all props. Per-frame: input graph values. Optional weights views are graph ports;
- * information and spatialContext are forwarded unchanged, including contributor validation.
+ * Port maps, information and spatialContext metadata are captured at construction, including
+ * contributor validation; graph value contents remain per-frame inputs.
  */
 export class GPUSpatialPanelLagMaximumLikelihoodOperation extends GPUContributorOperation {
   constructor(props: SpatialPanelLagMaximumLikelihoodOperationProps) {
+    props = snapshotSpatialPanelLagOperationProps(props);
     const id = props.id ?? 'spatial-panel-lag-maximum-likelihood';
     const rowCount = props.entityCount * props.periodCount;
     super({

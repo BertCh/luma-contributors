@@ -1,0 +1,47 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MIT -->
+<!-- SPDX-FileCopyrightText: Copyright (c) vis.gl contributors -->
+<html lang="en">
+  <head><meta charset="utf-8"><title>Fresh point-density walkthrough</title></head>
+  <body>
+    <script>
+      // Vitest transforms dynamic imports in this standalone iframe as well as in test pages.
+      // Use its fresh-worker pass-through bridge; do not load the parent runner or GPU utilities.
+      globalThis.__vitest_browser_runner__ = {
+        wrapDynamicImport: factory => factory()
+      };
+    </script>
+    <script type="module">
+      import {luma} from '@luma.gl/core';
+
+      const result = {
+        type: 'first-density-result',
+        baselineAdapterMissing: luma.selectAdapter('webgpu', []) === null,
+        missingAdapterRejected: false,
+        displayed: []
+      };
+      const originalLog = console.log.bind(console);
+      console.log = (...values) => {
+        if (Array.isArray(values[0]) && typeof values[1] === 'number') {
+          result.displayed.push(values);
+        }
+        originalLog(...values);
+      };
+      try {
+        // A forgotten adapters prop must fail in this fresh module registry.
+        try {
+          const unexpected = await luma.createDevice({type: 'webgpu'});
+          unexpected.destroy();
+        } catch {
+          result.missingAdapterRejected = true;
+        }
+        await import('./point-density-first-run.test-utils.ts');
+      } catch (error) {
+        result.error = String(error?.stack ?? error);
+      } finally {
+        console.log = originalLog;
+        window.parent.postMessage(result, window.location.origin);
+      }
+    </script>
+  </body>
+</html>

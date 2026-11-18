@@ -57,6 +57,7 @@ import {
 } from './space-time-hawkes-parameters';
 import {
   getSpaceTimeHawkesEventWGSL,
+  SPACE_TIME_HAWKES_COMPENSATOR_WGSL,
   GPU_SPACE_TIME_HAWKES_BRANCHING_RATIO_FLOOR,
   GPU_SPACE_TIME_HAWKES_INTENSITY_FLOOR,
   GPU_SPACE_TIME_HAWKES_MINIMUM_SPATIAL_VARIANCE,
@@ -109,10 +110,12 @@ export type GPUSpaceTimeHawkesOutput = {
   estimates: GraphDataView<'float32'>;
   /**
    * Optional one-row log-likelihood of the catalogue at the parameters that entered the last
-   * executed iteration, which is the last iterate when the fit converged. The compensator uses the
-   * whole-plane spatial mass (no spatial edge term).
+   * executed iteration, before its update. Use `fittedLogLikelihood` to compare fitted models.
+   * The compensator uses the whole-plane spatial mass (no spatial edge term).
    */
   logLikelihood?: GraphDataView<'float32'>;
+  /** Optional one-row log-likelihood at the published estimates, using the whole-plane spatial mass. */
+  fittedLogLikelihood?: GraphDataView<'float32'>;
   /**
    * Optional per-event probability, in input row order, that the event is background (not
    * triggered), at the published estimates. NaN for an excluded row.
@@ -295,6 +298,18 @@ export class GPUSpaceTimeHawkes implements GPUCommandNodeProducer {
         'output.logLikelihood must contain exactly one row'
       );
     }
+    if (output.fittedLogLikelihood) {
+      validateSinglePackedView(
+        output.fittedLogLikelihood,
+        ['float32'],
+        `${id} output.fittedLogLikelihood`
+      );
+      validateRequirement(
+        id,
+        output.fittedLogLikelihood.length === 1,
+        'output.fittedLogLikelihood must contain exactly one row'
+      );
+    }
     if (output.backgroundProbability) {
       validateSinglePackedView(
         output.backgroundProbability,
@@ -319,7 +334,11 @@ export class GPUSpaceTimeHawkes implements GPUCommandNodeProducer {
     }
     const outputViews = this.getOutputViews();
     validateTrajectoryWritableDispatches(id, [
-      {estimates: output.estimates, logLikelihood: output.logLikelihood},
+      {
+        estimates: output.estimates,
+        logLikelihood: output.logLikelihood,
+        fittedLogLikelihood: output.fittedLogLikelihood
+      },
       {backgroundProbability: output.backgroundProbability},
       {...output.status}
     ]);
@@ -329,7 +348,10 @@ export class GPUSpaceTimeHawkes implements GPUCommandNodeProducer {
       props.parameters
     ]);
     this.estimatedCommandNodeCount =
-      FIXED_COMMAND_NODE_COUNT + SORT_COMMAND_NODE_ALLOWANCE + 3 * this.maximumIterations;
+      FIXED_COMMAND_NODE_COUNT +
+      SORT_COMMAND_NODE_ALLOWANCE +
+      3 * this.maximumIterations +
+      (output.fittedLogLikelihood ? 2 : 0);
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
 
@@ -338,6 +360,7 @@ export class GPUSpaceTimeHawkes implements GPUCommandNodeProducer {
     return [
       output.estimates,
       output.logLikelihood,
+      output.fittedLogLikelihood,
       output.backgroundProbability,
       ...Object.values(output.status ?? {})
     ].filter(view => view !== undefined);
@@ -617,6 +640,7 @@ const INTENSITY_FLOOR: f32 = ${getWGSLFloatLiteral(GPU_SPACE_TIME_HAWKES_INTENSI
 const BRANCHING_RATIO_FLOOR: f32 = ${getWGSLFloatLiteral(GPU_SPACE_TIME_HAWKES_BRANCHING_RATIO_FLOOR)};
 const MAXIMUM_ITERATIONS: f32 = ${maximumIterations}.0;
 ${SCALED_QUOTIENT_WGSL}
+${SPACE_TIME_HAWKES_COMPENSATOR_WGSL}
 fn sumAt(index: u32) -> f32 { return state[stateOffset + S_SUMS + index]; }
 fn relativeChange(next: f32, previous: f32) -> f32 {
   return getScaledQuotient(abs(next - previous), max(abs(previous), INTENSITY_FLOOR), 1.0, 0);
@@ -639,7 +663,7 @@ fn relativeChange(next: f32, previous: f32) -> f32 {
   let distanceSum = sumAt(3u);
   let eventCount = sumAt(6u);
   let windowMass = sumAt(7u);
-  state[stateOffset + S_LOG_LIKELIHOOD] = sumAt(4u) - (background * area * duration + branchingRatio * windowMass);
+  state[stateOffset + S_LOG_LIKELIHOOD] = sumAt(4u) - (getHawkesBackgroundCompensator(background, area, duration) + branchingRatio * windowMass);
   if (!(eventCount > 0.0) || !(windowMass > 0.0)) {
     let nan = getNaN();
     state[stateOffset + S_BACKGROUND] = nan;
@@ -677,8 +701,55 @@ fn relativeChange(next: f32, previous: f32) -> f32 {
       );
     }
 
-    // 6. Per-event background probability at the published estimates.
-    if (output.backgroundProbability) {
+    // 6. Final diagnostics share one evaluation of each event at the published estimates.
+    let fittedSums: GraphDataView<'float32'> | undefined;
+    if (output.fittedLogLikelihood) {
+      fittedSums = createTransientView(graph, `${id}-fitted-sums`, 'float32', 2);
+      nodes.push(
+        ...getRowTileSumNodes<Parameters>(graph, {
+          id: `${id}-fitted-sums`,
+          operation: OPERATION,
+          variant: 'fitted-sums',
+          rowCount,
+          layout,
+          sumCount: 2,
+          partial,
+          output: fittedSums,
+          bindings: [
+            ...tileBindings,
+            ...(output.backgroundProbability
+              ? [
+                  {name: 'timeOrder', view: timeOrder, type: 'u32', access: 'read'} as const,
+                  {
+                    name: 'backgroundProbability',
+                    view: output.backgroundProbability,
+                    type: 'f32',
+                    access: 'read_write'
+                  } as const
+                ]
+              : [])
+          ],
+          declarations: `${stateConstants}\n${IS_FINITE_VALUE_WGSL}\n${getNaNDeclaration()}\n${eventWGSL}
+fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
+  let time = events[eventsOffset + 4u * row + 2u];
+  let hasEstimates = isFiniteValue(state[stateOffset + S_BACKGROUND]) &&
+    isFiniteValue(state[stateOffset + S_BRANCHING_RATIO]) &&
+    isFiniteValue(state[stateOffset + S_DECAY_RATE]) &&
+    isFiniteValue(state[stateOffset + S_SPATIAL_VARIANCE]);
+  var probability = getNaN();
+  if (hasEstimates && isFiniteValue(time)) {
+    let statistics = evaluateEvent(row);
+    probability = statistics.background;
+    let exponent = state[stateOffset + S_DECAY_RATE] * (params[paramsOffset + 1u] - time);
+    let windowMass = select(1.0 - exp(-exponent), exponent - 0.5 * exponent * exponent, exponent < 1e-3);
+    (*terms)[0] += statistics.logIntensity;
+    (*terms)[1] += windowMass;
+  }
+  ${output.backgroundProbability ? 'backgroundProbability[backgroundProbabilityOffset + timeOrder[timeOrderOffset + row]] = probability;' : ''}
+}`
+        })
+      );
+    } else if (output.backgroundProbability) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-responsibilities`,
@@ -732,14 +803,38 @@ fn relativeChange(next: f32, previous: f32) -> f32 {
                   access: 'read_write'
                 } as const
               ]
+            : []),
+          ...(output.fittedLogLikelihood && fittedSums
+            ? [
+                {name: 'fittedSums', view: fittedSums, type: 'f32', access: 'read'} as const,
+                {name: 'params', view: props.parameters, type: 'f32', access: 'read'} as const,
+                {
+                  name: 'fittedLogLikelihood',
+                  view: output.fittedLogLikelihood,
+                  type: 'f32',
+                  access: 'read_write'
+                } as const
+              ]
             : [])
         ],
-        declarations: stateConstants,
+        declarations: `${stateConstants}\n${IS_FINITE_VALUE_WGSL}\n${getNaNDeclaration()}\n${SPACE_TIME_HAWKES_COMPENSATOR_WGSL}`,
         body: `estimates[estimatesOffset] = state[stateOffset + S_BACKGROUND];
   estimates[estimatesOffset + 1u] = state[stateOffset + S_BRANCHING_RATIO];
   estimates[estimatesOffset + 2u] = state[stateOffset + S_DECAY_RATE];
   estimates[estimatesOffset + 3u] = sqrt(state[stateOffset + S_SPATIAL_VARIANCE]);
-  ${output.logLikelihood ? 'logLikelihood[logLikelihoodOffset] = state[stateOffset + S_LOG_LIKELIHOOD];' : ''}`
+  ${output.logLikelihood ? 'logLikelihood[logLikelihoodOffset] = state[stateOffset + S_LOG_LIKELIHOOD];' : ''}
+  ${
+    output.fittedLogLikelihood
+      ? `
+  let valid = isFiniteValue(state[stateOffset + S_BACKGROUND]) &&
+    isFiniteValue(state[stateOffset + S_BRANCHING_RATIO]) &&
+    isFiniteValue(state[stateOffset + S_DECAY_RATE]) &&
+    isFiniteValue(state[stateOffset + S_SPATIAL_VARIANCE]);
+  fittedLogLikelihood[fittedLogLikelihoodOffset] = select(getNaN(),
+    fittedSums[fittedSumsOffset] - (getHawkesBackgroundCompensator(state[stateOffset + S_BACKGROUND], params[paramsOffset], params[paramsOffset + 1u]) +
+    state[stateOffset + S_BRANCHING_RATIO] * fittedSums[fittedSumsOffset + 1u]), valid);`
+      : ''
+  }`
       })
     );
     const status = output.status ?? {};

@@ -11,6 +11,10 @@ import {
   GPUOffsetCurveComponentsOperation,
   type OffsetCurveComponentsOperationProps
 } from '../../../src/gpu-spatial-analysis/geometry-refinement/gpu-offset-curve-components-operation';
+import {
+  expectOffsetCurveLineWithSubdivisions,
+  OFFSET_CURVE_ENDPOINT_CASES
+} from './offset-curve-components-test-utils';
 
 function getInput() {
   return {
@@ -69,6 +73,107 @@ function getProps(): OffsetCurveComponentsOperationProps {
   };
 }
 
+function makeCPUInput(format: 'float32x2' | 'uint32', values: Float32Array | Uint32Array) {
+  const length = values.length / (format === 'float32x2' ? 2 : 1);
+  return {format, length, chunks: [{values, length}], pack: () => values};
+}
+
+it.each([1, 8])('honours operation segmentCapacity=%s', async segmentCapacity => {
+  const output = await new CPUOffsetCurveComponentsOperation({
+    ...getProps(),
+    lineCount: 1,
+    segmentCapacity
+  }).execute({
+    inputs: {
+      originalPositions: makeCPUInput('float32x2', Float32Array.of(0, 0, 1, 0, 2, 0)),
+      originalOffsets: makeCPUInput('uint32', Uint32Array.of(0, 3)),
+      rawPositions: makeCPUInput('float32x2', Float32Array.of(0, 1, 1, 1, 2, 1)),
+      rawOffsets: makeCPUInput('uint32', Uint32Array.of(0, 3))
+    }
+  });
+  const vertexCount = segmentCapacity === 1 ? 2 : 3;
+  expect(Array.from(output['status'] as Uint32Array)).toEqual([
+    1,
+    vertexCount,
+    1,
+    vertexCount,
+    0,
+    segmentCapacity === 1 ? 1 : 0,
+    0,
+    0
+  ]);
+  expect(Array.from((output['positions'] as Float32Array).subarray(0, vertexCount * 2))).toEqual([
+    0,
+    1,
+    1,
+    1,
+    ...(vertexCount === 3 ? [2, 1] : [])
+  ]);
+});
+
+it.each([1, 3])('honours operation intersectionCapacity=%s', async intersectionCapacity => {
+  const output = await new CPUOffsetCurveComponentsOperation({
+    ...getProps(),
+    lineCount: 3,
+    intersectionCapacity
+  }).execute({
+    inputs: {
+      originalPositions: makeCPUInput(
+        'float32x2',
+        Float32Array.of(-2, -10, 2, -10, -2, -10, 2, -10, -2, -10, 2, -10)
+      ),
+      originalOffsets: makeCPUInput('uint32', Uint32Array.of(0, 2, 4, 6)),
+      rawPositions: makeCPUInput(
+        'float32x2',
+        Float32Array.of(-2, 0, 2, 0, 0, -2, 0, 2, -2, -2, 2, 2)
+      ),
+      rawOffsets: makeCPUInput('uint32', Uint32Array.of(0, 2, 4, 6))
+    }
+  });
+  expect(Array.from(output['status'] as Uint32Array)).toEqual(
+    intersectionCapacity === 1 ? [0, 0, 0, 0, 0, 1, 0, 0] : [3, 9, 3, 9, 0, 0, 0, 0]
+  );
+});
+
+it('keeps standalone noding uncapped by default and counts overlaps but not adjacent touches', () => {
+  const original = {
+    positions: Float32Array.of(-10, -10, 10, -10),
+    lineOffsets: Uint32Array.of(0, 2)
+  };
+  const options = {distance: 1, tolerance: 0, vertexCapacity: 16, componentCapacity: 4};
+  const straight = {
+    positions: Float32Array.of(0, 1, 1, 1, 2, 1),
+    lineOffsets: Uint32Array.of(0, 3)
+  };
+  expect(
+    Array.from(computeOffsetCurveComponentsOnCPU({original, raw: straight}, options).status)
+  ).toEqual([1, 3, 1, 3, 0, 0, 0, 0]);
+  const triangle = {
+    positions: Float32Array.of(0, 0, 1, 0, 0, 1, 0, 0),
+    lineOffsets: Uint32Array.of(0, 4)
+  };
+  expect(
+    Array.from(
+      computeOffsetCurveComponentsOnCPU(
+        {original, raw: triangle},
+        {...options, intersectionCapacity: 1}
+      ).status
+    )
+  ).toEqual([1, 4, 1, 4, 0, 0, 0, 0]);
+  const overlapping = {
+    positions: Float32Array.of(0, 0, 1, 0, 0, 0, 1, 0),
+    lineOffsets: Uint32Array.of(0, 4)
+  };
+  expect(
+    Array.from(
+      computeOffsetCurveComponentsOnCPU(
+        {original, raw: overlapping},
+        {...options, intersectionCapacity: 1}
+      ).status
+    )
+  ).toEqual([0, 0, 0, 0, 0, 1, 0, 0]);
+});
+
 it('matches hand-computed distance bands, spur cancellation and three ordered components on two lines', () => {
   // The first curve has a doubled vertical spur; the two opposite fragments cancel.
   // The second dips inside the unit band, leaving separate x=10..12 and x=14..16 runs.
@@ -84,6 +189,189 @@ it('matches hand-computed distance bands, spur cancellation and three ordered co
     rowsPerVertex: 2
   });
   expect(Array.from(provenance.sourceEdges.subarray(0, 7))).toEqual([0, 0, 1, 2, 2, 4, 4]);
+});
+
+it.each(OFFSET_CURVE_ENDPOINT_CASES)('$name', fixture => {
+  const result = computeOffsetCurveComponentsOnCPU(
+    {
+      original: {
+        positions: Float32Array.from(fixture.originalPositions),
+        lineOffsets: Uint32Array.of(0, fixture.originalPositions.length / 2)
+      },
+      raw: {
+        positions: Float32Array.from(fixture.rawPositions),
+        lineOffsets: Uint32Array.of(0, fixture.rawPositions.length / 2)
+      }
+    },
+    {...getProps(), distance: fixture.distance}
+  );
+  expect(Array.from(result.status)).toEqual(fixture.status);
+  expect(Array.from(result.positions.subarray(0, fixture.positions.length))).toEqual(
+    fixture.positions
+  );
+  expect(Array.from(result.components.subarray(0, fixture.components.length))).toEqual(
+    fixture.components
+  );
+  expect(Array.from(result.sourceEdges.subarray(0, fixture.sourceEdges.length))).toEqual(
+    fixture.sourceEdges
+  );
+});
+
+it.each([
+  2 ** -20,
+  1,
+  2 ** 20
+])('preserves straight-line topology at coordinate scale %s', scale => {
+  // An absolute endpoint floor incorrectly cancels these two forward fragments at 2^-20.
+  const result = computeOffsetCurveComponentsOnCPU(
+    {
+      original: {
+        positions: Float32Array.of(0, 0, scale, 0, 2 * scale, 0),
+        lineOffsets: Uint32Array.of(0, 3)
+      },
+      raw: {
+        positions: Float32Array.of(0, scale, scale, scale, 2 * scale, scale),
+        lineOffsets: Uint32Array.of(0, 3)
+      }
+    },
+    {...getProps(), distance: scale}
+  );
+  expect(Array.from(result.status)).toEqual([1, 3, 1, 3, 0, 0, 0, 0]);
+  expect(Array.from(result.positions.subarray(0, 6))).toEqual([
+    0,
+    scale,
+    scale,
+    scale,
+    2 * scale,
+    scale
+  ]);
+  expect(Array.from(result.components.subarray(0, 4))).toEqual([0, 3, 0, 0]);
+  expect(Array.from(result.sourceEdges.subarray(0, 3))).toEqual([0, 0, 1]);
+});
+
+it.each([100, 10000])('preserves short forward edges at offset distance %s', distance => {
+  // The 3.125 cm edges are representable in float32 even at these projected coordinates.
+  // A tolerance proportional to the offset instead of the fragments deletes their prefix at 10 km.
+  const positions = Float32Array.of(1000, 0, 1000.03125, 0, 1000.0625, 0, 11000, 0, 21000, 0);
+  const rawPositions = positions.map((value, index) => (index % 2 === 1 ? distance : value));
+  const result = computeOffsetCurveComponentsOnCPU(
+    {
+      original: {positions, lineOffsets: Uint32Array.of(0, 5)},
+      raw: {positions: rawPositions, lineOffsets: Uint32Array.of(0, 5)}
+    },
+    {...getProps(), distance}
+  );
+  expect(Array.from(result.status)).toEqual([1, 5, 1, 5, 0, 0, 0, 0]);
+  expect(Array.from(result.positions.subarray(0, 10))).toEqual(Array.from(rawPositions));
+  expect(Array.from(result.sourceEdges.subarray(0, 5))).toEqual([0, 0, 1, 2, 3]);
+});
+
+it('allows a collinear tangent split while rejecting missing short edges and invalid geometry', () => {
+  const expectedPositions = Float32Array.of(
+    1000,
+    10000,
+    1000.03125,
+    10000,
+    1000.0625,
+    10000,
+    11000,
+    10000,
+    21000,
+    10000
+  );
+  const expectedSourceEdges = [0, 0, 1, 2, 3];
+  const result = {
+    positions: Float32Array.of(
+      1000,
+      10000,
+      1000.03125,
+      10000,
+      1000.0625,
+      10000,
+      10998.2373046875,
+      10000,
+      11000,
+      10000,
+      21000,
+      10000
+    ),
+    sourceEdges: Uint32Array.of(0, 0, 1, 2, 2, 3),
+    components: Uint32Array.of(0, 6, 0, 0),
+    status: Uint32Array.of(1, 6, 1, 6, 0, 0, 0, 0)
+  };
+  // The extra x comes from a fused float32 discriminant at an exact circle tangency.
+  expectOffsetCurveLineWithSubdivisions(result, expectedPositions, expectedSourceEdges);
+  const lostPrefix = {
+    positions: expectedPositions.subarray(4),
+    sourceEdges: Uint32Array.of(2, 2, 3),
+    components: Uint32Array.of(0, 3, 0, 0),
+    status: Uint32Array.of(1, 3, 1, 3, 0, 0, 0, 0)
+  };
+  expect(() =>
+    expectOffsetCurveLineWithSubdivisions(lostPrefix, expectedPositions, expectedSourceEdges)
+  ).toThrow();
+  for (const [word, value] of [
+    [2, 1000.0625],
+    [6, 11001],
+    [7, 9999],
+    [6, NaN]
+  ] as const) {
+    const positions = result.positions.slice();
+    positions[word] = value;
+    expect(() =>
+      expectOffsetCurveLineWithSubdivisions(
+        {...result, positions},
+        expectedPositions,
+        expectedSourceEdges
+      )
+    ).toThrow();
+  }
+  const sourceEdges = result.sourceEdges.slice();
+  sourceEdges[3] = 1;
+  expect(() =>
+    expectOffsetCurveLineWithSubdivisions(
+      {...result, sourceEdges},
+      expectedPositions,
+      expectedSourceEdges
+    )
+  ).toThrow();
+});
+
+it.each([2 ** -20, 1, 2 ** 20])('cancels a truly reversed spur at coordinate scale %s', scale => {
+  const result = computeOffsetCurveComponentsOnCPU(
+    {
+      original: {
+        positions: Float32Array.of(0, 0, 6 * scale, 0),
+        lineOffsets: Uint32Array.of(0, 2)
+      },
+      raw: {
+        positions: Float32Array.of(
+          0,
+          scale,
+          3 * scale,
+          scale,
+          3 * scale,
+          2 * scale,
+          3 * scale,
+          scale,
+          6 * scale,
+          scale
+        ),
+        lineOffsets: Uint32Array.of(0, 5)
+      }
+    },
+    {...getProps(), distance: scale}
+  );
+  expect(Array.from(result.status)).toEqual([1, 3, 1, 3, 0, 0, 0, 0]);
+  expect(Array.from(result.positions.subarray(0, 6))).toEqual([
+    0,
+    scale,
+    3 * scale,
+    scale,
+    6 * scale,
+    scale
+  ]);
+  expect(Array.from(result.sourceEdges.subarray(0, 3))).toEqual([0, 0, 3]);
 });
 
 it('publishes only complete component records while preserving partial vertex writes', () => {
@@ -332,12 +620,7 @@ it('executes every CPU graph port and rejects mismatched graph input lengths', a
       pack: () => data.raw.lineOffsets
     }
   };
-  // Both GPU scratch capacities are deliberately too small for this scene; the CPU twin ignores them.
-  const output = await new CPUOffsetCurveComponentsOperation({
-    ...getProps(),
-    intersectionCapacity: 1,
-    segmentCapacity: 1
-  }).execute({inputs});
+  const output = await new CPUOffsetCurveComponentsOperation(getProps()).execute({inputs});
   expect(Array.from(output['status'] as Uint32Array)).toEqual([3, 7, 3, 7, 0, 0, 0, 0]);
   expect((output['positions'] as Float32Array).length).toBe(32);
   expect((output['sourceEdges'] as Uint32Array).length).toBe(16);

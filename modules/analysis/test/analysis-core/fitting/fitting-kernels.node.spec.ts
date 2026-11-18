@@ -18,6 +18,69 @@ import {getGPUCommandNodeKernelSources} from '../../utils/gpu-contributor-test-u
 import {auditWGSLModule} from '../kernel-audit/kernel-audit-wgsl';
 import fixture from './fixtures/fitting-numpy-scipy.json';
 
+it('snapshots fitting shapes and port maps while retaining GPU view identities', () => {
+  const context = createKernelAuditContext('fitting-props-snapshot');
+  const {view, graph, device} = context;
+  try {
+    const orderProps = {
+      rowCount: 2,
+      parameters: view('uint32', 3),
+      output: {order: view('uint32', 2)}
+    };
+    const order = new GPUFittingMinibatchOrder(orderProps);
+    const orderView = orderProps.output.order;
+    orderProps.rowCount = 0;
+    orderProps.output.order = view('uint32', 0);
+    expect(order.getCommandNodes(graph).length).toBeGreaterThan(0);
+    expect(order.props.output.order).toBe(orderView);
+
+    const sumProps = {
+      rowCount: 2,
+      parameterCount: 1,
+      gradients: view('float32', 2),
+      output: {sums: view('float32', 1)}
+    };
+    const sums = new GPUFittingGradientSums(sumProps);
+    const sumView = sumProps.output.sums;
+    sumProps.parameterCount = 2;
+    sumProps.output.sums = view('float32', 0);
+    expect(sums.props.parameterCount).toBe(1);
+    expect(sums.props.output.sums).toBe(sumView);
+    expect(sums.getCommandNodes(graph)).toHaveLength(1);
+
+    const encoderProps = {
+      encoding: 'fourier' as const,
+      dimensions: 2,
+      frequencyCount: 1,
+      rowCount: 1,
+      coordinates: view('float32', 2),
+      frequencies: view('float32', 2),
+      spatialContext: {coordinateSpace: 'planar' as const, metric: 'native' as const},
+      output: {features: view('float32', 2), validity: view('uint32', 1)}
+    };
+    const encoder = new GPUFittingCoordinateEncoder(encoderProps);
+    const features = encoderProps.output.features;
+    encoderProps.dimensions = 3;
+    encoderProps.output.features = view('float32', 0);
+    encoderProps.spatialContext.metric = 'none' as 'native';
+    expect(encoder.props.dimensions).toBe(2);
+    expect(encoder.props.output.features).toBe(features);
+    expect(encoder.spatialContext.metric).toBe('native');
+    expect(encoder.getCommandNodes(graph)).toHaveLength(1);
+
+    const adamProps = createAdamAuditProps(context, 2, 3);
+    const adam = new GPUAdamStep(adamProps);
+    const iterationCount = adamProps.output.status.iterationCount;
+    adamProps.maximumIterations = 0;
+    adamProps.output.status.iterationCount = view('uint32', 0);
+    expect(adam.props.maximumIterations).toBe(3);
+    expect(adam.props.output.status.iterationCount).toBe(iterationCount);
+    expect(adam.getCommandNodes(graph)).toHaveLength(2);
+  } finally {
+    device.destroy();
+  }
+});
+
 it('packs per-frame Adam values and validates after float32 rounding', () => {
   expect(Array.from(getGPUAdamStepParameterValues())).toEqual(
     [0.001, 0.9, 0.999, 1e-8, 0, 0].map(Math.fround)

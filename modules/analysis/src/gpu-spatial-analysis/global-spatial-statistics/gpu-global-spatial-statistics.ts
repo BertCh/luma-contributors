@@ -25,6 +25,7 @@ import {createSegmentSumNode} from '../../analysis-core/kernels/sorted-segment-s
 import {
   validateCommandNodeBudget,
   validateCapacity,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGPUStorageBindingByteLength,
   validateGraphViewsBelongToGraph,
@@ -62,6 +63,12 @@ import {
   GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT,
   type GPUGlobalSpatialStatistic
 } from './global-spatial-statistics-layout';
+import {
+  type GPUCandidateStatusPort,
+  type GPUOverflowStatusPort,
+  validateGPUStatusPort
+} from '../../analysis-core/contracts/status';
+import {getGlobalSpatialStatisticsStatusNodes} from './global-spatial-statistics-status';
 
 const OPERATION = 'GPUGlobalSpatialStatistics';
 
@@ -163,6 +170,10 @@ export type GPUGlobalSpatialStatisticsProps = {
    * Square spatial weights: neighbor IDs index the same rows as `offsets`. Chunked weights run the
    * weights-reading kernels once per chunk (and the symmetry lookup per row chunk and target
    * chunk) with per-row partials accumulated in chunk order; a whole CSR is a single dispatch.
+   * Either nonzero status flag (overflow or candidateOverflow) suppresses statistic and
+   * inference blocks with NaN; output.status reports the producer's flags independently.
+   * Chunk-local loss flags are rejected; aggregate them on the outer weights.status port.
+   * An input overflow view may have spare capacity; only its first word controls suppression.
    */
   weights: GPUSpatialWeights | GPUChunkedSpatialWeights;
   /**
@@ -212,6 +223,13 @@ export type GPUGlobalSpatialStatisticsProps = {
 /** Caller-owned outputs of {@link GPUGlobalSpatialStatistics}. */
 export type GPUGlobalSpatialStatisticsOutput = {
   /**
+   * Optional uint32 scalar diagnostics, overwritten on each submission. overflow forwards
+   * the input producer's overflow flag and candidateOverflow forwards its candidate flag,
+   * independently as 0 or 1: overflow is final capacity and candidateOverflow is intermediate loss.
+   * An absent input flag publishes 0.
+   */
+  status?: Partial<GPUOverflowStatusPort> & GPUCandidateStatusPort;
+  /**
    * Every statistic block, at least `GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length` float32 values,
    * laid out by `GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT`.
    */
@@ -242,9 +260,11 @@ export type GPUGlobalSpatialStatisticsOutput = {
  * `n`. The island rule looks at out-links only; for symmetric weights it equals the in-or-out
  * rule. Parity with esda needs `islands: 'keep'`.
  *
- * Truncated weights: when `weights.status.overflow` is nonzero the weights are incomplete (rows
- * after the overflow are empty), so every statistic block and the weight sums and moments of the
- * summary are NaN. Only `count` and `islandCount` stay informative.
+ * Incomplete weights: when `weights.status.overflow` or `weights.status.candidateOverflow` is
+ * nonzero, every statistic block and the weight sums and moments of the summary are NaN.
+ * Population, island and black counts stay informative; ordered-pair join counts become zero.
+ * Optional output.status preserves both producer flags independently. Both tiled and reference
+ * modes consume the flags on the GPU on every submission.
  *
  * Definitions (PySAL esda), over the `n` analysis rows (mask nonzero, every provided value finite
  * and, for `'exclude'`, not an island; excluded rows are neither foci nor neighbors), with
@@ -319,6 +339,15 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
     this.islands = resolveGPUIslandPolicy(id, props.islands);
     this.alternative = resolveAnalyticAlternative(id, props.alternative);
     const rows = validateGPUSpatialWeightsOrChunks(id, props.weights);
+    if ('chunks' in props.weights) {
+      for (const [index, chunk] of props.weights.chunks.entries()) {
+        validateRequirement(
+          id,
+          !chunk.weights.status?.overflow && !chunk.weights.status?.candidateOverflow,
+          `weights.chunks[${index}].weights.status loss flags must be aggregated on the outer weights.status port`
+        );
+      }
+    }
     validateCapacity(
       id,
       'weights.rowCount (GLOBAL_SPATIAL_STATISTICS_MAXIMUM_ROWS)',
@@ -353,12 +382,12 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
       0,
       GLOBAL_SPATIAL_STATISTICS_MAXIMUM_SLOTS
     );
-    if (props.weights.status?.overflow) {
-      validateSinglePackedView(
-        props.weights.status.overflow,
-        ['uint32'],
-        `${id} weights.status.overflow`
-      );
+    for (const name of ['overflow', 'candidateOverflow'] as const) {
+      const view = props.weights.status?.[name];
+      if (view) {
+        validateSinglePackedView(view, ['uint32'], `${id} weights.status.${name}`);
+        validateCapacity(id, `weights.status.${name} length`, view.length, 1);
+      }
     }
     if (validateFloat32OrUint32Values(props.values, `${id} values`) !== rows) {
       throw new Error(`${id} values needs one row per weights row`);
@@ -387,6 +416,13 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
       throw new Error(`${id} bivariateMoran requires secondValues`);
     }
     const {output} = props;
+    validateGPUStatusPort(id, output.status ?? {});
+    for (const [name, view] of Object.entries(output.status ?? {})) {
+      if (view) {
+        validateSinglePackedView(view, ['uint32'], `${id} output.status.${name}`);
+        validateCapacity(id, `output.status.${name} length`, view.length, 1, 1);
+      }
+    }
     validateSinglePackedView(output.summary, ['float32'], `${id} output.summary`);
     if (output.summary.length < GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length) {
       throw new Error(
@@ -405,15 +441,25 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
     }
     validateSpatialStatisticsWritableDispatches(
       id,
-      {summary: output.summary, joinCounts: output.joinCounts, counts: output.counts},
-      [['summary', 'joinCounts']]
+      {
+        summary: output.summary,
+        joinCounts: output.joinCounts,
+        counts: output.counts,
+        overflow: output.status?.overflow,
+        candidateOverflow: output.status?.candidateOverflow
+      },
+      [
+        ['summary', 'joinCounts'],
+        ['overflow', 'candidateOverflow']
+      ]
     );
     validateGraphOutputsDisjointFromInputs(
       id,
-      [output.summary, output.joinCounts, output.counts],
+      [output.summary, output.joinCounts, output.counts, ...Object.values(output.status ?? {})],
       [
         ...getWeightsViews(props.weights),
         props.weights.status?.overflow,
+        props.weights.status?.candidateOverflow,
         props.values,
         props.secondValues,
         props.mask
@@ -452,7 +498,10 @@ ${getPValueWGSL(this.alternative)}
 fn writeBlock(offset: u32, statisticBlock: array<f32, 8>, enabled: bool) {
  for (var field = 0u; field < 8u; field++) { results[resultsOffset + offset + field] = select(getQuietNaN(field), statisticBlock[field], enabled); }
 }`;
-      const body = getFinalizeBody(props, Boolean(weights.status?.overflow))
+      const body = getFinalizeBody(
+        props,
+        Boolean(weights.status?.overflow || weights.status?.candidateOverflow)
+      )
         .replace(
           'let mean = divideBySpatialCount(readTotal(COLUMN_X), count) * inverseScaleX + divideBySpatialCount(readTotal(COLUMN_DEVIATION_X), count);',
           'let mean = readControlFloat(13u) + readControlFloat(14u);'
@@ -486,12 +535,16 @@ fn writeBlock(offset: u32, statisticBlock: array<f32, 8>, enabled: bool) {
     validateGraphViewsBelongToGraph(id, graph, [
       ...getWeightsViews(weights),
       weights.status?.overflow,
+      weights.status?.candidateOverflow,
       props.values,
       props.secondValues,
       mask,
       output.summary,
-      output.joinCounts
+      output.joinCounts,
+      output.counts,
+      ...Object.values(output.status ?? {})
     ]);
+    const weightsStatus = getGlobalSpatialStatisticsStatusNodes(graph, props);
     // uint32 values (counts) are converted to f32 once; float32 values are used as given.
     const valueConversion = createFloat32ValuesNodes(graph, `${id}-values`, props.values);
     const secondValueConversion = props.secondValues
@@ -506,7 +559,7 @@ fn writeBlock(offset: u32, statisticBlock: array<f32, 8>, enabled: bool) {
       (total, dispatch) => total + dispatch.weights.neighbors.length,
       0
     );
-    const overflow = weights.status?.overflow;
+    const overflow = weightsStatus.incomplete;
     const standardized = isGPUSpatialWeightsRowStandardized(weights);
     const keepIslands = this.islands === 'keep';
     const blockCount = Math.ceil(rows / BLOCK_ROWS);
@@ -1196,6 +1249,7 @@ ${getRowScaleWGSL(standardized)}`,
     }
 
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...weightsStatus.nodes,
       ...valueConversion.nodes,
       ...(secondValueConversion?.nodes ?? []),
       createFillNode<Parameters>(graph, {
@@ -1667,7 +1721,7 @@ fn getPValue(z: f32) -> f32 {
 
 /** Builds the finalize kernel body, writing only the requested blocks. */
 function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps, hasOverflow: boolean): string {
-  // Truncated weights (overflow) make every statistic NaN; General G also needs non-negative data.
+  // The GPU-folded weights loss flag suppresses every statistic; General G also needs non-negative data.
   const enabled = (statistic: GPUGlobalSpatialStatistic) =>
     props.statistics.includes(statistic)
       ? statistic === 'getisOrdG'

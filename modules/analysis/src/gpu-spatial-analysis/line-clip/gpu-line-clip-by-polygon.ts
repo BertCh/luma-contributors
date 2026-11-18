@@ -1,6 +1,7 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
 
 import {
   createTransientView,
@@ -196,6 +197,7 @@ export class GPULineClipByPolygon implements GPUCommandNodeProducer {
       props.polygonsSpatialContext,
       this.spatialContext
     );
+    props = {...props, lines: snapshotSinglePartGeometryPort(this.id, 'lines', props.lines)};
     this.props = props;
     const {id} = this;
     const {lines, polygons} = props;
@@ -344,8 +346,8 @@ export class GPULineClipByPolygon implements GPUCommandNodeProducer {
         leafCapacity: props.leafCapacity,
         output: {
           pairs: {
-            leftIds: pairLeft,
-            rightIds: pairRight,
+            leftRows: pairLeft,
+            rightRows: pairRight,
             status: {count: pairCount, overflow: pairOverflow}
           },
           status: {uncertainCount: segmentUncertain},

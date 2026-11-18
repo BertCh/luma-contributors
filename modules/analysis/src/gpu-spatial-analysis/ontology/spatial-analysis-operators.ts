@@ -4,6 +4,9 @@
 
 import {GPU_ANALYSIS_OPERATOR_KIND_RECORDS} from './analysis-experience/analysis-operator-kind-records';
 import {GPU_SPATIAL_ANALYSIS_CAPABILITIES} from './spatial-analysis-catalog';
+import {SPATIAL_ANALYSIS_OPERATOR_SUMMARIES} from './spatial-analysis-operator-summaries';
+import {GPU_SPATIAL_ANALYSIS_DATA_KINDS} from './spatial-analysis-ontology';
+import {freezeCatalog} from './freeze-catalog';
 import {KEPLER_ANALYSIS_OPERATOR_OVERRIDES} from './kepler-analysis-catalog';
 import {COVERAGE_EXPANSION_OPERATOR_OVERRIDES} from './coverage-expansion-catalog';
 import {OPERATOR_ANNOTATIONS} from './all-entry-points/operator-annotations';
@@ -41,6 +44,7 @@ type OperatorOverride = Partial<
 type CompleteOperatorOverride = OperatorOverride & {tests?: string; documentation?: string};
 
 const BOUNDED_STATUS = ['count', 'requiredCount', 'overflow'] as const;
+const COMPACT_CANDIDATE_STATUS = [...BOUNDED_STATUS, 'candidateOverflow'] as const;
 
 /**
  * Material operator-level differences that cannot be inferred from a capability family.
@@ -49,6 +53,23 @@ const BOUNDED_STATUS = ['count', 'requiredCount', 'overflow'] as const;
  * the catalogue makes additions reviewable without importing any contributor constructor.
  */
 const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
+  GPULocalMoran: {status: ['invalidCount', 'overflow', 'candidateOverflow']},
+  GPUHotSpotAnalysis: {status: ['invalidCount', 'overflow', 'candidateOverflow']},
+  GPUGlobalSpatialStatistics: {status: ['overflow', 'candidateOverflow']},
+  GPUPointInPolygonJoin: {status: [...COMPACT_CANDIDATE_STATUS, 'uncertainCount']},
+  GPUNearestFeatureWeights: {status: ['overflow', 'candidateOverflow']},
+  // Audited compact outputs: candidate loss is independent of final output capacity.
+  GPUNearestFeatureJoin: {status: COMPACT_CANDIDATE_STATUS},
+  GPUBufferSelection: {status: COMPACT_CANDIDATE_STATUS},
+  GPURegionStatistics: {status: COMPACT_CANDIDATE_STATUS},
+  GPUDotDensity: {status: COMPACT_CANDIDATE_STATUS},
+  GPURandomPointsInPolygon: {status: COMPACT_CANDIDATE_STATUS},
+  GPURandomPointsOnLine: {status: COMPACT_CANDIDATE_STATUS},
+  GPUZoneEvents: {status: COMPACT_CANDIDATE_STATUS},
+  GPUTrajectoryEncounters: {status: COMPACT_CANDIDATE_STATUS},
+  GPUTrajectoryClosestApproach: {status: COMPACT_CANDIDATE_STATUS},
+  GPUBoundsFilter: {status: COMPACT_CANDIDATE_STATUS},
+  addFleetDwellZoneEventsRecipe: {status: COMPACT_CANDIDATE_STATUS},
   GPUHierarchicalDensityClustering: {
     inputs: ['points', 'attributes', 'parameters'],
     outputs: ['attributes', 'summary'],
@@ -74,7 +95,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     evidence: 'partial',
     tests:
       'modules/analysis/test/gpu-spatial-analysis/geometry-measures/cr01-geodesic-envelopes.spec.ts',
-    documentation: 'modules/analysis/docs/geodesic-precision.md',
+    documentation: 'docs/api/gpu-spatial-analysis/geodesic-precision.md',
     contract: 'GPUGeodesicPairsProps'
   },
   GPUGeodesicDestination: {
@@ -87,7 +108,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     evidence: 'partial',
     tests:
       'modules/analysis/test/gpu-spatial-analysis/geometry-measures/cr01-geodesic-envelopes.spec.ts',
-    documentation: 'modules/analysis/docs/geodesic-precision.md',
+    documentation: 'docs/api/gpu-spatial-analysis/geodesic-precision.md',
     contract: 'GPUGeodesicDestinationProps'
   },
   GPUNestedInterpolationValidation:
@@ -242,9 +263,9 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     cardinality: 'capacity-bounded',
     semantics: 'approximate',
     deterministic: true,
-    status: ['converged'],
+    status: ['converged', ...BOUNDED_STATUS],
     evidence: 'partial',
-    tests: 'modules/analysis/test/geospatial-expansion/raster-terrain-expansion.spec.ts',
+    tests: 'modules/analysis/test/gpu-spatial-analysis/concave-hull/concave-hull.spec.ts',
     documentation: 'docs/api/gpu-raster/expansion.md',
     contract: 'GPUGroupConcaveHullProps'
   },
@@ -294,17 +315,8 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     contract: 'GPUBoundedFacilityAllocationProps'
   },
   addZonalDistributionRecipe: {
-    inputs: [
-      'points',
-      'polygons',
-      'trajectories',
-      'cells',
-      'surface',
-      'spatial-weights',
-      'attributes',
-      'parameters'
-    ],
-    outputs: ['attributes', 'surface', 'network', 'summary'],
+    inputs: ['points', 'polygons', 'attributes', 'parameters'],
+    outputs: ['attributes', 'summary'],
     coordinateModels: ['mixed'],
     dimensionality: '2d',
     topology: 'fixed',
@@ -318,17 +330,8 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     contract: 'GPUZonalDistributionRecipeProps'
   },
   addRasterZonalDistributionRecipe: {
-    inputs: [
-      'points',
-      'polygons',
-      'trajectories',
-      'cells',
-      'surface',
-      'spatial-weights',
-      'attributes',
-      'parameters'
-    ],
-    outputs: ['attributes', 'surface', 'network', 'summary'],
+    inputs: ['surface', 'attributes', 'parameters'],
+    outputs: ['attributes', 'summary'],
     coordinateModels: ['mixed'],
     dimensionality: '2d',
     topology: 'fixed',
@@ -342,17 +345,8 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     contract: 'GPURasterZonalDistributionRecipeProps'
   },
   addInterpolationDiagnosticsRecipe: {
-    inputs: [
-      'points',
-      'polygons',
-      'trajectories',
-      'cells',
-      'surface',
-      'spatial-weights',
-      'attributes',
-      'parameters'
-    ],
-    outputs: ['attributes', 'surface', 'network', 'summary'],
+    inputs: ['points', 'attributes', 'parameters'],
+    outputs: ['surface', 'attributes', 'summary'],
     coordinateModels: ['mixed'],
     dimensionality: '2d',
     topology: 'fixed',
@@ -366,17 +360,8 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     contract: 'GPUInterpolationDiagnosticsRecipeProps'
   },
   addExposureByZoneRecipe: {
-    inputs: [
-      'points',
-      'polygons',
-      'trajectories',
-      'cells',
-      'surface',
-      'spatial-weights',
-      'attributes',
-      'parameters'
-    ],
-    outputs: ['attributes', 'surface', 'network', 'summary'],
+    inputs: ['surface', 'attributes', 'parameters'],
+    outputs: ['attributes', 'summary'],
     coordinateModels: ['mixed'],
     dimensionality: '2d',
     topology: 'fixed',
@@ -390,17 +375,8 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     contract: 'GPUExposureByZoneRecipeProps'
   },
   addRegionalRasterChangeRecipe: {
-    inputs: [
-      'points',
-      'polygons',
-      'trajectories',
-      'cells',
-      'surface',
-      'spatial-weights',
-      'attributes',
-      'parameters'
-    ],
-    outputs: ['attributes', 'surface', 'network', 'summary'],
+    inputs: ['surface', 'attributes', 'parameters'],
+    outputs: ['surface', 'attributes', 'summary'],
     coordinateModels: ['mixed'],
     dimensionality: '2d',
     topology: 'fixed',
@@ -414,17 +390,8 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     contract: 'GPURegionalRasterChangeRecipeProps'
   },
   addDrainageNetworkRecipe: {
-    inputs: [
-      'points',
-      'polygons',
-      'trajectories',
-      'cells',
-      'surface',
-      'spatial-weights',
-      'attributes',
-      'parameters'
-    ],
-    outputs: ['attributes', 'surface', 'network', 'summary'],
+    inputs: ['surface', 'attributes', 'parameters'],
+    outputs: ['surface', 'network', 'summary'],
     coordinateModels: ['mixed'],
     dimensionality: '2d',
     topology: 'fixed',
@@ -438,72 +405,45 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     contract: 'GPUDrainageNetworkRecipeProps'
   },
   addLocalVariabilityRecipe: {
-    inputs: [
-      'points',
-      'polygons',
-      'trajectories',
-      'cells',
-      'surface',
-      'spatial-weights',
-      'attributes',
-      'parameters'
-    ],
-    outputs: ['attributes', 'surface', 'network', 'summary'],
+    inputs: ['spatial-weights', 'attributes', 'parameters'],
+    outputs: ['attributes'],
     coordinateModels: ['mixed'],
     dimensionality: '2d',
     topology: 'fixed',
     cardinality: 'mixed',
     semantics: 'approximate',
     deterministic: true,
-    status: ['invalidCount', 'overflow'],
+    status: ['invalidCount', 'overflow', 'candidateOverflow'],
     evidence: 'partial',
     tests: 'modules/analysis/test/gpu-spatial-analysis/recipes/expansion-recipes.spec.ts',
     documentation: 'docs/api/gpu-spatial-analysis/expansion-recipes.md',
     contract: 'GPULocalVariabilityRecipeProps'
   },
   addCellFlowTopologyRecipe: {
-    inputs: [
-      'points',
-      'polygons',
-      'trajectories',
-      'cells',
-      'surface',
-      'spatial-weights',
-      'attributes',
-      'parameters'
-    ],
-    outputs: ['attributes', 'surface', 'network', 'summary'],
+    inputs: ['cells', 'pairs', 'attributes'],
+    outputs: ['cells', 'pairs', 'network', 'attributes', 'render-geometry'],
     coordinateModels: ['mixed'],
     dimensionality: '2d',
     topology: 'fixed',
     cardinality: 'mixed',
     semantics: 'approximate',
     deterministic: true,
-    status: ['invalidCount', 'overflow'],
+    status: ['invalidCount'],
     evidence: 'partial',
     tests: 'modules/analysis/test/gpu-spatial-analysis/recipes/expansion-recipes.spec.ts',
     documentation: 'docs/api/gpu-network/expansion.md',
     contract: 'GPUCellFlowTopologyRecipeProps'
   },
   addSurfacePreparationRecipe: {
-    inputs: [
-      'points',
-      'polygons',
-      'trajectories',
-      'cells',
-      'surface',
-      'spatial-weights',
-      'attributes',
-      'parameters'
-    ],
-    outputs: ['attributes', 'surface', 'network', 'summary'],
+    inputs: ['surface', 'parameters'],
+    outputs: ['surface', 'attributes', 'summary'],
     coordinateModels: ['mixed'],
     dimensionality: '2d',
     topology: 'fixed',
     cardinality: 'mixed',
     semantics: 'approximate',
     deterministic: true,
-    status: ['invalidCount', 'overflow'],
+    status: ['invalidCount'],
     evidence: 'partial',
     tests: 'modules/analysis/test/gpu-spatial-analysis/recipes/expansion-recipes.spec.ts',
     documentation: 'docs/api/gpu-spatial-analysis/expansion-recipes.md',
@@ -584,7 +524,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     outputs: ['pairs', 'attributes'],
     coordinateModels: ['none'],
     dimensionality: 'topology',
-    status: BOUNDED_STATUS,
+    status: ['overflow', 'candidateOverflow', 'matchedCount'],
     contract: 'GPUCompactPairPort',
     evidence: 'proven',
     tests: 'modules/analysis/test/gpu-spatial-analysis/pair-gather/gpu-pair-gather.spec.ts'
@@ -635,7 +575,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     cardinality: 'capacity-bounded',
     semantics: 'robust-exact',
     deterministic: true,
-    status: [...BOUNDED_STATUS, 'candidateOverflow', 'uncertainCount'],
+    status: ['count', 'requiredRingCount', 'overflow', 'candidateOverflow', 'uncertainCount'],
     contract: 'GPUPolygonizeOutput',
     evidence: 'proven',
     tests:
@@ -650,7 +590,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     cardinality: 'capacity-bounded',
     semantics: 'robust-exact',
     deterministic: true,
-    status: [...BOUNDED_STATUS, 'candidateOverflow', 'uncertainCount'],
+    status: ['count', 'requiredRingCount', 'overflow', 'candidateOverflow', 'uncertainCount'],
     contract: 'GPUPolygonizeOutput',
     evidence: 'proven',
     tests:
@@ -775,6 +715,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     cardinality: 'source-sized',
     semantics: 'exact',
     deterministic: true,
+    status: ['invalidCount', 'overflow', 'candidateOverflow'],
     contract: 'GPUInferenceResultPort',
     evidence: 'proven',
     tests:
@@ -892,13 +833,16 @@ function makeOperator(
   const kindRecord = Object.hasOwn(GPU_ANALYSIS_OPERATOR_KIND_RECORDS, exportName)
     ? GPU_ANALYSIS_OPERATOR_KIND_RECORDS[exportName]
     : undefined;
-  const annotation = OPERATOR_ANNOTATIONS[exportName] ?? {};
+  const packageName = override.package ?? '@luma-contributors/analysis/gpu-spatial-analysis';
+  const annotation =
+    OPERATOR_ANNOTATIONS[`${packageName}:${exportName}`] ?? OPERATOR_ANNOTATIONS[exportName] ?? {};
   const capabilityEvidence = capability.evidence;
   if (!capabilityEvidence) {
     throw new Error(`available capability ${capability.id} needs execution evidence`);
   }
   return {
     exportName,
+    summary: SPATIAL_ANALYSIS_OPERATOR_SUMMARIES[exportName],
     primaryCapability: capability.id,
     tags: override.tags ?? [],
     package: override.package ?? '@luma-contributors/analysis/gpu-spatial-analysis',
@@ -937,10 +881,11 @@ function makeOperator(
 }
 
 /** Operator-level discovery catalogue. It contains names and metadata, never constructors. */
-export const GPU_SPATIAL_ANALYSIS_OPERATORS: readonly GPUSpatialAnalysisOperator[] =
+export const GPU_SPATIAL_ANALYSIS_OPERATORS: readonly GPUSpatialAnalysisOperator[] = freezeCatalog(
   GPU_SPATIAL_ANALYSIS_CAPABILITIES.flatMap(capability =>
     capability.operators.map(exportName => makeOperator(capability, exportName))
-  );
+  )
+);
 
 const OPERATOR_BY_NAME = new Map(
   GPU_SPATIAL_ANALYSIS_OPERATORS.map(operator => [operator.exportName, operator])
@@ -972,6 +917,7 @@ export function queryGPUSpatialAnalysisOperators(
     if (!search) return true;
     return [
       operator.exportName,
+      operator.summary ?? '',
       operator.primaryCapability,
       ...operator.tags,
       ...operator.inputs,
@@ -1033,9 +979,5 @@ export function formatGPUSpatialAnalysisAuditMarkdown(): string {
 
 /** Narrows arbitrary strings to known logical data kinds for catalogue generators. */
 export function isGPUSpatialAnalysisDataKind(value: string): value is GPUSpatialAnalysisDataKind {
-  return GPU_SPATIAL_ANALYSIS_CAPABILITIES.some(
-    capability =>
-      capability.inputs.includes(value as GPUSpatialAnalysisDataKind) ||
-      capability.outputs.includes(value as GPUSpatialAnalysisDataKind)
-  );
+  return GPU_SPATIAL_ANALYSIS_DATA_KINDS.includes(value as GPUSpatialAnalysisDataKind);
 }

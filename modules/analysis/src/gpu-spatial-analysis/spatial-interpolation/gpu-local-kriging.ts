@@ -238,12 +238,6 @@ export type GPULocalKrigingProps<
    * binding) and splits the queries into chunks whose candidate rows fit one binding.
    */
   sampleIndex?: GPULocalKrigingSampleIndex;
-  /**
-   * Largest number of queries per grid-index chunk. Compile-time; omitted means as many as fit the
-   * device's `maxStorageBufferBindingSize`. Exists so tests can exercise chunking on small inputs.
-   * @internal
-   */
-  sampleIndexChunkQueryCount?: number;
   searchRadius?: number;
   /**
    * What a query with no usable sample in its neighbourhood reports. Compile-time.
@@ -343,10 +337,16 @@ export class GPULocalKriging<
   /** Resolved candidate source: supplied `neighborhoods`, an exhaustive scan, or the grid index. */
   readonly sampleIndex: 'supplied' | 'brute-force' | 'grid';
   private readonly covarianceParameters?: LocalKrigingParameterState;
+  private readonly sampleIndexChunkQueryCount?: number;
 
   constructor(
     props: GPULocalKrigingProps<SupportRows, ValueRows, StatusRows, WeightRows, DriftRows>
+  );
+  constructor(
+    props: GPULocalKrigingProps<SupportRows, ValueRows, StatusRows, WeightRows, DriftRows>,
+    sampleIndexChunkQueryCount?: number
   ) {
+    this.sampleIndexChunkQueryCount = sampleIndexChunkQueryCount;
     this.props = props;
     this.id = props.id ?? 'local-kriging';
     this.spatialContext = resolveGPUSpatialContext(
@@ -561,13 +561,8 @@ export class GPULocalKriging<
           GPU_LOCAL_KRIGING_MAXIMUM_BRUTE_FORCE_WORK
         );
       }
-      if (props.sampleIndexChunkQueryCount !== undefined) {
-        validateCapacity(
-          this.id,
-          'sampleIndexChunkQueryCount',
-          props.sampleIndexChunkQueryCount,
-          1
-        );
+      if (sampleIndexChunkQueryCount !== undefined) {
+        validateCapacity(this.id, 'sampleIndexChunkQueryCount', sampleIndexChunkQueryCount, 1);
       }
     }
     this.chunkPlan = planGraphChunkGroups(
@@ -613,7 +608,7 @@ export class GPULocalKriging<
     const gridChunkLength = Math.max(
       1,
       Math.min(
-        props.sampleIndexChunkQueryCount ?? Infinity,
+        sampleIndexChunkQueryCount ?? Infinity,
         getSampleIndexChunkQueryCount(
           owner.device.limits.maxStorageBufferBindingSize,
           sampleCount,
@@ -739,7 +734,7 @@ export class GPULocalKriging<
     );
     const maximumGridChunkLength = Math.min(
       maximumInputChunkLength,
-      props.sampleIndexChunkQueryCount ?? Infinity,
+      this.sampleIndexChunkQueryCount ?? Infinity,
       deviceGridChunkLength
     );
     if (this.sampleIndex === 'grid') {
@@ -1308,4 +1303,27 @@ ${getNearestNeighborSearchWGSL('true')}
 for (var slot = 0u; slot < found; slot++) { candidates[candidatesOffset + index * K + slot] = bestIds[slot]; }`
     });
   }
+}
+
+/** Forces small query chunks for sample-index tests without changing public props. @internal */
+export function createLocalKrigingForTesting<
+  SupportRows extends
+    | GraphDataView<'float32x2' | 'float32x4'>
+    | GraphVectorView<'float32x2' | 'float32x4'>,
+  ValueRows extends GraphDataView<'float32x4'> | GraphVectorView<'float32x4'>,
+  StatusRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'>,
+  WeightRows extends GraphDataView<'float32'> | GraphVectorView<'float32'>,
+  DriftRows extends
+    | GraphDataView<'float32' | 'float32x4'>
+    | GraphVectorView<'float32' | 'float32x4'>
+>(
+  props: GPULocalKrigingProps<SupportRows, ValueRows, StatusRows, WeightRows, DriftRows> & {
+    sampleIndexChunkQueryCount?: number;
+  }
+): GPULocalKriging<SupportRows, ValueRows, StatusRows, WeightRows, DriftRows> {
+  const {sampleIndexChunkQueryCount, ...publicProps} = props;
+  return Reflect.construct(GPULocalKriging, [
+    publicProps,
+    sampleIndexChunkQueryCount
+  ]) as GPULocalKriging<SupportRows, ValueRows, StatusRows, WeightRows, DriftRows>;
 }

@@ -306,9 +306,10 @@ for (const entry of fixture.cases.filter(value => value.tracks.length < 100)) {
             trackLimited.overflow,
             trackLimited.trackOverflow,
             trackLimited.eventOverflow,
-            trackLimited.candidateOverflow
+            trackLimited.candidateOverflow,
+            trackLimited.eventsCandidateOverflow
           ],
-          [keptCount, keptCount, 1, 1, 0, 0]
+          [keptCount, keptCount, 0, 1, 0, 0, 1]
         );
         compare(
           'per-track bounded visit counts',

@@ -36,23 +36,31 @@ import {
   QUADBIN_TILE_WGSL,
   resolveCellSpatialContext,
   type CellKeyLayout,
-  type GPUCellFamily
+  type GPUCellAggregationFamily
 } from './cell-keys';
 import {
   getCellTableNodes,
   getCellTableViews,
   hasCellKeyHighWord,
   validateCellTable,
+  snapshotCellTable,
   type GPUCellTable
 } from './cell-table';
-import {GPU_CELL_DEFAULT_SUM_SCALE, validateSumScale} from '../../analysis-core/cell-key-wgsl';
+import {
+  GPU_CELL_DEFAULT_SUM_SCALE,
+  validateSumScale
+} from '../../analysis-core/kernels/cell-key-wgsl';
 import {
   validateCellPublishBindingCount,
   validateCellViewBindingRanges,
   validateCellTableScratchBindingSizes,
-  validateCellWritableViews
+  validateCellTableWritableViews
 } from './cell-validation';
 import {IS_NAN_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
 import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 
 import {getTiledCellAggregationNodes} from './cell-tiled-aggregation';
@@ -86,7 +94,7 @@ export type GPUCellAggregationProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'cell-aggregation'`. */
   id?: string;
   /** Grid family of the keys. Points (`positions`) are supported for `'quadbin'` only. */
-  family: GPUCellFamily;
+  family: GPUCellAggregationFamily;
   /** Resolution of the output table: Quadbin 0-26, H3 0-15. */
   resolution: number;
   /**
@@ -125,8 +133,6 @@ export type GPUCellAggregationProps = {
   sumScale?: number;
   /** Caller-owned cell table; its capacity is `output.cells.length`. */
   output: GPUCellTable;
-  /** Optional extra one-row destinations of the clamped output count. @internal */
-  extraCounts?: readonly GraphDataView<'uint32'>[];
   /** Retains the original one-binding sort as an explicit reference route. */
   scratchMode?: 'auto' | 'packed';
   /** Optional power-of-two tile width; smaller widths can exercise split scratch on small data. */
@@ -176,7 +182,36 @@ export class GPUCellAggregation implements GPUCommandNodeProducer {
   /** Resolved spatial context: longitude/latitude for `positions`, `discrete-grid` for `cells`. */
   readonly spatialContext: GPUSpatialContext;
 
-  constructor(props: GPUCellAggregationProps) {
+  private readonly extraCounts: readonly GraphDataView<'uint32'>[];
+
+  constructor(props: GPUCellAggregationProps);
+  constructor(
+    props: GPUCellAggregationProps,
+    extraCounts: readonly GraphDataView<'uint32'>[] = []
+  ) {
+    const fields = snapshotConstructionFields(props, [
+      'id',
+      'family',
+      'resolution',
+      'spatialContext',
+      'positions',
+      'cells',
+      'wordOrder',
+      'values',
+      'mask',
+      'sumScale',
+      'output',
+      'scratchMode',
+      'scratchTileSize'
+    ]);
+    props = Object.freeze({
+      ...fields,
+      output: snapshotCellTable(fields.output),
+      spatialContext: fields.spatialContext
+        ? snapshotConstructionSpatialContext(fields.spatialContext)
+        : undefined
+    });
+    this.extraCounts = [...extraCounts];
     this.id = props.id ?? 'cell-aggregation';
     this.props = props;
     const id = this.id;
@@ -268,48 +303,36 @@ export class GPUCellAggregation implements GPUCommandNodeProducer {
     if (!props.values && (output.sums || output.sumValues || output.minimums || output.maximums)) {
       throw new Error(`${id} needs values for sums and extremes`);
     }
-    for (const [index, view] of (props.extraCounts ?? []).entries()) {
+    for (const [index, view] of this.extraCounts.entries()) {
       validateSinglePackedView(view, ['uint32'], `${id} extraCounts[${index}]`);
       validateCapacity(id, `extraCounts[${index}] rows`, view.length);
     }
-    validateCellWritableViews(
-      id,
-      [
-        ...getCellTableViews(output).map((view, index) => [`output field ${index}`, view] as const),
-        ...(props.extraCounts ?? []).map((view, index) => [`extraCounts[${index}]`, view] as const)
-      ],
-      {separateDispatches: this.usesTiledScratch}
-    );
-    if (this.usesTiledScratch) {
-      // Columns publish separately, while status and extra counts share one dispatch.
-      validateCellWritableViews(id, [
-        ...Object.entries(output.status),
-        ...(props.extraCounts ?? []).map((view, index) => [`extraCounts[${index}]`, view] as const)
-      ]);
-    }
+    validateCellTableWritableViews(id, output, this.extraCounts, {
+      separateColumns: this.usesTiledScratch
+    });
     validateGraphOutputsDisjointFromInputs(
       id,
-      [...getCellTableViews(output), ...(props.extraCounts ?? [])],
+      [...getCellTableViews(output), ...this.extraCounts],
       [props.positions, props.cells, props.values, props.mask]
     );
   }
 
   /** Validates all caller views and derived scratch without mutating the graph. @internal */
-  validateBindings<Parameters>(graph: GPUCommandGraph<Parameters>): void {
+  private validateBindings<Parameters>(graph: GPUCommandGraph<Parameters>): void {
     const {id, props} = this;
     validateCellPublishBindingCount(
       graph.device,
       id,
       Boolean(props.output.status.requiredCount),
       0,
-      props.extraCounts?.length ?? 0
+      this.extraCounts.length
     );
     validateCellViewBindingRanges(graph, id, [
       ...[props.positions, props.cells, props.values, props.mask].flatMap(view =>
         view ? getGraphViewChunks(view).filter(chunk => chunk.length > 0) : []
       ),
       ...getCellTableViews(props.output),
-      ...(props.extraCounts ?? [])
+      ...this.extraCounts
     ]);
     const rowView = (props.positions ?? props.cells)!;
     validateCellTableScratchBindingSizes(
@@ -319,7 +342,7 @@ export class GPUCellAggregation implements GPUCommandNodeProducer {
       props.output.cells.length
     );
     if (this.usesTiledScratch) {
-      validateTiledKeyUnionKernelSupport(graph, id, this.props.extraCounts?.length ?? 0);
+      validateTiledKeyUnionKernelSupport(graph, id, this.extraCounts.length);
       validateCellTableScratchBindingSizes(
         graph.device,
         id,
@@ -348,7 +371,8 @@ export class GPUCellAggregation implements GPUCommandNodeProducer {
         this.props,
         this.id,
         this.scratchTileSize,
-        this.sumScale
+        this.sumScale,
+        this.extraCounts
       );
     const {id, props, layout} = this;
     const rowView = (props.positions ?? props.cells)!;
@@ -526,8 +550,23 @@ ${IS_NAN_BITS_WGSL}`,
         source: {kind: 'rows', values},
         sumScale: this.sumScale,
         output: props.output,
-        extraCounts: props.extraCounts
+        extraCounts: this.extraCounts
       })
     ];
   }
+}
+
+/** Runs the private allocation-free preflight for pyramid composition. @internal */
+export function validateCellAggregationBindings<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  contributor: GPUCellAggregation
+): void {
+  Reflect.apply(Reflect.get(contributor, 'validateBindings'), contributor, [graph]);
+}
+
+/** Adds composition-only destinations for a pyramid's level counts. @internal */
+export function createCellAggregation(
+  props: GPUCellAggregationProps & {extraCounts?: readonly GraphDataView<'uint32'>[]}
+): GPUCellAggregation {
+  return Reflect.construct(GPUCellAggregation, [props, props.extraCounts]) as GPUCellAggregation;
 }

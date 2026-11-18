@@ -10,6 +10,43 @@ import {
 import {GPUTrajectorySegmentsOperation} from '../../../src/gpu-spatial-analysis/trajectory-staypoints/gpu-trajectory-segments-operation';
 import {getSegmentsFixture, getSegmentsProps} from './trajectory-segments-operation-fixture';
 
+it('rejects inaccessible trip and upstream tripleg loss destinations in both forms', () => {
+  for (const Operation of [GPUTrajectorySegmentsOperation, CPUTrajectorySegmentsOperation]) {
+    const props = getSegmentsProps(3, 5);
+    delete props.output.trips!.status.candidateOverflow;
+    expect(() => new Operation(props)).toThrow(/segments-test .*trips.status.candidateOverflow/);
+    const upstream = getSegmentsProps();
+    upstream.staypoints!.status.candidateOverflow = 'stayCandidateOverflow';
+    delete upstream.output.triplegs.status.candidateOverflow;
+    expect(() => new Operation(upstream)).toThrow(
+      /segments-test .*triplegs.status.candidateOverflow/
+    );
+  }
+});
+
+it('marks dependent trips incomplete when the tripleg prefix loses a track', () => {
+  const result = computeTrajectorySegmentsOnCPU(
+    {
+      positions: Float32Array.of(0, 0, 1, 0, 2, 0, 3, 0),
+      timestamps: Float32Array.of(0, 1, 0, 1),
+      trackOffsets: Uint32Array.of(0, 2, 4),
+      staypointIds: new Uint32Array(4).fill(0xffffffff),
+      parameters: Float32Array.of(0, 1, 0, 0),
+      staypoints: {
+        tracks: Uint32Array.of(0),
+        startRows: Uint32Array.of(0),
+        finishRows: Uint32Array.of(0),
+        durations: Float32Array.of(0),
+        count: Uint32Array.of(0)
+      }
+    },
+    {triplegCapacity: 1, tripCapacity: 2}
+  );
+  expect(result.tripCount[0]).toBe(1);
+  expect(result.tripOverflow[0]).toBe(0);
+  expect(result.tripCandidateOverflow[0]).toBe(1);
+});
+
 it('matches the hand-built timeline, including consecutive activities, nonactivities and gaps', () => {
   const result = computeTrajectorySegmentsOnCPU(getSegmentsFixture(), {
     triplegCapacity: 6,
@@ -49,6 +86,7 @@ it('matches the hand-built timeline, including consecutive activities, nonactivi
     triplegCount: [5],
     triplegRequiredCount: [5],
     triplegOverflow: [0],
+    triplegCandidateOverflow: [0],
     tripIds: [0, 0, 1, 1, missing],
     tripStartRows: [2, 12, 16, 20, missing],
     tripFinishRows: [7, 15, 17, 21, missing],
@@ -57,7 +95,8 @@ it('matches the hand-built timeline, including consecutive activities, nonactivi
     triplegTripIds: [0, 0, 1, 2, 3, missing],
     tripCount: [4],
     tripRequiredCount: [4],
-    tripOverflow: [0]
+    tripOverflow: [0],
+    tripCandidateOverflow: [0]
   });
 });
 
@@ -76,6 +115,26 @@ it('keeps tripleg overflow separate and assembles trips from the stored prefix',
   expect(Array.from(result.originStaypoints)).toEqual([0]);
   expect(Array.from(result.destinationStaypoints)).toEqual([2]);
   expect(Array.from(result.rowTriplegIds.subarray(16))).toEqual(new Array(6).fill(0xffffffff));
+});
+
+it('reports bounded tripleg and supplied staypoint loss independently of trip capacity', () => {
+  const bounded = computeTrajectorySegmentsOnCPU(getSegmentsFixture(), {
+    triplegCapacity: 3,
+    tripCapacity: 5
+  });
+  expect(bounded.tripCount[0]).toBe(2);
+  expect(bounded.tripOverflow[0]).toBe(0);
+  expect(bounded.tripCandidateOverflow[0]).toBe(1);
+  for (const field of ['overflow', 'candidateOverflow'] as const) {
+    const input = getSegmentsFixture();
+    const result = computeTrajectorySegmentsOnCPU(
+      {...input, staypoints: {...input.staypoints, [field]: Uint32Array.of(1)}},
+      {triplegCapacity: 6, tripCapacity: 5}
+    );
+    expect(result.tripCandidateOverflow[0]).toBe(1);
+    expect(result.triplegCandidateOverflow[0]).toBe(1);
+    expect(result.tripOverflow[0]).toBe(0);
+  }
 });
 
 it('drops stationary and singleton runs, supports triplegs alone, and clamps active staypoint count', () => {

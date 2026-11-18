@@ -4,7 +4,7 @@
 
 import type {Device} from '@luma.gl/core';
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
-import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   validateCapacity,

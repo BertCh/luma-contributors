@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   GPUSpatialRegressionDiagnostics,
   type GPUSpatialRegressionDiagnosticsProps
@@ -18,7 +19,12 @@ export type SpatialRegressionDiagnosticsOperationProps = Pick<
   'id' | 'predictorCount' | 'restandardizeRows' | 'tileRowCount'
 > & {
   rowCount: number;
-  weights: {offsets: string; neighbors: string; weights: string};
+  weights: {
+    offsets: string;
+    neighbors: string;
+    weights: string;
+    status?: {overflow?: string; candidateOverflow?: string};
+  };
   predictors: string;
   response: string;
   residuals: string;
@@ -26,14 +32,57 @@ export type SpatialRegressionDiagnosticsOperationProps = Pick<
   output: {tests: string; summary: string; status: {code: string}};
 };
 
+/** Capture declared operation ports once for contract, lowering and CPU execution. @internal */
+export function snapshotDiagnosticsOperationProps(
+  props: SpatialRegressionDiagnosticsOperationProps
+): SpatialRegressionDiagnosticsOperationProps {
+  const captured = snapshotConstructionFields(props, [
+    'id',
+    'rowCount',
+    'predictorCount',
+    'restandardizeRows',
+    'tileRowCount',
+    'weights',
+    'predictors',
+    'response',
+    'residuals',
+    'mask',
+    'output'
+  ]);
+  const weights = snapshotConstructionFields(captured.weights, [
+    'offsets',
+    'neighbors',
+    'weights',
+    'status'
+  ]);
+  const output = snapshotConstructionFields(captured.output, ['tests', 'summary', 'status']);
+  return Object.freeze({
+    ...captured,
+    weights: Object.freeze({
+      ...weights,
+      ...(weights.status
+        ? {status: snapshotConstructionFields(weights.status, ['overflow', 'candidateOverflow'])}
+        : {})
+    }),
+    output: Object.freeze({...output, status: snapshotConstructionFields(output.status, ['code'])})
+  });
+}
+
 /** GPU spatial regression report as a graph operation, with the contributor's minimum sizes. */
 export class GPUSpatialRegressionDiagnosticsOperation extends GPUContributorOperation {
   constructor(props: SpatialRegressionDiagnosticsOperationProps) {
+    props = snapshotDiagnosticsOperationProps(props);
     const id = props.id ?? 'spatial-regression-diagnostics';
     super({
       id,
       inputs: {
-        ...props.weights,
+        offsets: props.weights.offsets,
+        neighbors: props.weights.neighbors,
+        weights: props.weights.weights,
+        ...(props.weights.status?.overflow ? {weightsOverflow: props.weights.status.overflow} : {}),
+        ...(props.weights.status?.candidateOverflow
+          ? {weightsCandidateOverflow: props.weights.status.candidateOverflow}
+          : {}),
         predictors: props.predictors,
         response: props.response,
         residuals: props.residuals,
@@ -59,7 +108,15 @@ export class GPUSpatialRegressionDiagnosticsOperation extends GPUContributorOper
           weights: {
             offsets: getView<'uint32'>('offsets'),
             neighbors: getView<'uint32'>('neighbors'),
-            weights: getView<'float32'>('weights')
+            weights: getView<'float32'>('weights'),
+            status: {
+              overflow: props.weights.status?.overflow
+                ? getView<'uint32'>('weightsOverflow')
+                : undefined,
+              candidateOverflow: props.weights.status?.candidateOverflow
+                ? getView<'uint32'>('weightsCandidateOverflow')
+                : undefined
+            }
           },
           predictors: getView<'float32'>('predictors'),
           response: getView<'float32'>('response'),

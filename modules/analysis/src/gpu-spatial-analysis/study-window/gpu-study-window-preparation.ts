@@ -32,7 +32,6 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
-  validateRequirement,
   validateCapacity,
   validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -44,6 +43,7 @@ import {
   STUDY_WINDOW_BOUNDARY_CELL_BIT
 } from '../../analysis-core/kernels/study-window-wgsl';
 import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {EXACT_GEOMETRY_WGSL} from '../../analysis-core/kernels/exact-geometry-wgsl';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -51,6 +51,10 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  advancePreparedGeometryGeneration,
+  createPreparedGeometrySnapshot
+} from '../spatial-join/prepared-geometry-snapshot';
 
 const OPERATION = 'GPUStudyWindowPreparation';
 // Ring records: role-signed area, perimeter, edge count, flags, bbox, reversal sign, ownership.
@@ -68,7 +72,7 @@ const STUDY_WINDOW_SORT_WORKGROUP_SIZE = 256;
 const STUDY_WINDOW_SORT_BUCKET_COUNT = 16;
 
 /** Compile-time geometry layout and sampler topology of {@link GPUStudyWindowPreparation}. */
-export type GPUStudyWindowPreparationProps = GPUPolygonGeometryFields & {
+export type GPUStudyWindowPreparationProps<Parameters = unknown> = GPUPolygonGeometryFields & {
   /** Prefix of generated nodes and views. Defaults to `'study-window'`. */
   id?: string;
   /** Planar frame shared with consumers. Omitted means native planar coordinates. */
@@ -83,12 +87,12 @@ export type GPUStudyWindowPreparationProps = GPUPolygonGeometryFields & {
   /** Optional edge-slab entry capacity; a full index falls back to walking edges. */
   slabEntryCapacity?: number;
   /**
-   * Optional CPU predicate evaluated once per encoding, with the encoding's parameters. Return true
-   * to rebuild the window in that encoding (for example when the geometry changed). Combine
-   * with {@link GPUStudyWindowPreparation.invalidate}.
+   * Optional CPU predicate bypassed by a queued refresh request.
+   * The first encoding and first encoding after invalidate() bypass it; other encodings call it
+   * once with their parameters. True requests a new geometry generation. Requested generations
+   * remain pending on the GPU until their complete preparation executes, including after discard.
    */
-  // biome-ignore lint/suspicious/noExplicitAny: the handle is shared by graphs with any Parameters.
-  rebuildWhen?: (parameters: any) => boolean;
+  rebuildWhen?: (parameters: Parameters) => boolean;
   /** Optional caller-owned summary copy for readback, containing eight float32 values. */
   output?: {summary?: GraphDataView<'float32'>};
 };
@@ -115,14 +119,19 @@ export type GPUStudyWindowPreparationProps = GPUPolygonGeometryFields & {
  * legal and sets EMPTY at encode time. The raster sampler uses raw positions: degenerate rings
  * can only add boundary flags (extra exact tests), never change coverage.
  *
- * The first encoding builds the window. Later encodings skip all build nodes (CPU conditions,
- * so no GPU work is recorded) until {@link invalidate} is called or `rebuildWhen` returns true.
- * It reuses a build, it never caches results: consumers still evaluate their current inputs on
+ * The first submitted encoding captures a persistent geometry snapshot. Invalidate or rebuildWhen
+ * requests a new generation, committed only after the complete preparation executes. Discarded
+ * encodings retry automatically. Public preparation stages replay against the retained geometry
+ * every encoding; geometry refresh alone is GPU-gated, avoiding private dispatch APIs. This repeats
+ * preparation work and adds one copy of each geometry view plus 24 generation-control bytes.
+ * It reuses geometry, it never caches results: consumers still evaluate their current inputs on
  * every encoding. Changed geometry needs `invalidate()` or `rebuildWhen`; otherwise consumers
  * deliberately keep using the previous build. Changing view lengths requires a new handle and
  * graph. One handle belongs to one graph, whose consumers may share it.
  */
-export class GPUStudyWindowPreparation implements GPUCommandNodeProducer, GPUPolygonStudyWindow {
+export class GPUStudyWindowPreparation<Parameters = unknown>
+  implements GPUCommandNodeProducer<Parameters>, GPUPolygonStudyWindow
+{
   /** Discriminant used by study-window consumers. */
   readonly kind = 'polygon' as const;
   /** Prefix of generated node and view IDs. */
@@ -132,18 +141,19 @@ export class GPUStudyWindowPreparation implements GPUCommandNodeProducer, GPUPol
   /** Number of source vertex rows, including any rows outside rings. */
   readonly vertexCount: number;
   /** Validated compile-time properties. */
-  readonly props: GPUStudyWindowPreparationProps;
+  readonly props: GPUStudyWindowPreparationProps<Parameters>;
   /** Sampler columns and rows. */
   readonly sampleGrid: readonly [number, number];
-  /** Number of encodings that rebuilt the window so far (counted on the CPU at encode time). */
+  /** CPU refresh-request encodings, including discarded requests; excludes automatic GPU retries. */
   encodedBuildCount = 0;
 
   private graph: unknown;
   private views: GPUPolygonStudyWindowViews | undefined;
   private ownedBuffers: Buffer[] = [];
-  private dirty = true;
+  private readonly rebuildGeneration = new Uint32Array([1, 0]);
+  private encodingRequestPending = true;
 
-  constructor(props: GPUStudyWindowPreparationProps) {
+  constructor(props: GPUStudyWindowPreparationProps<Parameters>) {
     this.id = props.id ?? 'study-window';
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
@@ -217,7 +227,8 @@ export class GPUStudyWindowPreparation implements GPUCommandNodeProducer, GPUPol
 
   /** Forces the next encoding to rebuild the window. Call it after the geometry changed. */
   invalidate(): void {
-    this.dirty = true;
+    advancePreparedGeometryGeneration(this.rebuildGeneration);
+    this.encodingRequestPending = true;
   }
 
   /** Destroys buffers the handle allocated itself. Destroy compiled graphs that use it first. */
@@ -228,7 +239,8 @@ export class GPUStudyWindowPreparation implements GPUCommandNodeProducer, GPUPol
     this.views = undefined;
     this.ownedBuffers = [];
     this.graph = undefined;
-    this.dirty = true;
+    this.rebuildGeneration.set([1, 0]);
+    this.encodingRequestPending = true;
   }
 
   private createPersistentView<Parameters, Format extends 'float32' | 'uint32' | 'uint32x2'>(
@@ -246,11 +258,10 @@ export class GPUStudyWindowPreparation implements GPUCommandNodeProducer, GPUPol
     return importGraphBuffer(graph, `${this.id}-${name}`, buffer, format, length);
   }
 
-  /** Returns preparation, rasterization, compaction and packing nodes conditioned on rebuilding. */
-  getCommandNodes<Parameters>(
-    graph: GPUCommandGraph<Parameters>
-  ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, vertexCount, sampleGrid} = this;
+  /** Returns gated geometry refresh, replayed preparation stages, and final GPU generation commit. */
+  getCommandNodes(graph: GPUCommandGraph<Parameters>): readonly GPUCommandNode<Parameters>[] {
+    const {id, vertexCount, sampleGrid} = this;
+    let props = this.props;
     if (this.graph) {
       throw new Error(`${id} is already added to a graph`);
     }
@@ -312,6 +323,41 @@ export class GPUStudyWindowPreparation implements GPUCommandNodeProducer, GPUPol
         byteLength,
         'reduce vertices, samplingGrid or capacities'
       );
+    const snapshot = createPreparedGeometrySnapshot(graph, {
+      id,
+      views: {
+        positions: props.positions,
+        featureOffsets: props.featureOffsets,
+        polygonOffsets: props.polygonOffsets,
+        ringOffsets: props.ringOffsets
+      },
+      generation: this.rebuildGeneration,
+      ownedBuffers: this.ownedBuffers,
+      recordEncoding: parameters => {
+        if (this.encodingRequestPending) this.encodedBuildCount++;
+        else if (this.props.rebuildWhen?.(parameters)) {
+          advancePreparedGeometryGeneration(this.rebuildGeneration);
+          this.encodedBuildCount++;
+        }
+        this.encodingRequestPending = false;
+      }
+    });
+    props = {
+      ...snapshotConstructionFields(props, [
+        'id',
+        'spatialContext',
+        'positions',
+        'featureOffsets',
+        'polygonOffsets',
+        'ringOffsets',
+        'samplingGrid',
+        'crossingCapacity',
+        'slabEntryCapacity',
+        'rebuildWhen',
+        'output'
+      ]),
+      ...snapshot.views
+    };
     this.graph = graph;
     const edges = this.createPersistentView(graph, 'edges', 'float32', 4 * vertexCount);
     const summary = this.createPersistentView(
@@ -758,49 +804,6 @@ ${getStudyWindowSampleCellWGSL(sampleGrid, 'readSummary')}`,
       sampleGrid,
       packed
     };
-    // Latch the decision once per encoding, including every nested scan/raster node and copy.
-    const nodeCount = nodes.length;
-    let evaluations = 0;
-    let latched = true;
-    const evaluate = (parameters: unknown): boolean => {
-      if (evaluations === 0) {
-        latched = this.dirty || (this.props.rebuildWhen?.(parameters) ?? false);
-        if (latched) {
-          this.encodedBuildCount++;
-        }
-      }
-      evaluations++;
-      if (evaluations === nodeCount) {
-        evaluations = 0;
-        if (latched) {
-          this.dirty = false;
-        }
-      }
-      return latched;
-    };
-    return nodes.map(node => {
-      const existing = node.condition;
-      if (existing) {
-        // Nested producers may already have a CPU gate. Always evaluate the rebuild latch first.
-        validateRequirement(
-          id,
-          existing.source === 'cpu',
-          'rebuild latch needs nested nodes without a GPU-sourced condition'
-        );
-        return {
-          ...node,
-          condition: {
-            id: `${id}-rebuild`,
-            source: 'cpu',
-            evaluate: (parameters: Parameters) =>
-              evaluate(parameters) && existing.evaluate(parameters)
-          }
-        } as GPUCommandNode<Parameters>;
-      }
-      return {
-        ...node,
-        condition: {id: `${id}-rebuild`, source: 'cpu', evaluate}
-      } as GPUCommandNode<Parameters>;
-    });
+    return [...snapshot.nodes, ...nodes, snapshot.commit(nodes)];
   }
 }

@@ -68,7 +68,7 @@ const OPERATION = 'GPUTrajectoryClosestApproach';
  * Capacity-bounded pair list of {@link GPUTrajectoryClosestApproach}: a {@link GPUCompactOutput}
  * (`ids` holds the lower track index of each pair) with optional per-pair columns, each with
  * exactly `ids.length` rows. Pairs are ordered by `(track, partner)` with `track < partner`. Rows at
- * and after `count` hold `0xffffffff` for IDs and 0 for values. Times are seconds relative to the
+ * and after `count` hold `0xffffffff` for IDs and 0 for values. Times use the declared timestamp unit relative to the
  * first sample of the lower track (`ids`), like the event times of `GPUZoneEvents`.
  */
 export type GPUTrajectoryClosestApproachPairs = GPUCompactOutput & {
@@ -142,7 +142,7 @@ export type GPUTrajectoryClosestApproachProps = GPUTrajectoryGeometryFields & {
    * cover at most 4096 cells (counting time cells); more raises `entryOverflow`.
    */
   cellSize: number;
-  /** Compile-time time cell length of the space-time grid, in seconds. */
+  /** Compile-time time cell length of the space-time grid, in the declared timestamp unit. */
   timeCellSize: number;
   /**
    * Maximum `(cell, segment)` entries per encoding; also the sorted entry scratch length. Its
@@ -318,6 +318,7 @@ export class GPUTrajectoryClosestApproach implements GPUCommandNodeProducer {
       pairs.ids,
       pairs.status.count,
       pairs.status.overflow,
+      pairs.status.candidateOverflow,
       pairs.status.requiredCount,
       pairs.partners,
       pairs.minimumDistances,
@@ -366,6 +367,7 @@ export class GPUTrajectoryClosestApproach implements GPUCommandNodeProducer {
     const f32 = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'float32', Math.max(length, 1));
     const state = u32('state', CLOSEST_APPROACH_STATE_WORDS);
+    const candidateOverflow = status.candidateOverflow ?? u32('candidate-overflow', 1);
     const segmentRecords = u32('segment-records', rowCount * CLOSEST_APPROACH_SEGMENT_WORDS);
     const segmentCounts = u32('segment-counts', rowCount);
     const segmentStarts = u32('segment-starts', rowCount);
@@ -550,14 +552,14 @@ export class GPUTrajectoryClosestApproach implements GPUCommandNodeProducer {
         state,
         entryOverflow: status.entryOverflow,
         hitOverflow: status.hitOverflow,
-        candidateOverflow: status.candidateOverflow
+        candidateOverflow
       }),
       createPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: OPERATION,
         requiredCount: runCount,
         output: pairs,
-        overflowSources: []
+        candidateOverflowSources: pairs.status.candidateOverflow ? [candidateOverflow] : []
       })
     );
     return nodes;

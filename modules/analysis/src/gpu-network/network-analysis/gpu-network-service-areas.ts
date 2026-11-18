@@ -21,7 +21,7 @@ import {
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology,
   type GPUNetworkTopology
-} from '../../analysis-core/network-topology';
+} from '../../analysis-core/contracts/network-topology';
 import {
   GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS,
   GPU_NETWORK_REACHABILITY_MAXIMUM_LOCAL_ITERATIONS,

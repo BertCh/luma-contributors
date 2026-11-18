@@ -10,6 +10,7 @@ import {
 } from '../../analysis-core/operations/cpu-operation-rows';
 import {
   GPUSpatialRegressionDiagnosticsOperation,
+  snapshotDiagnosticsOperationProps,
   type SpatialRegressionDiagnosticsOperationProps
 } from './gpu-spatial-regression-diagnostics-operation';
 import {validateCPURegressionWeights, type CPURegressionWeights} from './cpu-regression-weights';
@@ -22,7 +23,9 @@ import {
 
 /** Supplied OLS residuals are consumed as-is, with common finite/unmasked row selection. */
 export type CPUSpatialRegressionDiagnosticsInput = {
-  weights: CPURegressionWeights;
+  weights: CPURegressionWeights & {
+    status?: {overflow?: Uint32Array; candidateOverflow?: Uint32Array};
+  };
   predictors: Float32Array;
   response: Float32Array;
   residuals: Float32Array;
@@ -68,7 +71,8 @@ export function computeSpatialRegressionDiagnosticsOnCPU(
 ): CPUSpatialRegressionDiagnosticsResult {
   const id = 'computeSpatialRegressionDiagnosticsOnCPU';
   validateCapacity(id, 'predictorCount', options.predictorCount);
-  const rowCount = validateCPURegressionWeights(id, input.weights);
+  // This twin publishes status 3 and suppresses diagnostics for either weights loss flag below.
+  const rowCount = validateCPURegressionWeights(id, input.weights, 'handled-by-caller');
   const {predictorCount} = options;
   const width = predictorCount + 1;
   if (input.response.length !== rowCount)
@@ -117,6 +121,8 @@ export function computeSpatialRegressionDiagnosticsOnCPU(
     result.status[0] = code;
     return result;
   };
+  if (input.weights.status?.overflow?.[0] || input.weights.status?.candidateOverflow?.[0])
+    return fail(3);
   if (usedCount <= width + 1) return fail(2);
   const active = usedRows.map(row => {
     const entries: [number, number][] = [];
@@ -293,6 +299,7 @@ export function computeSpatialRegressionDiagnosticsOnCPU(
 /** CPU diagnostic report; supplied residuals and all output/status layouts are preserved. */
 export class CPUSpatialRegressionDiagnosticsOperation extends GPUCPUOperation {
   constructor(props: SpatialRegressionDiagnosticsOperationProps) {
+    props = snapshotDiagnosticsOperationProps(props);
     const id = props.id ?? 'spatial-regression-diagnostics';
     validateCapacity(id, 'rowCount', props.rowCount);
     validateCapacity(id, 'predictorCount', props.predictorCount);
@@ -316,7 +323,15 @@ export class CPUSpatialRegressionDiagnosticsOperation extends GPUCPUOperation {
             weights: {
               offsets: getCPUOperationUint32Rows(id, inputs, 'offsets'),
               neighbors: getCPUOperationUint32Rows(id, inputs, 'neighbors'),
-              weights: getCPUOperationFloat32Rows(id, inputs, 'weights')
+              weights: getCPUOperationFloat32Rows(id, inputs, 'weights'),
+              status: {
+                overflow: props.weights.status?.overflow
+                  ? getCPUOperationUint32Rows(id, inputs, 'weightsOverflow')
+                  : undefined,
+                candidateOverflow: props.weights.status?.candidateOverflow
+                  ? getCPUOperationUint32Rows(id, inputs, 'weightsCandidateOverflow')
+                  : undefined
+              }
             },
             predictors: getCPUOperationFloat32Rows(id, inputs, 'predictors'),
             response,

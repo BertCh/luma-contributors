@@ -276,7 +276,9 @@ it('GPUPointHorizonProfile schedules canonicalization, pyramid levels and march 
   checkPointHorizonVerticalDatums(create, createBand(graph, 'datum-elevation', 64 * 48));
   const nodes = contributor.getCommandNodes(graph);
   const ids = nodes.map(node => node.id);
-  const levelCount = contributor.model.layout?.levels.length ?? 0;
+  const levelCount =
+    resolvePointHorizonModel(contributor.id, contributor.props.grid, contributor.props).layout
+      ?.levels.length ?? 0;
   expect(levelCount).toBe(5); // 64 x 48 with 4 px blocks: 16x12, 8x6, 4x3, 2x2, 1x1
   // The pyramid builder may fuse its coarse levels into fewer nodes; only its presence matters.
   expect(ids[0]).toBe('point-horizon-profile-elevation');
@@ -328,7 +330,9 @@ it('GPUPointHorizonProfile schedules canonicalization, pyramid levels and march 
     firstAzimuth: 20,
     output: tangentOnly('sector-tangent', 300)
   });
-  expect(sector.model.azimuthSpan).toBe(100);
+  expect(resolvePointHorizonModel(sector.id, sector.props.grid, sector.props).azimuthSpan).toBe(
+    100
+  );
 
   expect(() => create({output: {}})).toThrow(/at least one output/);
   expect(() => create({output: tangentOnly('short-tangent', 10)})).toThrow(
@@ -356,7 +360,9 @@ it('GPUPointHorizonProfile schedules canonicalization, pyramid levels and march 
       elevation: {...shared, storage: {kind: 'buffer', values: shared.storage.values}},
       output: {tangent: shared.storage.values}
     })
-  ).toThrow(/share buffers/);
+  ).toThrow(
+    /^point-horizon-profile output\[0\] chunk 0 logical byte ranges must not overlap \(writable storage\)$/
+  );
   const otherGraph = new GPUCommandGraph(device);
   expect(() =>
     new GPUPointHorizonProfile({

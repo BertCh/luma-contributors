@@ -25,6 +25,7 @@ import {
 } from '../spatial-weights/spatial-weights';
 import {
   getGPUSpatialWeightsChunks,
+  getGPUSpatialWeightsLossViews,
   getGPUSpatialWeightsOrChunksViews,
   validateGPUSpatialWeightsOrChunks,
   type GPUChunkedSpatialWeights
@@ -261,7 +262,7 @@ export const PERMUTATION_FLOAT_WGSL = SPATIAL_AUTOCORRELATION_FLOAT_WGSL;
  * - When the weights are row standardized, each analysis row's active weights are re-standardized
  *   to sum to 1 (see the returned `weights`), so masked or missing neighbors drop out of the lag
  *   instead of shrinking it toward 0.
- * - If `weights.status.overflow` is nonzero the weights are truncated and no row is analyzed (all
+ * - If `weights.status.overflow` or `candidateOverflow` is nonzero the weights are incomplete and no row is analyzed (all
  *   statistics are NaN).
  * - The mean uses a fixed-order f32 tree sum followed by a second pass on the deviations from that
  *   first mean, so the centered values sum to zero to f32 accuracy for data with a large offset.
@@ -417,6 +418,19 @@ ${PERMUTATION_FLOAT_WGSL}`;
   analysisFlags[analysisFlagsOffset + index] = select(0u, 1u, analyzed);`)
       });
     }),
+    ...getGPUSpatialWeightsLossViews(weights).map((loss, lossIndex) =>
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-incomplete-analysis-${lossIndex}`,
+        operation,
+        variant: 'incomplete-input',
+        bindings: [
+          {name: 'loss', view: loss, type: 'u32', access: 'read'},
+          {name: 'analysisFlags', view: analysisFlags, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: rows,
+        body: 'if (loss[lossOffset] != 0u) { analysisFlags[analysisFlagsOffset + index] = 0u; }'
+      })
+    ),
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-moment-inputs`,
       operation,

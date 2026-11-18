@@ -271,6 +271,7 @@ export class GPUTrajectoryStaypoints implements GPUCommandNodeProducer {
     validateTrajectoryWritableDispatches(this.id, [
       {ids: output.ids, startRows: output.startRows},
       {endRows: output.endRows, finishRows: output.finishRows},
+      {candidateOverflow: output.status.candidateOverflow},
       {
         count: output.status.count,
         overflow: output.status.overflow,
@@ -477,7 +478,15 @@ export class GPUTrajectoryStaypoints implements GPUCommandNodeProducer {
         id: `${id}-publish`,
         operation: OPERATION,
         requiredCount: stayTotal,
-        output,
+        // The candidate pass above owns the search-loss word; this pass owns final capacity.
+        output: {
+          ids: output.ids,
+          status: {
+            count: output.status.count,
+            overflow: output.status.overflow,
+            requiredCount: output.status.requiredCount
+          }
+        },
         extraCounts: output.drawInstanceCount ? [output.drawInstanceCount] : []
       })
     );

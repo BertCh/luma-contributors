@@ -21,6 +21,7 @@ import {getCPUTrajectoryDistance} from '../../analysis-core/operations/cpu-traje
 import {GPU_MOVEMENT_SENTINEL} from '../trajectory-staypoints/movement-common';
 import {
   GPUMobilityIndicatorsOperation,
+  snapshotMobilityIndicatorsOperationProps,
   type MobilityIndicatorsOperationProps
 } from './gpu-mobility-indicators-operation';
 
@@ -34,6 +35,8 @@ export type CPUMobilityIndicatorsInput = {
     durations: Float32Array;
     locationIds: Uint32Array;
     count: Uint32Array;
+    overflow?: Uint32Array;
+    candidateOverflow?: Uint32Array;
   };
   triplegs?: {
     tracks: Uint32Array;
@@ -41,6 +44,8 @@ export type CPUMobilityIndicatorsInput = {
     endRows: Uint32Array;
     count: Uint32Array;
     staypointFinishRows: Uint32Array;
+    overflow?: Uint32Array;
+    candidateOverflow?: Uint32Array;
   };
 };
 /** Real entropy can be skipped when unused; the default computes every indicator. */
@@ -98,7 +103,7 @@ function computeSequenceEntropy(sequence: Uint32Array): number {
  * - Arithmetic uses float64 and rounds each output once. Int64 timestamps are subtracted exactly
  *   before conversion. Distances, entropies and duration-ranking ties near rounding can differ.
  * - Real entropy uses the full sequence: maximumEntropySequenceRows is ignored and
- *   candidateOverflow is always zero. includeRealEntropy=false skips that unused calculation.
+ *   candidateOverflow reports supplied staypoint loss. includeRealEntropy=false skips that unused calculation.
  * - Inconsistent columns, invalid row indices and unordered active track IDs throw an Error.
  * - Nonfinite coordinates/durations/times use JavaScript arithmetic and comparisons; GPU results
  *   for such inputs are unspecified.
@@ -291,12 +296,30 @@ export function computeMobilityIndicatorsOnCPU(
     begin = end;
     triplegBegin = triplegEnd;
   }
+  for (const name of ['overflow', 'candidateOverflow'] as const) {
+    const flag = triplegs?.[name];
+    if (flag && flag.length < 1)
+      throw new Error(`mobility-indicators triplegs.${name} must contain at least one row`);
+    if (flag?.[0]) result.trackingQuality.fill(NaN);
+    const stayFlag = staypoints[name];
+    if (stayFlag && stayFlag.length < 1)
+      throw new Error(`mobility-indicators staypoints.${name} must contain at least one row`);
+    if (stayFlag?.[0]) {
+      for (const values of Object.values(result)) {
+        if (values instanceof Float32Array) values.fill(NaN);
+      }
+      result.homeLocations.fill(GPU_MOVEMENT_SENTINEL);
+      result.workLocations.fill(GPU_MOVEMENT_SENTINEL);
+      result.candidateOverflow[0] = 1;
+    }
+  }
   return result;
 }
 
 /** CPU mobility twin; full sequence entropy replaces the GPU's bounded estimator. */
 export class CPUMobilityIndicatorsOperation extends GPUCPUOperation {
   constructor(props: MobilityIndicatorsOperationProps) {
+    props = snapshotMobilityIndicatorsOperationProps(props);
     const id = props.id ?? 'mobility-indicators';
     validateCapacity(id, 'trackCount', props.trackCount);
     validateCapacity(id, 'rowCount', props.rowCount, 0);
@@ -358,7 +381,15 @@ export class CPUMobilityIndicatorsOperation extends GPUCPUOperation {
               startRows: getCPUOperationUint32Rows(id, inputs, 'stayStartRows'),
               durations: getCPUOperationFloat32Rows(id, inputs, 'durations'),
               locationIds: getCPUOperationUint32Rows(id, inputs, 'locationIds'),
-              count: getCPUOperationUint32Rows(id, inputs, 'stayCount')
+              count: getCPUOperationUint32Rows(id, inputs, 'stayCount'),
+              overflow:
+                props.staypoints.status.overflow !== undefined
+                  ? getCPUOperationUint32Rows(id, inputs, 'stayOverflow')
+                  : undefined,
+              candidateOverflow:
+                props.staypoints.status.candidateOverflow !== undefined
+                  ? getCPUOperationUint32Rows(id, inputs, 'stayCandidateOverflow')
+                  : undefined
             },
             triplegs: triplegTracks
               ? {
@@ -366,6 +397,14 @@ export class CPUMobilityIndicatorsOperation extends GPUCPUOperation {
                   startRows: getCPUOperationUint32Rows(id, inputs, 'triplegStartRows'),
                   endRows: getCPUOperationUint32Rows(id, inputs, 'triplegEndRows'),
                   count: getCPUOperationUint32Rows(id, inputs, 'triplegCount'),
+                  overflow:
+                    props.triplegs?.status.overflow !== undefined
+                      ? getCPUOperationUint32Rows(id, inputs, 'triplegOverflow')
+                      : undefined,
+                  candidateOverflow:
+                    props.triplegs?.status.candidateOverflow !== undefined
+                      ? getCPUOperationUint32Rows(id, inputs, 'triplegCandidateOverflow')
+                      : undefined,
                   staypointFinishRows: getCPUOperationUint32Rows(id, inputs, 'stayFinishRows')
                 }
               : undefined

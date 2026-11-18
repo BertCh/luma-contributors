@@ -60,7 +60,7 @@ for (const owner of ['feature', 'polygon'] as PolygonEdgeSlabOwner[]) {
       expect(slabs.ownerCount).toBe(1);
       expect(slabs.vertexCount).toBe(64);
       expect(slabs.slabEntries.length).toBe(64 + slabs.entryCapacity);
-      for (const source of getParsedKernelSources(nodes).values()) {
+      for (const {source} of getParsedKernelSources(nodes).configurations) {
         expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
       }
 
@@ -315,7 +315,7 @@ it('GPUCellCover slab kernels parse and stay within eight storage buffers', () =
     });
     const sources = getParsedKernelSources(cover.getCommandNodes(graph));
     expect(sources.size).toBeGreaterThan(8);
-    for (const source of sources.values()) {
+    for (const {source} of sources.configurations) {
       expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
     }
   }

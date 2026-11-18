@@ -57,6 +57,49 @@ function getProps(
   };
 }
 
+for (const Operation of [GPUCoregionalizationFitOperation, CPUCoregionalizationFitOperation]) {
+  it(`final1b ${Operation.name} retains zero-budget shape and ports after caller mutation`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const props = getProps(2, 1, 0);
+    const operation = new Operation(props);
+    props.maximumIterations = 1;
+    props.variableCount = 3;
+    props.structureCount = 2;
+    props.output.matrices = 'other';
+    props.output.status.iterationCount = 'other-iterations';
+    props.distances = 'other-distances';
+    const result = await runOperationGraph(device, {
+      inputs: {
+        distances: {format: 'float32', values: Float32Array.of(1)},
+        semivariances: {format: 'float32', values: Float32Array.of(2, -1, 3)},
+        pairCounts: {format: 'uint32', values: Uint32Array.of(10)},
+        parameters: {
+          format: 'float32',
+          values: getGPUCoregionalizationFitParameterValues([
+            {model: 'spherical', range: 1, sill: 1}
+          ])
+        }
+      },
+      operations: [operation],
+      outputs: [
+        'matrices',
+        'loadings',
+        'iterationCount',
+        'validity',
+        'converged',
+        'iterationLimitReached'
+      ]
+    });
+    expect(Array.from(result['matrices'])).toEqual([0, 0, 0, 0]);
+    expect(Array.from(result['loadings'])).toEqual([0, 0, 0, 0]);
+    expect(Array.from(result['iterationCount'])).toEqual([0]);
+    expect(Array.from(result['validity'])).toEqual([1]);
+    expect(Array.from(result['converged'])).toEqual([0]);
+    expect(Array.from(result['iterationLimitReached'])).toEqual([1]);
+  });
+}
+
 /** Factor signs/bases are arbitrary. Compare their Gram matrices (all other outputs directly). */
 function reconstructLoadings(values: OperationGraphRows, variableCount: number): number[] {
   const output: number[] = [];
@@ -208,7 +251,10 @@ it('a fitted supplied LMC predicts the hand-derived two-observation co-kriging r
   }
 });
 
-it('replay rewrites statuses after nonfinite bins and per-frame models, preserving trailing output capacity', async () => {
+it.each([
+  false,
+  true
+])('replay rewrites statuses after nonfinite bins and per-frame models, preserving trailing output capacity (CORE-08 props mutation: %s)', async mutateProps => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const graph = new GPUCommandGraph(device);
@@ -251,29 +297,37 @@ it('replay rewrites statuses after nonfinite bins and per-frame models, preservi
     iterationLimitReached: bind(new Uint32Array([777, 777]), 'uint32'),
     invalidCount: bind(new Uint32Array([777, 777]), 'uint32')
   };
-  graph.add(
-    new GPUCoregionalizationFit({
-      variableCount: 2,
-      structureCount: 1,
-      maximumIterations: 4,
-      distances: distances.view,
-      semivariances: semivariances.view,
-      pairCounts: pairCounts.view,
-      parameters: parameters.view,
-      output: {
-        matrices: matrices.view,
-        loadings: loadings.view,
-        diagnostics: diagnostics.view,
-        status: {
-          validity: status.validity.view,
-          iterationCount: status.iterationCount.view,
-          converged: status.converged.view,
-          iterationLimitReached: status.iterationLimitReached.view,
-          invalidCount: status.invalidCount.view
-        }
+  const props = {
+    variableCount: 2,
+    structureCount: 1,
+    maximumIterations: 4,
+    distances: distances.view,
+    semivariances: semivariances.view,
+    pairCounts: pairCounts.view,
+    parameters: parameters.view,
+    output: {
+      matrices: matrices.view,
+      loadings: loadings.view,
+      diagnostics: diagnostics.view,
+      status: {
+        validity: status.validity.view,
+        iterationCount: status.iterationCount.view,
+        converged: status.converged.view,
+        iterationLimitReached: status.iterationLimitReached.view,
+        invalidCount: status.invalidCount.view
       }
-    })
-  );
+    }
+  };
+  const contributor = new GPUCoregionalizationFit(props);
+  if (mutateProps) {
+    props.variableCount = 5;
+    props.structureCount = 3;
+    props.maximumIterations = 0;
+    props.output.matrices = loadings.view;
+    props.output.status.validity = status.iterationCount.view;
+    props.distances = parameters.view;
+  }
+  graph.add(contributor);
   const compiled = graph.compile();
   try {
     for (const scenario of [

@@ -4,6 +4,10 @@
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUOPTICS, OPTICS_ITERATION_STATUS_FIELDS, type GPUOPTICSProps} from './gpu-optics';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
 
 /** OPTICS graph values; each per-row output has the explicit rowCount inferred from positions. */
 export type OPTICSOperationProps = Omit<GPUOPTICSProps, 'positions' | 'times' | 'output'> & {
@@ -30,9 +34,96 @@ export type OPTICSOperationProps = Omit<GPUOPTICSProps, 'positions' | 'times' | 
   };
 };
 
+/** @internal Retains the operation's construction fields across deferred execution/lowering. */
+export function snapshotOPTICSOperationProps(props: OPTICSOperationProps): OPTICSOperationProps {
+  const snapshot = snapshotConstructionFields(props, [
+    'id',
+    'positions',
+    'times',
+    'rowCount',
+    'output',
+    'spatialContext',
+    'temporalContext',
+    'maximumTimeDistance',
+    'minimumSamples',
+    'maximumDistance',
+    'extractionDistance',
+    'extractionMethod',
+    'xi',
+    'minimumClusterSize',
+    'predecessorCorrection',
+    'frontierBatchSize',
+    'maximumIterations',
+    'neighborIndex',
+    'orderingMethod',
+    'neighborCapacity'
+  ]);
+  const output = snapshotConstructionFields(snapshot.output, [
+    'ordering',
+    'coreDistances',
+    'reachability',
+    'predecessors',
+    'labels',
+    'status',
+    'clusterIntervals',
+    'clusterSummary',
+    'ports'
+  ]);
+  const ports = output.ports && snapshotConstructionFields(output.ports, ['status']);
+  const temporal =
+    snapshot.temporalContext &&
+    snapshotConstructionFields(snapshot.temporalContext, [
+      'unit',
+      'epoch',
+      'encoding',
+      'timeZone',
+      'axis'
+    ]);
+  const axis =
+    temporal &&
+    snapshotConstructionFields(temporal.axis, ['kind', 'step'] as (keyof typeof temporal.axis)[]);
+  return Object.freeze({
+    ...snapshot,
+    ...(snapshot.spatialContext
+      ? {spatialContext: snapshotConstructionSpatialContext(snapshot.spatialContext)}
+      : {}),
+    ...(temporal
+      ? {
+          temporalContext: Object.freeze({
+            ...temporal,
+            axis: Object.freeze({
+              ...axis,
+              ...(axis && 'step' in axis && typeof axis.step === 'object'
+                ? {
+                    step: snapshotConstructionFields(axis.step, ['calendarUnit', 'interval'])
+                  }
+                : {})
+            }) as typeof temporal.axis
+          })
+        }
+      : {}),
+    output: Object.freeze({
+      ...output,
+      ...(ports
+        ? {
+            ports: Object.freeze({
+              status: snapshotConstructionFields(ports.status, [
+                'candidateOverflow',
+                'iterationCount',
+                'converged',
+                'iterationLimitReached'
+              ])
+            })
+          }
+        : {})
+    })
+  });
+}
+
 /** OPTICS contributor operation. Compile with `GPU_CONTRIBUTOR_OPERATION_LOWERING`. */
 export class GPUOPTICSOperation extends GPUContributorOperation {
   constructor(props: OPTICSOperationProps) {
+    props = snapshotOPTICSOperationProps(props);
     const id = props.id ?? 'optics';
     const {output} = props;
     const length = props.rowCount;

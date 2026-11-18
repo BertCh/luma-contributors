@@ -181,3 +181,102 @@ it('Gi and Gi* differ on this lattice, so a mismatched permutation statistic wou
   // further apart than that in every row.
   expect(Math.min(...differences)).toBeGreaterThan(1e-3);
 });
+
+it('keeps the 25-row permutation correction family beside the 9-row analytic family', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new RecipeTestFixture(device, 'hot-spot-families');
+  try {
+    const zScores = fixture.output('z-scores', 'float32', 25);
+    const pseudoPValues = fixture.output('pseudo-p-values', 'float32', 25);
+    const significant = fixture.output('significant', 'uint32', 25);
+    const result = addHotSpotAnalysisRecipe(fixture.graph, {
+      source: {
+        kind: 'lattice',
+        values: fixture.input(
+          'values',
+          Float32Array.from({length: 25}, (_, row) => row + 1),
+          'float32',
+          25
+        ),
+        width: 5,
+        height: 5,
+        neighborCapacity: 200
+      },
+      parameters: fixture.parameterBuffer(
+        'analytic-parameters',
+        'float32',
+        GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
+      ),
+      settings: {seed: 4, permutationCount: 199},
+      permutation: {
+        parameters: fixture.parameterBuffer(
+          'permutation-parameters',
+          'uint32',
+          GPU_PERMUTATION_PARAMETER_LENGTH
+        ),
+        maximumPermutations: 199,
+        multipleTesting: 'benjamini-hochberg'
+      },
+      outputs: {
+        zScores: zScores.view,
+        permutation: {pseudoPValues: pseudoPValues.view, significant: significant.view}
+      }
+    });
+    expect(result.inference.testedRowsDefinition).toBe(
+      'included rows with at least 8 active neighbors (islands excluded) and a defined z-score'
+    );
+    expect(result.permutationInference?.testedRowsDefinition).toContain('1 to 32');
+    fixture.run();
+    expect((await fixture.readFloat32(zScores, 25)).filter(Number.isFinite)).toHaveLength(9);
+    const probabilities = await fixture.readFloat32(pseudoPValues, 25);
+    expect(probabilities.filter(Number.isFinite)).toHaveLength(25);
+    expect(probabilities[6]).toBeCloseTo(0.01, 6);
+    expect((await fixture.readUint32(significant, 25))[6]).toBe(0);
+  } finally {
+    fixture.destroy();
+  }
+});
+
+it('R6 excludes an isolated masked-lattice row at the effective minimum of one', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new RecipeTestFixture(device, 'hot-spot-effective-minimum');
+  try {
+    const mask = new Uint32Array(25).fill(1);
+    for (const row of [1, 5, 6]) mask[row] = 0;
+    const zScores = fixture.output('z-scores', 'float32', 25);
+    const result = addHotSpotAnalysisRecipe(fixture.graph, {
+      source: {
+        kind: 'lattice',
+        width: 5,
+        height: 5,
+        neighborCapacity: 200,
+        values: fixture.input(
+          'values',
+          Float32Array.from({length: 25}, (_, row) => row + 1),
+          'float32',
+          25
+        ),
+        mask: fixture.input('mask', mask, 'uint32', 25)
+      },
+      minimumNeighbors: 0,
+      parameters: fixture.parameterBuffer(
+        'parameters',
+        'float32',
+        GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
+      ),
+      outputs: {zScores: zScores.view}
+    });
+    expect(result.inference.testedRowsDefinition).toBe(
+      'included rows with at least 1 active neighbor (islands excluded) and a defined z-score'
+    );
+    fixture.run();
+    const scores = await fixture.readFloat32(zScores, 25);
+    expect(scores[0]).toBeNaN();
+    for (const row of [1, 5, 6]) expect(scores[row]).toBeNaN();
+    expect(scores.filter(Number.isFinite)).toHaveLength(21);
+  } finally {
+    fixture.destroy();
+  }
+});

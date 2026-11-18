@@ -25,11 +25,11 @@ import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgs
 import {
   createConformalScoreNodes,
   getConformalInputViews,
-  GPU_CONFORMAL_RANK_SLACK,
   validateConformalInputs,
   type GPUConformalCalibration,
   type GPUConformalQuery
 } from './conformal-prediction-nodes';
+import {CONFORMAL_PREDICTION_RANKS_WGSL} from './conformal-prediction-ranks';
 import {
   GPU_CONFORMAL_STATUS_INVALID_QUERY,
   GPU_CONFORMAL_STATUS_LOWER_UNBOUNDED,
@@ -42,6 +42,10 @@ import {
 
 /** Most neighbours of one query the localized contributor weighs. */
 export const GPU_GEO_CONFORMAL_MAXIMUM_NEIGHBORS = 256;
+
+// Relative tolerance for the localized approximate weighted quantile, whose sums use float32.
+// Global split/CV+ order-statistic ranks instead use exact integer arithmetic.
+const GEO_CONFORMAL_WEIGHT_SLACK = 2 ** -20;
 
 /** Neighbour lists of the localized contributor, in compressed sparse row form. */
 export type GPUGeoConformalNeighbors = {
@@ -83,8 +87,9 @@ export type GPUGeoConformalPredictionIntervalsProps = {
  * smallest score `s` with `sum_{R_j <= s} w_j >= (1 - alpha) (sum_j w_j + selfWeight)`, or an
  * unbounded interval if there is none. The interval is `p -+ scale s`.
  *
- * With equal weights `w_j = selfWeight` this is exactly the global split interval of
- * {@link GPUConformalPredictionIntervals}, which is its equivalence test. At most
+ * With positive equal weights `w_j = selfWeight` this uses the exact packed-alpha rank of
+ * {@link GPUConformalPredictionIntervals} over the same usable entries, including unbounded
+ * sides and their status bits. At most
  * {@link GPU_GEO_CONFORMAL_MAXIMUM_NEIGHBORS} entries per query are used. Weights are summed in
  * float32 in list order, so non-uniform weights give a quantile level accurate to float32
  * rounding only. Localized coverage is approximate (it holds when the weights reflect the
@@ -215,7 +220,8 @@ export class GPUGeoConformalPredictionIntervals implements GPUCommandNodeProduce
         ],
         declarations: `${IS_FINITE_BITS_WGSL}
 ${GET_NAN_WGSL}
-${INFINITY_WGSL}`,
+${INFINITY_WGSL}
+${CONFORMAL_PREDICTION_RANKS_WGSL}`,
         body: `let miscoverage = parameters[parametersOffset];
   let selfWeight = parameters[parametersOffset + 1u];
   let scale = ${props.query.scales ? 'queryScales[queryScalesOffset + index]' : '1.0'};
@@ -226,10 +232,12 @@ ${INFINITY_WGSL}`,
   var code = select(0u, ${GPU_CONFORMAL_STATUS_NEIGHBORS_TRUNCATED}u, available > used);
   var total = selfWeight;
   var usable = 0u;
+  var equalWeights = isFiniteBits(selfWeight) && selfWeight > 0.0;
   for (var entry = 0u; entry < used; entry++) {
     let weight = entryWeights[entryWeightsOffset + first + entry];
     total += weight;
     usable += u32(weight > 0.0);
+    equalWeights = equalWeights && (weight <= 0.0 || weight == selfWeight);
   }
   var lower = getNaN();
   var upper = getNaN();
@@ -239,19 +247,31 @@ ${INFINITY_WGSL}`,
     code |= ${GPU_CONFORMAL_STATUS_NO_CALIBRATION}u;
   } else {
     // The smallest score whose cumulative weight reaches the level; ties count together.
-    let level = (1.0 - miscoverage) * total * (1.0 - ${GPU_CONFORMAL_RANK_SLACK});
+    var level = 0.0;
+    var equalWeightRank = 0u;
+    if (equalWeights) {
+      let ranks = getConformalPredictionRanks(usable, miscoverage);
+      equalWeightRank = ranks.y;
+    } else {
+      level = (1.0 - miscoverage) * total * (1.0 - ${GEO_CONFORMAL_WEIGHT_SLACK});
+    }
     var best = getInfinity();
     for (var candidate = 0u; candidate < used; candidate++) {
       if (entryWeights[entryWeightsOffset + first + candidate] <= 0.0) { continue; }
       let candidateScore = entryScores[entryScoresOffset + first + candidate];
       if (candidateScore >= best) { continue; }
       var cumulative = 0.0;
+      var cumulativeCount = 0u;
       for (var other = 0u; other < used; other++) {
         if (entryScores[entryScoresOffset + first + other] <= candidateScore) {
-          cumulative += entryWeights[entryWeightsOffset + first + other];
+          let weight = entryWeights[entryWeightsOffset + first + other];
+          cumulative += weight;
+          cumulativeCount += u32(weight > 0.0);
         }
       }
-      if (cumulative >= level) { best = candidateScore; }
+      if (select(cumulative >= level, cumulativeCount >= equalWeightRank, equalWeights)) {
+        best = candidateScore;
+      }
     }
     let width = scale * best;
     lower = prediction - width;

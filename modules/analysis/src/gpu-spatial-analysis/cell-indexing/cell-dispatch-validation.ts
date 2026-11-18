@@ -7,7 +7,7 @@ import {
   validateDisjointWritableViews,
   validateGraphChunkBindingRanges
 } from '../../analysis-core/kernels/graph-chunk-dispatch';
-import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 import {
   validateCapacity,
   validateGPUStorageBindingByteLength,

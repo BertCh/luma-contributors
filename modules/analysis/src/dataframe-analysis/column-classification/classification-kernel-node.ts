@@ -4,6 +4,7 @@
 
 import {Buffer} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
+import {registerWGSLKernelNodeRecord} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   createGPUComputeCommandNode,
   getBoundedDispatchLayout,
@@ -76,6 +77,22 @@ fn main(@builtin(workgroup_id) workgroupId: vec3<u32>, @builtin(num_workgroups) 
   ${props.bindings.map(binding => `_ = &${binding.name};`).join('\n')}
   ${props.body}
 }`;
+  registerWGSLKernelNodeRecord(graph, {
+    id: props.id,
+    operation: props.operation,
+    variant: props.variant,
+    source,
+    body: props.body,
+    declarations: props.declarations,
+    entryPoint: 'main',
+    workgroupSize: [workgroupSize, 1, 1],
+    workgroups: [layout.x, layout.y, layout.z],
+    invocationCount: props.invocationCount,
+    constants: {},
+    bindings: props.bindings,
+    textures: [],
+    indirect: props.condition?.source === 'gpu' && props.condition.mode === 'indirect'
+  });
   return createGPUComputeCommandNode<Parameters>({
     id: props.id,
     condition: props.condition,

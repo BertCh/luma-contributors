@@ -25,7 +25,7 @@ import {
 import {
   validateGPUNetworkTopology,
   type GPUNetworkAdjacency
-} from '../../analysis-core/network-topology';
+} from '../../analysis-core/contracts/network-topology';
 import {
   GPUNetworkReachability,
   GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS

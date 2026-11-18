@@ -218,7 +218,7 @@ it('both operations reject an unrounded negative snap tolerance before execution
                 weights: 'weights',
                 status: {overflow: 'overflow'}
               }
-            })
+            } as never) // Intentionally omit the required port to check scalar-first validation.
           ],
           outputs: ['offsets', 'neighbors', 'weights', 'overflow']
         }))()

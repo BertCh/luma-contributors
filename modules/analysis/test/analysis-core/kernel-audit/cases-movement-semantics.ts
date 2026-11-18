@@ -108,7 +108,11 @@ function addSegments(context: KernelAuditContext, rows: number): void {
         },
         trips: {
           ids: view('uint32', capacity),
-          status: {count: view('uint32', 1), overflow: view('uint32', 1)},
+          status: {
+            count: view('uint32', 1),
+            overflow: view('uint32', 1),
+            candidateOverflow: view('uint32', 1)
+          },
           startRows: view('uint32', capacity),
           finishRows: view('uint32', capacity),
           originStaypoints: view('uint32', capacity),

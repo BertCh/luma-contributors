@@ -104,10 +104,12 @@ const makeNeighborhoods = (queries: number, withGrid: boolean) =>
     queryRows: view('uint32', queries),
     radius: 1,
     capacity: 4,
-    indices: view('uint32', queries * 4),
-    squaredDistances: view('float32', queries * 4),
-    counts: view('uint32', queries),
-    ...(withGrid ? {grid: GRID} : {})
+    ...(withGrid ? {grid: GRID} : {}),
+    output: {
+      indices: view('uint32', queries * 4),
+      squaredDistances: view('float32', queries * 4),
+      counts: view('uint32', queries)
+    }
   });
 
 it('neighborhoods without a grid refuse more than the unindexed work limit and ask for a grid', () => {
@@ -124,11 +126,13 @@ const makeICP = (source: number, withGrid: boolean) =>
     target: view('float32x3', 65536),
     maximumDistance: 1,
     iterations: 2,
-    transform: view('float32', 16),
-    history: view('float32x3', 2),
-    inlierMask: view('uint32', source),
-    status: view('uint32', 1),
-    ...(withGrid ? {targetGrid: GRID} : {})
+    ...(withGrid ? {targetGrid: GRID} : {}),
+    output: {
+      transform: view('float32', 16),
+      history: view('float32x3', 2),
+      inlierMask: view('uint32', source),
+      status: view('uint32', 1)
+    }
   });
 
 it('ICP without a target grid refuses more than the unindexed work limit and ask for targetGrid', () => {
@@ -148,11 +152,13 @@ const makeChange = (cores: number, withGrid: boolean) =>
     alignment: 'already-aligned',
     radius: 1,
     halfDepth: 1,
-    changes: view('float32x3', cores),
-    roughness: view('float32x3', cores),
-    counts: view('uint32', cores * 2),
-    status: view('uint32', cores),
-    ...(withGrid ? {grid: GRID} : {})
+    ...(withGrid ? {grid: GRID} : {}),
+    output: {
+      changes: view('float32x3', cores),
+      roughness: view('float32x3', cores),
+      counts: view('uint32', cores * 2),
+      status: view('uint32', cores)
+    }
   });
 
 it('change detection without a grid refuses more than the unindexed work limit and asks for grid', () => {

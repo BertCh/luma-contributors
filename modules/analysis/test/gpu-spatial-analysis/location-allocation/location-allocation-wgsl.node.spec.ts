@@ -5,6 +5,7 @@
 import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {WgslReflect} from 'wgsl_reflect';
 import {expect, it} from 'vitest';
+import {findStatisticsNonFiniteConstants} from '../spatial-weights/statistics-wgsl-audit';
 import {
   GPULocationAllocation,
   GPU_LOCATION_ALLOCATION_STATUS,
@@ -72,7 +73,7 @@ function getKernelSources(
   return sources;
 }
 
-it('GPULocationAllocation kernels parse as WGSL (syntax only; no type checking)', () => {
+it('GPULocationAllocation kernels parse and avoid non-finite constant bitcasts', () => {
   for (const sparse of [false, true]) {
     for (const [operation, swaps] of [
       ['p-median', 2],
@@ -83,6 +84,10 @@ it('GPULocationAllocation kernels parse as WGSL (syntax only; no type checking)'
       const sources = getKernelSources(operation, swaps, sparse);
       expect(sources.length, operation).toBeGreaterThan(0);
       for (const {id, source} of sources) {
+        expect(
+          findStatisticsNonFiniteConstants(source),
+          `${operation} sparse ${sparse} ${id}`
+        ).toEqual([]);
         expect(() => new WgslReflect(source), `${operation} sparse ${sparse} ${id}`).not.toThrow();
         // The generated kernels never exceed the core limit of eight storage buffers.
         expect(

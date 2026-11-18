@@ -9,19 +9,17 @@ Run from the repository root, with no other GPU suites or source edits running:
 
 ```sh
 nvm use
-LUMA_TEST_BROWSER_BENCHMARKS=true \
-VITE_GEOSPATIAL_BACKLOG_BENCHMARK=true \
 VITE_BENCHMARK_REVISION="$(git rev-parse HEAD)" \
 VITE_BENCHMARK_SOURCE_STATE=clean \
-yarn test-headless --silent=false --maxWorkers=1 modules/graph/test/geospatial-expansion/backlog-performance-benchmark.spec.ts
+yarn test-benchmarks modules/analysis/test/geospatial-expansion/backlog-performance-benchmark.spec.ts
 ```
 
 Use `clean` only after checking `git status --short`. For a dirty checkout, preserve the patch and
 new files alongside the log and set `VITE_BENCHMARK_SOURCE_STATE` to an identifying artifact name.
 The commit alone cannot reproduce uncommitted changes. Keep the complete console log, including
 metadata, all six measurement records, and the final test outcome. Partial runs retain completed
-records but are not a complete envelope. Both opt-in variables are necessary: the repository's
-benchmark project selects the file, and the Vite flag enables its workload.
+records but are not a complete envelope. The launcher selects the benchmark inventory and enables
+its workload flags automatically; ordinary correctness runs exclude these files.
 
 | Workload | Small | Bounded larger | Correctness reference |
 | --- | --- | --- | --- |
@@ -62,5 +60,5 @@ it only with independently checked workloads and measured device results.
 CPU fixture/reference checks run without a GPU:
 
 ```sh
-yarn test-node --maxWorkers=2 modules/graph/test/geospatial-expansion/backlog-performance.node.spec.ts
+yarn test-node --maxWorkers=2 modules/analysis/test/geospatial-expansion/backlog-performance.node.spec.ts
 ```

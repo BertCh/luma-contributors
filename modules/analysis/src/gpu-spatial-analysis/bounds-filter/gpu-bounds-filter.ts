@@ -143,8 +143,11 @@ export type GPUBoundsFilterProps<MaskRows extends GPUUint32Rows = GraphDataView<
   spatialContext?: GPUSpatialContext;
   /**
    * Packed or chunked per-feature bounds `[minX, minY, maxX, maxY]`, for example `GPUGeometryMeasures`
-   * bounds. Rows with a non-finite component (NaN or infinite, the empty-geometry marker) are
-   * rejected in every mode.
+   * planar bounds. Geographic measures unwrap longitudes from the first vertex: those bounds
+   * and the query must use the same longitude branch. Otherwise test equivalent query intervals
+   * shifted by whole turns and union the masks; wrapX alone does not normalize feature bounds.
+   * Rows with a non-finite component (NaN or infinite, the empty-geometry marker) are rejected
+   * in every mode.
    */
   bounds: GraphDataView<'float32x4'> | GraphVectorView<'float32x4'>;
   /** Per-frame box: a packed float32 view written with {@link getGPUBoundsFilterParameterValues}. */
@@ -238,6 +241,7 @@ export class GPUBoundsFilter<MaskRows extends GPUUint32Rows = GraphDataView<'uin
       'output.ids': props.output.ids,
       'output.status.count': props.output.status.count,
       'output.status.overflow': props.output.status.overflow,
+      'output.status.candidateOverflow': props.output.status.candidateOverflow,
       'output.status.requiredCount': props.output.status.requiredCount,
       'output.outputMask': props.output.outputMask
     };
@@ -245,7 +249,7 @@ export class GPUBoundsFilter<MaskRows extends GPUUint32Rows = GraphDataView<'uin
       if (view)
         validateCapacity(id, `${name}.length`, view.length, 0, GPU_BOUNDS_FILTER_MAXIMUM_ROWS);
     }
-    validateSpatialJoinOutputGroups(id, outputs, [{...props.output.status}]);
+    validateSpatialJoinOutputGroups(id, outputs, [{ids: props.output.ids, ...props.output.status}]);
     validateGraphOutputsDisjointFromInputs(id, Object.values(outputs), [
       props.bounds,
       props.parameters
@@ -266,6 +270,7 @@ export class GPUBoundsFilter<MaskRows extends GPUUint32Rows = GraphDataView<'uin
       'output.outputMask': output.outputMask,
       'output.status.count': output.status.count,
       'output.status.overflow': output.status.overflow,
+      'output.status.candidateOverflow': output.status.candidateOverflow,
       'output.status.requiredCount': output.status.requiredCount
     };
     validateGraphChunkBindingRanges(graph, id, views);

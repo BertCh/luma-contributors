@@ -1497,12 +1497,11 @@ const MATCH_CAPACITY: u32 = ${capacity}u;`,
 
 /**
  * Publishes aggregate overflow, candidate and uncertain counts, and the clamped match count.
- * GPUCompactOutput specifies that match overflow includes every contributor capacity loss, so
- * both overflow words receive the same aggregate value. matchTotal counts retained assignments;
- * it can fit MATCH_CAPACITY even when lost BVH leaves or candidates make the result incomplete.
+ * Compact final capacity and candidate loss are separate. Candidate publication uses its own
+ * pass, keeping the main finalizer within eight storage bindings with every diagnostic wired.
  * @internal
  */
-export function createSpatialJoinFinalizeNode<Parameters>(
+export function createSpatialJoinFinalizeNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
@@ -1515,7 +1514,7 @@ export function createSpatialJoinFinalizeNode<Parameters>(
     uncertainCount?: GraphDataView<'uint32'>;
     matches?: GPUCompactOutput;
   }
-): GPUCommandNode<Parameters> {
+): GPUCommandNode<Parameters>[] {
   const {matches} = props;
   const bindings: WGSLKernelBinding[] = [
     {name: 'state', view: props.state, type: 'u32', access: 'read'},
@@ -1553,7 +1552,7 @@ export function createSpatialJoinFinalizeNode<Parameters>(
     }
   }
   const matchCapacity = matches?.ids.length ?? 0;
-  return createWGSLKernelNode<Parameters>(graph, {
+  const finalize = createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
     variant: 'finalize',
@@ -1573,11 +1572,30 @@ const MATCH_CAPACITY: u32 = ${matchCapacity}u;`,
   ${
     matches
       ? `matchCount[matchCountOffset] = min(matchTotal, MATCH_CAPACITY);
-  matchOverflow[matchOverflowOffset] = overflowValue;
+  matchOverflow[matchOverflowOffset] = select(0u, 1u, matchTotal > MATCH_CAPACITY);
   ${matches.status.requiredCount ? 'matchTotalCount[matchTotalCountOffset] = matchTotal;' : ''}`
       : ''
   }`
   });
+  const candidateOverflow = matches?.status.candidateOverflow;
+  if (!candidateOverflow) return [finalize];
+  return [
+    finalize,
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${props.id}-compact-candidate`,
+      operation: props.operation,
+      variant: 'compact-candidate',
+      bindings: [
+        {name: 'state', view: props.state, type: 'u32', access: 'read'},
+        {name: 'bvhOverflow', view: props.bvhOverflow, type: 'u32', access: 'read'},
+        {name: 'matchCandidateOverflow', view: candidateOverflow, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: 1,
+      declarations: `const CANDIDATE_CAPACITY: u32 = ${props.candidateCapacity}u;`,
+      body: `matchCandidateOverflow[matchCandidateOverflowOffset] = select(0u, 1u,
+      bvhOverflow[bvhOverflowOffset] != 0u || state[stateOffset] > CANDIDATE_CAPACITY);`
+    })
+  ];
 }
 
 /** Vertices of the polygon side from which `edgeSlabs` can default on (see {@link getDefaultEdgeSlabs}). @internal */

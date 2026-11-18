@@ -11,9 +11,14 @@ import {
   getGPUPeriodIndexStepIndex,
   GPUPeriodIndex,
   GPU_PERIOD_INDEX_MAXIMUM_COUNT,
+  GPU_PERIOD_INDEX_OUT_OF_RANGE,
   type GPUPeriodIndexProps
 } from '../../../src/dataframe-analysis/period-index/index';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources,
+  getParsedKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 import {getExpectedCalendarPeriod} from './period-index-oracle';
 
 const CONTEXT: GPUTemporalContext = {
@@ -285,6 +290,74 @@ describe('GPUPeriodIndex validation', () => {
 });
 
 describe('period index CPU twin', () => {
+  it('preserves signed hour and unsigned period boundaries in CPU results and shaders', () => {
+    const hourIndices = [-0x80000001, -1, 0, 0x7ffffffc, 0x7ffffffd, 0x7fffffff, 0x80000000];
+    const fieldsAtHour = (hourIndex: number) => {
+      const instant = new Date(hourIndex * 3_600_000);
+      return {
+        year: instant.getUTCFullYear(),
+        month: instant.getUTCMonth() + 1,
+        day: instant.getUTCDate(),
+        hour: instant.getUTCHours()
+      };
+    };
+    const fields = hourIndices.map(fieldsAtHour);
+    for (const originHour of [0, -24, -0x80000000]) {
+      for (const interval of [1, 3]) {
+        const device = createNullWebGPUDevice();
+        try {
+          const graph = new GPUCommandGraph(device);
+          const column = <Format extends 'uint32' | 'sint32'>(name: string, format: Format) =>
+            createTransientView(graph, name, format, fields.length);
+          const columns = {
+            year: column('year', 'sint32'),
+            month: column('month', 'uint32'),
+            dayOfMonth: column('day', 'uint32'),
+            hour: column('hour', 'uint32')
+          };
+          const output = {
+            periods: column('periods', 'uint32'),
+            status: {invalidCount: createTransientView(graph, 'invalid-count', 'uint32', 1)}
+          };
+          const step = {calendarUnit: 'hour', interval} as const;
+          const origin = fieldsAtHour(originHour);
+          const contributor = new GPUPeriodIndex({
+            temporalContext: CONTEXT,
+            periods: {kind: 'calendar', step, origin, count: GPU_PERIOD_INDEX_MAXIMUM_COUNT},
+            columns,
+            output
+          });
+          const expected = hourIndices.map(hourIndex => {
+            const difference = hourIndex - originHour;
+            const candidate = Math.floor(difference / interval);
+            return difference >= 0 && candidate < GPU_PERIOD_INDEX_MAXIMUM_COUNT
+              ? candidate
+              : GPU_PERIOD_INDEX_OUT_OF_RANGE;
+          });
+          expect(
+            fields.map(value => {
+              const candidate = getGPUPeriodIndexCalendarPeriod(
+                step,
+                origin,
+                GPU_PERIOD_INDEX_MAXIMUM_COUNT,
+                value
+              );
+              return candidate < 0 ? GPU_PERIOD_INDEX_OUT_OF_RANGE : candidate;
+            })
+          ).toEqual(expected);
+          const nodes = contributor.getCommandNodes(graph);
+          getParsedKernelSources(nodes);
+          const source = getGPUCommandNodeKernelSources(nodes).at(-1)!.source;
+          expect(source).toContain('candidate.y < 4294967293u');
+          expect(source).toContain('multiplyUint64ByUint32(calendarStepWords(daysFromCivil');
+          expect(source).not.toContain('candidate < 2147483647');
+        } finally {
+          device.destroy();
+        }
+      }
+    }
+  });
+
   it('matches Date arithmetic at calendar boundaries', () => {
     const origin = {year: 2023, month: 11, day: 15, hour: 6};
     const times = [

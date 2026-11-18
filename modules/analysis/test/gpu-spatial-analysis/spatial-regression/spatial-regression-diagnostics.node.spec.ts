@@ -88,6 +88,29 @@ it('GPUSpatialRegressionDiagnostics validates its inputs', () => {
   device.destroy();
 });
 
+it('F2 diagnostics finish reads both weights-loss flags', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const props = createProps(graph);
+  const overflow = createTransientView(graph, 'overflow', 'uint32', 1);
+  const candidateOverflow = createTransientView(graph, 'candidate-overflow', 'uint32', 1);
+  try {
+    const nodes = new GPUSpatialRegressionDiagnostics({
+      ...props,
+      weights: {...props.weights, status: {overflow, candidateOverflow}}
+    }).getCommandNodes(graph);
+    const finish = nodes.find(node => node.id.endsWith('-finish'))!;
+    for (const flag of [overflow, candidateOverflow])
+      expect(
+        finish.resources?.some(
+          resource =>
+            'buffer' in resource && resource.buffer === flag && resource.usage === 'storage-read'
+        )
+      ).toBe(true);
+  } finally {
+    graph.device.destroy();
+  }
+});
+
 it('GPUSpatialRegressionDiagnostics declares its kernels, including the weights transpose, with at most eight storage buffers', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);

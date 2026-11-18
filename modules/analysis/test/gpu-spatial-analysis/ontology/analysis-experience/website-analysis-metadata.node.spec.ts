@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+/// <reference types="vite/client" />
+/// <reference path="../../../../../../website/src/env.d.ts" />
+
 import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {catalogPlugin} from '../../../../../../website/build/catalog-plugin';
@@ -58,6 +61,57 @@ import {
 } from '../../../../../../website/src/catalog/index';
 
 describe('shared website analysis metadata', () => {
+  it('declares the public local-permutation replay factory as a recording helper', () => {
+    expect(
+      getCatalogAnalysisMetadata(
+        'createLocalPermutationReplay',
+        '@luma-contributors/analysis/gpu-spatial-analysis'
+      )
+    ).toEqual({
+      questions: ['prepare-data'],
+      dataKinds: {
+        input: ['attributes', 'spatial-weights', 'parameters'],
+        output: ['attributes', 'summary']
+      }
+    });
+  });
+  it('retains both visibility recipe identities through inventory extraction and metadata lookup', () => {
+    const recipes = inventory.symbols.filter(item => item.symbol === 'addVisibilityGraphRecipe');
+    expect(recipes.map(item => item.importPath).sort()).toEqual([
+      '@luma-contributors/analysis/gpu-network',
+      '@luma-contributors/analysis/gpu-spatial-analysis'
+    ]);
+    expect(new Set(recipes.map(item => item.sourceFile)).size).toBe(2);
+    for (const recipe of recipes) {
+      expect(getCatalogAnalysisMetadata(recipe.symbol, recipe.importPath).dataKinds).toEqual(
+        recipe.dataKinds
+      );
+    }
+    expect(() => getCatalogAnalysisMetadata('addVisibilityGraphRecipe')).toThrow(
+      /ambiguous.*importPath/
+    );
+  });
+  it('retains visibility overloads and assigns documentation and lenses by qualified identity', () => {
+    for (const entryPoint of ['gpu-network', 'gpu-spatial-analysis']) {
+      const recipe = inventory.symbols.find(
+        item =>
+          item.symbol === 'addVisibilityGraphRecipe' &&
+          item.importPath === `@luma-contributors/analysis/${entryPoint}`
+      )!;
+      expect(recipe.docsSlug).toBe(
+        entryPoint === 'gpu-network'
+          ? 'api/gpu-network/visibility-graph'
+          : 'api/gpu-spatial-analysis/urban-morphology'
+      );
+      expect(recipe.lensScenarios).toEqual([`${entryPoint}.visibility-graph-recipe`]);
+      expect((recipe as unknown as {overloads?: unknown[]}).overloads).toHaveLength(2);
+    }
+  });
+  it('does not silently discard the public centrality continuation factory', () => {
+    expect(
+      inventory.symbols.some(item => item.symbol === 'createNetworkCentralityContinuation')
+    ).toBe(true);
+  });
   it('uses the shared question ids, labels, descriptions and order, including the twelfth question', () => {
     expect(QUESTIONS).toEqual(
       GPU_ANALYSIS_QUESTION_RECORDS.map(question => ({
@@ -73,14 +127,17 @@ describe('shared website analysis metadata', () => {
 
   it('covers every authored entry and extracted symbol, using the authoritative operator kinds', () => {
     const operators = new Map(
-      getGPUAnalysisOperatorCatalog().map(operator => [operator.exportName, operator])
+      getGPUAnalysisOperatorCatalog().map(operator => [
+        `${operator.package}:${operator.exportName}`,
+        operator
+      ])
     );
     expect(entries.length).toBeGreaterThan(500);
     for (const item of inventory.symbols) {
-      const metadata = getCatalogAnalysisMetadata(item.symbol);
+      const metadata = getCatalogAnalysisMetadata(item.symbol, item.importPath);
       expect(item.questions, item.symbol).toEqual(metadata.questions);
       expect(item.dataKinds, item.symbol).toEqual(metadata.dataKinds);
-      const operator = operators.get(item.symbol);
+      const operator = operators.get(`${item.importPath}:${item.symbol}`);
       if (operator) {
         const kinds = resolveGPUAnalysisOperatorKinds(operator);
         expect(metadata.dataKinds, item.symbol).toEqual({
@@ -98,7 +155,9 @@ describe('shared website analysis metadata', () => {
       expect(resolved.interpretation?.summary, entry.symbol).toBe(entry.explanation);
       expect(Array.isArray(resolved.interpretation?.cautions), entry.symbol).toBe(true);
       expect(
-        inventory.symbols.some(item => item.symbol === entry.symbol),
+        inventory.symbols.some(
+          item => item.symbol === entry.symbol && item.importPath === entry.importPath
+        ),
         entry.symbol
       ).toBe(true);
     }
@@ -172,7 +231,7 @@ describe('shared website analysis metadata', () => {
     const attached = attachCatalogAnalysisMetadata(legacy);
     expect(attached.dataTypes.input).toEqual(['points', 'lines', 'polygons']);
     expect(filterEntries({dataType: 'points'}, [measures])).toEqual([measures]);
-    expect(getFacetCounts({query: 'GPUGeometryMeasures'}).data.points).toBe(1);
+    expect(getFacetCounts({query: 'GPUGeometryMeasures'}).data['points']).toBe(1);
     const producer = {
       ...measures,
       id: 'point-producer',
@@ -239,10 +298,10 @@ describe('shared website analysis metadata', () => {
     expect(watchedFiles).toHaveLength(Object.keys(entryGroups).length);
     for (const summary of summaries) {
       expect(summary.questions, summary.symbol).toEqual(
-        getCatalogAnalysisMetadata(summary.symbol).questions
+        getCatalogAnalysisMetadata(summary.symbol, summary.importPath).questions
       );
       expect(summary.dataKinds, summary.symbol).toEqual(
-        getCatalogAnalysisMetadata(summary.symbol).dataKinds
+        getCatalogAnalysisMetadata(summary.symbol, summary.importPath).dataKinds
       );
       expect(summary).not.toHaveProperty('interpretation');
       expect(summary).not.toHaveProperty('explanation');

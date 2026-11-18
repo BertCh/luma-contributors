@@ -312,23 +312,25 @@ export function createRasterBenchmarkCases(): BenchmarkCase[] {
       construct(scope) {
         const initial = floats(count, index => 0.6 + (index % 7) * 0.01),
           updated = floats(count, index => initial[index] + 0.1);
-        new GPURasterEVI({
-          width: side,
-          height: side,
-          nearInfrared: band(scope, 'nearInfrared', initial, updated),
-          red: band(
-            scope,
-            'red',
-            floats(count, () => 0.2)
-          ),
-          blue: band(
-            scope,
-            'blue',
-            floats(count, () => 0.1)
-          ),
-          output: scope.output('values', count, 'float32'),
-          outputValidity: scope.output('validity', count, 'uint32')
-        }).addToGraph(scope.graph);
+        scope.graph.add(
+          new GPURasterEVI({
+            width: side,
+            height: side,
+            nearInfrared: band(scope, 'nearInfrared', initial, updated),
+            red: band(
+              scope,
+              'red',
+              floats(count, () => 0.2)
+            ),
+            blue: band(
+              scope,
+              'blue',
+              floats(count, () => 0.1)
+            ),
+            output: scope.output('values', count, 'float32'),
+            outputValidity: scope.output('validity', count, 'uint32')
+          })
+        );
         return {
           reference: changed => ({
             values: Array.from(

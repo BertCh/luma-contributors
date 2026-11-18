@@ -24,6 +24,7 @@ import {
 import {
   getRasterAlgebraInputNodes,
   getRasterAlgebraInputViews,
+  getNamedRasterAlgebraInputViews,
   isRasterAlgebraBand,
   validateRasterAlgebraInput,
   validateRasterAlgebraInputBindings
@@ -132,14 +133,14 @@ export class GPURasterConditional implements GPUCommandNodeProducer {
     );
     validateRasterAlgebraAliasing(
       id,
-      [output.values, output.conditionResult],
-      [
-        props.mask,
-        ...getRasterAlgebraInputViews(props.conditionValues),
-        ...getRasterAlgebraInputViews(props.a),
-        ...getRasterAlgebraInputViews(props.b),
-        props.parameters
-      ]
+      {'output.values': output.values, 'output.conditionResult': output.conditionResult},
+      {
+        ...getNamedRasterAlgebraInputViews(props.conditionValues, 'conditionValues'),
+        ...getNamedRasterAlgebraInputViews(props.a, 'a'),
+        ...getNamedRasterAlgebraInputViews(props.b, 'b'),
+        mask: props.mask,
+        parameters: props.parameters
+      }
     );
   }
 

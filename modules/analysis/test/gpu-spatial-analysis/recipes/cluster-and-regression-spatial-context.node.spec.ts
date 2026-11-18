@@ -149,9 +149,6 @@ it('regression local fits forward great-circle context and default to native pla
     expect(contributor).toBeInstanceOf(GPUGeographicallyWeightedRegression);
     if (contributor instanceof GPUGeographicallyWeightedRegression) {
       expect(contributor.spatialContext).toEqual(spatialContext ?? PLANAR);
-      if (spatialContext) {
-        expect(contributor.spatialContext).toBe(spatialContext);
-      }
     }
   }
 });

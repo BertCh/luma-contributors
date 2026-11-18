@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateRegressionOutputDispatches} from './regression-output-dispatches';
+import {snapshotRegressionConstructionProps} from './regression-construction-snapshot';
+import {getRegressionWeightsSuppressionNodes} from './regression-weights-completeness';
 
 import {
   getRegressionErrorGMAllocationLengths,
@@ -91,6 +93,8 @@ import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
 const OPERATION = 'GPUSpatialErrorGM';
 const TILE_WORKGROUP_SIZE = 64;
 const MAXIMUM_DEFAULT_TILE_COUNT = 4096;
+// Bounds the serial norm merge to the regression family's 4096-partial merge budget.
+const MAXIMUM_TILE_COUNT = 4096;
 const MINIMUM_DEFAULT_TILE_ROWS = 64;
 /** Moment sums: `u'u`, `u'Wu`, `(Wu)'Wu`, `u'WWu`, `(Wu)'WWu`, `(WWu)'WWu`, `tr W'W`. */
 const MOMENT_SUM_COUNT = 7;
@@ -255,6 +259,24 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
   readonly estimator: GPUSpatialErrorGMEstimator;
 
   constructor(props: GPUSpatialErrorGMProps) {
+    props = snapshotRegressionConstructionProps(
+      props,
+      [
+        'id',
+        'weights',
+        'predictors',
+        'response',
+        'predictorCount',
+        'estimator',
+        'traceMode',
+        'traceProbeCount',
+        'traceParameters',
+        'tileRowCount',
+        'output'
+      ],
+      ['table', 'summary', 'residuals', 'status'],
+      'spatial-error-gm'
+    );
     const id = props.id ?? 'spatial-error-gm';
     this.id = id;
     this.props = props;
@@ -336,6 +358,7 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
       Math.max(MINIMUM_DEFAULT_TILE_ROWS, Math.ceil(rows / MAXIMUM_DEFAULT_TILE_COUNT));
     // Tiles never span chunks; a whole CSR has ceil(rows / tileRowCount) tiles.
     this.tileCount = getGPUSpatialWeightsTilePlan(props.weights, this.tileRowCount).tileCount;
+    validateMaximumCount(id, 'tileCount', this.tileCount, MAXIMUM_TILE_COUNT);
     validateRegressionOutputDispatches(
       this.id,
       {...output, status: undefined, code: output.status.code},
@@ -942,7 +965,10 @@ ${getFinishWGSL(k, homoskedastic)}`,
         'finish();'
       )
     );
-    return nodes;
+    return [
+      ...nodes,
+      ...getRegressionWeightsSuppressionNodes<Parameters>(graph, id, props.weights, props.output)
+    ];
   }
 }
 

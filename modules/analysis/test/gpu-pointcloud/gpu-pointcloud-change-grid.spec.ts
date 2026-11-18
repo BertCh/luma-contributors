@@ -104,10 +104,12 @@ async function expectGridMatchesUnindexed(
           registrationCovariance: options.registrationCovariance,
           uncertaintyCombination: options.uncertaintyCombination,
           ...(indexed ? {grid} : {}),
-          changes: changes.view,
-          roughness: roughness.view,
-          counts: counts.view,
-          status: status.view
+          output: {
+            changes: changes.view,
+            roughness: roughness.view,
+            counts: counts.view,
+            status: status.view
+          }
         })
       );
       return {changes, roughness, counts, status};
@@ -254,10 +256,12 @@ it('a core whose cylinder leaves the grid reports the incomplete-grid flag', asy
         halfDepth: 0.5,
         minimumSupport: 2,
         grid: {origin: [0, -2, -2], cellSize: 1, dimensions: [5, 4, 4]},
-        changes: changes.view,
-        roughness: roughness.view,
-        counts: counts.view,
-        status: status.view
+        output: {
+          changes: changes.view,
+          roughness: roughness.view,
+          counts: counts.view,
+          status: status.view
+        }
       })
     );
     await fixture.run();

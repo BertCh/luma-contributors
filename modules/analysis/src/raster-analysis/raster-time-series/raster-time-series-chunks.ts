@@ -18,29 +18,28 @@ import {
 import {
   getGraphViewChunks,
   validateCapacity,
-  validateGraphOutputsDisjointFromInputs,
   validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  validateDisjointWritableViews,
-  validateGraphChunkBindingRanges
-} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import type {WGSLKernelProps} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {
+  validateRasterWritableDispatches,
+  type RasterWritableDispatch
+} from '../raster-grid/raster-view-validation';
+import {planRasterTimeSeriesCellTopology} from './raster-time-series-cell-topology';
+export {RASTER_TIME_SERIES_SPLIT_CELL_RECORD} from './raster-time-series-cell-topology';
 
 /** Scalar time-series fields, either packed or split between complete cell records. */
 export type RasterTimeSeriesScalarView = GraphDataView | GraphVectorView;
-/** Retains packed field types for packed callers. All cell fields share the same view kind. */
+/** Packed fields may accompany a matching one-chunk vector; multiple chunks must align. */
 export type RasterTimeSeriesField<
   Format extends 'float32' | 'uint32',
   Rows extends RasterTimeSeriesScalarView
-> = Rows extends GraphVectorView ? GraphVectorView<Format> : GraphDataView<Format>;
+> = GraphDataView<Format> | (Rows extends GraphVectorView ? GraphVectorView<Format> : never);
 
 /** One count and up to fifteen binding offsets fit four uniform vec4s without storage slots. */
 const RASTER_TIME_SERIES_DISPATCH_PARAMETER_WORD_COUNT = 16;
-/** A stable name in errors identifies a boundary through the middle of one cell's record. */
-export const RASTER_TIME_SERIES_SPLIT_CELL_RECORD = 'split cell record';
 
 /** Plans complete records at construction; dates, parameters and other unlisted tables stay packed. */
 export function planRasterTimeSeriesChunks<Props extends {cellCount: number}>(
@@ -67,46 +66,12 @@ export function planRasterTimeSeriesChunks<Props extends {cellCount: number}>(
     validateCapacity(id, `${path} required entries`, props.cellCount * width);
     return [{path, width, view}];
   });
-  const template = fields.find(field => field.view instanceof GraphVectorView);
-  if (!template) return [props];
-  const cellCounts = getGraphViewChunks(template.view).map((chunk, chunkIndex) => {
-    validateRequirement(
-      id,
-      chunk.length % template.width === 0,
-      `${template.path} chunk ${chunkIndex} ${RASTER_TIME_SERIES_SPLIT_CELL_RECORD}: length must be a multiple of ${template.width}`
-    );
-    return chunk.length / template.width;
-  });
-  validateRequirement(
+  const {cellCounts, chunked} = planRasterTimeSeriesCellTopology(
     id,
-    cellCounts.reduce((total, count) => total + count, 0) === props.cellCount,
-    `${template.path} chunks must hold exactly cellCount complete cell records`
+    props.cellCount,
+    Object.fromEntries(fields.map(({path, width, view}) => [path, {view, entriesPerCell: width}]))
   );
-  for (const {path, width, view} of fields) {
-    validateRequirement(
-      id,
-      view instanceof GraphVectorView,
-      `${path} must match the cell chunk topology`
-    );
-    const chunks = getGraphViewChunks(view);
-    validateRequirement(
-      id,
-      chunks.length === cellCounts.length,
-      `${path} must match the cell chunk topology`
-    );
-    for (const [chunkIndex, chunk] of chunks.entries()) {
-      validateRequirement(
-        id,
-        chunk.length % width === 0,
-        `${path} chunk ${chunkIndex} ${RASTER_TIME_SERIES_SPLIT_CELL_RECORD}: length must be a multiple of ${width}`
-      );
-      validateRequirement(
-        id,
-        chunk.length / width === cellCounts[chunkIndex],
-        `${path} chunk ${chunkIndex} must match the cell chunk topology`
-      );
-    }
-  }
+  if (!chunked) return [props];
   return cellCounts.flatMap((cellCount, chunkIndex) => {
     if (!cellCount) return [];
     const chunkProps = {...props, cellCount};
@@ -120,31 +85,15 @@ export function planRasterTimeSeriesChunks<Props extends {cellCount: number}>(
 export function validateRasterTimeSeriesViews(
   id: string,
   inputs: readonly RasterTimeSeriesScalarView[],
-  outputs: readonly RasterTimeSeriesScalarView[]
+  outputs: readonly RasterTimeSeriesScalarView[],
+  dispatches?: readonly RasterWritableDispatch[]
 ): void {
-  // Hazards follow graph handles: multiple imports of one physical buffer hide cross-field writes.
-  // DynamicBuffer defaults are resolved by the shared analysis-core helper, as in writable ranges.
-  const importedHandles = new Map<Buffer, GraphDataView['buffer']>();
   for (const view of [...inputs, ...outputs]) {
     for (const chunk of getGraphViewChunks(view)) {
       validatePackedView(chunk, [view.format], `${id} views`);
-      if (chunk.buffer.defaultBuffer) {
-        const physicalBuffer = getCoreDefaultBuffer(chunk.buffer.defaultBuffer);
-        const previousHandle = importedHandles.get(physicalBuffer);
-        validateRequirement(
-          id,
-          !previousHandle || previousHandle === chunk.buffer,
-          'views for one physical buffer must use one imported handle'
-        );
-        importedHandles.set(physicalBuffer, chunk.buffer);
-      }
     }
   }
-  validateGraphOutputsDisjointFromInputs(id, outputs, inputs);
-  validateDisjointWritableViews(
-    id,
-    Object.fromEntries(outputs.map((view, index) => [`output ${index}`, view]))
-  );
+  validateRasterWritableDispatches(id, inputs, outputs, dispatches);
 }
 
 /** Preflight every actual binding, including shared tables, before any node is declared. */

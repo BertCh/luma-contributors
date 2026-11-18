@@ -8,6 +8,7 @@ import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   getRasterAlgebraInputNodes,
   getRasterAlgebraInputViews,
+  getNamedRasterAlgebraInputViews,
   isRasterAlgebraBand,
   validateRasterAlgebraInput,
   validateRasterAlgebraInputBindings
@@ -113,13 +114,13 @@ export class GPURasterArithmetic implements GPUCommandNodeProducer {
     validateRasterAlgebraView(id, 'output.values', output.values, 'float32', cellCount);
     validateRasterAlgebraAliasing(
       id,
-      [output.values],
-      [
-        ...getRasterAlgebraInputViews(props.a),
-        ...getRasterAlgebraInputViews(props.b),
-        props.mask,
-        props.parameters
-      ]
+      {'output.values': output.values},
+      {
+        ...getNamedRasterAlgebraInputViews(props.a, 'a'),
+        ...getNamedRasterAlgebraInputViews(props.b, 'b'),
+        mask: props.mask,
+        parameters: props.parameters
+      }
     );
   }
 

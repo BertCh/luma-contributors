@@ -109,7 +109,40 @@ describe('GPUComputationRecorder', () => {
         ['first', 'first', ''],
         ['second', 'second', '']
       ]);
-      expect(described.resources?.every(resource => resource.ownership === 'imported')).toBe(true);
+      expect(described.resources?.every(resource => resource.ownership === 'unknown')).toBe(true);
+      expect(described.resources?.every(resource => resource.bytesKind === 'lower-bound')).toBe(
+        true
+      );
+    } finally {
+      compiled.destroy();
+      device.destroy();
+    }
+  });
+
+  test('unobserved resource size includes the offset of disjoint views', () => {
+    const device = createDevice();
+    const graph = new GPUCommandGraph(device, {id: 'offset-extent'});
+    const storage = createTransientView(graph, 'storage', 'uint32', 4);
+    for (const byteOffset of [0, 4]) {
+      const view = graph.createDataView(storage.buffer, {format: 'uint32', length: 1, byteOffset});
+      graph.add(
+        createGPUComputeCommandNode({
+          id: `read-${byteOffset}`,
+          resources: [{buffer: view, usage: 'storage-read'}],
+          compile: () => ({encode: () => {}})
+        })
+      );
+    }
+    const compiled = graph.compile();
+    try {
+      expect(describeGPUCommandGraph(compiled).graph.resources).toEqual([
+        expect.objectContaining({
+          id: 'storage',
+          bytes: 8,
+          bytesKind: 'lower-bound',
+          ownership: 'unknown'
+        })
+      ]);
     } finally {
       compiled.destroy();
       device.destroy();

@@ -59,7 +59,7 @@ import type {
 import {
   createLonLatPolygonCheckNode,
   hasLonLatPolygonStatus
-} from '../../analysis-core/lon-lat-ring-wgsl';
+} from '../../analysis-core/kernels/lon-lat-ring-wgsl';
 
 const OPERATION = 'GPULineLengthPerPolygon';
 
@@ -442,8 +442,8 @@ ${FIND_LINE_WGSL}`,
     );
 
     const pairs = {
-      leftIds: createTransientView(graph, `${id}-pair-left`, 'uint32', pairCapacity),
-      rightIds: createTransientView(graph, `${id}-pair-right`, 'uint32', pairCapacity),
+      leftRows: createTransientView(graph, `${id}-pair-left`, 'uint32', pairCapacity),
+      rightRows: createTransientView(graph, `${id}-pair-right`, 'uint32', pairCapacity),
       status: {
         count: createTransientView(graph, `${id}-pair-count`, 'uint32', 1),
         overflow: createTransientView(graph, `${id}-pair-overflow`, 'uint32', 1)
@@ -492,8 +492,8 @@ ${FIND_LINE_WGSL}`,
         operation: OPERATION,
         variant: spherical ? 'clip-spherical' : 'clip-planar',
         bindings: [
-          {name: 'leftIds', view: pairs.leftIds, type: 'u32', access: 'read'},
-          {name: 'rightIds', view: pairs.rightIds, type: 'u32', access: 'read'},
+          {name: 'leftRows', view: pairs.leftRows, type: 'u32', access: 'read'},
+          {name: 'rightRows', view: pairs.rightRows, type: 'u32', access: 'read'},
           {name: 'segmentPositions', view: segmentPositions, type: 'f32', access: 'read'},
           {name: 'featureRings', view: featureRings, type: 'u32', access: 'read'},
           {name: 'ringOffsets', view: polygons.ringOffsets, type: 'u32', access: 'read'},
@@ -551,8 +551,8 @@ fn isInside(point: vec2f, ringStart: u32, ringEnd: u32) -> bool {
   return (winding & 1) != 0;
 }`,
         body: `var inside = 0.0;
-  let segment = leftIds[leftIdsOffset + index];
-  let feature = rightIds[rightIdsOffset + index];
+  let segment = leftRows[leftRowsOffset + index];
+  let feature = rightRows[rightRowsOffset + index];
   if (segment != NO_FEATURE && feature != NO_FEATURE) {
     let a = vec2f(segmentPositions[segmentPositionsOffset + 4u * segment], segmentPositions[segmentPositionsOffset + 4u * segment + 1u]);
     let b = vec2f(segmentPositions[segmentPositionsOffset + 4u * segment + 2u], segmentPositions[segmentPositionsOffset + 4u * segment + 3u]);
@@ -638,8 +638,8 @@ fn isInside(point: vec2f, ringStart: u32, ringEnd: u32) -> bool {
         operation: OPERATION,
         variant: 'finish-pairs',
         bindings: [
-          {name: 'leftIds', view: pairs.leftIds, type: 'u32', access: 'read'},
-          {name: 'rightIds', view: pairs.rightIds, type: 'u32', access: 'read'},
+          {name: 'leftRows', view: pairs.leftRows, type: 'u32', access: 'read'},
+          {name: 'rightRows', view: pairs.rightRows, type: 'u32', access: 'read'},
           {name: 'insideLengths', view: insideLengths, type: 'f32', access: 'read'},
           {name: 'segmentWeights', view: segmentWeights, type: 'f32', access: 'read'},
           {name: 'keys', view: keys, type: 'u32', access: 'read_write'},
@@ -658,8 +658,8 @@ fn isInside(point: vec2f, ringStart: u32, ringEnd: u32) -> bool {
         invocationCount: pairCapacity,
         declarations: `const NO_FEATURE: u32 = 0xffffffffu;
 const POLYGON_COUNT: u32 = ${polygonCount}u;`,
-        body: `let segment = leftIds[leftIdsOffset + index];
-  let feature = rightIds[rightIdsOffset + index];
+        body: `let segment = leftRows[leftRowsOffset + index];
+  let feature = rightRows[rightRowsOffset + index];
   let inside = insideLengths[insideLengthsOffset + index];
   var key = POLYGON_COUNT;
   var contribution = 0.0;

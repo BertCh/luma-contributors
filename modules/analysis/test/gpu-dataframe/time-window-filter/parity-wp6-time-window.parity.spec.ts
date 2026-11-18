@@ -97,7 +97,7 @@ for (const fixture of fixtures) {
             sorted,
             validateOrder: sorted,
             output: {
-              ids: harness.output('ids', scene.capacity, 'uint32'),
+              rows: harness.output('ids', scene.capacity, 'uint32'),
               status: {
                 count: harness.output('count', 1, 'uint32'),
                 requiredCount: harness.output('requiredCount', 1, 'uint32'),

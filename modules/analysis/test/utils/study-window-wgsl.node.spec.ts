@@ -135,10 +135,12 @@ for (const kernel of [undefined, 'gaussian', 'quartic', 'epanechnikov'] as const
           getStudyWindowBoundaryDistance(point, 1000.0) + getStudyWindowCircleFraction(point, 800.0) +
           getStudyWindowSampleCell(0x80000001u).x ${kernel ? '+ getStudyWindowKernelMass(point, 500.0)' : ''};`
     });
-    const source = getParsedKernelSources([query]).get('window-query')!;
+    const sources = getParsedKernelSources([query]);
+    const source = sources.get('window-query')!;
     expect(source.match(/\borientSign\(/g)).toHaveLength(2); // declaration + one call
     expect(source.match(/\bexactOrientSigns\(/g)).toHaveLength(3); // declaration + unused segment helper + crossing helper
     expect(getStorageBindingCount(source)).toBe(2);
-    expect(auditWGSLModule(source)).toEqual([]);
+    for (const kernel of sources.getConfigurations('window-query'))
+      expect(auditWGSLModule(kernel.source, kernel.constants)).toEqual([]);
   });
 }

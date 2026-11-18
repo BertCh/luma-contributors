@@ -69,3 +69,5 @@ export type {
   GPUSpatialJoinCapacityPlan,
   GPUSpatialJoinCapacityPlanningOptions
 } from './spatial-join-capacity-plan';
+export {computeSpatialPredicateJoinOnCPU, computeNearestFeatureJoinOnCPU} from './cpu-feature-join';
+export type {CPUSpatialJoinGeometry, MultipartJoinPredicate} from './cpu-feature-join';

@@ -24,7 +24,7 @@ const ROWS = 300;
 const MAXIMUM_PERMUTATIONS = 99;
 let serial = 0;
 
-function getSources(kind: 'knox' | 'mantel'): {id: string; source: string}[] {
+function getSources(kind: 'knox' | 'mantel'): ReturnType<typeof getGPUCommandNodeKernelSources> {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
@@ -62,14 +62,15 @@ for (const kind of ['knox', 'mantel'] as const) {
   it(`${kind} kernels fit the core binding, private and workgroup limits`, () => {
     const sources = getSources(kind);
     expect(sources.length).toBeGreaterThan(0);
-    for (const {id, source} of sources) {
+    for (const {id, source, constants} of sources) {
       expect(getStorageBindingCount(source), `${id} storage bindings`).toBeLessThanOrEqual(8);
-      expect(getPrivateMemoryBytes(source), `${id} private bytes`).toBeLessThanOrEqual(
+      expect(getPrivateMemoryBytes(source, constants), `${id} private bytes`).toBeLessThanOrEqual(
         CORE_PRIVATE_MEMORY_LIMIT_BYTES
       );
-      expect(getWorkgroupMemoryBytes(source), `${id} workgroup bytes`).toBeLessThanOrEqual(
-        CORE_WORKGROUP_STORAGE_LIMIT_BYTES
-      );
+      expect(
+        getWorkgroupMemoryBytes(source, constants),
+        `${id} workgroup bytes`
+      ).toBeLessThanOrEqual(CORE_WORKGROUP_STORAGE_LIMIT_BYTES);
     }
   });
 
@@ -80,8 +81,8 @@ for (const kind of ['knox', 'mantel'] as const) {
     expect(partials.source).not.toContain('getFeistelRoundKeys(readSeedKey()');
     expect(partials.source).toContain('loadSwapOrNotRounds(');
     expect(partials.source).toContain('getSwapOrNotPermutationIndex(');
-    // The workgroup holds the rounds of one permutation: 2 arrays of 150 words.
-    expect(getWorkgroupMemoryBytes(partials.source)).toBe(2 * 150 * 4);
+    // Each of the two 600-byte arrays consumes 608 bytes of the WebGPU storage limit.
+    expect(getWorkgroupMemoryBytes(partials.source, partials.constants)).toBe(2 * 608);
     // The barrier follows the conditional load at function scope, never inside a branch.
     const body = partials.source.slice(partials.source.indexOf('fn main('));
     expect(body).toMatch(/\n {2}workgroupBarrier\(\);/);
@@ -91,10 +92,12 @@ for (const kind of ['knox', 'mantel'] as const) {
     );
     expect(prologue).not.toContain('return');
     // No kernel but the partials one (and the sort) pays for the workgroup memory.
-    for (const {id, source} of getSources(kind)) {
+    for (const {id, source, constants} of getSources(kind)) {
       if (!id.endsWith('-partials') && !id.includes('-sort-')) {
-        // Knox count-close keeps a workgroup (low word, carry count) pair of two atomics.
-        expect(getWorkgroupMemoryBytes(source), id).toBe(id.endsWith('-count-close') ? 8 : 0);
+        // Knox count-close keeps two atomics, each rounded to 16 bytes for the device limit.
+        expect(getWorkgroupMemoryBytes(source, constants), id).toBe(
+          id.endsWith('-count-close') ? 32 : 0
+        );
       }
     }
   });
@@ -131,5 +134,5 @@ it('knox count-close issues its global atomics once per workgroup, from lane 0',
   expect(
     body.slice(body.indexOf('let index = '), body.indexOf('workgroupBarrier()'))
   ).not.toContain('return');
-  expect(getWorkgroupMemoryBytes(kernel.source)).toBe(2 * 4);
+  expect(getWorkgroupMemoryBytes(kernel.source, kernel.constants)).toBe(2 * 16);
 });

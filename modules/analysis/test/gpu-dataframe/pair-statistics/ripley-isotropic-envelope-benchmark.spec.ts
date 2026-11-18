@@ -5,7 +5,7 @@
 /**
  * Chicago polygon-isotropic cost, with persistent window preparation and CSR envelopes.
  * Run with:
- * LUMA_TEST_BROWSER_BENCHMARKS=true npx vitest run --project headless --no-file-parallelism --silent=false modules/analysis/test/gpu-dataframe/pair-statistics/ripley-isotropic-envelope-benchmark.spec.ts
+ * yarn test-benchmarks modules/analysis/test/gpu-dataframe/pair-statistics/ripley-isotropic-envelope-benchmark.spec.ts
  *
  * Times are wall-clock encode + submit + queue completion, excluding compilation and readback.
  * "window build" is the first FULL encode (including the consumer and first-use GPU overhead),

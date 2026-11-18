@@ -14,6 +14,11 @@ export * from './gpu-raster-climate-run-accumulator';
 export * from './gpu-raster-climate-anomaly';
 export * from './gpu-raster-medoid-composite';
 export * from './gpu-raster-geometric-median-composite';
+export {getGPURasterGeometricMedianCompositeOutputLayout} from './raster-geometric-median-output-layout';
+export type {
+  GPURasterGeometricMedianCompositeOutputLayoutOptions,
+  GPURasterGeometricMedianCompositeOutputLayout
+} from './raster-geometric-median-output-layout';
 export * from './gpu-raster-best-available-pixel';
 export * from './gpu-raster-phenology-metrics';
 export * from './gpu-raster-harmonic-regression';

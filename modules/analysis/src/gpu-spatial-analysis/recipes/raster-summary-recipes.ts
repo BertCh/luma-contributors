@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getRecipeView as getOrCreateView} from './recipe-utils';
+import {addPreparedRecipe} from './prepared-recipe';
+
+import {getRecipeView as getOrCreateView, validateRecipeBoundary} from './recipe-utils';
+import {getRasterBandViews} from '../../raster-analysis/raster-band-utils';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPURasterBufferBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {GPURasterNeighborhood} from '@luma.gl/graph/gpu-raster';
@@ -21,15 +24,16 @@ import {
 
 /** @internal Resolve raw nodata before calibration; every missing output is NaN. */
 function prepareBand<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
+  builder: RecipeBuilder<Parameters>,
   id: string,
   grid: GPURasterMetadata,
   input: GPURasterBufferBand
 ): GPURasterBufferBand<'float32'> {
+  const {graph} = builder;
   const count = grid.width * grid.height;
   const values = getOrCreateView(graph, `${id}-values`, 'float32', count);
   const validity = getOrCreateView(graph, `${id}-validity`, 'uint32', count);
-  new GPURasterNeighborhood({
+  const neighborhood = new GPURasterNeighborhood({
     id,
     width: grid.width,
     height: grid.height,
@@ -38,7 +42,8 @@ function prepareBand<Parameters>(
     outputValidity: validity,
     radius: 0,
     kernel: [1]
-  }).addToGraph(graph);
+  });
+  builder.addAdapter(target => neighborhood.addToGraph(target));
   return {id, format: 'float32', storage: {kind: 'buffer', values}, validity};
 }
 export type GPURasterZonalDistributionRecipeProps = Omit<
@@ -55,15 +60,42 @@ export function addRasterZonalDistributionRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPURasterZonalDistributionRecipeProps
 ) {
+  return addPreparedRecipe(graph, props, declareRasterZonalDistributionRecipe);
+}
+
+function declareRasterZonalDistributionRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPURasterZonalDistributionRecipeProps
+) {
   const id = props.id ?? 'raster-zonal-distribution-recipe';
-  const band = prepareBand(graph, `${id}-calibrate`, props.grid, props.input);
-  const result = addZonalDistributionRecipe(graph, {
-    ...props,
+  validateRecipeBoundary(
+    graph,
     id,
+    [...getRasterBandViews(props.input), props.zones, props.probabilities],
+    [
+      props.outputs?.zoneIds,
+      props.outputs?.rowCounts,
+      props.outputs?.validCounts,
+      props.outputs?.medians,
+      props.outputs?.modes,
+      props.outputs?.uniqueCounts,
+      props.outputs?.quantiles
+    ]
+  );
+  const builder = new RecipeBuilder(graph);
+  const band = prepareBand(builder, `${id}-calibrate`, props.grid, props.input);
+  const result = addZonalDistributionRecipe(graph, {
+    id,
+    probabilities: props.probabilities,
+    outputs: props.outputs,
     values: band.storage.values,
     source: {kind: 'zones', zones: props.zones, zoneCount: props.zoneCount, mask: band.validity}
   });
-  return {...result, intermediates: {...result.intermediates, band, grid: props.grid}};
+  return {
+    ...result,
+    contributors: [...builder.contributors, ...result.contributors],
+    intermediates: {...result.intermediates, band, grid: props.grid}
+  };
 }
 
 export type GPUExposureByZoneRecipeProps = {
@@ -86,6 +118,13 @@ export function addExposureByZoneRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUExposureByZoneRecipeProps
 ) {
+  return addPreparedRecipe(graph, props, declareExposureByZoneRecipe);
+}
+
+function declareExposureByZoneRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUExposureByZoneRecipeProps
+) {
   const id = props.id ?? 'exposure-by-zone-recipe';
   const builder = new RecipeBuilder(graph);
   const count = props.grid.width * props.grid.height;
@@ -96,8 +135,8 @@ export function addExposureByZoneRecipe<Parameters>(
     (props.cellAreas && props.cellAreas.length !== count)
   )
     throw new Error(`${id}: incompatible grid or missing density areas`);
-  const hazard = prepareBand(graph, `${id}-hazard`, props.grid, props.hazard);
-  const population = prepareBand(graph, `${id}-population`, props.grid, props.population);
+  const hazard = prepareBand(builder, `${id}-hazard`, props.grid, props.hazard);
+  const population = prepareBand(builder, `${id}-population`, props.grid, props.population);
   const totals = getOrCreateView(graph, `${id}-totals`, 'float32', count);
   const observed = getOrCreateView(graph, `${id}-observed`, 'float32', count);
   const exposed = getOrCreateView(graph, `${id}-exposed`, 'float32', count);
@@ -226,6 +265,13 @@ export type GPURegionalRasterChangeRecipeProps = {
 };
 /** Two-period raster differences over common support, with independently reported coverage. */
 export function addRegionalRasterChangeRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPURegionalRasterChangeRecipeProps
+) {
+  return addPreparedRecipe(graph, props, declareRegionalRasterChangeRecipe);
+}
+
+function declareRegionalRasterChangeRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPURegionalRasterChangeRecipeProps
 ) {

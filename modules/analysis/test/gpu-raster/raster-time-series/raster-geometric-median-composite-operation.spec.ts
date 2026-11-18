@@ -108,3 +108,57 @@ it('compares a nonzero lastStep after one Weiszfeld iteration', async () => {
     else expect(Math.abs(results[0][output][0] - results[1][output][0])).toBeLessThanOrEqual(2e-5);
   }
 });
+
+for (const lastStep of [false, true]) {
+  it(`publishes the geometric median layout with two cells, three bands and lastStep=${lastStep}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const props: RasterGeometricMedianCompositeOperationProps = {
+      cellCount: 2,
+      sliceCount: 1,
+      bandCount: 3,
+      iterationCount: 1,
+      values: 'values',
+      parameters: 'parameters',
+      mask: 'mask',
+      output: {
+        composite: 'composite',
+        status: 'status',
+        ...(lastStep ? {lastStep: 'lastStep'} : {})
+      }
+    };
+    const expected = {
+      composite: [10, 11, 12, NaN, NaN, NaN],
+      status: [0, 1],
+      ...(lastStep ? {lastStep: [0, NaN]} : {})
+    };
+    for (const Operation of [
+      GPURasterGeometricMedianCompositeOperation,
+      CPURasterGeometricMedianCompositeOperation
+    ]) {
+      const result = await runOperationGraph(device, {
+        inputs: {
+          values: {format: 'float32', values: Float32Array.of(10, 11, 12, 20, 21, 22)},
+          mask: {format: 'uint32', values: Uint32Array.of(1, 0)},
+          parameters: {
+            format: 'float32',
+            values: getGPURasterGeometricMedianCompositeParameterValues()
+          }
+        },
+        operations: [new Operation(props)],
+        outputs: Object.keys(expected)
+      });
+      expect(Object.keys(result).sort()).toEqual(Object.keys(expected).sort());
+      for (const [name, values] of Object.entries(expected)) {
+        expect(result[name]).toHaveLength(values.length);
+        for (const [index, value] of values.entries()) {
+          if (Number.isNaN(value)) expect(result[name][index]).toBeNaN();
+          else {
+            expect(Number.isFinite(result[name][index])).toBe(true);
+            expect(result[name][index]).toBeCloseTo(value, 5);
+          }
+        }
+      }
+    }
+  });
+}

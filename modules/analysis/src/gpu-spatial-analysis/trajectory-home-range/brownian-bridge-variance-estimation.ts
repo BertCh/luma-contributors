@@ -27,6 +27,21 @@ export type WindowedBrownianMotionVarianceOptions = BrownianMotionVarianceOption
   windowSize?: number;
 };
 
+/** A motion variance estimate and its optimization diagnostic. */
+export type BrownianMotionVarianceEstimate = {
+  motionVariance: number;
+  status: {
+    /** True when the returned estimate is exactly the nonnegative lower bound, zero. */
+    lowerBoundReached: boolean;
+  };
+};
+
+/** Sliding-window estimates and the diagnostic for each segment's window. */
+export type WindowedBrownianMotionVarianceEstimate = {
+  motionVariances: Float64Array;
+  segmentStatus: BrownianMotionVarianceEstimate['status'][];
+};
+
 const GRID_POINT_COUNT = 160;
 const REFINEMENT_COUNT = 80;
 
@@ -84,7 +99,7 @@ function getLogLikelihood(
   let total = 0;
   for (const {weight, errorVariance, squaredResidual} of terms) {
     const variance = weight * motionVariance + errorVariance;
-    if (!(variance > 0)) {
+    if (!(variance > 0) || !Number.isFinite(variance)) {
       return -Infinity;
     }
     total += -Math.log(2 * Math.PI * variance) - squaredResidual / (2 * variance);
@@ -92,10 +107,67 @@ function getLogLikelihood(
   return total;
 }
 
+/** L(second) - L(first), retaining small changes that disappear in absolute log-likelihoods. */
+function getLogLikelihoodDifference(
+  terms: ReturnType<typeof getVarianceTerms>,
+  first: number,
+  second: number
+): number {
+  let total = 0;
+  for (const {weight, errorVariance, squaredResidual} of terms) {
+    const variance = weight * first + errorVariance;
+    const nextVariance = weight * second + errorVariance;
+    if (!(variance > 0) || !(nextVariance > 0)) {
+      return getLogLikelihood(terms, second) - getLogLikelihood(terms, first);
+    }
+    const change = (weight * (second - first)) / variance;
+    if (Math.abs(change) >= 0.01) {
+      // Do not cancel x against -x for large variance ratios: the remaining logarithm is
+      // the entire penalty for a zero residual with a very small location error.
+      total +=
+        Math.log(variance) -
+        Math.log(nextVariance) +
+        (squaredResidual === 0
+          ? 0
+          : (squaredResidual / variance - squaredResidual / nextVariance) / 2);
+      continue;
+    }
+    // x - log1p(x) starts at x^2 / 2. Subtracting the two directly would erase the
+    // likelihood gain of a positive optimum very near the nonnegative boundary.
+    const logarithmRemainder =
+      Math.abs(change) < 0.01
+        ? change *
+          change *
+          (1 / 2 +
+            change *
+              (-1 / 3 +
+                change *
+                  (1 / 4 +
+                    change * (-1 / 5 + change * (1 / 6 + change * (-1 / 7 + change * (1 / 8)))))))
+        : change - Math.log1p(change);
+    const residualExcess = (squaredResidual - 2 * variance) / (2 * variance);
+    total += logarithmRemainder + ((residualExcess - change) * change) / (1 + change);
+  }
+  return total;
+}
+
 /** Maximum-likelihood motion variance of the given terms, by a log-spaced scan then golden section. */
-function maximizeLikelihood(terms: ReturnType<typeof getVarianceTerms>): number {
-  if (terms.length === 0) {
-    return NaN;
+function maximizeLikelihood(
+  terms: ReturnType<typeof getVarianceTerms>
+): BrownianMotionVarianceEstimate {
+  if (
+    terms.length === 0 ||
+    terms.some(
+      ({weight, errorVariance, squaredResidual}) =>
+        !Number.isFinite(weight) ||
+        weight <= 0 ||
+        !Number.isFinite(errorVariance) ||
+        errorVariance < 0 ||
+        !Number.isFinite(squaredResidual) ||
+        squaredResidual < 0
+    )
+  ) {
+    return {motionVariance: NaN, status: {lowerBoundReached: false}};
   }
   // Scale of the answer: the closed form of the error-free estimator,
   // sigma^2 = mean(r^2 / (2 w)), which is exact when every location error is 0.
@@ -104,35 +176,76 @@ function maximizeLikelihood(terms: ReturnType<typeof getVarianceTerms>): number 
     scale += squaredResidual / (2 * weight);
   }
   scale = scale / terms.length;
-  if (!(scale > 0) || !Number.isFinite(scale)) {
-    return 0;
+  if (!Number.isFinite(scale)) {
+    return {motionVariance: NaN, status: {lowerBoundReached: false}};
   }
-  const lowest = Math.log(scale) - 12;
-  const highest = Math.log(scale) + 6;
-  let bestIndex = 0;
-  let bestValue = -Infinity;
-  for (let index = 0; index < GRID_POINT_COUNT; index++) {
-    const logVariance = lowest + ((highest - lowest) * index) / (GRID_POINT_COUNT - 1);
-    const value = getLogLikelihood(terms, Math.exp(logVariance));
-    if (value > bestValue) {
-      bestValue = value;
-      bestIndex = index;
+  if (scale === 0) {
+    return {motionVariance: 0, status: {lowerBoundReached: true}};
+  }
+  if (terms.every(term => term.errorVariance === 0)) {
+    return {motionVariance: scale, status: {lowerBoundReached: false}};
+  }
+  // Heterogeneous errors can produce separate peaks many orders of magnitude apart. Include
+  // each term's error transition and positive optimum instead of bracketing only the mean scale.
+  const scales = new Set([scale]);
+  for (const {weight, errorVariance, squaredResidual} of terms) {
+    for (const candidate of [
+      errorVariance / weight,
+      (squaredResidual / 2 - errorVariance) / weight
+    ]) {
+      if (candidate > 0 && Number.isFinite(candidate)) scales.add(candidate);
     }
   }
-  const step = (highest - lowest) / (GRID_POINT_COUNT - 1);
-  let low = lowest + Math.max(bestIndex - 1, 0) * step;
-  let high = lowest + Math.min(bestIndex + 1, GRID_POINT_COUNT - 1) * step;
+  const candidates = new Set<number>([0]);
+  const intervals = [...scales]
+    .map(value => [Math.log(value) - 12, Math.log(value) + 6])
+    .sort((first, second) => first[0] - second[0]);
+  const merged: number[][] = [];
+  for (const interval of intervals) {
+    const previous = merged[merged.length - 1];
+    if (previous && interval[0] <= previous[1]) previous[1] = Math.max(previous[1], interval[1]);
+    else merged.push([...interval]);
+  }
+  for (const [lowest, highest] of merged) {
+    const count = Math.ceil((highest - lowest) / (18 / (GRID_POINT_COUNT - 1)));
+    for (let index = 0; index <= count; index++) {
+      const candidate = Math.exp(lowest + ((highest - lowest) * index) / count);
+      if (Number.isFinite(candidate)) candidates.add(candidate);
+    }
+  }
+  const grid = [...candidates].sort((first, second) => first - second);
+  let best = NaN;
+  const consider = (candidate: number) => {
+    if (
+      Number.isFinite(getLogLikelihood(terms, candidate)) &&
+      (Number.isNaN(best) || getLogLikelihoodDifference(terms, best, candidate) > 0)
+    )
+      best = candidate;
+  };
+  for (const candidate of grid) consider(candidate);
   const ratio = (Math.sqrt(5) - 1) / 2;
-  for (let iteration = 0; iteration < REFINEMENT_COUNT; iteration++) {
-    const left = high - ratio * (high - low);
-    const right = low + ratio * (high - low);
-    if (getLogLikelihood(terms, Math.exp(left)) < getLogLikelihood(terms, Math.exp(right))) {
-      low = left;
-    } else {
-      high = right;
+  for (let index = 0; index < grid.length - 1; index++) {
+    // The first interval can contain a maximum even when its positive sample loses to zero.
+    // Always refine it before declaring that the nonnegative boundary won.
+    if (
+      index !== 0 &&
+      (getLogLikelihoodDifference(terms, grid[index - 1], grid[index]) < 0 ||
+        getLogLikelihoodDifference(terms, grid[index], grid[index + 1]) > 0)
+    )
+      continue;
+    const fromZero = index === 0 || grid[index - 1] === 0;
+    let low = fromZero ? 0 : Math.log(grid[index - 1]);
+    let high = fromZero ? grid[index + 1] : Math.log(grid[index + 1]);
+    const getVariance = (value: number) => (fromZero ? value : Math.exp(value));
+    for (let iteration = 0; iteration < REFINEMENT_COUNT; iteration++) {
+      const left = high - ratio * (high - low);
+      const right = low + ratio * (high - low);
+      if (getLogLikelihoodDifference(terms, getVariance(left), getVariance(right)) > 0) low = left;
+      else high = right;
     }
+    consider(getVariance(0.5 * (low + high)));
   }
-  return Math.exp(0.5 * (low + high));
+  return {motionVariance: best, status: {lowerBoundReached: best === 0}};
 }
 
 /**
@@ -153,12 +266,25 @@ function maximizeLikelihood(terms: ReturnType<typeof getVarianceTerms>): number 
  * refinement. The R packages `move` and `BBMM` (licences not verified) were not consulted or run,
  * so no parity with their estimates or optimizers is claimed.
  *
- * @returns The variance, or NaN when the track has fewer than three fixes.
+ * @returns The variance, or NaN when there are fewer than three fixes, unusable terms (including
+ * non-finite coordinates, times or location errors), or no finite likelihood candidate.
  */
 export function estimateBrownianMotionVariance(
   track: BrownianBridgeTrack,
   options: BrownianMotionVarianceOptions = {}
 ): number {
+  return estimateBrownianMotionVarianceWithStatus(track, options).motionVariance;
+}
+
+/**
+ * The same estimator as {@link estimateBrownianMotionVariance}, including the exact zero
+ * candidate. `status.lowerBoundReached` reports whether zero was selected. With fewer than
+ * three fixes or unusable terms/likelihoods the estimate is NaN and the flag is false.
+ */
+export function estimateBrownianMotionVarianceWithStatus(
+  track: BrownianBridgeTrack,
+  options: BrownianMotionVarianceOptions = {}
+): BrownianMotionVarianceEstimate {
   return maximizeLikelihood(
     getVarianceTerms(track, options.locationError, 0, track.times.length - 1)
   );
@@ -181,6 +307,26 @@ export function estimateWindowedBrownianMotionVariance(
   track: BrownianBridgeTrack,
   options: WindowedBrownianMotionVarianceOptions = {}
 ): Float64Array {
+  return computeWindowedMotionVariances(track, options);
+}
+
+/** Windowed estimates with the zero-bound diagnostic for each segment, in segment order. */
+export function estimateWindowedBrownianMotionVarianceWithStatus(
+  track: BrownianBridgeTrack,
+  options: WindowedBrownianMotionVarianceOptions = {}
+): WindowedBrownianMotionVarianceEstimate {
+  const segmentStatus: BrownianMotionVarianceEstimate['status'][] = [];
+  return {
+    motionVariances: computeWindowedMotionVariances(track, options, segmentStatus),
+    segmentStatus
+  };
+}
+
+function computeWindowedMotionVariances(
+  track: BrownianBridgeTrack,
+  options: WindowedBrownianMotionVarianceOptions,
+  segmentStatus?: BrownianMotionVarianceEstimate['status'][]
+): Float64Array {
   const fixCount = track.times.length;
   const windowSize = Math.min(options.windowSize ?? 31, fixCount);
   const variances = new Float64Array(Math.max(fixCount - 1, 0));
@@ -189,9 +335,11 @@ export function estimateWindowedBrownianMotionVariance(
       Math.max(segment + 1 - Math.floor(windowSize / 2), 0),
       fixCount - windowSize
     );
-    variances[segment] = maximizeLikelihood(
+    const estimate = maximizeLikelihood(
       getVarianceTerms(track, options.locationError, first, first + windowSize - 1)
     );
+    variances[segment] = estimate.motionVariance;
+    segmentStatus?.push(estimate.status);
   }
   return variances;
 }

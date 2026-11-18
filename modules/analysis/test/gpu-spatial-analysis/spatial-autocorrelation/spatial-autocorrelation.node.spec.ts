@@ -380,7 +380,7 @@ it('GPUHotSpotAnalysis and GPULocalMoran reject invalid properties', () => {
   const base = createLocalMoranProps(graph);
   expect(
     () => new GPULocalMoran({...base, output: {...base.output, zScores: base.values as never}})
-  ).toThrow(/outputs must not share/);
+  ).toThrow(/outputs(?:\[\d+\])? must not share buffers with inputs/);
   expect(
     () =>
       new GPULocalMoran({
@@ -614,7 +614,11 @@ function getEdgeAssociationSources(
   kind: 'pearson' | 'gamma',
   rows: number,
   withMask: boolean
-): {nodeIds: string[]; sources: {id: string; source: string}[]; workgroups: number[]} {
+): {
+  nodeIds: string[];
+  sources: ReturnType<typeof getGPUCommandNodeKernelSources>;
+  workgroups: number[];
+} {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
@@ -650,11 +654,13 @@ it('Pearson and Gamma reduce edges in three fixed-order stages without atomics',
       const prefix = kind === 'pearson' ? 'spatial-pearson' : 'gamma-statistic';
       expect(nodeIds).toEqual([`${prefix}-moments`, `${prefix}-centered`, `${prefix}-statistic`]);
       expect(sources.map(({id}) => id)).toEqual(nodeIds);
-      for (const {id, source} of sources) {
+      for (const {id, source, constants} of sources) {
         expect(source, id).not.toContain('atomic');
         expect(getStorageBindingCount(source), `${id} storage bindings`).toBeLessThanOrEqual(8);
-        expect(getWorkgroupMemoryBytes(source), `${id} workgroup bytes`).toBe(3 * 256 * 4);
-        expect(getWorkgroupMemoryBytes(source)).toBeLessThanOrEqual(
+        expect(getWorkgroupMemoryBytes(source, constants), `${id} workgroup bytes`).toBe(
+          3 * 256 * 4
+        );
+        expect(getWorkgroupMemoryBytes(source, constants)).toBeLessThanOrEqual(
           CORE_WORKGROUP_STORAGE_LIMIT_BYTES
         );
         // 70000 rows / 256 lanes = 274 > 256: the workgroup count is capped.

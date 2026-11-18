@@ -12,6 +12,13 @@ import {
   type NetworkPathExtractionOperationProps
 } from '../../../src/gpu-network/network-analysis/gpu-network-path-extraction-operation';
 import {constructNetworkOperationContributor} from '../../utils/network-operation-test-utils';
+import {
+  buildCSR,
+  dijkstra,
+  F1_EDGES,
+  predecessorOracle
+} from '../network-reachability/network-reachability-oracle';
+import {extractPathsOracle} from './network-path-extraction-oracle';
 
 const NONE = 0xffffffff;
 const INPUT = {
@@ -123,7 +130,7 @@ it('honors active-count and completion flags, and rejects broken/cyclic chains w
   expect(Array.from(empty.edges!.ids)).toEqual([0, 0]);
 });
 
-it('extracts complete paths beyond the GPU walk cap', () => {
+it('honors an explicit walk budget and reports candidate loss with ample final capacity', () => {
   const nodeCount = 65537;
   const result = computeNetworkPathExtractionOnCPU({
     predecessors: Uint32Array.from({length: nodeCount}, (_, node) =>
@@ -134,10 +141,49 @@ it('extracts complete paths beyond the GPU walk cap', () => {
     maximumPathLength: 1,
     capacity: 1
   });
-  // A chain built in increasing node order has exactly nodeCount nodes, irrespective of GPU budget.
-  expect(result.requiredCount[0]).toBe(nodeCount);
-  expect(result.pathFound[0]).toBe(1);
+  expect(result.requiredCount[0]).toBe(0);
+  expect(result.pathFound[0]).toBe(0);
+  expect(result.overflow[0]).toBe(0);
+  expect(result.candidateOverflow[0]).toBe(1);
   expect(result.ids[0]).toBe(0);
+});
+
+it('separates bounded-path loss from final capacity on the F1 node and edge outputs', () => {
+  const topology = buildCSR(8, F1_EDGES);
+  const costs = dijkstra(topology, 8, [{node: 0, cost: 0}]);
+  const predecessors = predecessorOracle(topology, costs, [{node: 0, cost: 0}]);
+  const input = {
+    predecessors,
+    costs,
+    targets: new Uint32Array([4, 0]),
+    maximumPathLength: 4,
+    capacity: 16,
+    edges: {...topology, capacity: 16}
+  };
+  const result = computeNetworkPathExtractionOnCPU(input);
+  // 0 -> 2 -> 1 -> 3 -> 4 needs five nodes, so only the root target survives the budget.
+  expect(Array.from(result.pathFound)).toEqual([0, 1]);
+  expect([result.count[0], result.requiredCount[0], result.edges!.count[0]]).toEqual([1, 1, 0]);
+  expect(Array.from(result.ids.slice(0, result.count[0]))).toEqual([0]);
+  expect([
+    result.overflow[0],
+    result.candidateOverflow[0],
+    result.edges!.overflow[0],
+    result.edges!.candidateOverflow[0]
+  ]).toEqual([0, 1, 0, 1]);
+  const reference = extractPathsOracle({
+    predecessors,
+    costs,
+    targets: input.targets,
+    maxPathLength: 4,
+    capacity: 16,
+    csr: topology,
+    edgeCapacity: 16
+  });
+  expect([reference.ids, reference.edgeIds, reference.found]).toEqual([[0], [], [0, 1]]);
+  expect([reference.overflow, reference.candidateOverflow, reference.edgeOverflow]).toEqual([
+    0, 1, 0
+  ]);
 });
 
 it('uses exact float64 edge consistency before choosing the smallest slot', () => {

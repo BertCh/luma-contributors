@@ -72,8 +72,8 @@ describe('GPU spatial-analysis contracts', () => {
     const overflow = view('uint32', 1);
     expect(() =>
       validateGPUCompactPairPort('pairs', {
-        leftIds: view('uint32', 8),
-        rightIds: view('uint32', 8),
+        leftRows: view('uint32', 8),
+        rightRows: view('uint32', 8),
         status: {count, requiredCount: count, overflow}
       })
     ).not.toThrow();

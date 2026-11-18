@@ -37,6 +37,85 @@ const ROWS = 6;
  */
 const PERMUTATIONS = 999;
 
+it('F13 distinguishes pair loss with fixed ample neighbor capacity', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new RecipeTestFixture(device, 'rate-pair-loss');
+  const layout = flattenPolygons(
+    [0, 1, 2].map(x => [
+      [
+        [x, 0],
+        [x + 1, 0],
+        [x + 1, 1],
+        [x, 1]
+      ]
+    ]) as OraclePolygons
+  );
+  try {
+    const polygons = {
+      kind: 'polygons' as const,
+      positions: fixture.input(
+        'positions',
+        Float32Array.from(layout.positions),
+        'float32x2',
+        layout.positions.length / 2
+      ),
+      featureOffsets: fixture.input('features', Uint32Array.of(0, 1, 2, 3), 'uint32', 4),
+      polygonOffsets: fixture.input(
+        'polygons',
+        Uint32Array.from(layout.polygonOffsets),
+        'uint32',
+        4
+      ),
+      ringOffsets: fixture.input('rings', Uint32Array.from(layout.ringOffsets), 'uint32', 4)
+    };
+    const events = fixture.input('events', Float32Array.of(1, 3, 2), 'float32', 3);
+    const populations = fixture.input('populations', Float32Array.of(10, 10, 10), 'float32', 3);
+    const palette = fixture.input('palette', new Uint32Array(5), 'uint32', 5);
+    const runs = [1, 32].map(pairCapacity => {
+      const id = `pairs-${pairCapacity}`;
+      const overflow = fixture.output(`${id}-overflow`, 'uint32', 1);
+      const candidate = fixture.output(`${id}-candidate`, 'uint32', 1);
+      const required = fixture.output(`${id}-required`, 'uint32', 1);
+      const recipe = addRateClusterMapRecipe(fixture.graph, {
+        id,
+        polygons,
+        events,
+        populations,
+        palette,
+        neighborCapacity: 16,
+        pairCapacity,
+        parameters: fixture.parameterBuffer(
+          `${id}-parameters`,
+          'float32',
+          GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
+        ),
+        outputs: {
+          status: {
+            weightsOverflow: overflow.view,
+            weightsCandidateOverflow: candidate.view,
+            weightsRequiredCount: required.view
+          }
+        }
+      });
+      expect(
+        recipe.status.stages.find(stage => stage.stage === 'weights')?.status.candidateOverflow
+      ).toBe(candidate.view);
+      return {pairCapacity, overflow, candidate, required};
+    });
+    fixture.run();
+    // Pair scratch loss leaves ample final neighbor capacity; its separate flag must still fire.
+    expect(await fixture.readUint32(runs[0].overflow, 1)).toEqual([0]);
+    expect(await fixture.readUint32(runs[0].candidate, 1)).toEqual([1]);
+    expect((await fixture.readUint32(runs[0].required, 1))[0]).toBeLessThanOrEqual(4);
+    expect(await fixture.readUint32(runs[1].overflow, 1)).toEqual([0]);
+    expect(await fixture.readUint32(runs[1].candidate, 1)).toEqual([0]);
+    expect(await fixture.readUint32(runs[1].required, 1)).toEqual([4]);
+  } finally {
+    fixture.destroy();
+  }
+});
+
 /** Unit squares with a high-rate corner, a low-rate corner and one empty-population polygon. */
 function createScene() {
   const random = createSeededRandom(21);

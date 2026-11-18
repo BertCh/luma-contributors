@@ -10,10 +10,10 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 
 /** Discrete global grid families keyed by {@link GPUCellAggregation}. */
-export type GPUCellFamily = 'quadbin' | 'h3';
+export type GPUCellAggregationFamily = 'quadbin' | 'h3';
 
 /** Finest resolution supported per family. */
-export const GPU_CELL_MAXIMUM_RESOLUTION: Readonly<Record<GPUCellFamily, number>> = {
+export const GPU_CELL_MAXIMUM_RESOLUTION: Readonly<Record<GPUCellAggregationFamily, number>> = {
   quadbin: 26,
   h3: 15
 };
@@ -39,7 +39,7 @@ const CELL_KEYED_SUPPORT: GPUSpatialContextSupport = Object.freeze({
  */
 export function resolveCellSpatialContext(
   id: string,
-  family: GPUCellFamily,
+  family: GPUCellAggregationFamily,
   context: GPUSpatialContext | undefined,
   rows: 'points' | 'cells',
   minimumResolution: number
@@ -79,7 +79,7 @@ export function resolveCellSpatialContext(
  * @internal
  */
 export type CellKeyLayout = {
-  family: GPUCellFamily;
+  family: GPUCellAggregationFamily;
   resolution: number;
   /** Lowest bit of the path in the 64-bit key. */
   lowBit: number;
@@ -92,7 +92,10 @@ export type CellKeyLayout = {
 };
 
 /** Returns the key bit layout of `family` at `resolution`. @internal */
-export function getCellKeyLayout(family: GPUCellFamily, resolution: number): CellKeyLayout {
+export function getCellKeyLayout(
+  family: GPUCellAggregationFamily,
+  resolution: number
+): CellKeyLayout {
   const maximum = GPU_CELL_MAXIMUM_RESOLUTION[family];
   validateCapacity(family, 'resolution', resolution, 0, maximum);
   const lowBit = family === 'quadbin' ? 52 - 2 * resolution : 45 - 3 * resolution;

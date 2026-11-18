@@ -15,8 +15,14 @@ import type {
   GPUCommandNodeProducer,
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPURasterBufferBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
-import {getRasterBandViews, getRasterBufferBandNodes} from './raster-band-utils';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  snapshotRasterBand,
+  validateRasterTextureBand,
+  validateRasterBandBelongsToGraph
+} from './raster-band-utils';
 import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {createRasterCountNodes} from './remote-sensing/raster-kernel-utils';
 import {IS_FINITE_VALUE_WGSL} from '../analysis-core/kernels/wgsl-common';
@@ -48,7 +54,7 @@ export type GPURasterFillNoDataOutput = {
 export type GPURasterFillNoDataProps = {
   id?: string;
   grid: GPURasterMetadata;
-  input: GPURasterBufferBand;
+  input: GPURasterBand;
   /**
    * Euclidean distance in pixel coordinates; positive integer, at most 256. Every missing pixel
    * scans a (2 * maximumDistance + 1)^2 window in one dispatch, so on large grids with many missing
@@ -69,8 +75,10 @@ export class GPURasterFillNoData implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPURasterFillNoDataProps;
   constructor(props: GPURasterFillNoDataProps) {
+    props = {...props, input: snapshotRasterBand(props.input)};
     this.id = props.id ?? 'raster-fill-nodata';
     this.props = props;
+    validateRasterTextureBand(this.id, props.input, props.grid);
     // Reject unsupported interpolation names instead of silently choosing all-donor IDW.
     validateRequirement(
       this.id,
@@ -123,6 +131,7 @@ export class GPURasterFillNoData implements GPUCommandNodeProducer {
     const {props, id} = this;
     const {output, grid} = props;
     const count = grid.width * grid.height;
+    validateRasterBandBelongsToGraph(id, graph, props.input, []);
     validateRasterExpansionGraph(id, graph, [
       ...getRasterBandViews(props.input),
       ...getOutputViews(output)

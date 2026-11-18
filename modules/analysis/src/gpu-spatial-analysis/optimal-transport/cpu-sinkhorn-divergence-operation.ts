@@ -103,7 +103,7 @@ function computeSoftMinimum(
 
 /**
  * Runs the full-kernel log-domain Sinkhorn method in float64, including the symmetric self
- * updates, epsilon schedule, target-marginal stopping test, and the final half-update on a
+ * updates, epsilon schedule, all-three-plan marginal stopping test, and the final half-update on a
  * budget-limited run. The explicit maximumIterations is a solver budget, with no GPU unroll cap.
  *
  * What differs from the GPU contributor:
@@ -111,7 +111,7 @@ function computeSoftMinimum(
  *   can change iterationCount and convergence flags; no universal relative bound exists near
  *   zero divergence or marginal error. Well-conditioned values agree within 3e-4 relative.
  * - Full blurs are always evaluated: blurRadius is ignored and approximation is always zero.
- *   No finite masked-log cutoff or capped exponential discards a term. The explicit solver
+ *   No finite masked-log cutoff discards a term. The explicit solver
  *   budget is retained, including iterationLimitReached; its GPU maximum of 1000 is dropped.
  * - The GPU's grid-side, row-count and storage-binding limits are dropped; uint32 grid dimensions
  *   and diagnostic counts remain. A 1x1 grid is accepted by both routes.
@@ -212,22 +212,44 @@ export function computeSinkhornDivergenceOnCPU(
       epsilon
     );
     let error = 0;
+    let sourceSelfError = 0;
+    let targetSelfError = 0;
+    const getMarginalResidual = (mass: number, logMass: number, delta: number): number => {
+      if (mass === 0) return 0;
+      // Evaluate the mass times the exponential before it can overflow on its own.
+      return delta > 1
+        ? Math.abs(Math.exp(logMass + delta) - mass)
+        : mass * Math.abs(Math.expm1(delta));
+    };
     for (let cell = 0; cell < count; cell++) {
-      if (targetMass[cell] > 0) {
-        const delta = (targetOfCross[cell] - nextTarget[cell]) / epsilon;
-        // Evaluate the mass times the exponential before it can overflow on its own.
-        error +=
-          delta > 1
-            ? Math.abs(Math.exp(second.logarithms[cell] + delta) - targetMass[cell])
-            : targetMass[cell] * Math.abs(Math.expm1(delta));
-      }
+      error += getMarginalResidual(
+        targetMass[cell],
+        second.logarithms[cell],
+        (targetOfCross[cell] - nextTarget[cell]) / epsilon
+      );
+      // The symmetric plan uses the same potential on both sides; its row and column
+      // residuals agree. Measure before damping, just as for the cross-plan update.
+      sourceSelfError += getMarginalResidual(
+        sourceMass[cell],
+        first.logarithms[cell],
+        (sourceOfSelf[cell] - nextSourceSelf[cell]) / epsilon
+      );
+      targetSelfError += getMarginalResidual(
+        targetMass[cell],
+        second.logarithms[cell],
+        (targetOfSelf[cell] - nextTargetSelf[cell]) / epsilon
+      );
       sourceOfSelf[cell] = (sourceOfSelf[cell] + nextSourceSelf[cell]) / 2;
       targetOfSelf[cell] = (targetOfSelf[cell] + nextTargetSelf[cell]) / 2;
     }
     targetOfCross = nextTarget;
     result.iterationCount[0] = iteration;
     marginalError = error;
-    const converged = epsilon <= finalEpsilon * 1.000001 && error <= tolerance;
+    const converged =
+      epsilon === finalEpsilon &&
+      error <= tolerance &&
+      sourceSelfError <= tolerance &&
+      targetSelfError <= tolerance;
     epsilon = Math.max(finalEpsilon, epsilonStart * scalingFactor ** iteration);
     if (converged) {
       result.converged[0] = 1;

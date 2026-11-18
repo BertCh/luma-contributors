@@ -508,7 +508,7 @@ const WGS84_ECCENTRICITY_SQUARED = GPU_WGS84_FLATTENING * (2 - GPU_WGS84_FLATTEN
 
 /**
  * WGSL of the Web Mercator ground model: the WGS84 local metric at the eye, which is the row
- * scale of `analysis-core/raster-grid.ts` (`N cos(lat)` east-west, `M` north-south).
+ * scale of `analysis-core/contracts/raster-grid.ts` (`N cos(lat)` east-west, `M` north-south).
  *
  * The great circle is traced on the sphere of radius `GPU_POINT_HORIZON_EARTH_RADIUS`, which
  * fixes which pixels a ray visits. Ground length and bearing then follow the ellipsoid at the

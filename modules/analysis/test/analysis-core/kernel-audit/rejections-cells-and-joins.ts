@@ -41,7 +41,7 @@ export const CELLS_AND_JOINS_REJECTIONS: readonly KernelAuditRejection[] = [
     kind: 'binding',
     limit: 16777216,
     rejects:
-      /^Error: spatial-join-candidates output.leftIds.length must be an integer in \[1, 16777216\]$/
+      /^Error: spatial-join-candidates output.leftRows.length must be an integer in \[1, 16777216\]$/
   },
   {
     exportName: 'GPUTrackSimilarity',

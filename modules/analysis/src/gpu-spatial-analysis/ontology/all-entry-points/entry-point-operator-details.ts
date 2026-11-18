@@ -11,9 +11,14 @@ export type EntryPointOperatorDetail = {
   summary: string;
   /** Repository-relative spec that exercises the operator. */
   tests: string;
+  additionalTests?: readonly string[];
   /** Repository-relative documentation page. */
   documentation: string;
   dimensionality?: GPUSpatialAnalysisOperator['dimensionality'];
+  /** Audited public scalar status fields; omitted means unknown. */
+  status?: GPUSpatialAnalysisOperator['status'];
+  /** Audited readback behavior; omitted means unknown. */
+  readback?: GPUSpatialAnalysisOperator['readback'];
 };
 
 const PACKAGE = '@luma-contributors/analysis';
@@ -34,6 +39,7 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
     documentation: 'docs/api/computation-record.md'
   },
   GPUSnapshotArena: {
+    readback: 'explicit-adapter',
     package: `${PACKAGE}/computation-record`,
     summary: 'Copies frames into one bounded readback buffer, then maps that buffer once.',
     tests: 'modules/analysis/test/computation-record/gpu-snapshot-arena.node.spec.ts',
@@ -86,6 +92,7 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
     dimensionality: 'topology'
   },
   GPUNetworkCoarsening: {
+    status: ['count', 'requiredCount', 'overflow', 'candidateOverflow'],
     package: `${PACKAGE}/gpu-network`,
     summary:
       'Coarsens a CSR network by a node group label into a summary graph for zoomed-out compound nodes: per-group node counts, centroids, bounds.',
@@ -103,6 +110,7 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
     dimensionality: 'topology'
   },
   GPUNetworkPathExtraction: {
+    status: ['count', 'requiredCount', 'overflow', 'candidateOverflow'],
     package: `${PACKAGE}/gpu-network`,
     summary:
       'Extracts ordered source-to-target node and edge lists from a shortest-path predecessor array on the GPU, ready for a path layer or highlight.',
@@ -112,6 +120,7 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
     dimensionality: 'topology'
   },
   GPUKShortestPaths: {
+    status: ['converged', 'iterationCount', 'iterationLimitReached', 'candidateOverflow'],
     package: `${PACKAGE}/gpu-network`,
     summary:
       'Yen k-shortest simple edge paths on CSR through parallel GPU shortest-path spur searches, with path, candidate and iteration budgets (Yen 1971).',
@@ -287,7 +296,7 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
     summary:
       'Weighted directed/undirected multilevel Louvain with sparse parallel CSR moving, conflict resolution and quotient aggregation; legacy dense reference retained.',
     tests: 'modules/analysis/test/gpu-network/network-optimization/network-louvain-sparse.spec.ts',
-    documentation: 'modules/analysis/docs/gpu-network-louvain.md',
+    documentation: 'docs/api/gpu-network/louvain.md',
     dimensionality: 'topology'
   },
   GPUNetworkFlow: {
@@ -376,6 +385,7 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
     dimensionality: '2d+time'
   },
   GPUFlowAggregation: {
+    status: ['count', 'requiredCount', 'overflow', 'candidateOverflow'],
     package: `${PACKAGE}/gpu-network`,
     summary:
       'Aggregates origin-destination movements into a weight-sorted top-K flow list and per-zone totals.',
@@ -494,7 +504,7 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
     package: `${PACKAGE}/gpu-terrain`,
     summary: 'Height above drainage over D8 or D-infinity fractions (TauDEM vertical average).',
     tests: 'modules/analysis/test/gpu-terrain/hydrology/terrain-dinf-hand.spec.ts',
-    documentation: 'modules/analysis/docs/terrain-dinf-hand.md',
+    documentation: 'docs/api/gpu-terrain/height-above-drainage.md',
     dimensionality: '2d'
   },
   GPUTerrainHydrologicIndices: {
@@ -553,7 +563,8 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
   },
   GPUTerrainDerivatives: {
     package: `${PACKAGE}/gpu-terrain`,
-    summary: "Computes slope, aspect, and hillshade for an elevation tile with Horn's 3x3 method.",
+    summary:
+      "Computes slope, aspect and hillshade with Horn's 3x3 method on orthogonal pixel axes.",
     tests: 'modules/analysis/test/gpu-terrain/terrain-analysis/gpu-terrain-derivatives.spec.ts',
     documentation: 'docs/api/gpu-terrain/operators.md',
     dimensionality: '2d'
@@ -1035,8 +1046,11 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
   GPURasterFractionalZonalStatistics: {
     package: `${PACKAGE}/raster-analysis`,
     summary:
-      'Area-aware fractional aggregation, preserving missing support and incomplete coverage.',
-    tests: 'modules/analysis/test/geospatial-expansion/raster-terrain-expansion.spec.ts',
+      'Fractional aggregation with uniform planar, ground geographic/web-mercator or explicit cellAreas units, preserving missing support and incomplete coverage.',
+    tests: 'modules/analysis/test/gpu-raster/fractional-cell-size-mode.spec.ts',
+    additionalTests: [
+      'modules/analysis/test/gpu-raster/raster-fractional-zonal-statistics-operation.spec.ts'
+    ],
     documentation: 'docs/api/gpu-raster/expansion-lenses.md',
     dimensionality: '2d'
   },
@@ -1139,7 +1153,8 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
   },
   GPURasterTileReprojection: {
     package: `${PACKAGE}/raster-analysis`,
-    summary: 'Explicit GPU mosaic assembly followed by destination-driven reprojection.',
+    summary:
+      'Explicit GPU mosaic assembly and reprojection, admitted by a 32,768-node estimate with at most 16,382 source tiles.',
     tests: 'modules/analysis/test/geospatial-expansion/raster-tile-reprojection.spec.ts',
     documentation: 'docs/api/gpu-raster/expansion-lenses.md',
     dimensionality: '2d'
@@ -1294,7 +1309,7 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
   GPURasterEmbeddingPyramidLevel: {
     package: `${PACKAGE}/raster-analysis`,
     summary:
-      'Overview level of an embedding raster that averages decoded vectors and renormalizes them.',
+      'Embedding overview from decoded vectors, quantized vectors or previous-level aggregation sums/counts, preserving original support and publishing optional unnormalized vector sums.',
     tests: 'modules/analysis/test/gpu-raster/raster-embeddings/rts03-embedding-rasters.spec.ts',
     documentation: 'docs/api/gpu-raster/raster-embeddings.md',
     dimensionality: '2d'
@@ -1603,7 +1618,7 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
     summary:
       'Goulard–Voltz weighted least squares with PSD projection for supplied local co-kriging structures.',
     tests: 'modules/analysis/test/gpu-dataframe/pair-statistics/coregionalization-fit.spec.ts',
-    documentation: 'modules/analysis/docs/coregionalization-fit.md'
+    documentation: 'docs/api/dataframe-analysis/coregionalization-fit.md'
   },
   GPUVariogramModelFit: {
     package: `${PACKAGE}/dataframe-analysis`,

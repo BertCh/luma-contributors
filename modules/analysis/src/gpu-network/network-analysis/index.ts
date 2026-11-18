@@ -41,6 +41,8 @@ export type {
 export {GPUNetworkPathExtractionOperation} from './gpu-network-path-extraction-operation';
 export type {
   NetworkPathExtractionCompactOperationOutput,
+  NetworkPathExtractionNodeOperationOutput,
+  NetworkPathExtractionEdgeOperationOutput,
   NetworkPathExtractionOperationProps
 } from './gpu-network-path-extraction-operation';
 export {

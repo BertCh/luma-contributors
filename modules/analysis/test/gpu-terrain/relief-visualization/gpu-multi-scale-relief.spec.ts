@@ -41,7 +41,7 @@ import {requireTestDevice} from '../../utils/require-test-device';
 import {
   getRasterGridGeoreference,
   getRasterGroundCellSize
-} from '../../../src/analysis-core/raster-grid';
+} from '../../../src/analysis-core/contracts/raster-grid';
 import {GPU_RELIEF_DEFAULT_QUANTUM} from '../../../src/gpu-terrain/relief-visualization/relief-visualization-utils';
 
 const WIDTH = 64;

@@ -452,7 +452,8 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         props.output.clusterCentroids,
         props.output.drawInstanceCount
       ],
-      [props.positions, props.parameters, props.sourceIds, props.times]
+      // The empty route reads none of the caller inputs and never binds the per-point views.
+      rows > 0 ? [props.positions, props.parameters, props.sourceIds, props.times] : []
     );
   }
 

@@ -33,7 +33,8 @@ export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
           targetIds: view('uint32', 257),
           output: {
             populations: view('float32x2', 257),
-            validity: view('uint32', 257),
+            alignmentCode: view('uint32', 257),
+            matchedMask: view('uint32', 257),
             status: view('uint32x4', 1)
           }
         })

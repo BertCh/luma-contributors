@@ -83,7 +83,10 @@ export function validateGPUSpatialParameterSchema<Format extends GPUSpatialParam
   }
 }
 
-/** Packs defaults plus supplied overrides into the schema's GPU-ready typed array. */
+/**
+ * Packs defaults plus supplied overrides into the schema's GPU-ready typed array. Both input and
+ * encoded values must satisfy the field's range; finite-only float32 fields cannot overflow.
+ */
 export function packGPUSpatialParameterValues<Format extends GPUSpatialParameterFormat>(
   schema: GPUSpatialParameterSchema<Format>,
   values: GPUSpatialParameterValues = {}
@@ -98,8 +101,7 @@ export function packGPUSpatialParameterValues<Format extends GPUSpatialParameter
   const packed = createParameterArray(schema.format, schema.wordLength);
   for (const field of schema.fields) {
     const value = values[field.name] ?? field.defaultValue;
-    validateFieldValue(schema.id, field, value);
-    packed[field.wordOffset] = value;
+    packed[field.wordOffset] = validateFieldValue(schema.id, field, value);
   }
   return packed as GPUSpatialParameterArray<Format>;
 }
@@ -122,8 +124,14 @@ function validateFieldValue<Format extends GPUSpatialParameterFormat>(
   schemaId: string,
   field: GPUSpatialParameterField<Format>,
   value: number
-): void {
-  if (!field.allowNonFinite && !Number.isFinite(value)) {
+): number {
+  const encodedValue =
+    field.format === 'float32'
+      ? Math.fround(value)
+      : field.format === 'uint32'
+        ? value >>> 0
+        : value | 0;
+  if (!field.allowNonFinite && (!Number.isFinite(value) || !Number.isFinite(encodedValue))) {
     throw new Error(`${schemaId} field ${field.name} must be finite`);
   }
   if (field.format === 'uint32' && (!Number.isInteger(value) || value < 0 || value > 0xffffffff)) {
@@ -135,10 +143,11 @@ function validateFieldValue<Format extends GPUSpatialParameterFormat>(
   ) {
     throw new Error(`${schemaId} field ${field.name} must be a sint32`);
   }
-  if (field.minimum !== undefined && value < field.minimum) {
+  if (field.minimum !== undefined && (value < field.minimum || encodedValue < field.minimum)) {
     throw new Error(`${schemaId} field ${field.name} is below its minimum`);
   }
-  if (field.maximum !== undefined && value > field.maximum) {
+  if (field.maximum !== undefined && (value > field.maximum || encodedValue > field.maximum)) {
     throw new Error(`${schemaId} field ${field.name} exceeds its maximum`);
   }
+  return encodedValue;
 }

@@ -4,18 +4,52 @@
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {validateGPUFeatureGeometryPort} from '../../analysis-core/contracts/index';
-import {validateSinglePackedView} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateRequirement,
+  validateSinglePackedView
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {createSpatialJoinBoundsNode, SPATIAL_JOIN_WGSL_HELPERS} from './spatial-join-passes';
 import type {GPUSpatialJoinGeometry} from './spatial-join-types';
+import type {
+  GPUMultipartGeometryPort,
+  GPUPackedGeometryPort
+} from '../../analysis-core/contracts/index';
 
 const OPERATION = 'GPUSpatialPredicateJoin';
 
+/** @internal Whether feature rows group point or linestring parts. */
+export function isMultipartJoinGeometry(
+  geometry: Readonly<{kind: string}>
+): geometry is GPUPackedGeometryPort<GPUMultipartGeometryPort> {
+  return (
+    (geometry.kind === 'points' || geometry.kind === 'lines') &&
+    'featureOffsets' in geometry &&
+    geometry.featureOffsets !== undefined
+  );
+}
+
+/** Refuse multipart layouts at boundaries that still require individual point/part rows. @internal */
+export function validateSpatialJoinMultipartGeometry(
+  id: string,
+  name: string,
+  geometry: Readonly<{kind: string}>
+): void {
+  if (geometry.kind === 'points' || geometry.kind === 'lines') {
+    validateRequirement(
+      id,
+      !('featureOffsets' in geometry) || geometry.featureOffsets === undefined,
+      `${name}.featureOffsets multipart ${geometry.kind} are unsupported; use explicit part rows with an owner map or a feature-level CPU join`
+    );
+  }
+}
+
 /** Returns the number of features in a predicate-join geometry. @internal */
 export function getSpatialJoinFeatureCount(geometry: GPUSpatialJoinGeometry): number {
+  if (isMultipartJoinGeometry(geometry)) return geometry.featureOffsets.length - 1;
   switch (geometry.kind) {
     case 'points':
       return geometry.positions.length;
@@ -29,7 +63,11 @@ export function getSpatialJoinFeatureCount(geometry: GPUSpatialJoinGeometry): nu
 /** Returns every input view of a predicate-join geometry. @internal */
 export function getSpatialJoinGeometryViews(geometry: GPUSpatialJoinGeometry): GraphDataView[] {
   if (geometry.kind === 'lines') {
-    return [geometry.positions, geometry.lineOffsets];
+    return [
+      geometry.positions,
+      geometry.lineOffsets,
+      ...(isMultipartJoinGeometry(geometry) ? [geometry.featureOffsets] : [])
+    ];
   }
   if (geometry.kind === 'polygons') {
     return [
@@ -39,7 +77,10 @@ export function getSpatialJoinGeometryViews(geometry: GPUSpatialJoinGeometry): G
       geometry.ringOffsets
     ];
   }
-  return [geometry.positions];
+  return [
+    geometry.positions,
+    ...(isMultipartJoinGeometry(geometry) ? [geometry.featureOffsets] : [])
+  ];
 }
 
 /**
@@ -50,8 +91,9 @@ export function validateSpatialJoinGeometry(
   id: string,
   name: string,
   geometry: GPUSpatialJoinGeometry,
-  options: {allowEmpty?: boolean} = {}
+  options: {allowEmpty?: boolean; allowMultipart?: boolean} = {}
 ): void {
+  if (!options.allowMultipart) validateSpatialJoinMultipartGeometry(id, name, geometry);
   for (const view of [...getSpatialJoinGeometryViews(geometry), geometry.sourceIds]) {
     if (view) {
       validateSinglePackedView(view, [view.format as 'float32x2' | 'uint32'], `${id} ${name}`);
@@ -88,7 +130,10 @@ export function isSameSpatialJoinGeometry(
   }
   const firstViews = getSpatialJoinGeometryViews(first);
   const secondViews = getSpatialJoinGeometryViews(second);
-  return firstViews.every((view, index) => view === secondViews[index]);
+  return (
+    firstViews.length === secondViews.length &&
+    firstViews.every((view, index) => view === secondViews[index])
+  );
 }
 
 /** Writes `(ringStart, ringEnd)` per polygon feature; malformed offsets give an empty range. */
@@ -143,7 +188,7 @@ export function createBoundsNode<Parameters>(
   }
 ): GPUCommandNode<Parameters> {
   const {geometry} = props;
-  if (geometry.kind === 'points') {
+  if (geometry.kind === 'points' && !isMultipartJoinGeometry(geometry)) {
     return createSpatialJoinBoundsNode<Parameters>(graph, {
       id,
       operation: props.operation ?? OPERATION,
@@ -157,11 +202,30 @@ export function createBoundsNode<Parameters>(
     {name: 'positions', view: geometry.positions, type: 'f32', access: 'read'}
   ];
   let range: string;
-  if (geometry.kind === 'lines') {
+  if (isMultipartJoinGeometry(geometry)) {
+    bindings.push({
+      name: 'featureOffsets',
+      view: geometry.featureOffsets,
+      type: 'u32',
+      access: 'read'
+    });
+    const partCount =
+      geometry.kind === 'points' ? geometry.positions.length : geometry.lineOffsets.length - 1;
+    if (geometry.kind === 'lines')
+      bindings.push({name: 'lineOffsets', view: geometry.lineOffsets, type: 'u32', access: 'read'});
+    range = `let partStart = featureOffsets[featureOffsetsOffset + index];
+  let partEnd = featureOffsets[featureOffsetsOffset + index + 1u];
+  var vertexStart = 0u;
+  var vertexEnd = 0u;
+  if (partStart < partEnd && partEnd <= ${partCount}u) {
+    vertexStart = ${geometry.kind === 'points' ? 'partStart' : 'lineOffsets[lineOffsetsOffset + partStart]'};
+    vertexEnd = min(${geometry.kind === 'points' ? 'partEnd' : 'lineOffsets[lineOffsetsOffset + partEnd]'}, VERTEX_COUNT);
+  }`;
+  } else if (geometry.kind === 'lines') {
     bindings.push({name: 'lineOffsets', view: geometry.lineOffsets, type: 'u32', access: 'read'});
     range = `let vertexStart = lineOffsets[lineOffsetsOffset + index];
   let vertexEnd = min(lineOffsets[lineOffsetsOffset + index + 1u], VERTEX_COUNT);`;
-  } else {
+  } else if (geometry.kind === 'polygons') {
     bindings.push(
       {
         name: 'featureRings',
@@ -179,6 +243,8 @@ export function createBoundsNode<Parameters>(
     vertexStart = ringOffsets[ringOffsetsOffset + ringStart];
     vertexEnd = min(ringOffsets[ringOffsetsOffset + ringEnd], VERTEX_COUNT);
   }`;
+  } else {
+    range = 'let vertexStart = index; let vertexEnd = index + 1u;';
   }
   bindings.push(
     {name: 'featureMinima', view: props.minima, type: 'f32', access: 'read_write'},

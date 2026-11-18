@@ -25,6 +25,57 @@ import {referenceSnapRound, referenceLatticeFrame} from './snap-rounding-referen
 
 type Line = (readonly [number, number])[];
 
+it('GPUSnapRoundedNoding propagates bounded crossing candidates without final overflow', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const lines: Line[] = [
+    [
+      [-1, 0],
+      [1, 0]
+    ],
+    [
+      [0, -1],
+      [0, 1]
+    ],
+    [
+      [-1, -1],
+      [1, 1]
+    ]
+  ];
+  const incomplete = await runOnGPU(device, lines, {capacity: 128, leafCapacity: 1});
+  expect(incomplete.candidateOverflow).toBe(1);
+  expect(incomplete.overflow).toBe(0);
+  const complete = await runOnGPU(device, lines, {capacity: 128, leafCapacity: 8});
+  expect(complete.candidateOverflow).toBe(0);
+  expect(complete.overflow).toBe(0);
+  expect(complete.count).toBe(6);
+});
+
+it('GPUSnapRoundedNoding reports candidate-only loss without final overflow', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const result = await runOnGPU(
+    device,
+    [
+      [
+        [-1, 0],
+        [1, 0]
+      ],
+      [
+        [0, -1],
+        [0, 1]
+      ],
+      [
+        [-1, -1],
+        [1, 1]
+      ]
+    ],
+    {capacity: 64, intersectionCapacity: 1}
+  );
+  expect(result.candidateOverflow).toBe(1);
+  expect(result.overflow).toBe(0);
+});
+
 async function runOnGPU(
   device: Device,
   lines: readonly Line[],
@@ -33,6 +84,7 @@ async function runOnGPU(
     intersectionCapacity?: number;
     capacity?: number;
     spatialSort?: boolean;
+    leafCapacity?: number;
   } = {}
 ): Promise<NodingRun & {overflow: number}> {
   const graph = new GPUCommandGraph(device, {id: 'snap-rounded-noding-gpu'});
@@ -93,6 +145,7 @@ async function runOnGPU(
       gridSize,
       intersectionCapacity: options.intersectionCapacity ?? 4096,
       spatialSort: options.spatialSort,
+      leafCapacity: options.leafCapacity,
       output: {
         endpoints: endpoints.view,
         latticeEndpoints: latticeEndpoints.view,

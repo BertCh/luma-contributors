@@ -8,7 +8,7 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import type {GPURasterCellSizeMode} from '../../analysis-core/raster-grid';
+import type {GPURasterCellSizeMode} from '../../analysis-core/contracts/raster-grid';
 import {getRasterGridWGSL} from '../../raster-analysis/cost-distance/raster-grid-utils';
 import {
   createRasterGatedLoopNodes,
@@ -355,7 +355,12 @@ export function createTerrainFlowAccumulationNodes<Parameters>(
     createFillNode<Parameters>(graph, {
       id: `${props.id}-accumulate-init`,
       operation: OPERATION,
-      view: props.accumulation,
+      // The pull kernel reads these bytes atomically as u32 and recognizes exactly 0xffffffff.
+      view: graph.createDataView(props.accumulation.buffer, {
+        format: 'uint32',
+        byteOffset: props.accumulation.byteOffset,
+        length: props.accumulation.length
+      }),
       type: 'u32',
       value: '0xffffffffu'
     }),

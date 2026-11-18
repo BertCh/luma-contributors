@@ -106,7 +106,7 @@ const cases: [string, (view: ViewFactory, source: SourceFactory) => GPUCommandNo
       new GPUTimeWindowFilter({
         timestamps: source('float32'),
         window: view('float32', 32),
-        output: {ids: view('uint32'), status: {count: view('uint32'), overflow: view('uint32')}}
+        output: {rows: view('uint32'), status: {count: view('uint32'), overflow: view('uint32')}}
       })
   ],
   [
@@ -391,7 +391,7 @@ it('allows shared output prefixes across separate passes and aligned packed fiel
         window: view('float32', 32),
         output: {
           rowRange: output('uint32', 0, 2),
-          ids: output('uint32', 256),
+          rows: output('uint32', 256),
           status: {count: output('uint32', 512), overflow: output('uint32', 768)}
         }
       })
@@ -549,7 +549,7 @@ it('time-window filtering rejects published primitive read/write aliases but per
       window,
       output: {
         outputMask: field(0, 2),
-        ids: field(256, 2),
+        rows: field(256, 2),
         status: {count: field(512), overflow: field(768)}
       }
     };
@@ -559,7 +559,7 @@ it('time-window filtering rejects published primitive read/write aliases but per
     expect(() =>
       new GPUTimeWindowFilter({
         ...props,
-        output: {...props.output, ids: field(256)}
+        output: {...props.output, rows: field(256)}
       }).getCommandNodes(graph)
     ).not.toThrow();
     const trackIds = createTransientView(graph, 'tracks', 'uint32', 2);
@@ -568,7 +568,7 @@ it('time-window filtering rejects published primitive read/write aliases but per
         new GPUTimeWindowFilter({
           ...props,
           trackIds,
-          output: {...props.output, ids: field(256), trackVisibleCounts: field(1024)}
+          output: {...props.output, rows: field(256), trackVisibleCounts: field(1024)}
         })
     ).toThrow(/outputs must not share buffers with inputs/);
     expect(
@@ -580,7 +580,7 @@ it('time-window filtering rejects published primitive read/write aliases but per
             length: 2,
             byteOffset: 1280
           }),
-          output: {...props.output, outputMask: undefined, ids: field(256)}
+          output: {...props.output, outputMask: undefined, rows: field(256)}
         })
     ).toThrow(/outputs must not share buffers with inputs/);
   } finally {

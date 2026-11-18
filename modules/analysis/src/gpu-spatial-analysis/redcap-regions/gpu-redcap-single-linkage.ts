@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateSpatialOutputViews} from '../spatial-clustering/spatial-output-validation';
+import {
+  snapshotWeightsFields,
+  snapshotWeightsPort
+} from '../spatial-weights/weights-construction-snapshot';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {getGraphOutputViews} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -22,6 +26,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
+  validateViewLength,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUIterationStatusPort} from '../../analysis-core/contracts/status';
@@ -31,6 +36,7 @@ import {
 } from '../spatial-weights/spatial-weights';
 import {
   GPU_MINIMUM_SPANNING_TREE_MAXIMUM_COLUMNS,
+  GPU_MINIMUM_SPANNING_TREE_STATUS,
   GPUSpatialWeightsMinimumSpanningTree
 } from '../spatial-regionalization/gpu-spatial-weights-minimum-spanning-tree';
 
@@ -104,13 +110,17 @@ export type GPURedcapSingleLinkageProps = {
 
 /** Caller-owned outputs of {@link GPURedcapSingleLinkage}. */
 export type GPURedcapSingleLinkageOutput = {
-  /** Region label per row (`rows` entries): the smallest row index of the region. */
+  /** Region label per row: smallest row index, or 0xffffffff throughout after supplied weights loss. */
   labels: GraphDataView<'uint32'>;
-  /** Optional one-row region count after the cuts. */
+  /** Optional one-row region count after the cuts; 0 after supplied weights loss. */
   regionCount?: GraphDataView<'uint32'>;
   /**
    * Optional status scalars (one uint32 row each): `converged` is 1 when the label propagation
-   * finished within `componentIterations`, `iterationLimitReached` is its complement, and
+   * finished within `componentIterations` and the supplied weights are complete.
+   * `iterationLimitReached` is 1 when the component budget was insufficient; both flags are 0
+   * after supplied weights overflow/candidateOverflow suppresses the partition.
+   * `iterationCount` is the executed label-propagation rounds (always `componentIterations`;
+   * every round executes even after labels stabilize). It excludes the spanning-tree rounds.
    * `invalidCount` counts non-finite attribute entries as `GPUSpatialWeightsMinimumSpanningTree`.
    */
   status?: GPUIterationStatusPort & {invalidCount?: GraphDataView<'uint32'>};
@@ -167,6 +177,32 @@ export class GPURedcapSingleLinkage implements GPUCommandNodeProducer {
   readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPURedcapSingleLinkageProps) {
+    const captured = snapshotWeightsFields(props, [
+      'id',
+      'weights',
+      'values',
+      'columnCount',
+      'standardize',
+      'parameters',
+      'componentIterations',
+      'output'
+    ]);
+    const output = snapshotWeightsFields(captured.output, ['labels', 'regionCount', 'status']);
+    props = Object.freeze({
+      ...captured,
+      weights: snapshotWeightsPort(captured.weights),
+      output: Object.freeze({
+        ...output,
+        status: output.status
+          ? snapshotWeightsFields(output.status, [
+              'converged',
+              'iterationLimitReached',
+              'iterationCount',
+              'invalidCount'
+            ])
+          : undefined
+      })
+    });
     const id = props.id ?? 'redcap-single-linkage';
     this.id = id;
     this.props = props;
@@ -198,11 +234,40 @@ export class GPURedcapSingleLinkage implements GPUCommandNodeProducer {
       props.output.labels.length === rows,
       'output.labels length must equal the weights row count'
     );
+    if (props.output.status?.iterationCount) {
+      validateSinglePackedView(
+        props.output.status.iterationCount,
+        ['uint32'],
+        `${id} output.status.iterationCount`
+      );
+      validateViewLength(id, 'output.status.iterationCount', props.output.status.iterationCount, 1);
+    }
+    if (props.output.status?.invalidCount) {
+      validateSinglePackedView(
+        props.output.status.invalidCount,
+        ['uint32'],
+        `${id} output.status.invalidCount`
+      );
+      validateCapacity(
+        id,
+        'output.status.invalidCount length',
+        props.output.status.invalidCount.length,
+        1
+      );
+    }
     this.estimatedCommandNodeCount =
       SPANNING_TREE_AND_SORT_NODE_ALLOWANCE +
       6 +
       2 * (props.componentIterations ?? GPU_REDCAP_SINGLE_LINKAGE_DEFAULT_COMPONENT_ITERATIONS) +
-      1;
+      1 +
+      (props.output.status?.iterationCount ? 1 : 0) +
+      (props.output.status?.invalidCount ? 1 : 0) +
+      (getRedcapWeightLossFlags(props.weights).length
+        ? 1 +
+          Number(Boolean(props.output.regionCount)) +
+          Number(Boolean(props.output.status?.converged)) +
+          Number(Boolean(props.output.status?.iterationLimitReached))
+        : 0);
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateSpatialOutputViews(
       this.id,
@@ -211,6 +276,7 @@ export class GPURedcapSingleLinkage implements GPUCommandNodeProducer {
           ...props.output,
           status: {
             converged: props.output.status?.converged,
+            iterationCount: props.output.status?.iterationCount,
             iterationLimitReached: props.output.status?.iterationLimitReached,
             invalidCount: props.output.status?.invalidCount
           }
@@ -231,7 +297,8 @@ export class GPURedcapSingleLinkage implements GPUCommandNodeProducer {
         props.parameters,
         props.weights.offsets,
         props.weights.neighbors,
-        props.weights.weights
+        props.weights.weights,
+        ...getRedcapWeightLossFlags(props.weights)
       ]
     );
   }
@@ -242,11 +309,13 @@ export class GPURedcapSingleLinkage implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {weights, output} = props;
+    const lossFlags = getRedcapWeightLossFlags(weights);
     validateGraphViewsBelongToGraph(id, graph, [
       props.values,
       props.parameters,
       weights.offsets,
       weights.neighbors,
+      ...getRedcapWeightLossFlags(weights),
       output.labels,
       output.regionCount,
       ...Object.values(output.status ?? {})
@@ -260,10 +329,14 @@ export class GPURedcapSingleLinkage implements GPUCommandNodeProducer {
       offsets: weights.offsets,
       neighbors: weights.neighbors,
       ...Object.fromEntries(
+        getRedcapWeightLossFlags(weights).map((view, index) => [`loss${index}`, view])
+      ),
+      ...Object.fromEntries(
         getGraphOutputViews({
           ...output,
           status: {
             converged: output.status?.converged,
+            iterationCount: output.status?.iterationCount,
             iterationLimitReached: output.status?.iterationLimitReached,
             invalidCount: output.status?.invalidCount
           }
@@ -288,6 +361,14 @@ export class GPURedcapSingleLinkage implements GPUCommandNodeProducer {
       props.componentIterations ?? GPU_REDCAP_SINGLE_LINKAGE_DEFAULT_COMPONENT_ITERATIONS;
     const treeEdgeFlags = createTransientView(graph, `${id}-tree-edge-flags`, 'uint32', slots);
     const treeLabels = createTransientView(graph, `${id}-tree-labels`, 'uint32', rows);
+    const treeStatus = output.status?.invalidCount
+      ? createTransientView(
+          graph,
+          `${id}-tree-status`,
+          'uint32',
+          GPU_MINIMUM_SPANNING_TREE_STATUS.length
+        )
+      : undefined;
     const edgeIds = createTransientView(graph, `${id}-edge-ids`, 'uint32', edgeCapacity);
     const edgeCount = createTransientView(graph, `${id}-edge-count`, 'uint32', 1);
     const edgeOverflow = createTransientView(graph, `${id}-edge-overflow`, 'uint32', 1);
@@ -309,7 +390,7 @@ const EDGE_CAPACITY: u32 = ${edgeCapacity}u;`;
   let trees = ROWS - edgeTotal;
   return min(select(0u, regionCount - trees, regionCount > trees), edgeTotal);
 }`;
-    return [
+    const nodes: GPUCommandNode<Parameters>[] = [
       ...new GPUSpatialWeightsMinimumSpanningTree({
         id: `${id}-tree`,
         weights,
@@ -319,7 +400,7 @@ const EDGE_CAPACITY: u32 = ${edgeCapacity}u;`;
         output: {
           treeEdgeFlags,
           componentLabels: treeLabels,
-          status: output.status?.invalidCount,
+          status: treeStatus,
           edges: {ids: edgeIds, status: {count: edgeCount, overflow: edgeOverflow}},
           edgeDissimilarities: edgeCosts
         }
@@ -389,6 +470,17 @@ ${cutCountWGSL}`,
         converged,
         iterations
       }),
+      ...(output.status?.iterationCount
+        ? [
+            createFillNode<Parameters>(graph, {
+              id: `${id}-iteration-count`,
+              operation: OPERATION,
+              view: output.status.iterationCount,
+              type: 'u32',
+              value: `${iterations}u`
+            })
+          ]
+        : []),
       ...(output.status?.iterationLimitReached && converged
         ? [
             createWGSLKernelNode<Parameters>(graph, {
@@ -429,5 +521,59 @@ ${cutCountWGSL}`,
           ]
         : [])
     ];
+    if (treeStatus && output.status?.invalidCount)
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-invalid-count`,
+          operation: OPERATION,
+          invocationCount: 1,
+          bindings: [
+            {name: 'treeStatus', view: treeStatus, type: 'u32', access: 'read'},
+            {
+              name: 'invalidCount',
+              view: output.status.invalidCount,
+              type: 'u32',
+              access: 'read_write'
+            }
+          ],
+          body: `invalidCount[invalidCountOffset] = treeStatus[treeStatusOffset + ${GPU_MINIMUM_SPANNING_TREE_STATUS.invalidCount}u];`
+        })
+      );
+    for (const [name, view, value] of [
+      ['labels', output.labels, '0xffffffffu'],
+      ['regionCount', output.regionCount, '0u'],
+      ['converged', output.status?.converged, '0u'],
+      ['iterationLimitReached', output.status?.iterationLimitReached, '0u']
+    ] as const) {
+      if (!view || lossFlags.length === 0) continue;
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-suppress-${name}`,
+          operation: OPERATION,
+          variant: 'incomplete-input',
+          bindings: [
+            ...lossFlags.map((flag, index) => ({
+              name: `loss${index}`,
+              view: flag,
+              type: 'u32' as const,
+              access: 'read' as const
+            })),
+            {name: 'result', view, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: name === 'labels' ? rows : 1,
+          body: `if (${lossFlags.map((_, index) => `loss${index}[loss${index}Offset] != 0u`).join(' || ')}) {
+  result[resultOffset + index] = ${value};
+}`
+        })
+      );
+    }
+    return nodes;
   }
+}
+
+/** Flags that make the retained contiguity graph incomplete. */
+function getRedcapWeightLossFlags(weights: GPUSpatialWeights): GraphDataView<'uint32'>[] {
+  return [weights.status?.overflow, weights.status?.candidateOverflow].filter(
+    (view): view is GraphDataView<'uint32'> => view !== undefined
+  );
 }

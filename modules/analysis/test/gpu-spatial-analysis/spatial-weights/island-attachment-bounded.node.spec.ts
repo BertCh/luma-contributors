@@ -108,7 +108,7 @@ describe('GPUIslandAttachment batched cooperative fallback', () => {
             expect(new WgslReflect(fallback.source).entry.compute.map(entry => entry.name)).toEqual(
               ['main']
             );
-            expect(getWorkgroupMemoryBytes(fallback.source)).toBe(3072);
+            expect(getWorkgroupMemoryBytes(fallback.source, fallback.constants)).toBe(3072);
             expect(auditWGSLModule(fallback.source)).toEqual([]);
             expect(fallback.bindings.length).toBeLessThanOrEqual(8);
           }

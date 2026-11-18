@@ -31,7 +31,7 @@ import {
   getRasterGroundScaleWGSL,
   validateRasterCellSizeMode,
   type GPURasterCellSizeMode
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 import {validateRasterGridAxisAligned, validateRasterParameters} from '../raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {getRasterRowEdgeWGSL} from '../raster-grid/raster-cell-area-scale';

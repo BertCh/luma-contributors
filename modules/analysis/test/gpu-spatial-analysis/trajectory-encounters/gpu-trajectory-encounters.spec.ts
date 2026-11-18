@@ -83,6 +83,7 @@ async function runEncounters(
     count: output(1),
     overflow: output(1),
     candidateOverflow: output(1),
+    pairCandidateOverflow: output(1),
     total: output(1)
   };
   graph.add(
@@ -115,6 +116,13 @@ async function runEncounters(
         pairs: {
           ids: importGraphBuffer(graph, 'o-ids', out.ids, 'uint32', pairCapacity),
           status: {
+            candidateOverflow: importGraphBuffer(
+              graph,
+              'pair-candidate',
+              out.pairCandidateOverflow,
+              'uint32',
+              1
+            ),
             count: importGraphBuffer(graph, 'o-count', out.count, 'uint32', 1),
             overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1),
             requiredCount: importGraphBuffer(graph, 'o-total', out.total, 'uint32', 1)
@@ -153,6 +161,7 @@ async function runEncounters(
     count,
     overflow,
     candidateOverflow,
+    pairCandidateOverflow: (await readUint32(out.pairCandidateOverflow, 1))[0],
     requiredCount,
     ids: await readUint32(out.ids, pairCapacity),
     partners: await readUint32(out.partners, pairCapacity),
@@ -248,6 +257,7 @@ it('GPUTrajectoryEncounters clamps the distance to the cell size and flags overf
   expect(small.requiredCount).toBe(expected.length);
   expect(small.overflow).toBe(1);
   expect(small.candidateOverflow).toBe(0);
+  expect(small.pairCandidateOverflow).toBe(0);
   // Too-small hit scratch.
   const starved = await runEncounters(device, samples, trackCount, bucketCount, {
     distance: 20,
@@ -257,6 +267,7 @@ it('GPUTrajectoryEncounters clamps the distance to the cell size and flags overf
   });
   expect(starved.overflow).toBe(0);
   expect(starved.candidateOverflow).toBe(1);
+  expect(starved.pairCandidateOverflow).toBe(1);
   device.destroy?.();
 });
 

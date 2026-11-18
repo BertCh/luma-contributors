@@ -108,13 +108,13 @@ it('GPUMaxPRegions kernels parse as WGSL and fit the core device limits', () => 
     const nodes = buildNodes(20, options);
     const kernels = getGPUCommandNodeKernelSources(nodes);
     expect(kernels.length).toBeGreaterThan(10);
-    for (const {id, source} of kernels) {
+    for (const {id, source, constants} of kernels) {
       expect(() => new WgslReflect(source), id).not.toThrow();
       expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
-      expect(getPrivateMemoryBytes(source), id).toBeLessThanOrEqual(
+      expect(getPrivateMemoryBytes(source, constants), id).toBeLessThanOrEqual(
         CORE_PRIVATE_MEMORY_LIMIT_BYTES
       );
-      expect(getWorkgroupMemoryBytes(source), id).toBeLessThanOrEqual(
+      expect(getWorkgroupMemoryBytes(source, constants), id).toBeLessThanOrEqual(
         CORE_WORKGROUP_STORAGE_LIMIT_BYTES
       );
     }

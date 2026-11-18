@@ -4,6 +4,8 @@
 
 import {Buffer} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
+import {registerWGSLKernelNodeRecord} from './wgsl-kernel-nodes';
+import {getGPUVectorFormatInfo} from '@luma.gl/graph/gpu-data';
 import {
   createGPUComputeCommandNode,
   getBoundedDispatchLayout,
@@ -126,13 +128,27 @@ export function planGraphChunkGroups(
   return {chunks, totalLength, nonemptyChunkCount: chunks.filter(chunk => chunk.length > 0).length};
 }
 
-/** Borrow a packed subview; the graph owns its creation and continues tracking the original handle. */
+/**
+ * Borrows a packed subview within the parent's rows, including an empty slice at its end.
+ * Row bounds must be nonnegative integers. Strided parents are rejected. Byte offsets need not
+ * be storage-word aligned; binding helpers enforce their own alignment requirements. The graph
+ * owns the subview's creation and continues tracking the original handle.
+ */
 export function sliceGraphChunkGroupView<Format extends GraphDataView['format'], Parameters>(
   graph: GPUCommandGraph<Parameters>,
   view: GraphDataView<Format>,
   rowStart: number,
   rowCount: number
 ): GraphDataView<Format> {
+  const id = 'sliceGraphChunkGroupView';
+  const rowByteLength = getGPUVectorFormatInfo(view.format).byteLength;
+  validateRequirement(
+    id,
+    view.rowByteLength === rowByteLength && view.byteStride === rowByteLength,
+    'view must have packed rows matching its format'
+  );
+  validateCapacity(id, 'rowStart', rowStart, 0, view.length);
+  validateCapacity(id, 'rowCount', rowCount, 0, view.length - rowStart);
   return graph.createDataView(view.buffer, {
     format: view.format,
     length: rowCount,
@@ -292,6 +308,22 @@ fn main(@builtin(workgroup_id) workgroupId: vec3<u32>,
   ${props.bindings.map((binding, bindingIndex) => `${binding.name}Offset = getChunkParameter(${4 + bindingIndex}u);`).join('\n  ')}
   ${props.body}
 }`;
+  registerWGSLKernelNodeRecord(graph, {
+    id: props.id,
+    operation: props.operation,
+    variant: props.variant,
+    source,
+    body: props.body,
+    declarations: props.declarations,
+    entryPoint: 'main',
+    workgroupSize: [workgroupSize, 1, 1],
+    workgroups: [layout.x, layout.y, layout.z],
+    invocationCount: props.invocationCount,
+    constants: {},
+    bindings: props.bindings,
+    textures: [],
+    indirect: props.condition?.source === 'gpu' && props.condition.mode === 'indirect'
+  });
   return createGPUComputeCommandNode<Parameters>({
     id: props.id,
     condition: props.condition,

@@ -29,6 +29,8 @@ import {
   GPUNetworkTimeRouting,
   type GPUNetworkTimeRoutingProps
 } from '../network-optimization/gpu-network-time-routing';
+import {getNetworkTravelTimePercentileRank} from './network-travel-time-percentile-rank';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 const OPERATION = 'GPUNetworkTravelTimePercentiles';
 
@@ -108,7 +110,32 @@ export class GPUNetworkTravelTimePercentiles implements GPUCommandNodeProducer {
   /** One departure-window node, one solve per departure and one percentile publication. */
   readonly estimatedCommandNodeCount: number;
 
-  constructor(props: GPUNetworkTravelTimePercentilesProps) {
+  constructor(originalProps: GPUNetworkTravelTimePercentilesProps) {
+    const settings = snapshotConstructionFields(originalProps, [
+      'id',
+      'stateVertices',
+      'transitions',
+      'costs',
+      'initialState',
+      'window',
+      'vertexCount',
+      'departureCount',
+      'percentiles',
+      'costModel',
+      'maximumRelaxations',
+      'samplesPerTransition',
+      'waitingPolicy',
+      'output'
+    ]);
+    const props = {
+      ...settings,
+      percentiles: Object.freeze(Array.from(settings.percentiles)),
+      output: snapshotConstructionFields(settings.output, [
+        'travelTimes',
+        'reachedCounts',
+        'status'
+      ])
+    };
     this.id = props.id ?? 'network-travel-time-percentiles';
     this.props = props;
     validateNetworkWritableViews(this.id, props.output);
@@ -275,7 +302,7 @@ if (index == 0u) { endpoints[endpointsOffset] = initialState[initialStateOffset]
     }
     const percentileCount = props.percentiles.length;
     const ranks = props.percentiles.map(percentile =>
-      Math.max(1, Math.ceil((percentile / 100) * departureCount - 1e-9))
+      getNetworkTravelTimePercentileRank(percentile, departureCount)
     );
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {

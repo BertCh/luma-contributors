@@ -164,10 +164,6 @@ function referenceArrivals(
   return arrival;
 }
 
-function nearestRank(sorted: number[], percentile: number): number {
-  return sorted[Math.max(1, Math.ceil((percentile / 100) * sorted.length - 1e-9)) - 1];
-}
-
 async function runPercentiles(
   nodeCount: number,
   edges: Edge[],
@@ -272,10 +268,11 @@ it('GPUNetworkTravelTimePercentiles follows FIFO time-dependent durations over a
     }).sort((first, second) => first - second);
     if (times[0] !== times.at(-1)) timeDependent++;
     options.percentiles.forEach((percentile, column) => {
+      // Hand-selected 1-based ranks for [25, 50, 90, 100]% of twelve departures.
       expect(
         result.travelTimes[vertex * options.percentiles.length + column],
         `vertex ${vertex} p${percentile}`
-      ).toBeCloseTo(nearestRank(times, percentile), 2);
+      ).toBeCloseTo(times[[3, 6, 11, 12][column] - 1], 2);
     });
   }
   // Teeth: the departure window changes the travel time at most vertices.

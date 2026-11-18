@@ -12,6 +12,29 @@ import {
   type BrownianBridgeUtilizationOperationProps
 } from '../../../src/gpu-spatial-analysis/trajectory-home-range/gpu-brownian-bridge-utilization-operation';
 import {getGPUBrownianBridgeUtilizationParameterValues} from '../../../src/gpu-spatial-analysis/trajectory-home-range/gpu-brownian-bridge-utilization';
+import {estimateWindowedBrownianMotionVariance} from '../../../src/gpu-spatial-analysis/trajectory-home-range/brownian-bridge-variance-estimation';
+
+it('pads each track final row when handing windowed estimates to utilization', () => {
+  const track = {x: [0, 1, 0], y: [0, 0, 0], times: [0, 1, 2]};
+  const estimates = estimateWindowedBrownianMotionVariance(track, {locationError: 1});
+  const motionVariances = new Float32Array(6);
+  motionVariances.set(estimates, 0);
+  motionVariances.set(estimates, 3);
+  expect(motionVariances[2]).toBe(0);
+  expect(motionVariances[5]).toBe(0);
+  const result = computeBrownianBridgeUtilizationOnCPU(
+    {
+      positions: Float32Array.of(0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0),
+      timestamps: Float32Array.of(0, 1, 2, 10, 11, 12),
+      trackOffsets: Uint32Array.of(0, 3, 6),
+      motionVariances,
+      locationErrors: new Float32Array(6).fill(1),
+      parameters: Float32Array.of(0, -0.5, 1, 0.5)
+    },
+    {gridSize: [1, 1], subStepCount: 1}
+  );
+  expect(result.density[0]).toBe(Math.fround(1 / Math.PI));
+});
 
 function getInput() {
   return {

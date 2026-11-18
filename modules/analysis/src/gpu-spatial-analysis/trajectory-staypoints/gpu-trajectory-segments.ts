@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   validateTrajectoryBindings,
   validateTrajectoryScratch,
@@ -123,6 +124,7 @@ export type GPUTrajectoryTripOutput = GPUCompactOutput & {
 /** Caller-owned outputs of {@link GPUTrajectorySegments}. */
 export type GPUTrajectorySegmentsOutput = {
   triplegs: GPUTrajectoryTriplegOutput;
+  /** Trips require status.candidateOverflow to expose loss from their bounded input table. */
   trips?: GPUTrajectoryTripOutput;
 };
 
@@ -141,7 +143,11 @@ export type GPUTrajectorySegmentsProps = GPUTrajectoryGeometryFields & {
     startRows: GraphDataView<'uint32'>;
     finishRows: GraphDataView<'uint32'>;
     durations: GraphDataView<'float32'>;
-    status: {count: GPUStatusScalar};
+    status: {
+      count: GPUStatusScalar;
+      overflow?: GPUStatusScalar;
+      candidateOverflow?: GPUStatusScalar;
+    };
   };
   /** Per-frame float32 view of {@link GPU_TRAJECTORY_SEGMENTS_PARAMETER_LENGTH} elements. */
   parameters: GraphDataView<'float32'>;
@@ -169,10 +175,77 @@ export class GPUTrajectorySegments implements GPUCommandNodeProducer {
   readonly props: GPUTrajectorySegmentsProps;
 
   constructor(props: GPUTrajectorySegmentsProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'positions',
+      'timestamps',
+      'temporalContext',
+      'trackOffsets',
+      'staypointIds',
+      'staypoints',
+      'parameters',
+      'output'
+    ]);
+    const outputSnapshot = snapshotConstructionFields(props.output, ['triplegs', 'trips']);
+    const snapshotTable = <Table extends GPUTrajectoryTriplegOutput>(table: Table): Table => {
+      const captured = snapshotConstructionFields(table, [
+        'ids',
+        'status',
+        'startRows',
+        'endRows',
+        'rowTriplegIds',
+        'finishRows',
+        'originStaypoints',
+        'destinationStaypoints',
+        'triplegTripIds'
+      ] as (keyof Table)[]);
+      return {
+        ...captured,
+        status: snapshotConstructionFields(captured.status, [
+          'count',
+          'overflow',
+          'requiredCount',
+          'candidateOverflow'
+        ])
+      };
+    };
+    const stays =
+      props.staypoints &&
+      snapshotConstructionFields(props.staypoints, [
+        'tracks',
+        'startRows',
+        'finishRows',
+        'durations',
+        'status'
+      ]);
+    props = {
+      ...props,
+      output: {
+        triplegs: snapshotTable(outputSnapshot.triplegs),
+        trips: outputSnapshot.trips && snapshotTable(outputSnapshot.trips)
+      },
+      staypoints: stays && {
+        ...stays,
+        status: snapshotConstructionFields(stays.status, ['count', 'overflow', 'candidateOverflow'])
+      }
+    };
     this.id = props.id ?? 'trajectory-segments';
     this.props = props;
     const id = this.id;
     const {positions, timestamps, trackOffsets, staypointIds, parameters, output} = props;
+    validateRequirement(
+      id,
+      !output.trips || output.trips.status.candidateOverflow !== undefined,
+      'output.trips.status.candidateOverflow is required because triplegs can be truncated'
+    );
+    validateRequirement(
+      id,
+      !(
+        props.staypoints?.status.overflow !== undefined ||
+        props.staypoints?.status.candidateOverflow !== undefined
+      ) || output.triplegs.status.candidateOverflow !== undefined,
+      'output.triplegs.status.candidateOverflow is required with supplied staypoint loss'
+    );
     validateSinglePackedView(positions, ['float32x2'], `${id} positions`);
     validateSinglePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
     validateSinglePackedView(trackOffsets, ['uint32'], `${id} trackOffsets`);
@@ -246,6 +319,15 @@ export class GPUTrajectorySegments implements GPUCommandNodeProducer {
       }
     }
     validateTrajectoryOutputRanges(this.id, this.props.output);
+    for (const [name, view] of Object.entries(props.staypoints?.status ?? {})) {
+      if (!view) continue;
+      validateSinglePackedView(view, ['uint32'], `${id} staypoints.status.${name}`);
+      validateRequirement(
+        id,
+        view.length >= 1,
+        `staypoints.status.${name} must have at least 1 row`
+      );
+    }
     validateTrajectoryWritableDispatches(id, [
       {
         ids: output.triplegs.ids,
@@ -292,7 +374,9 @@ export class GPUTrajectorySegments implements GPUCommandNodeProducer {
       props.staypoints?.startRows,
       props.staypoints?.finishRows,
       props.staypoints?.durations,
-      props.staypoints?.status.count
+      props.staypoints?.status.count,
+      props.staypoints?.status.overflow,
+      props.staypoints?.status.candidateOverflow
     ];
   }
 
@@ -302,14 +386,18 @@ export class GPUTrajectorySegments implements GPUCommandNodeProducer {
       triplegs.ids,
       triplegs.status.count,
       triplegs.status.overflow,
+      triplegs.status.candidateOverflow,
       triplegs.status.requiredCount,
+      triplegs.status.candidateOverflow,
       triplegs.startRows,
       triplegs.endRows,
       triplegs.rowTriplegIds,
       trips?.ids,
       trips?.status.count,
       trips?.status.overflow,
+      trips?.status.candidateOverflow,
       trips?.status.requiredCount,
+      trips?.status.candidateOverflow,
       trips?.startRows,
       trips?.finishRows,
       trips?.originStaypoints,
@@ -327,6 +415,10 @@ export class GPUTrajectorySegments implements GPUCommandNodeProducer {
     const rowCount = positions.length;
     const trackCount = trackOffsets.length - 1;
     const triplegCapacity = output.triplegs.ids.length;
+    const stayLossSources = [
+      props.staypoints?.status.overflow,
+      props.staypoints?.status.candidateOverflow
+    ].filter((view): view is GraphDataView<'uint32'> => Boolean(view));
     validateGPUStorageBindingByteLength(
       graph.device,
       id,
@@ -457,7 +549,11 @@ fn isOutsideStaypoint(row: u32) -> bool {
         id: `${id}-tripleg-publish`,
         operation: OPERATION,
         requiredCount: triplegTotal,
-        output: output.triplegs
+        output: {
+          ...output.triplegs,
+          status: output.triplegs.status
+        },
+        candidateOverflowSources: stayLossSources
       })
     ];
     if (output.triplegs.rowTriplegIds) {
@@ -809,6 +905,12 @@ fn isGapBetween(a: u32, b: u32) -> bool {
     const {id, props} = this;
     const trips = props.output.trips!;
     const {tripTotal, tripRecords, trackTripOffsets, triplegStarts, triplegTotal} = context;
+    const triplegCapacity = props.output.triplegs.ids.length;
+    const triplegLoss = createTransientView(graph, `${id}-trip-input-loss`, 'uint32', 1);
+    const stayLossSources = [
+      props.staypoints?.status.overflow,
+      props.staypoints?.status.candidateOverflow
+    ].filter((view): view is GraphDataView<'uint32'> => Boolean(view));
     const capacity = trips.ids.length;
     const trackCount = props.trackOffsets.length - 1;
     const startRows =
@@ -871,9 +973,27 @@ fn isGapBetween(a: u32, b: u32) -> bool {
         id: `${id}-trip-publish`,
         operation: OPERATION,
         requiredCount: tripTotal,
-        output: trips
+        output: {
+          ...trips,
+          status: trips.status
+        },
+        candidateOverflowSources: [triplegLoss, ...stayLossSources]
       })
     ];
+    // Only the stored tripleg prefix participates in trip assembly. Its lost rows are
+    // intermediate loss for trips, independently of the final trip capacity.
+    nodes.unshift(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-trip-input-loss`,
+        operation: OPERATION,
+        invocationCount: 1,
+        bindings: [
+          {name: 'triplegTotal', view: triplegTotal, type: 'u32', access: 'read'},
+          {name: 'loss', view: triplegLoss, type: 'u32', access: 'read_write'}
+        ],
+        body: `loss[lossOffset] = select(0u, 1u, triplegTotal[triplegTotalOffset] > ${triplegCapacity}u);`
+      })
+    );
     if (trips.triplegTripIds) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {

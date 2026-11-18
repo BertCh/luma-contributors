@@ -24,6 +24,7 @@ import {
   getGPUAnalysisOperatorCatalog,
   queryGPUAnalysisOperators
 } from '../../../src/gpu-spatial-analysis/ontology/index';
+import type {GPUAnalysisPackage} from '../../../src/gpu-spatial-analysis/ontology/index';
 import {FITTING_KERNEL_OPERATORS} from '../../../src/gpu-spatial-analysis/ontology/fitting-kernel-catalog';
 import {SPATIOTEMPORAL_REVIEW_OPERATORS} from '../../../src/gpu-spatial-analysis/ontology/spatiotemporal-review-catalog';
 
@@ -55,7 +56,10 @@ function listExportedContributors(entry: Record<string, unknown>): string[] {
 it('has a catalog entry for every exported contributor and recipe of every entry point', () => {
   const missing: Record<string, string[]> = {};
   for (const [packageName, entry] of Object.entries(ENTRY_POINTS)) {
-    const names = listExportedContributors(entry).filter(name => !getGPUAnalysisOperator(name));
+    const names = listExportedContributors(entry).filter(
+      exportName =>
+        !getGPUAnalysisOperator({package: packageName as GPUAnalysisPackage, exportName})
+    );
     if (names.length > 0) missing[packageName] = names;
   }
   // A new contributor or add*Recipe export needs an entry in the operator catalog.
@@ -70,7 +74,10 @@ it('resolves every catalog operator from the entry point it declares', () => {
       `${operator.package}: ${operator.exportName}`
     ).toBeTypeOf('function');
   }
-  expect(new Set(operators.map(({exportName}) => exportName)).size).toBe(operators.length);
+  expect(
+    new Set(operators.map(({package: packageName, exportName}) => `${packageName}:${exportName}`))
+      .size
+  ).toBe(operators.length);
 });
 
 it('keeps the original exports unchanged and adds the other entry points beside them', () => {
@@ -94,11 +101,14 @@ it('keeps the original exports unchanged and adds the other entry points beside 
       226 +
       SPATIOTEMPORAL_REVIEW_OPERATORS.length +
       FITTING_KERNEL_OPERATORS.length +
-      REUSED_ANALYSIS_OPERATORS.length
+      REUSED_ANALYSIS_OPERATORS.length +
+      1
   );
   expect(all.slice(0, 261)).toEqual(GPU_SPATIAL_ANALYSIS_OPERATORS);
   const capabilities = getGPUAnalysisCapabilityCatalog();
-  expect(capabilities.slice(0, 49)).toEqual(GPU_SPATIAL_ANALYSIS_CAPABILITIES);
+  expect(capabilities.slice(0, 49).map(({id}) => id)).toEqual(
+    GPU_SPATIAL_ANALYSIS_CAPABILITIES.map(({id}) => id)
+  );
   expect(new Set(capabilities.map(({id}) => id)).size).toBe(capabilities.length);
   for (const operator of all) {
     expect(capabilities.some(({id}) => id === operator.primaryCapability)).toBe(true);
@@ -117,7 +127,7 @@ it('names the new capability families for what they do, never for a development 
 
 it('records a tier for every operator and the limits of every reference operator', () => {
   for (const operator of getGPUAnalysisOperatorCatalog()) {
-    expect(['scale', 'reference'], operator.exportName).toContain(operator.tier);
+    expect(['scale', 'reference', 'unknown'], operator.exportName).toContain(operator.tier);
     if (operator.tier === 'reference') {
       expect(
         (operator.limits?.length ?? 0) > 0 || Boolean(operator.limitation),

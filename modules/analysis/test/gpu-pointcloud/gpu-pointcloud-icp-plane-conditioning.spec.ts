@@ -92,13 +92,14 @@ for (const scene of SCENES) {
           metric: 'point-to-plane',
           maximumDistance: 0.02 * scene.extent,
           iterations,
-          // The scene is float32: the tolerances follow its coordinate resolution.
           translationTolerance: 1e-4 * scene.extent,
           rotationTolerance: 1e-4,
-          transform: transform.view,
-          history: history.view,
-          inlierMask: mask.view,
-          status: status.view
+          output: {
+            transform: transform.view,
+            history: history.view,
+            inlierMask: mask.view,
+            status: status.view
+          }
         })
       );
       await fixture.run();
@@ -173,10 +174,12 @@ it('point-to-plane ICP still reports a single tilted plane as degenerate', async
         metric: 'point-to-plane',
         maximumDistance: 0.2,
         iterations: 4,
-        transform: transform.view,
-        history: history.view,
-        inlierMask: mask.view,
-        status: status.view
+        output: {
+          transform: transform.view,
+          history: history.view,
+          inlierMask: mask.view,
+          status: status.view
+        }
       })
     );
     await fixture.run();

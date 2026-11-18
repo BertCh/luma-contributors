@@ -8,7 +8,11 @@ export {
   isGPUCellIndexFamily,
   validateCellIndexResolution
 } from './cell-index-families';
-export type {GPUCellIndexFamily, GPUCellIndexResolutionRange} from './cell-index-families';
+export type {
+  GPUCellIndexFamily,
+  GPUCellIndexResolutionRange,
+  GPUCellTopologyFamily
+} from './cell-index-families';
 export {GPUPointToCell} from './gpu-point-to-cell';
 export type {GPUPointToCellOutput, GPUPointToCellProps} from './gpu-point-to-cell';
 export {

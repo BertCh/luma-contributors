@@ -148,7 +148,7 @@ for (const completeEntry of fixture.cases)
                   querySort,
                   output: {
                     outputMask: mask.view,
-                    nearestFeatureIds: bufferNearest.view,
+                    nearestFeatureRows: bufferNearest.view,
                     distances: bufferDistances.view,
                     drawInstanceCount: drawCount.view,
                     matches: {
@@ -372,8 +372,8 @@ for (const entry of fixture.cases)
             : undefined;
           if (prepared) rig.graph.add(prepared);
           const capacity = (entry.queries.length / 2) * entry.distances[0].length;
-          const leftIds = rig.output('left', capacity, 'uint32');
-          const rightIds = rig.output('right', capacity, 'uint32');
+          const leftRows = rig.output('left', capacity, 'uint32');
+          const rightRows = rig.output('right', capacity, 'uint32');
           const count = rig.output('count', 1, 'uint32');
           const total = rig.output('total', 1, 'uint32');
           const overflow = rig.output('overflow', 1, 'uint32');
@@ -387,8 +387,8 @@ for (const entry of fixture.cases)
               prepared,
               distance: frame.radius,
               output: {
-                leftIds: leftIds.view,
-                rightIds: rightIds.view,
+                leftRows: leftRows.view,
+                rightRows: rightRows.view,
                 status: {count: count.view, requiredCount: total.view, overflow: overflow.view}
               }
             })
@@ -419,7 +419,7 @@ for (const entry of fixture.cases)
                   label,
                   fixture.reference,
                   'complete left rows',
-                  (await readUint32(leftIds.buffer, capacity)).slice(0, frame.candidates.length),
+                  (await readUint32(leftRows.buffer, capacity)).slice(0, frame.candidates.length),
                   frame.candidates.map(pair => pair[0])
                 );
                 compareParity(
@@ -427,7 +427,7 @@ for (const entry of fixture.cases)
                   label,
                   fixture.reference,
                   'complete right rows',
-                  (await readUint32(rightIds.buffer, capacity)).slice(0, frame.candidates.length),
+                  (await readUint32(rightRows.buffer, capacity)).slice(0, frame.candidates.length),
                   frame.candidates.map(pair => pair[1])
                 );
               }

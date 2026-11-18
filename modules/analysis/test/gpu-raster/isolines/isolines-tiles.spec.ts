@@ -226,8 +226,8 @@ async function intersectExternalPolygon(
   const lineOffsets = output('lineOffsets', 'uint32', capacity + 1);
   const pairCount = output('pairCount', 'uint32', 1);
   const pairOverflow = output('pairOverflow', 'uint32', 1);
-  const leftIds = output('leftIds', 'uint32', capacity);
-  const rightIds = output('rightIds', 'uint32', capacity);
+  const leftRows = output('leftRows', 'uint32', capacity);
+  const rightRows = output('rightRows', 'uint32', capacity);
   const points = output('points', 'float32x2', capacity, 2);
   graph.add(
     new GPUIsolines({
@@ -276,8 +276,8 @@ async function intersectExternalPolygon(
       },
       output: {
         pairs: {
-          leftIds: leftIds.view,
-          rightIds: rightIds.view,
+          leftRows: leftRows.view,
+          rightRows: rightRows.view,
           status: {count: pairCount.view, overflow: pairOverflow.view}
         },
         points: points.view
@@ -290,15 +290,15 @@ async function intersectExternalPolygon(
     expect((await readUint32(overflow.buffer, 1))[0]).toBe(0);
     expect((await readUint32(pairOverflow.buffer, 1))[0]).toBe(0);
     const length = (await readUint32(pairCount.buffer, 1))[0];
-    const [leftRows, rightRows, coordinates, segmentLevels] = await Promise.all([
-      readUint32(leftIds.buffer, length),
-      readUint32(rightIds.buffer, length),
+    const [leftRowValues, rightRowValues, coordinates, segmentLevels] = await Promise.all([
+      readUint32(leftRows.buffer, length),
+      readUint32(rightRows.buffer, length),
       readFloat32(points.buffer, length * 2),
       readUint32(levels.buffer, capacity)
     ]);
     return Array.from({length}, (_, index) => [
-      segmentLevels[leftRows[index] / 2],
-      rightRows[index],
+      segmentLevels[leftRowValues[index] / 2],
+      rightRowValues[index],
       coordinates[2 * index],
       coordinates[2 * index + 1]
     ]);

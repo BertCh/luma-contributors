@@ -5,7 +5,7 @@
     "access": "public"
   },
   "description": "GPU geospatial and analysis operations (spatial analysis, network, terrain, dataframe, raster, point cloud) built on published luma.gl.",
-  "license": "MIT",
+  "license": "MIT AND Apache-2.0 AND BSD-3-Clause",
   "type": "module",
   "repository": {
     "type": "git",
@@ -77,7 +77,10 @@
     "dist",
     "!src/testing",
     "!dist/testing",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "LICENSES",
+    "THIRD-PARTY-NOTICES.md"
   ],
   "sideEffects": false,
   "dependencies": {
@@ -90,10 +93,5 @@
     "@luma.gl/graph": "~10.0.0-alpha.14",
     "@luma.gl/shaders": "~10.0.0-alpha.14",
     "apache-arrow": ">=17.0.0"
-  },
-  "peerDependenciesMeta": {
-    "apache-arrow": {
-      "optional": true
-    }
   }
 }

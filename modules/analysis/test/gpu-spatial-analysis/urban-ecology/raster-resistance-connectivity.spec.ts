@@ -13,7 +13,7 @@ import {
   getRasterGridGeoreference,
   getRasterGroundCellSize,
   type GPURasterCellSizeMode
-} from '../../../src/analysis-core/raster-grid';
+} from '../../../src/analysis-core/contracts/raster-grid';
 import {createWGSLKernelNode} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import {requireTestDevice} from '../../utils/require-test-device';

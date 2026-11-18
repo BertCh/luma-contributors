@@ -14,6 +14,7 @@ import {
 } from '../../analysis-core/operations/cpu-operation-rows';
 import {
   GPUOrdinaryLeastSquaresOperation,
+  snapshotOrdinaryLeastSquaresOperationProps,
   type OrdinaryLeastSquaresOperationProps
 } from './gpu-ordinary-least-squares-operation';
 import {
@@ -28,6 +29,7 @@ import {
   solveCPURegressionFactor,
   getCPURegressionSingularValueRange
 } from './cpu-regression-linear-algebra';
+import {computeCenteredRegressionContribution} from './centered-regression-prediction';
 
 /** Exact float32 input rows; parameters use getGPUOrdinaryLeastSquaresParameterValues. */
 export type CPUOrdinaryLeastSquaresInput = {
@@ -46,6 +48,8 @@ export type CPUOrdinaryLeastSquaresResult = {
   summary: Float32Array;
   residuals: Float32Array;
   fitted: Float32Array;
+  /** Centered predictions for finite predictor rows, independent of the mask or response validity. */
+  predictions: Float32Array;
 };
 
 type CenteredFit = {
@@ -117,6 +121,7 @@ function fitCenteredRows(
 /**
  * Centered OLS (or slope-only ridge) and all 22 report slots in float64, rounded once on return.
  * Non-finite predictor/response rows and mask=0 rows are excluded, as in the contributor.
+ * Predictions still cover those rows when their predictors are finite; fitted values remain NaN.
  *
  * What differs from the GPU contributor:
  * - Float64 moments, solves, residuals and diagnostics replace float32 tile reductions and mean
@@ -170,7 +175,8 @@ export function computeOrdinaryLeastSquaresOnCPU(
     tStatistics: new Float32Array(coefficientCount).fill(NaN),
     summary: new Float32Array(GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH).fill(NaN),
     residuals: new Float32Array(rowCount).fill(NaN),
-    fitted: new Float32Array(rowCount).fill(NaN)
+    fitted: new Float32Array(rowCount).fill(NaN),
+    predictions: new Float32Array(rowCount).fill(NaN)
   };
   const usedCount = usedRows.length;
   result.summary[0] = usedCount;
@@ -184,13 +190,22 @@ export function computeOrdinaryLeastSquaresOnCPU(
     return result;
   }
   const residuals = response.map((value, row) => {
-    let centeredFitted = 0;
-    for (let column = 0; column < predictorCount; column++) {
-      centeredFitted += fit.slopes[column] * (predictors[row][column] - fit.means[column]);
-    }
+    const centeredFitted = computeCenteredRegressionContribution(
+      predictors[row],
+      fit.means,
+      fit.slopes
+    );
     result.fitted[usedRows[row]] = fit.means[predictorCount] + centeredFitted;
     return value - fit.means[predictorCount] - centeredFitted;
   });
+  for (let row = 0; row < rowCount; row++) {
+    const values = input.predictors.subarray(row * predictorCount, (row + 1) * predictorCount);
+    if (values.every(Number.isFinite)) {
+      result.predictions[row] =
+        fit.means[predictorCount] +
+        computeCenteredRegressionContribution(values, fit.means, fit.slopes);
+    }
+  }
   const residualSumSquares = residuals.reduce((sum, value) => sum + value ** 2, 0);
   const sumCubes = residuals.reduce((sum, value) => sum + value ** 3, 0);
   const sumFourth = residuals.reduce((sum, value) => sum + value ** 4, 0);
@@ -306,6 +321,7 @@ export function computeOrdinaryLeastSquaresOnCPU(
 /** CPU twin; drops the shader predictor cap and tile budget, retaining every output layout. */
 export class CPUOrdinaryLeastSquaresOperation extends GPUCPUOperation {
   constructor(props: OrdinaryLeastSquaresOperationProps) {
+    props = snapshotOrdinaryLeastSquaresOperationProps(props);
     const id = props.id ?? 'ordinary-least-squares';
     validateCapacity(id, 'rowCount', props.rowCount);
     validateCapacity(id, 'predictorCount', props.predictorCount);
@@ -348,7 +364,8 @@ export class CPUOrdinaryLeastSquaresOperation extends GPUCPUOperation {
           [props.output.tStatistics]: result.tStatistics,
           [props.output.summary]: result.summary,
           ...(props.output.residuals ? {[props.output.residuals]: result.residuals} : {}),
-          ...(props.output.fitted ? {[props.output.fitted]: result.fitted} : {})
+          ...(props.output.fitted ? {[props.output.fitted]: result.fitted} : {}),
+          ...(props.output.predictions ? {[props.output.predictions]: result.predictions} : {})
         };
       }
     });

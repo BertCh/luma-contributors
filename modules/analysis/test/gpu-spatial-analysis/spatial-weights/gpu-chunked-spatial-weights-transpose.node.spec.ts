@@ -234,12 +234,14 @@ for (const statusLevel of ['matrix', 'chunk'] as const) {
   for (const outputField of ['count', 'requiredCount', 'overflow', 'asymmetricSlots'] as const) {
     it(`rejects output ${outputField} aliasing preserved ${statusLevel} input status`, () => {
       const {graph, weights, output, view} = createSetup();
-      const inputStatus = {overflow: view('uint32', 1)};
+      const inputStatusView = view('uint32', 1);
+      const inputStatus =
+        statusLevel === 'matrix' ? {overflow: inputStatusView} : {requiredCount: inputStatusView};
       if (statusLevel === 'matrix') weights.status = inputStatus;
       else weights.chunks[0].weights.status = inputStatus;
       const destination = output();
-      if (outputField === 'asymmetricSlots') destination.asymmetricSlots = inputStatus.overflow;
-      else destination.chunks[0].weights.status[outputField] = inputStatus.overflow;
+      if (outputField === 'asymmetricSlots') destination.asymmetricSlots = inputStatusView;
+      else destination.chunks[0].weights.status[outputField] = inputStatusView;
       try {
         expect(() => new GPUChunkedSpatialWeightsTranspose({weights, output: destination})).toThrow(
           /outputs must not share buffers with inputs/
@@ -252,7 +254,9 @@ for (const statusLevel of ['matrix', 'chunk'] as const) {
 
   it(`rejects packed output aliasing preserved ${statusLevel} input status`, () => {
     const {graph, weights, view, createSpatialWeights} = createSetup();
-    const inputStatus = {overflow: view('uint32', 1)};
+    const inputStatusView = view('uint32', 1);
+    const inputStatus =
+      statusLevel === 'matrix' ? {overflow: inputStatusView} : {requiredCount: inputStatusView};
     if (statusLevel === 'matrix') weights.status = inputStatus;
     else weights.chunks[0].weights.status = inputStatus;
     try {
@@ -260,9 +264,25 @@ for (const statusLevel of ['matrix', 'chunk'] as const) {
         () =>
           new GPUChunkedSpatialWeightsTranspose({
             weights,
-            output: {...createSpatialWeights(6, 16), asymmetricSlots: inputStatus.overflow}
+            output: {...createSpatialWeights(6, 16), asymmetricSlots: inputStatusView}
           })
       ).toThrow(/outputs must not share buffers with inputs/);
+    } finally {
+      graph.device.destroy();
+    }
+  });
+}
+
+for (const loss of ['overflow', 'candidateOverflow'] as const) {
+  it(`refuses chunk-local ${loss} before publication for either output layout`, () => {
+    const {graph, weights, output, view, createSpatialWeights} = createSetup();
+    weights.chunks[0].weights.status = {[loss]: view('uint32', 1)};
+    try {
+      for (const destination of [output(), createSpatialWeights(6, 16)]) {
+        expect(() => new GPUChunkedSpatialWeightsTranspose({weights, output: destination})).toThrow(
+          /input chunk 0 status loss ports must be aggregated on outer weights.status/
+        );
+      }
     } finally {
       graph.device.destroy();
     }

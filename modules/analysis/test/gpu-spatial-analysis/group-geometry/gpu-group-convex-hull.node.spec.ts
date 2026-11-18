@@ -146,17 +146,19 @@ it('GPUGroupConvexHull filter kernels parse and stay inside the core limits', ()
   for (const groupCount of [3, 256, 257]) {
     const {nodes} = buildHullNodes({id: `hull-limits-${groupCount}`, rows: 9000, groupCount});
     const sources = getParsedKernelSources(nodes);
-    for (const [id, source] of sources) {
+    for (const {id, source} of sources.configurations) {
       expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
     }
     const filterIds = [...sources.keys()].filter(id => /^hull-(extreme-|filter-rows)/.test(id));
     expect(filterIds.length).toBe(4);
     for (const id of filterIds) {
-      const memory = getWorkgroupMemoryBytes(sources.get(id)!);
-      if (/extreme-(values|ties)$/.test(id)) {
-        expect(memory, id).toBe(groupCount <= 256 ? groupCount * 8 * 4 : 0);
-      } else {
-        expect(memory, id).toBe(0);
+      for (const kernel of sources.getConfigurations(id)) {
+        const memory = getWorkgroupMemoryBytes(kernel.source, kernel.constants);
+        if (/extreme-(values|ties)$/.test(id)) {
+          expect(memory, id).toBe(groupCount <= 256 ? groupCount * 8 * 4 : 0);
+        } else {
+          expect(memory, id).toBe(0);
+        }
       }
     }
   }

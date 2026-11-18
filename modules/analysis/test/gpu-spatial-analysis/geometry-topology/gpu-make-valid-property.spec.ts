@@ -30,6 +30,35 @@ type Fixture = {
 
 const fixture: Fixture = fixtureJson as unknown as Fixture;
 
+it('retains an identical square for both highest uint32 caller identities', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const results = [];
+  for (const identity of [0xfffffffe, 0xffffffff]) {
+    const result = await runMakeValid(
+      device,
+      [
+        [
+          [0, 0],
+          [2, 0],
+          [2, 2],
+          [0, 2]
+        ]
+      ],
+      {segments: 16, intersections: 16, rings: 8, vertices: 32},
+      {ringOffsets: [0, 1], sourceIds: [identity]}
+    );
+    expect(result.count).toBe(1);
+    expect(result.overflow).toBe(0);
+    expect(result.candidateOverflow).toBe(0);
+    expect(result.sourceIds).toEqual([identity]);
+    expect(result.polygons[0]).toHaveLength(1);
+    expect(getRingArea(result.polygons[0][0])).toBe(4);
+    results.push(result.polygons);
+  }
+  expect(results[0]).toEqual(results[1]);
+});
+
 function getRingArea(ring: readonly number[][]): number {
   let doubled = 0;
   for (let index = 0; index < ring.length; index++) {

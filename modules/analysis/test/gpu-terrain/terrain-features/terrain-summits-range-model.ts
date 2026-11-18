@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPURasterCellSizeMode} from '../../../src/analysis-core/raster-grid';
+import type {GPURasterCellSizeMode} from '../../../src/analysis-core/contracts/raster-grid';
 import {getOracleCellSize, isInOracleDisc} from './terrain-summits-oracle';
 
 const f32 = Math.fround;

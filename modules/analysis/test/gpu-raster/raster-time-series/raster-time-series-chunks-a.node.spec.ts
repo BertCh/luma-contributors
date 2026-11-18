@@ -659,7 +659,7 @@ for (const family of families) {
   }
 }
 
-it('rejects fitted-output buffers that are also read by the storage QR publication pass', () => {
+it('permits pooled harmonic reference outputs but rejects storage publication aliases', () => {
   for (const field of ['coefficients', 'summary'] as const) {
     const graph = new GPUCommandGraph(device);
     const props = createHarmonicBoundaryProps(graph, 1, 16, 1);
@@ -677,7 +677,7 @@ it('rejects fitted-output buffers that are also read by the storage QR publicati
           : graph.createDataView(handle, {format: 'uint32', length: 2});
       const output = {...props.output, fitted, [field]: shared};
       expect(() => new GPURasterHarmonicRegression({...props, output})).toThrow(
-        /output.fitted.*share buffers/
+        /^raster-harmonic-regression .*must not share buffers/
       );
       expect(
         () => new GPURasterHarmonicRegression({...props, mode: 'reference', output})

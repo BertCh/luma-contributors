@@ -14,7 +14,7 @@ import {
   makeGPURasterBand,
   makeGPURasterMetadata
 } from '@luma-contributors/analysis/raster-analysis';
-import {getRasterGridGeoreference} from '../../../src/analysis-core/raster-grid';
+import {getRasterGridGeoreference} from '../../../src/analysis-core/contracts/raster-grid';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
 const GRID = makeGPURasterMetadata({width: 6, height: 5});

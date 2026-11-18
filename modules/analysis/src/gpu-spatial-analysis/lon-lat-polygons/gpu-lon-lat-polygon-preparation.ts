@@ -90,8 +90,8 @@ export type GPULonLatPolygonPreparationOutput = {
 export type GPULonLatPolygonPreparationProps = GPUPolygonGeometryFields & {
   /** Node prefix; defaults to 'lon-lat-polygon-preparation'. */
   id?: string;
-  /** Longitude/latitude with metric none or great-circle; omitted edge model means linear. */
-  spatialContext?: GPUSpatialContext;
+  /** Required longitude/latitude context with metric none or great-circle; omitted edge model means linear. */
+  spatialContext: GPUSpatialContext;
   /** Four float32 words from getGPULonLatPolygonPreparationParameterValues. */
   parameters: GraphDataView<'float32'>;
   /** Maximum pieces per original edge, an integer in [1, 65536]; defaults to 1024. */

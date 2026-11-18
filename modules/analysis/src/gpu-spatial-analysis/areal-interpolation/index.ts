@@ -21,4 +21,4 @@ export type {
   GPUPycnophylacticOutput,
   GPUPycnophylacticProps
 } from './gpu-pycnophylactic';
-export {getSphericalRasterCellArea} from '../../analysis-core/spherical-cell-area';
+export {getSphericalRasterCellArea} from '../../analysis-core/kernels/spherical-cell-area';

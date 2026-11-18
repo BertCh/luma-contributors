@@ -5,8 +5,10 @@
 import {type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
 import {RecipeBuilder} from '../recipes/recipe-utils';
+import {validateUrbanLandscapeRecipeViews} from './urban-landscape-recipe-validation';
 import {
   GPUPopulationSupportAlignment,
+  validatePopulationSupportAlignmentViews,
   type GPUPopulationSupportAlignmentProps
 } from './gpu-population-support-alignment';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -72,6 +74,48 @@ export function addSegregationCounterfactualRecipe<Parameters>(
   validateViewLength(id, 'final', props.final, count);
   validateRequirement(id, props.supportId.length > 0, 'supportId must not be empty');
   const output = props.output;
+  // Preflight all supplied layouts and bindings before reserving any transient resource IDs.
+  const inputs = {baseline: props.baseline, final: props.final};
+  validateUrbanLandscapeRecipeViews(
+    graph,
+    id,
+    inputs,
+    {
+      compositionOnly: {view: output?.compositionOnly, format: 'float32x2', length: count},
+      spatialOnly: {view: output?.spatialOnly, format: 'float32x2', length: count},
+      indices: {view: output?.indices, format: 'float32', length: 4},
+      validity: {view: output?.validity, format: 'uint32', length: 4},
+      decomposition: {view: output?.decomposition, format: 'float32x4', length: 1}
+    },
+    [
+      {reads: inputs, writes: {compositionOnly: output?.compositionOnly}},
+      {reads: inputs, writes: {spatialOnly: output?.spatialOnly}},
+      {reads: {}, writes: {indices: output?.indices, validity: output?.validity}},
+      {reads: {indices: output?.indices}, writes: {decomposition: output?.decomposition}}
+    ]
+  );
+  // Resolve every override before either scenario appends commands to the caller's graph.
+  const indices = getRecipeView(
+    graph,
+    `${id}-decomposition-indices`,
+    'float32',
+    4,
+    output?.indices
+  );
+  const validity = getRecipeView(
+    graph,
+    `${id}-decomposition-validity`,
+    'uint32',
+    4,
+    output?.validity
+  );
+  const decomposition = getRecipeView(
+    graph,
+    `${id}-decomposition-decomposition`,
+    'float32x4',
+    1,
+    output?.decomposition
+  );
   const compositionOnly = getRecipeView(
     graph,
     `${id}-composition-only`,
@@ -137,9 +181,9 @@ output[outputOffset+2u*unit]=select(missing,result.x,valid);output[outputOffset+
     supportId: props.supportId,
     counterfactualMethod: props.method,
     output: {
-      indices: output?.indices,
-      validity: output?.validity,
-      decomposition: output?.decomposition
+      indices,
+      validity,
+      decomposition
     }
   });
   return {
@@ -159,16 +203,24 @@ export type {
   GPUPopulationSupportAlignmentProps
 } from './gpu-population-support-alignment';
 
-/** Exact ID alignment. Prefer the CPU operation when support data is already on the host. */
+/**
+ * Exact ID alignment. Prefer the CPU operation when support data is already on the host.
+ * Returns canonical recipe status stages for missing targets, ambiguous targets and excluded
+ * sources. Their invalidCount scalars alias the corresponding packed words without new commands.
+ * The original [complete, missing, ambiguous, excluded] view remains available as packedStatus.
+ */
 export function addPopulationSupportAlignmentRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUPopulationSupportAlignmentProps
 ) {
   const id = props.id ?? 'population-support-alignment';
-  // Preserve legacy validation order and caller-owned/transient output overrides.
-  validateRequirement(id, props.populations.length > 0, 'populations must have at least 1 row');
-  validateViewLength(id, 'sourceIds', props.sourceIds, props.populations.length);
-  validateRequirement(id, props.targetIds.length > 0, 'targetIds must have at least 1 row');
+  validateRequirement(
+    id,
+    !props.output || !('validity' in props.output),
+    'output.validity is no longer supported; use output.alignmentCode for diagnostics and output.matchedMask for row selection'
+  );
+  // Preflight every input and supplied output before reserving transient resource IDs.
+  validatePopulationSupportAlignmentViews(id, props, graph);
   const populations = getRecipeView(
     graph,
     `${id}-populations`,
@@ -176,22 +228,47 @@ export function addPopulationSupportAlignmentRecipe<Parameters>(
     props.targetIds.length,
     props.output?.populations
   );
-  const validity = getRecipeView(
+  const alignmentCode = getRecipeView(
     graph,
-    `${id}-validity`,
+    `${id}-alignment-code`,
     'uint32',
     props.targetIds.length,
-    props.output?.validity
+    props.output?.alignmentCode
+  );
+  const matchedMask = getRecipeView(
+    graph,
+    `${id}-matched-mask`,
+    'uint32',
+    props.targetIds.length,
+    props.output?.matchedMask
   );
   const status = getRecipeView(graph, `${id}-status`, 'uint32x4', 1, props.output?.status);
   const builder = new RecipeBuilder(graph);
   builder.add(
-    new GPUPopulationSupportAlignment({...props, id, output: {populations, validity, status}})
+    new GPUPopulationSupportAlignment({
+      ...props,
+      id,
+      output: {populations, alignmentCode, matchedMask, status}
+    })
+  );
+  const stages = ['missing-targets', 'ambiguous-targets', 'excluded-sources'].map(
+    (stage, index) => ({
+      stage,
+      status: {
+        invalidCount: graph.createDataView(status.buffer, {
+          format: 'uint32',
+          length: 1,
+          byteOffset: status.byteOffset + (index + 1) * Uint32Array.BYTES_PER_ELEMENT
+        })
+      }
+    })
   );
   return {
     contributors: builder.contributors,
-    outputs: {populations, validity},
-    status,
+    outputs: {populations, alignmentCode, matchedMask},
+    intermediates: {},
+    status: {stages},
+    packedStatus: status,
     provenance: {
       sourceIds: props.sourceIds,
       targetIds: props.targetIds,

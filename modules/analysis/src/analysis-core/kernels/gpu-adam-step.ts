@@ -20,6 +20,7 @@ import {createWGSLDispatchGate, createWGSLKernelNode} from './wgsl-kernel-nodes'
 import {GPU_ADAM_STEP_PARAMETER_LENGTH} from './adam-step-parameters';
 import {ADAM_MOMENT_RANGE_WGSL, getAdamBiasCorrectionWGSL} from './adam-step-wgsl';
 import {validateDisjointWritableViews} from './graph-chunk-dispatch';
+import {snapshotConstructionFields} from './construction-snapshot';
 
 /** Keeps history small (40 kB) and bias correction bounded to 14 binary-composition rounds. */
 export const GPU_ADAM_STEP_MAXIMUM_ITERATIONS = 10_000;
@@ -64,6 +65,31 @@ export class GPUAdamStep implements GPUCommandNodeProducer {
   readonly estimatedCommandNodeCount = 2;
 
   constructor(props: GPUAdamStepProps) {
+    props = Object.freeze({
+      ...snapshotConstructionFields(props, [
+        'id',
+        'gradients',
+        'loss',
+        'parameters',
+        'maximumIterations',
+        'output'
+      ]),
+      output: Object.freeze({
+        ...snapshotConstructionFields(props.output, [
+          'weights',
+          'firstMoment',
+          'secondMoment',
+          'lossHistory',
+          'status'
+        ]),
+        status: snapshotConstructionFields(props.output.status, [
+          'iterationCount',
+          'converged',
+          'iterationLimitReached',
+          'invalidCount'
+        ])
+      })
+    });
     this.id = props.id ?? 'adam-step';
     this.props = props;
     const {id} = this;

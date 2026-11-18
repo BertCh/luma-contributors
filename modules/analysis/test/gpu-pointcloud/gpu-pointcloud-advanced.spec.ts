@@ -44,10 +44,12 @@ it('owned rows with full halos reproduce monolithic neighborhoods and flag insuf
         grid: {origin: [-1, -2, -2], dimensions: [4, 4, 4], cellSize: 1},
         radius: 1,
         capacity: 2,
-        indices: indices.view,
-        squaredDistances: distances.view,
-        counts: counts.view,
-        status: status.view
+        output: {
+          indices: indices.view,
+          squaredDistances: distances.view,
+          counts: counts.view,
+          status: status.view
+        }
       })
     );
     await fixture.run();
@@ -85,8 +87,7 @@ for (const {label, rowDirection} of POINT_CLOUD_ROW_DIRECTIONS) {
             rowDirection
           ),
           interpolation: {method: 'bilinear'},
-          heights: heights.view,
-          status: status.view
+          output: {heights: heights.view, status: status.view}
         })
       );
       const filled = fixture.view('float32', new Float32Array(2));
@@ -102,8 +103,7 @@ for (const {label, rowDirection} of POINT_CLOUD_ROW_DIRECTIONS) {
             rowDirection
           ),
           interpolation: {method: 'idw', radius: 2, power: 2, minimumSupport: 2},
-          heights: filled.view,
-          status: filledStatus.view
+          output: {heights: filled.view, status: filledStatus.view}
         })
       );
       await fixture.run();
@@ -146,10 +146,12 @@ it('indexed robust ICP merges multiple moment blocks and rejects Tukey outliers'
         robust: {method: 'tukey', scale: 0.5},
         maximumDistance: 60,
         iterations: 4,
-        transform: transform.view,
-        history: history.view,
-        inlierMask: mask.view,
-        status: status.view
+        output: {
+          transform: transform.view,
+          history: history.view,
+          inlierMask: mask.view,
+          status: status.view
+        }
       })
     );
     await fixture.run();
@@ -187,10 +189,12 @@ it('normal-projected registration covariance changes confidence by orientation w
         halfDepth: 2,
         registrationCovariance: [0.01, 0, 0, 0.04, 0, 0.09],
         uncertaintyCombination: 'quadrature',
-        changes: changes.view,
-        roughness: roughness.view,
-        counts: counts.view,
-        status: status.view
+        output: {
+          changes: changes.view,
+          roughness: roughness.view,
+          counts: counts.view,
+          status: status.view
+        }
       })
     );
     await fixture.run();
@@ -257,10 +261,12 @@ it('point-to-plane ICP recovers a rigid transform on three oriented faces and re
         metric: 'point-to-plane',
         maximumDistance: 0.5,
         iterations: 6,
-        transform: transform.view,
-        history: history.view,
-        inlierMask: mask.view,
-        status: status.view
+        output: {
+          transform: transform.view,
+          history: history.view,
+          inlierMask: mask.view,
+          status: status.view
+        }
       })
     );
     await fixture.run();
@@ -319,11 +325,13 @@ it('explicit disjoint voxel merges preserve global representatives and independe
       new GPUPointCloudVoxelMerge({
         parts,
         partitionPolicy: 'disjoint-owned-rows',
-        counts: counts.view,
-        centroids: centroids.view,
-        representatives: representatives.view,
-        attribute: {means: means.view, counts: support.view},
-        status: status.view
+        output: {
+          counts: counts.view,
+          centroids: centroids.view,
+          representatives: representatives.view,
+          attribute: {means: means.view, counts: support.view},
+          status: status.view
+        }
       })
     );
     await fixture.run();
@@ -369,10 +377,12 @@ it('correlated surface-change confidence matches independent SciPy pairwise cova
         },
         registrationCovariance: [0, 0, 0, 0, 0, changeOracle.registrationVariance],
         uncertaintyCombination: 'quadrature',
-        changes: changes.view,
-        roughness: roughness.view,
-        counts: counts.view,
-        status: status.view
+        output: {
+          changes: changes.view,
+          roughness: roughness.view,
+          counts: counts.view,
+          status: status.view
+        }
       })
     );
     await fixture.run();
@@ -435,11 +445,13 @@ it('voxel merge combines hand-built centroid and packed vec2 attribute parts', a
           sourceRowOffset: index * 10,
           attribute: {means: part.meansView, counts: part.attributeCounts.view}
         })),
-        counts: mergedCounts.view,
-        centroids: mergedCentroids.view,
-        representatives: mergedRepresentatives.view,
-        status: status.view,
-        attribute: {means: mergedMeansView, counts: mergedAttributeCounts.view}
+        output: {
+          counts: mergedCounts.view,
+          centroids: mergedCentroids.view,
+          representatives: mergedRepresentatives.view,
+          status: status.view,
+          attribute: {means: mergedMeansView, counts: mergedAttributeCounts.view}
+        }
       })
     );
     await fixture.run();
@@ -476,8 +488,7 @@ it('block-merged statistical filtering matches independent population moments ac
         counts: counts.view,
         capacity: 1,
         standardDeviations: 1.5,
-        meanDistances: means.view,
-        validity: mask.view
+        output: {meanDistances: means.view, validity: mask.view}
       })
     );
     const supported = distances.filter((_, index) => support[index]);
@@ -516,9 +527,7 @@ it('outlier classification and coincident-cell height sampling agree with actual
         positions: positions.view,
         radius: 100,
         capacity: 3,
-        indices: indices.view,
-        squaredDistances: distances.view,
-        counts: counts.view
+        output: {indices: indices.view, squaredDistances: distances.view, counts: counts.view}
       })
     );
     fixture.graph.add(
@@ -527,8 +536,7 @@ it('outlier classification and coincident-cell height sampling agree with actual
         counts: counts.view,
         capacity: 3,
         standardDeviations: 2,
-        meanDistances: means.view,
-        validity: mask.view
+        output: {meanDistances: means.view, validity: mask.view}
       })
     );
     const heightPositions = fixture.view(
@@ -548,10 +556,12 @@ it('outlier classification and coincident-cell height sampling agree with actual
         positions: heightPositions.view,
         classifications: classifications.view,
         grid,
-        terrain: terrain.view,
-        surface: surface.view,
-        canopy: canopy.view,
-        coverage: coverage.view
+        output: {
+          terrain: terrain.view,
+          surface: surface.view,
+          canopy: canopy.view,
+          coverage: coverage.view
+        }
       })
     );
     fixture.graph.add(
@@ -561,8 +571,7 @@ it('outlier classification and coincident-cell height sampling agree with actual
         terrain: terrain.view,
         coverage: coverage.view,
         coverageBit: 2,
-        heights: heights.view,
-        status: status.view
+        output: {heights: heights.view, status: status.view}
       })
     );
     await fixture.run();
@@ -598,10 +607,12 @@ it('change uncertainty overflow invalidates finite observations and recovers on 
         halfDepth: 2,
         minimumSupport: 2,
         confidenceMultiplier: 3e38,
-        changes: changes.view,
-        roughness: roughness.view,
-        counts: counts.view,
-        status: status.view
+        output: {
+          changes: changes.view,
+          roughness: roughness.view,
+          counts: counts.view,
+          status: status.view
+        }
       })
     );
     await fixture.run();
@@ -662,8 +673,7 @@ for (const {label, rowDirection} of POINT_CLOUD_ROW_DIRECTIONS) {
             rowDirection
           ),
           interpolation: {method: 'idw', radius: 2 * cellSize, power: 8},
-          heights: heights.view,
-          status: status.view
+          output: {heights: heights.view, status: status.view}
         })
       );
       await fixture.run();
@@ -703,11 +713,13 @@ it('voxel sufficient-statistic merges avoid overflow for opposite finite centroi
       new GPUPointCloudVoxelMerge({
         parts,
         partitionPolicy: 'disjoint-owned-rows',
-        counts: counts.view,
-        centroids: centroids.view,
-        representatives: representatives.view,
-        attribute: {means: means.view, counts: support.view},
-        status: status.view
+        output: {
+          counts: counts.view,
+          centroids: centroids.view,
+          representatives: representatives.view,
+          attribute: {means: means.view, counts: support.view},
+          status: status.view
+        }
       })
     );
     await fixture.run();
@@ -736,10 +748,12 @@ it('indexed ICP supports a search radius spanning more than signed-int32 grid ce
         maximumDistance: 1,
         iterations: 1,
         targetGrid: {origin: [0, 0, 0], cellSize: 1e-10, dimensions: [2, 2, 2]},
-        transform: fixture.view('float32', new Float32Array(16)).view,
-        history: fixture.view('float32x3', new Float32Array(3)).view,
-        status: fixture.view('uint32', new Uint32Array(1)).view,
-        inlierMask: inlierMask.view
+        output: {
+          transform: fixture.view('float32', new Float32Array(16)).view,
+          history: fixture.view('float32x3', new Float32Array(3)).view,
+          status: fixture.view('uint32', new Uint32Array(1)).view,
+          inlierMask: inlierMask.view
+        }
       })
     );
     await fixture.run();
@@ -766,8 +780,7 @@ it('statistical filtering keeps finite population moments when their unnormalize
         counts: fixture.view('uint32', new Uint32Array(512).fill(1)).view,
         capacity: 1,
         standardDeviations: 2,
-        meanDistances: meanDistances.view,
-        validity: mask.view
+        output: {meanDistances: meanDistances.view, validity: mask.view}
       })
     );
     await fixture.run();
@@ -820,8 +833,7 @@ for (const {label, rowDirection} of POINT_CLOUD_ROW_DIRECTIONS) {
               : method === 'bilinear'
                 ? {method}
                 : undefined,
-          heights: heights.view,
-          status: status.view
+          output: {heights: heights.view, status: status.view}
         })
       );
       for (const sign of [1, -1]) {

@@ -22,7 +22,7 @@ import {
   type Data,
   type Vector
 } from 'apache-arrow';
-import {convertWideNumericVector, isWideNumericType} from './arrow-analytics-wide-numeric';
+import {isWideNumericType, narrowWideNumericValue} from './arrow-analytics-wide-numeric';
 import type {GPUAnalyticsDictionary} from '@luma.gl/graph/arrow';
 
 export type ArrowAnalyticsTimeUnit = 'second' | 'millisecond' | 'microsecond' | 'nanosecond';
@@ -163,8 +163,10 @@ export function prepareArrowTableForGPUAnalytics(
       chunks = vectors.map(
         vector =>
           vectorFromArray(
-            convertWideNumericVector(field.type, vector, value =>
-              convertFloat64(value, options.float64!, report)
+            Array.from(vector, value =>
+              isWideNumericType(field.type)
+                ? narrowWideNumericValue(field.type, value, options.float64!, report)
+                : convertFloat64(value as number | null, options.float64!, report)
             ),
             type
           ).data[0]

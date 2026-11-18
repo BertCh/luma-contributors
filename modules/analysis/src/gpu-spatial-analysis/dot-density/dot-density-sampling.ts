@@ -43,7 +43,7 @@ import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index
 import {GPU_DOT_DENSITY_PARAMETER_LENGTH} from './dot-density-parameters';
 import {PHILOX_WGSL} from '../../analysis-core/kernels/philox-random';
 import {getDotTriangleCumulativeAreaNodes} from './dot-density-triangle-cdf';
-import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 import {
   validateDisjointWritableViews,
   validateGraphChunkBindingRanges
@@ -148,7 +148,8 @@ export type GPUDotDensityOutput = {
   /**
    * Compact dot list: `ids` holds the feature row of each dot (capacity rows, `0xffffffff` past the
    * count), `count = min(total, capacity)` is safe as an instance count, and `overflow` is 1 when
-   * the total exceeds the capacity or a slot count was clamped.
+   * the retained total exceeds final capacity. Optional candidateOverflow reports slot clamping;
+   * requiredCount counts retained requests and is then a lower bound.
    */
   dots: GPUCompactOutput;
   /** Optional category per dot (dot density only), capacity rows. */
@@ -246,6 +247,12 @@ export function validateDotSamplingConfig(config: DotSamplingConfig): number {
   validateSinglePackedView(output.positions, ['float32x2'], `${id} output.positions`);
   validateCompactOutput(id, output.dots);
   const capacity = output.positions.length;
+  validateRequirement(
+    id,
+    getDotSlotCountLimit(slotCount, capacity) > capacity ||
+      Boolean(output.dots.status.candidateOverflow),
+    'output.dots.status.candidateOverflow is required when the per-slot limit can hide loss below final capacity'
+  );
   if (capacity < 1 || output.dots.ids.length !== capacity) {
     throw new Error(`${id} output.positions and output.dots.ids must share a positive capacity`);
   }
@@ -292,6 +299,7 @@ export function validateDotSamplingConfig(config: DotSamplingConfig): number {
   validateDisjointWritableViews(id, {
     count: output.dots.status.count,
     overflow: output.dots.status.overflow,
+    candidateOverflow: output.dots.status.candidateOverflow,
     requiredCount: output.dots.status.requiredCount
   });
   validateGraphOutputsDisjointFromInputs(
@@ -309,6 +317,7 @@ function getDotSamplingOutputs(config: DotSamplingConfig) {
     'output.dots.ids': output.dots.ids,
     'output.dots.status.count': output.dots.status.count,
     'output.dots.status.overflow': output.dots.status.overflow,
+    'output.dots.status.candidateOverflow': output.dots.status.candidateOverflow,
     'output.dots.status.requiredCount': output.dots.status.requiredCount,
     'output.categories': output.categories,
     'output.status.failedCount': output.status?.failedCount,
@@ -999,14 +1008,14 @@ fn getMaskWeight(point: vec2<f32>) -> f32 {
     })
   );
 
-  // 11. Count, overflow (capacity or clamped slot) and the unclamped total.
+  // 11. Retained total, final capacity overflow and separate slot-clamping diagnostics.
   nodes.push(
     createPublishNode<Parameters>(graph, {
       id: `${id}-publish`,
       operation,
       requiredCount: total,
       output: output.dots,
-      overflowSources: [clampFlag]
+      candidateOverflowSources: output.dots.status.candidateOverflow ? [clampFlag] : []
     })
   );
   return nodes;

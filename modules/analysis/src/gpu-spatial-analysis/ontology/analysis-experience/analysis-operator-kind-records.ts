@@ -691,40 +691,40 @@ export const GPU_ANALYSIS_OPERATOR_KIND_RECORDS: Readonly<
   },
   // dataframe-analysis/pair-statistics/gpu-space-time-diggle-test.ts
   GPUSpaceTimeDiggleTest: {inputs: ['points', 'time-series', 'parameters'], outputs: ['summary']},
-  // pointcloud-analysis/gpu-pointcloud-neighborhoods.ts
+  // pointcloud-analysis/operations/gpu-pointcloud-neighborhoods.ts
   GPUPointCloudNeighborhoods: {inputs: ['points', 'attributes'], outputs: ['attributes']},
-  // pointcloud-analysis/gpu-pointcloud-features.ts
+  // pointcloud-analysis/operations/gpu-pointcloud-features.ts
   GPUPointCloudFeatures: {inputs: ['points', 'attributes', 'parameters'], outputs: ['attributes']},
-  // pointcloud-analysis/gpu-pointcloud-statistical-filter.ts
+  // pointcloud-analysis/operations/gpu-pointcloud-statistical-filter.ts
   GPUPointCloudStatisticalFilter: {inputs: ['attributes', 'parameters'], outputs: ['attributes']},
-  // pointcloud-analysis/gpu-pointcloud-ground.ts
+  // pointcloud-analysis/operations/gpu-pointcloud-ground.ts
   GPUPointCloudGround: {
     inputs: ['points', 'attributes', 'parameters'],
     outputs: ['surface', 'attributes']
   },
-  // pointcloud-analysis/gpu-pointcloud-smrf.ts
+  // pointcloud-analysis/operations/gpu-pointcloud-smrf.ts
   GPUPointCloudSMRF: {
     inputs: ['points', 'attributes', 'parameters'],
     outputs: ['surface', 'attributes']
   },
-  // pointcloud-analysis/gpu-pointcloud-surfaces.ts
+  // pointcloud-analysis/operations/gpu-pointcloud-surfaces.ts
   GPUPointCloudSurfaces: {inputs: ['points', 'attributes'], outputs: ['surface']},
-  // pointcloud-analysis/gpu-pointcloud-surfaces.ts
+  // pointcloud-analysis/operations/gpu-pointcloud-height.ts
   GPUPointCloudHeight: {inputs: ['points', 'surface'], outputs: ['attributes']},
-  // pointcloud-analysis/gpu-pointcloud-icp.ts
+  // pointcloud-analysis/operations/gpu-pointcloud-icp.ts
   GPUPointCloudICP: {
     inputs: ['points', 'attributes', 'parameters'],
     outputs: ['attributes', 'summary']
   },
-  // pointcloud-analysis/gpu-pointcloud-normal-scale.ts
+  // pointcloud-analysis/operations/gpu-pointcloud-normal-scale.ts
   GPUPointCloudNormalScale: {inputs: ['points', 'parameters'], outputs: ['attributes']},
-  // pointcloud-analysis/gpu-pointcloud-change.ts
+  // pointcloud-analysis/operations/gpu-pointcloud-change.ts
   GPUPointCloudChange: {inputs: ['points', 'attributes', 'parameters'], outputs: ['attributes']},
-  // pointcloud-analysis/gpu-pointcloud-voxel-merge.ts
+  // pointcloud-analysis/operations/gpu-pointcloud-voxel-merge.ts
   GPUPointCloudVoxelMerge: {inputs: ['points', 'attributes'], outputs: ['points', 'attributes']},
-  // geospatial-analysis/gpu-datum-grid-transform.ts
+  // geospatial-analysis/datum-grid-transform/gpu-datum-grid-transform.ts
   GPUDatumGridTransform: {inputs: ['points', 'surface'], outputs: ['points', 'attributes']},
-  // geospatial-analysis/gpu-point-buffer.ts
+  // geospatial-analysis/point-buffer/gpu-point-buffer.ts
   GPUPointBuffer: {inputs: ['points', 'parameters'], outputs: ['polygons']},
 
   // gpu-spatial-analysis/spatial-autocorrelation/gpu-quantile-lisa.ts: values, weights, quantileParameters; membership, classes, pValues
@@ -851,7 +851,7 @@ export const GPU_ANALYSIS_OPERATOR_KIND_RECORDS: Readonly<
   GPUSpatialJoinPrepared: {inputs: ['points', 'lines', 'polygons'], outputs: []},
   // gpu-spatial-analysis/spatial-join/gpu-point-in-polygon-join.ts: points, polygons; pointFeatureIds, matches
   GPUPointInPolygonJoin: {inputs: ['points', 'polygons'], outputs: ['attributes', 'pairs']},
-  // gpu-spatial-analysis/spatial-join/gpu-nearest-feature-join.ts: queries, features; nearestFeatureIds, neighbor tables, matches
+  // gpu-spatial-analysis/spatial-join/gpu-nearest-feature-join.ts: queries, features; nearestFeatureIds, neighborIds plus original neighborRows, matches
   GPUNearestFeatureJoin: {
     inputs: ['points', 'lines', 'polygons'],
     outputs: ['attributes', 'pairs']
@@ -871,7 +871,7 @@ export const GPU_ANALYSIS_OPERATOR_KIND_RECORDS: Readonly<
   GPUContiguityWeights: {inputs: ['polygons'], outputs: ['spatial-weights']},
   // gpu-spatial-analysis/spatial-weights/gpu-lattice-weights.ts: width, height, criterion (generator, mask optional); spatial weights CSR
   GPULatticeWeights: {inputs: ['parameters'], outputs: ['spatial-weights']},
-  // gpu-spatial-analysis/spatial-join/gpu-nearest-feature-weights.ts: neighborIds, neighborCounts, neighborDistances; spatial weights CSR
+  // gpu-spatial-analysis/spatial-join/gpu-nearest-feature-weights.ts: neighborRows, neighborCounts, neighborDistances; spatial weights CSR
   GPUNearestFeatureWeights: {inputs: ['attributes'], outputs: ['spatial-weights']},
   // gpu-spatial-analysis/spatial-weights/gpu-spatial-weights-transform.ts: weights; transformed weights
   GPUSpatialWeightsTransform: {inputs: ['spatial-weights'], outputs: ['spatial-weights']},

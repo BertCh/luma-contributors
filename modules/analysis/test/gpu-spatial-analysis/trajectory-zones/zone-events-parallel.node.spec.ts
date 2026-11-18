@@ -89,7 +89,7 @@ it('GPUZoneEvents replaces the per-track walk with a cell sort and per-cell kern
 
 it('GPUZoneEvents parallel kernels parse, stay within 8 storage bindings and add no size-varying variants', () => {
   const nodes = getZoneEventsNodes(3, true);
-  for (const [kernelId, source] of getParsedKernelSources(nodes)) {
+  for (const {id: kernelId, source} of getParsedKernelSources(nodes).configurations) {
     expect(getStorageBindingCount(source), kernelId).toBeLessThanOrEqual(8);
   }
   // Rule 12: no kernel family appears more than once per build, so a different track count gives

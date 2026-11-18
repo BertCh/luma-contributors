@@ -21,7 +21,7 @@ import {
 import {
   getRasterGridGeoreference,
   type GPURasterCellSizeMode
-} from '../../../src/analysis-core/raster-grid';
+} from '../../../src/analysis-core/contracts/raster-grid';
 import {
   makeGPURasterBand,
   makeGPURasterMetadata
@@ -121,20 +121,38 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
   const cellCount = width * height;
   const graph = new GPUCommandGraph(device, {id: 'cost-distance-test'});
   const parameters: GPUParameterBuffer[] = [];
-  const createParameter = <Format extends 'uint32' | 'float32'>(
+  function createParameter(
     name: string,
-    format: Format,
+    format: 'uint32',
     values: number[]
-  ) => {
-    const parameter = new GPUParameterBuffer(device, {
-      id: `cd-${name}`,
-      format,
-      length: values.length,
-      values: format === 'uint32' ? Uint32Array.from(values) : Float32Array.from(values)
-    });
+  ): GPUParameterBuffer<'uint32'>;
+  function createParameter(
+    name: string,
+    format: 'float32',
+    values: number[]
+  ): GPUParameterBuffer<'float32'>;
+  function createParameter(
+    name: string,
+    format: 'uint32' | 'float32',
+    values: number[]
+  ): GPUParameterBuffer<'uint32'> | GPUParameterBuffer<'float32'> {
+    const parameter =
+      format === 'uint32'
+        ? new GPUParameterBuffer(device, {
+            id: `cd-${name}`,
+            format,
+            length: values.length,
+            values: Uint32Array.from(values)
+          })
+        : new GPUParameterBuffer(device, {
+            id: `cd-${name}`,
+            format,
+            length: values.length,
+            values: Float32Array.from(values)
+          });
     parameters.push(parameter);
     return parameter;
-  };
+  }
   const frictionBuffer = createInputBuffer(device, options.friction);
   const buffers = {
     costs: createOutputBuffer(device, cellCount),
@@ -145,7 +163,7 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
     'settings',
     'float32',
     Array.from(getGPUCostDistanceParameterValues(options.settings ?? {}, grid))
-  ) as GPUParameterBuffer<'float32'>;
+  );
   const sources = options.sources
     ? createParameter('sources', 'uint32', options.sources)
     : undefined;
@@ -160,11 +178,7 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
     ? createParameter('thresholds', 'float32', options.thresholds)
     : undefined;
   const frictionParameters = options.frictionParameters
-    ? (createParameter(
-        'friction-parameters',
-        'float32',
-        options.frictionParameters
-      ) as GPUParameterBuffer<'float32'>)
+    ? createParameter('friction-parameters', 'float32', options.frictionParameters)
     : undefined;
   const target = options.path
     ? createParameter('target', 'uint32', [options.path.target])

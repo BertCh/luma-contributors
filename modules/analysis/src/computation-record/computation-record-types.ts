@@ -6,8 +6,9 @@
  * Schema of `GPUComputationRecord`: one recorded real execution of a luma computation, drawn by
  * the computation views. Structure (graphs, axes, refs, decisions, choices) is deterministic from
  * construction and can be diffed and tested without a GPU. Measurements and readbacks live in
- * separate sidecars (`GPUComputationMetrics`, `GPUComputationCaptures`) joined by `runId`, graph
- * id and node id, so two metrics files over one structure form an A/B comparison.
+ * separate sidecars (`GPUComputationMetrics`, `GPUComputationCaptures`) joined by `runId`,
+ * `executionId`, graph id and node id. Repeated executions share deterministic comparison identity
+ * while retaining distinct execution identity.
  *
  * The schema is fork-local and carries no external compatibility promise. Fields exist only when
  * a view consumes them; see `dev-docs/upstream-first-recording.md`.
@@ -51,10 +52,16 @@ export type GPUComputationRecord = {
   /** Stable record identifier, for example a lens scenario id. */
   id: string;
   /**
-   * Run identity. Hashes the structure ids, input dataset version, seed and adapter or variant,
-   * so permalinks survive record updates or fail visibly. Sidecars join on it.
+   * Deterministic comparison/permalink identity: structure ids, dataset version, seed, adapter,
+   * parameters, choices and implementation revision. Sidecars additionally join on executionId.
    */
   runId: string;
+  /** Unique execution identity. Omitted only in legacy /1 records. */
+  executionId?: string;
+  /** Implementation revision included in runId. Omitted in legacy /1 records. */
+  implementationRevision?: string;
+  /** Per-frame parameters included in runId, supplied by the caller. */
+  parameters?: GPUComputationAttributes;
   /** ISO 8601 creation time. */
   createdAt: string;
   /** Adapter that executed the run. */
@@ -276,10 +283,16 @@ export type GPUComputationResource = {
   id: string;
   /** Resource class. */
   kind: 'buffer' | 'texture' | 'external-texture';
-  /** Logical byte size (estimated for textures). */
+  /** Logical byte size, estimate, or observed lower bound, as specified by `bytesKind`. */
   bytes: number;
-  /** `imported` resources are caller-owned; `transient` ones are graph-owned and may alias. */
-  ownership: 'imported' | 'transient';
+  /**
+   * `logical` comes from a buffer handle; `lower-bound` is the largest observed range end;
+   * `estimated` describes a texture. `unavailable` means bytes is a zero placeholder for opaque
+   * storage, not a measured zero. Omitted in legacy /1 records whose size precision is unknown.
+   */
+  bytesKind?: 'logical' | 'lower-bound' | 'estimated' | 'unavailable';
+  /** Caller-owned (`imported`), graph-owned (`transient`), or unobserved (`unknown`). */
+  ownership: 'imported' | 'transient' | 'unknown';
   /**
    * Physical allocation id shared by aliased transients, such as `transient-buffer-0`.
    * Omitted for imported resources.
@@ -561,12 +574,14 @@ export type GPUComputationNodeMetrics = {
   counters?: Readonly<Record<string, number>>;
 };
 
-/** Measurement sidecar of one graph in one run, keyed by `runId`, `graph` and node id. */
+/** Measurement sidecar of one graph in one execution, keyed by run/execution ids, graph and node. */
 export type GPUComputationMetrics = {
   /** Schema identifier, always {@link GPU_COMPUTATION_METRICS_SCHEMA}. */
   schema: typeof GPU_COMPUTATION_METRICS_SCHEMA;
   /** Run this sidecar measures. */
   runId: string;
+  /** Must match the record's executionId; omitted only when both use legacy /1 identity. */
+  executionId?: string;
   /** Measured graph id (normally the compiled form). */
   graph: string;
   /** Unit of `gpuBegin` and `gpuEnd`. */
@@ -649,8 +664,15 @@ export type GPUComputationCaptureGeometry =
       coordinateModel: 'geographic' | 'projected' | 'unknown';
       /** Capture id or name holding path start offsets, for lines and polygons. */
       offsetsCapture?: string;
+      /**
+       * Key space of path/polygon rows, distinct from the coordinate capture's vertex keys.
+       * Omitted: feature picking and linked selection are unavailable.
+       */
+      featureKeySpace?: string;
       /** Capture id or name holding one value per feature, coloured on the run's scale. */
       valuesCapture?: string;
+      /** For points, capture id or name of the scalar active count; rows at or beyond it are inactive. */
+      countCapture?: string;
       /** Unit of projected coordinates, such as `m`. */
       unit?: string;
     }
@@ -692,6 +714,8 @@ export type GPUComputationCaptures = {
   schema: typeof GPU_COMPUTATION_CAPTURES_SCHEMA;
   /** Run these captures belong to. */
   runId: string;
+  /** Must match the record's executionId; omitted only when both use legacy /1 identity. */
+  executionId?: string;
   /** Resource copies taken at publication points, steps or taps. */
   snapshots: readonly GPUComputationCapture[];
   /** Per-datum stamps such as settle round, FDR rank or last-improved round. */

@@ -13,6 +13,44 @@ import {getGPUTrajectoryThinningParameterValues} from '../../../src/gpu-spatial-
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 
+it('both thinning forms honor a one-row forward search budget', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const Operation of [GPUTrajectoryThinningOperation, CPUTrajectoryThinningOperation]) {
+    const result = await runOperationGraph(device, {
+      inputs: {
+        positions: {format: 'float32x2', values: new Float32Array(8)},
+        timestamps: {format: 'float32', values: Float32Array.of(0, 1, 2, 3)},
+        offsets: {format: 'uint32', values: Uint32Array.of(0, 4)},
+        parameters: {format: 'float32', values: Float32Array.of(10, 0, 0, 0)}
+      },
+      operations: [
+        new Operation({
+          positions: 'positions',
+          timestamps: 'timestamps',
+          trackOffsets: 'offsets',
+          parameters: 'parameters',
+          rowCount: 4,
+          trackCount: 1,
+          capacity: 4,
+          mode: 'minimum-time',
+          maximumSearchRows: 1,
+          output: {
+            rowIds: 'rows',
+            trackOffsets: 'outputOffsets',
+            status: {count: 'count', overflow: 'overflow', candidateOverflow: 'candidate'}
+          }
+        })
+      ],
+      outputs: ['rows', 'count', 'candidate', 'overflow']
+    });
+    expect(Array.from(result['rows']).slice(0, 3)).toEqual([0, 2, 3]);
+    expect(Array.from(result['count'])).toEqual([3]);
+    expect(Array.from(result['candidate'])).toEqual([1]);
+    expect(Array.from(result['overflow'])).toEqual([0]);
+  }
+});
+
 it('thinning compares spherical dateline and quarter-circle tracks exactly', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

@@ -2,9 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GraphDataView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GraphDataView, GPUCommandGraph, GPUCommandNode} from '@luma.gl/graph/gpu-core';
+import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {GPUKMeans} from '@luma.gl/graph/gpu-vector-search';
-import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  captureGraphCommandNodes,
+  validateCapacity
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createRasterEmbeddingMatrix,
   validateRasterEmbeddingShape,
@@ -53,9 +57,10 @@ export type GPURasterEmbeddingKMeansProps = {
  * Per-frame: the contents of the views. Compile-time: `pixelCount`, `dimensions`, `clusterCount`,
  * `maximumIterations` and which optional views exist.
  */
-export class GPURasterEmbeddingKMeans {
+export class GPURasterEmbeddingKMeans implements GPUCommandNodeProducer {
   readonly id: string;
   private readonly clustering: GPUKMeans;
+  private readonly commandNodes = new WeakMap<object, readonly GPUCommandNode[]>();
 
   constructor(readonly props: GPURasterEmbeddingKMeansProps) {
     const id = props.id ?? 'raster-embedding-kmeans';
@@ -90,8 +95,16 @@ export class GPURasterEmbeddingKMeans {
     });
   }
 
-  /** Adds the published k-means passes. */
-  addToGraph<Parameters>(graph: GPUCommandGraph<Parameters>): void {
-    this.clustering.addToGraph(graph);
+  /** Returns the published k-means passes without scheduling them. */
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    const cached = this.commandNodes.get(graph);
+    if (cached) return cached as readonly GPUCommandNode<Parameters>[];
+    const nodes = Object.freeze(
+      captureGraphCommandNodes(graph, () => this.clustering.addToGraph(graph))
+    );
+    this.commandNodes.set(graph, nodes as readonly GPUCommandNode[]);
+    return nodes;
   }
 }

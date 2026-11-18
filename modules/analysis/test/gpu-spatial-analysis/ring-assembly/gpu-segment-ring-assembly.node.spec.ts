@@ -51,6 +51,31 @@ it('GPUSegmentRingAssembly declares hash, sort, tracing, scan, placement and rin
   expect(fewer.length).toBeLessThan(nodes.length);
 });
 
+it('snapshots ring options, context and nested output maps before graph declaration', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const props = createProps(graph, {
+      splitTouchingRings: false,
+      spatialContext: {coordinateSpace: 'planar', metric: 'native'}
+    });
+    const producer = new GPUSegmentRingAssembly(props);
+    const outputCount = props.output.status.count;
+    const positions = props.output.positions;
+    props.splitTouchingRings = true;
+    props.spatialContext!.coordinateSpace = 'longitude-latitude';
+    props.output.positions = createTransientView(graph, 'replacement-positions', 'float32x2', 0);
+    props.output.status.count = createTransientView(graph, 'replacement-count', 'uint32', 0);
+    expect(producer.props.splitTouchingRings).toBe(false);
+    expect(producer.spatialContext.coordinateSpace).toBe('planar');
+    expect(producer.props.output.positions).toBe(positions);
+    expect(producer.props.output.status.count).toBe(outputCount);
+    expect(producer.getCommandNodes(graph).length).toBeGreaterThan(0);
+  } finally {
+    device.destroy();
+  }
+});
+
 it('GPUSegmentRingAssembly validates its properties', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'ring-validate'});
   const view = <Format extends 'uint32' | 'float32' | 'float32x2'>(

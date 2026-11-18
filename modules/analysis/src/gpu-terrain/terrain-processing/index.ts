@@ -3,7 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 export * from './gpu-terrain-breach';
-export * from './gpu-terrain-branching-flow';
+export {
+  GPUTerrainBranchingFlow,
+  TERRAIN_BRANCHING_MAXIMUM_WALK_LENGTH
+} from './gpu-terrain-branching-flow';
+export type {GPUTerrainBranchingFlowProps} from './gpu-terrain-branching-flow';
 export * from './gpu-terrain-depression-hierarchy';
 export * from './gpu-terrain-catchment-summary';
 export * from './gpu-terrain-dem-coregistration';

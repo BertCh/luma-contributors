@@ -11,11 +11,13 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCompactOutput} from '../../analysis-core/kernels/gpu-contributor-types';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   validateCapacity,
   validateCompactOutput,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
+  validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -51,11 +53,14 @@ export type GPUPairGatherColumn = {
  * flattened to one pair row per filled slot (GeoPandas `sjoin_nearest`).
  */
 export type GPUPairGatherNeighbors = {
-  /** Neighbor feature row at `query * capacity + slot`, or `GPU_SPATIAL_JOIN_NO_FEATURE`. */
-  ids: GraphDataView<'uint32'>;
+  /**
+   * Neighbor feature row at `query * capacity + slot`, or `GPU_SPATIAL_JOIN_NO_FEATURE`.
+   * Use nearest join's `neighborRows`, never its application-valued `neighborIds`.
+   */
+  rows: GraphDataView<'uint32'>;
   /** Number of filled slots per query. Its length is the query (left row) count. */
   counts: GraphDataView<'uint32'>;
-  /** Slots per query: `ids.length` is `counts.length * capacity`. */
+  /** Slots per query: `rows.length` is `counts.length * capacity`. */
   capacity: number;
 };
 
@@ -69,8 +74,10 @@ export type GPUPairGatherOutput = {
   rowCount: GraphDataView<'uint32'>;
   /** Completeness and diagnostic scalars. */
   status: {
-    /** One-row scalar receiving `1` when any capacity (including the inputs') overflowed, otherwise `0`. */
+    /** One-row scalar receiving `1` when final output capacity (including the inputs') was too small. */
     overflow: GraphDataView<'uint32'>;
+    /** Candidate loss inherited from inputs; required when any supplied input carries candidateOverflow. */
+    candidateOverflow?: GraphDataView<'uint32'>;
     /** Optional one-row scalar receiving the matched pair count that fed the output. */
     matchedCount?: GraphDataView<'uint32'>;
   };
@@ -101,13 +108,15 @@ export type GPUPairGatherProps = {
   /** Right attribute columns, gathered by `rightRows`; unmatched left rows get NaN or `0xffffffff`. */
   rightColumns?: readonly GPUPairGatherColumn[];
   /**
-   * Columns aligned with the input pair slots (`pairs.leftIds` rows, or `ids` rows for
+   * Columns aligned with the input pair slots (`pairs.leftRows` rows, or `rows` slots for
    * `neighbors`) and carried to the output pair rows, for example `neighborDistances`
    * (`sjoin_nearest(distance_col=...)`) or join weights. Unmatched rows get NaN or `0xffffffff`.
    */
   slotColumns?: readonly GPUPairGatherColumn[];
-  /** Extra one-row flags ORed into `output.status.overflow`, for example a nearest join's `overflow`. */
+  /** Extra final-output capacity flags ORed into `output.status.overflow`. */
   overflowSources?: readonly GraphDataView<'uint32'>[];
+  /** Extra intermediate-loss flags propagated separately from final-output overflow. */
+  candidateOverflowSources?: readonly GraphDataView<'uint32'>[];
   /** Caller-owned bounded row outputs. */
   output: GPUPairGatherOutput;
 };
@@ -137,10 +146,120 @@ export class GPUPairGather implements GPUCommandNodeProducer {
   readonly how: GPUPairGatherHow;
 
   constructor(props: GPUPairGatherProps) {
-    this.id = props.id ?? 'pair-gather';
+    // Capture compile-time maps and scalar options; retain view identities for per-frame writes.
+    props = snapshotConstructionFields(props, [
+      'id',
+      'how',
+      'pairs',
+      'neighbors',
+      'unmatchedLeft',
+      'leftColumns',
+      'rightColumns',
+      'slotColumns',
+      'overflowSources',
+      'candidateOverflowSources',
+      'output'
+    ]);
+    const id = props.id ?? 'pair-gather';
+    validateRequirement(
+      id,
+      !props.pairs || (!('leftIds' in props.pairs) && !('rightIds' in props.pairs)),
+      'pairs.leftRows and pairs.rightRows are required; leftIds and rightIds are unsupported application-ID names'
+    );
+    validateRequirement(
+      id,
+      !props.neighbors || !('ids' in props.neighbors),
+      'neighbors.rows is required and neighbors.ids is unsupported; supply feature rows, not application IDs'
+    );
+    const pairs =
+      props.pairs && snapshotConstructionFields(props.pairs, ['leftRows', 'rightRows', 'status']);
+    const unmatchedLeft =
+      props.unmatchedLeft && snapshotConstructionFields(props.unmatchedLeft, ['ids', 'status']);
+    const outputMap = snapshotConstructionFields(props.output, [
+      'leftRows',
+      'rightRows',
+      'rowCount',
+      'status'
+    ]);
+    props = Object.freeze({
+      ...props,
+      ...(props.neighbors
+        ? {
+            neighbors: snapshotConstructionFields(props.neighbors, ['rows', 'counts', 'capacity'])
+          }
+        : {}),
+      ...(pairs
+        ? {
+            pairs: Object.freeze({
+              ...pairs,
+              status: snapshotConstructionFields(pairs.status, [
+                'count',
+                'overflow',
+                'requiredCount',
+                'candidateOverflow'
+              ])
+            })
+          }
+        : {}),
+      ...(unmatchedLeft
+        ? {
+            unmatchedLeft: Object.freeze({
+              ...unmatchedLeft,
+              status: snapshotConstructionFields(unmatchedLeft.status, [
+                'count',
+                'overflow',
+                'requiredCount',
+                'candidateOverflow'
+              ])
+            })
+          }
+        : {}),
+      ...(props.leftColumns
+        ? {
+            leftColumns: Object.freeze(
+              props.leftColumns.map(column =>
+                snapshotConstructionFields(column, ['source', 'output'])
+              )
+            )
+          }
+        : {}),
+      ...(props.rightColumns
+        ? {
+            rightColumns: Object.freeze(
+              props.rightColumns.map(column =>
+                snapshotConstructionFields(column, ['source', 'output'])
+              )
+            )
+          }
+        : {}),
+      ...(props.slotColumns
+        ? {
+            slotColumns: Object.freeze(
+              props.slotColumns.map(column =>
+                snapshotConstructionFields(column, ['source', 'output'])
+              )
+            )
+          }
+        : {}),
+      ...(props.overflowSources
+        ? {overflowSources: Object.freeze([...props.overflowSources])}
+        : {}),
+      ...(props.candidateOverflowSources
+        ? {candidateOverflowSources: Object.freeze([...props.candidateOverflowSources])}
+        : {}),
+      output: Object.freeze({
+        ...outputMap,
+        status: snapshotConstructionFields(outputMap.status, [
+          'overflow',
+          'candidateOverflow',
+          'matchedCount'
+        ])
+      })
+    });
+    this.id = id;
     this.props = props;
     this.how = props.how ?? 'inner';
-    const {id, how} = this;
+    const {how} = this;
     const {output} = props;
     if (how !== 'inner' && how !== 'left') {
       throw new Error(`${id} how must be 'inner' or 'left'`);
@@ -161,6 +280,7 @@ export class GPUPairGather implements GPUCommandNodeProducer {
       ['rightRows', output.rightRows],
       ['rowCount', output.rowCount],
       ['status.overflow', output.status.overflow],
+      ['status.candidateOverflow', output.status.candidateOverflow],
       ['status.matchedCount', output.status.matchedCount]
     ] as const) {
       if (view) {
@@ -177,6 +297,7 @@ export class GPUPairGather implements GPUCommandNodeProducer {
     for (const [name, view] of [
       ['rowCount', output.rowCount],
       ['status.overflow', output.status.overflow],
+      ['status.candidateOverflow', output.status.candidateOverflow],
       ['status.matchedCount', output.status.matchedCount]
     ] as const) {
       if (view && view.length < 1) {
@@ -187,23 +308,28 @@ export class GPUPairGather implements GPUCommandNodeProducer {
     if (props.pairs) {
       const {pairs} = props;
       validateGPUCompactPairPort(id, pairs);
-      validateSinglePackedView(pairs.leftIds, ['uint32'], `${id} pairs.leftIds`);
-      validateSinglePackedView(pairs.rightIds, ['uint32'], `${id} pairs.rightIds`);
+      validateSinglePackedView(pairs.leftRows, ['uint32'], `${id} pairs.leftRows`);
+      validateSinglePackedView(pairs.rightRows, ['uint32'], `${id} pairs.rightRows`);
       validateSinglePackedView(pairs.status.count, ['uint32'], `${id} pairs.count`);
       validateSinglePackedView(pairs.status.overflow, ['uint32'], `${id} pairs.overflow`);
-      if (pairs.rightIds.length !== pairs.leftIds.length) {
-        throw new Error(`${id} pairs.rightIds length must equal pairs.leftIds length`);
+      if (pairs.rightRows.length !== pairs.leftRows.length) {
+        throw new Error(`${id} pairs.rightRows length must equal pairs.leftRows length`);
       }
-      slotCount = pairs.leftIds.length;
+      slotCount = pairs.leftRows.length;
     } else {
       const {neighbors} = props;
-      validateSinglePackedView(neighbors!.ids, ['uint32'], `${id} neighbors.ids`);
+      validateRequirement(
+        id,
+        Boolean(neighbors?.rows) && !('ids' in neighbors!),
+        'neighbors.rows is required and neighbors.ids is unsupported; supply feature rows, not application IDs'
+      );
+      validateSinglePackedView(neighbors!.rows, ['uint32'], `${id} neighbors.rows`);
       validateSinglePackedView(neighbors!.counts, ['uint32'], `${id} neighbors.counts`);
       validateCapacity(id, 'neighbors.capacity', neighbors!.capacity);
-      if (neighbors!.ids.length !== neighbors!.counts.length * neighbors!.capacity) {
-        throw new Error(`${id} neighbors.ids length must equal counts length * capacity`);
+      if (neighbors!.rows.length !== neighbors!.counts.length * neighbors!.capacity) {
+        throw new Error(`${id} neighbors.rows length must equal counts length * capacity`);
       }
-      slotCount = neighbors!.ids.length;
+      slotCount = neighbors!.rows.length;
     }
     if (slotCount < 1) {
       throw new Error(`${id} needs at least one pair slot`);
@@ -241,6 +367,20 @@ export class GPUPairGather implements GPUCommandNodeProducer {
     for (const flag of props.overflowSources ?? []) {
       validateSinglePackedView(flag, ['uint32'], `${id} overflowSources`);
     }
+    const candidateFlags = this._getCandidateFlags();
+    validateRequirement(
+      id,
+      candidateFlags.length === 0 || Boolean(output.status.candidateOverflow),
+      'output.status.candidateOverflow is required when inputs supply candidate overflow'
+    );
+    for (const flag of candidateFlags) {
+      validateSinglePackedView(flag, ['uint32'], `${id} candidateOverflowSources`);
+      validateRequirement(
+        id,
+        flag.length >= 1,
+        'candidateOverflowSources must contain one uint32 row'
+      );
+    }
     validateGraphOutputsDisjointFromInputs(id, this._getOutputViews(), this._getInputViews());
     validateGeographicDistributionViews(
       id,
@@ -277,6 +417,7 @@ export class GPUPairGather implements GPUCommandNodeProducer {
       output.rightRows,
       output.rowCount,
       output.status.overflow,
+      ...(output.status.candidateOverflow ? [output.status.candidateOverflow] : []),
       ...(output.status.matchedCount ? [output.status.matchedCount] : []),
       ...[
         ...(this.props.leftColumns ?? []),
@@ -291,12 +432,12 @@ export class GPUPairGather implements GPUCommandNodeProducer {
     return [
       ...(props.pairs
         ? [
-            props.pairs.leftIds,
-            props.pairs.rightIds,
+            props.pairs.leftRows,
+            props.pairs.rightRows,
             props.pairs.status.count,
             props.pairs.status.overflow
           ]
-        : [props.neighbors!.ids, props.neighbors!.counts]),
+        : [props.neighbors!.rows, props.neighbors!.counts]),
       ...(props.unmatchedLeft
         ? [
             props.unmatchedLeft.ids,
@@ -305,11 +446,23 @@ export class GPUPairGather implements GPUCommandNodeProducer {
           ]
         : []),
       ...(props.overflowSources ?? []),
+      ...this._getCandidateFlags(),
       ...[
         ...(props.leftColumns ?? []),
         ...(props.rightColumns ?? []),
         ...(props.slotColumns ?? [])
       ].map(column => column.source as GraphDataView)
+    ];
+  }
+
+  private _getCandidateFlags(): GraphDataView<'uint32'>[] {
+    const {props} = this;
+    return [
+      ...(props.pairs?.status.candidateOverflow ? [props.pairs.status.candidateOverflow] : []),
+      ...(props.unmatchedLeft?.status.candidateOverflow
+        ? [props.unmatchedLeft.status.candidateOverflow]
+        : []),
+      ...(props.candidateOverflowSources ?? [])
     ];
   }
 
@@ -332,7 +485,7 @@ export class GPUPairGather implements GPUCommandNodeProducer {
     // Visibility creates scalar masks/identity/compaction offsets. Scan summaries shrink from
     // those planes. No nested allocation exceeds the larger neighbor-slot/query plane.
     const scratchRows = props.neighbors
-      ? Math.max(props.neighbors.ids.length, props.neighbors.counts.length)
+      ? Math.max(props.neighbors.rows.length, props.neighbors.counts.length)
       : 1;
     validateGPUStorageBindingByteLength(
       graph.device,
@@ -353,7 +506,7 @@ export class GPUPairGather implements GPUCommandNodeProducer {
     let matched: GraphDataView<'uint32'>;
     const neighbors = props.neighbors;
     if (neighbors) {
-      const slotCount = neighbors.ids.length;
+      const slotCount = neighbors.rows.length;
       const slotMask = createTransientView(graph, `${id}-slot-mask`, 'uint32', slotCount);
       slotIds = createTransientView(graph, `${id}-slot-ids`, 'uint32', slotCount);
       matched = createTransientView(graph, `${id}-matched`, 'uint32', 1);
@@ -363,7 +516,7 @@ export class GPUPairGather implements GPUCommandNodeProducer {
           operation: OPERATION,
           variant: 'neighbors',
           bindings: [
-            {name: 'neighborIds', view: neighbors.ids, type: 'u32', access: 'read'},
+            {name: 'neighborRows', view: neighbors.rows, type: 'u32', access: 'read'},
             {name: 'neighborCounts', view: neighbors.counts, type: 'u32', access: 'read'},
             {name: 'maskOut', view: slotMask, type: 'u32', access: 'read_write'}
           ],
@@ -373,7 +526,7 @@ const NO_FEATURE: u32 = ${NO_FEATURE}u;`,
           body: `let query = index / CAPACITY;
   let slot = index % CAPACITY;
   let filled = slot < neighborCounts[neighborCountsOffset + query] &&
-    neighborIds[neighborIdsOffset + index] != NO_FEATURE;
+    neighborRows[neighborRowsOffset + index] != NO_FEATURE;
   maskOut[maskOutOffset + index] = select(0u, 1u, filled);`
         }),
         ...new GPUVisibilityWorkflow({
@@ -436,14 +589,14 @@ const NO_FEATURE: u32 = ${NO_FEATURE}u;`,
       rowBindings.push({name: 'slotIds', view: slotIds, type: 'u32', access: 'read'});
     }
     if (neighbors) {
-      rowBindings.push({name: 'neighborIds', view: neighbors.ids, type: 'u32', access: 'read'});
+      rowBindings.push({name: 'neighborRows', view: neighbors.rows, type: 'u32', access: 'read'});
       pairLookup = `let slot = slotIds[slotIdsOffset + index];
     left = slot / ${neighbors.capacity}u;
-    right = neighborIds[neighborIdsOffset + slot];`;
+    right = neighborRows[neighborRowsOffset + slot];`;
     } else {
       rowBindings.push(
-        {name: 'pairLeft', view: props.pairs!.leftIds, type: 'u32', access: 'read'},
-        {name: 'pairRight', view: props.pairs!.rightIds, type: 'u32', access: 'read'}
+        {name: 'pairLeft', view: props.pairs!.leftRows, type: 'u32', access: 'read'},
+        {name: 'pairRight', view: props.pairs!.rightRows, type: 'u32', access: 'read'}
       );
       pairLookup = `left = pairLeft[pairLeftOffset + index];
     right = pairRight[pairRightOffset + index];`;
@@ -626,6 +779,43 @@ const FILL: u32 = ${column.source.format === 'float32' ? '0x7fc00000u' : '0xffff
   ${output.status.matchedCount ? 'matchedOut[matchedOutOffset] = matched;' : ''}`
       })
     );
+    // Candidate loss cannot be recovered by growing the gathered row capacity. Publish it
+    // separately, seven inputs per pass so each pass stays within eight storage bindings.
+    if (output.status.candidateOverflow) {
+      const candidateFlags = this._getCandidateFlags();
+      for (let start = 0; start < Math.max(candidateFlags.length, 1); start += 7) {
+        const group = candidateFlags.slice(start, start + 7);
+        const expression =
+          group
+            .map((_, flagIndex) => `candidateIn${flagIndex}[candidateIn${flagIndex}Offset] != 0u`)
+            .join(' || ') || 'false';
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-candidate-overflow-${start / 7}`,
+            operation: OPERATION,
+            variant: 'candidate-overflow',
+            bindings: [
+              ...group.map(
+                (flag, flagIndex): WGSLKernelBinding => ({
+                  name: `candidateIn${flagIndex}`,
+                  view: flag,
+                  type: 'u32',
+                  access: 'read'
+                })
+              ),
+              {
+                name: 'candidateOverflowOut',
+                view: output.status.candidateOverflow,
+                type: 'u32',
+                access: 'read_write'
+              }
+            ],
+            invocationCount: 1,
+            body: `candidateOverflowOut[candidateOverflowOutOffset] = ${start === 0 ? '' : 'candidateOverflowOut[candidateOverflowOutOffset] | '}select(0u, 1u, ${expression});`
+          })
+        );
+      }
+    }
     return nodes;
   }
 }

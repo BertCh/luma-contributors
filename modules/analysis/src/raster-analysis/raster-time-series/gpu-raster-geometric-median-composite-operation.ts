@@ -4,6 +4,7 @@
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPURasterGeometricMedianComposite} from './gpu-raster-geometric-median-composite';
+import {getGPURasterGeometricMedianCompositeOutputLayout} from './raster-geometric-median-output-layout';
 
 /** Graph value names replacing views, with the contributor's fixed-count recursion settings. */
 export type RasterGeometricMedianCompositeOperationProps = {
@@ -24,6 +25,11 @@ export class GPURasterGeometricMedianCompositeOperation extends GPUContributorOp
   constructor(props: RasterGeometricMedianCompositeOperationProps) {
     const id = props.id ?? 'raster-geometric-median-composite';
     const lastStep = props.output.lastStep;
+    const outputLayout = getGPURasterGeometricMedianCompositeOutputLayout({
+      ...props,
+      id,
+      lastStep: lastStep !== undefined
+    });
     super({
       id,
       inputs: {
@@ -34,12 +40,11 @@ export class GPURasterGeometricMedianCompositeOperation extends GPUContributorOp
       outputs: {
         composite: {
           value: props.output.composite,
-          format: 'float32',
-          length: props.cellCount * props.bandCount
+          ...outputLayout.composite
         },
-        status: {value: props.output.status, format: 'uint32', length: props.cellCount},
-        ...(lastStep !== undefined
-          ? {lastStep: {value: lastStep, format: 'float32' as const, length: props.cellCount}}
+        status: {value: props.output.status, ...outputLayout.status},
+        ...(lastStep !== undefined && outputLayout.lastStep
+          ? {lastStep: {value: lastStep, ...outputLayout.lastStep}}
           : {})
       },
       createContributor: getView =>

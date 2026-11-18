@@ -19,11 +19,18 @@ import {
   type CPURasterOperationBand
 } from '../raster-grid/raster-operation-band';
 import type {RasterFractionalZonalStatisticsOperationProps} from './gpu-raster-fractional-zonal-statistics-operation';
+import {validateRasterCellSizeMode} from '../../analysis-core/contracts/raster-grid';
+import {validateRasterGridAxisAligned} from '../raster-band-utils';
+import {
+  getRasterRowAreaScale,
+  isRasterEffectiveAxisAligned
+} from '../raster-grid/raster-cell-area-scale';
 
 /** Packed inputs of the fractional aggregate. Coverage status is borrowed, never changed. */
 export type CPURasterFractionalZonalStatisticsInput = {
   input: CPURasterOperationBand;
   parameters?: Float32Array;
+  cellAreas?: Float32Array;
   coverage: {
     zoneIds: Uint32Array;
     cellIds: Uint32Array;
@@ -32,12 +39,13 @@ export type CPURasterFractionalZonalStatisticsInput = {
     count: Uint32Array;
     requiredCount: Uint32Array;
     overflow: Uint32Array;
+    candidateOverflow?: Uint32Array;
   };
 };
 
 export type CPURasterFractionalZonalStatisticsOptions = Pick<
   RasterFractionalZonalStatisticsOperationProps,
-  'grid' | 'zoneCount' | 'quantity'
+  'grid' | 'zoneCount' | 'quantity' | 'cellSizeMode'
 >;
 export type CPURasterFractionalZonalStatisticsResult = {
   totals: Float32Array;
@@ -49,8 +57,8 @@ export type CPURasterFractionalZonalStatisticsResult = {
 
 /**
  * Aggregates all zones in one tuple pass, preserving the contributor's count clamp, ignored
- * out-of-range IDs and completeness rule (overflow == 0 and zoneValidity != 0). requiredCount
- * is a graph input but does not affect this contributor's result. Fractions are used as supplied,
+ * out-of-range IDs and completeness rule (matching in-capacity counts, overflow and optional
+ * candidateOverflow zero, zoneValidity nonzero). Fractions are used as supplied,
  * including negative and nonfinite fractions; they are not silently sanitized. Coverage cellIds
  * and fractions may have surplus rows beyond zoneIds.length, zoneValidity beyond zoneCount,
  * and scalar coverage statuses beyond their first row; these tails are ignored as on the GPU.
@@ -71,8 +79,17 @@ export function computeRasterFractionalZonalStatisticsOnCPU(
 ): CPURasterFractionalZonalStatisticsResult {
   const id = 'computeRasterFractionalZonalStatisticsOnCPU';
   validateRasterOperationBand(id, input.input, options.grid);
-  validateStatisticsOptions(id, options);
+  validateStatisticsOptions(id, options, input.cellAreas !== undefined);
+  if (input.cellAreas && input.cellAreas.length !== options.grid.width * options.grid.height)
+    throw new Error(`${id} cellAreas must contain grid.width * grid.height rows`);
   const {coverage, parameters} = input;
+  const effectiveAligned = isRasterEffectiveAxisAligned(
+    options.grid,
+    options.cellSizeMode ?? 'uniform',
+    parameters
+  );
+  if (coverage.candidateOverflow && coverage.candidateOverflow.length < 1)
+    throw new Error(`${id} coverage.candidateOverflow must have at least one row`);
   if (
     coverage.cellIds.length < coverage.zoneIds.length ||
     coverage.fractions.length < coverage.zoneIds.length
@@ -100,18 +117,34 @@ export function computeRasterFractionalZonalStatisticsOnCPU(
   const weighted = new Float64Array(options.zoneCount);
   const covered = new Float64Array(options.zoneCount);
   const observed = new Float64Array(options.zoneCount);
+  const observedFractions = new Float64Array(options.zoneCount);
   const totals = new Float64Array(options.zoneCount);
   for (let tuple = 0; tuple < Math.min(coverage.count[0], coverage.zoneIds.length); tuple++) {
     const zone = coverage.zoneIds[tuple];
     const cell = coverage.cellIds[tuple];
     if (zone >= options.zoneCount || cell >= values.length) continue;
     const fraction = coverage.fractions[tuple];
-    covered[zone] += fraction;
+    const area =
+      input.cellAreas?.[cell] ??
+      cellArea *
+        getRasterRowAreaScale(
+          options.grid,
+          options.cellSizeMode ?? 'uniform',
+          Math.floor(cell / options.grid.width),
+          parameters
+        );
+    if (input.cellAreas && !(Number.isFinite(area) && area > 0)) {
+      covered[zone] = NaN;
+      observed[zone] = NaN;
+      continue;
+    }
+    covered[zone] += fraction * area;
     if (Number.isFinite(values[cell])) {
       const value = values[cell];
       weighted[zone] += value * fraction;
-      totals[zone] += value * fraction * (options.quantity === 'extensive' ? 1 : cellArea);
-      observed[zone] += fraction;
+      totals[zone] += value * fraction * (options.quantity === 'extensive' ? 1 : area);
+      observed[zone] += fraction * area;
+      observedFractions[zone] += fraction;
     }
   }
   const result: CPURasterFractionalZonalStatisticsResult = {
@@ -122,16 +155,29 @@ export function computeRasterFractionalZonalStatisticsOnCPU(
     validity: new Uint32Array(options.zoneCount)
   };
   for (let zone = 0; zone < options.zoneCount; zone++) {
-    const complete = coverage.overflow[0] === 0 && coverage.zoneValidity[zone] !== 0;
-    const area = observed[zone] * cellArea;
+    const complete =
+      coverage.overflow[0] === 0 &&
+      (coverage.candidateOverflow?.[0] ?? 0) === 0 &&
+      coverage.count[0] <= coverage.zoneIds.length &&
+      coverage.requiredCount[0] === coverage.count[0] &&
+      coverage.zoneValidity[zone] !== 0 &&
+      effectiveAligned;
+    const area = observed[zone];
+    const mean = observedFractions[zone] > 0 ? weighted[zone] / observedFractions[zone] : NaN;
+    if (
+      !Number.isFinite(Math.fround(covered[zone])) ||
+      !Number.isFinite(Math.fround(area)) ||
+      (area > 0 &&
+        (!Number.isFinite(Math.fround(totals[zone])) || !Number.isFinite(Math.fround(mean))))
+    )
+      continue;
     if (complete) {
-      result.coveredArea[zone] = covered[zone] * cellArea;
+      result.coveredArea[zone] = covered[zone];
       result.validArea[zone] = area;
       if (area > 0) {
         result.validity[zone] = 1;
         result.totals[zone] = totals[zone];
-        result.means[zone] =
-          observed[zone] > 0 ? weighted[zone] / Math.max(observed[zone], 1e-30) : NaN;
+        result.means[zone] = mean;
       }
     }
   }
@@ -140,8 +186,16 @@ export function computeRasterFractionalZonalStatisticsOnCPU(
 
 function validateStatisticsOptions(
   id: string,
-  options: CPURasterFractionalZonalStatisticsOptions
+  options: CPURasterFractionalZonalStatisticsOptions,
+  hasCellAreas: boolean
 ): void {
+  validateRasterCellSizeMode(id, options.cellSizeMode);
+  validateRasterGridAxisAligned(id, options.grid, options.cellSizeMode);
+  validateRequirement(
+    id,
+    !hasCellAreas || (options.cellSizeMode ?? 'uniform') === 'uniform',
+    'cellSizeMode must be uniform when cellAreas is given (cellAreas already declares the areas)'
+  );
   validateCapacity(id, 'zoneCount', options.zoneCount);
   validateRequirement(
     id,
@@ -155,7 +209,7 @@ export class CPURasterFractionalZonalStatisticsOperation extends GPUCPUOperation
   constructor(props: RasterFractionalZonalStatisticsOperationProps) {
     const id = props.id ?? 'fractional-zonal-statistics';
     validateRasterOperationBand(id, props.input, props.grid);
-    validateStatisticsOptions(id, props);
+    validateStatisticsOptions(id, props, props.cellAreas !== undefined);
     const inputs = {
       values: props.input.storage.values,
       ...(props.input.validity !== undefined ? {inputValidity: props.input.validity} : {}),
@@ -166,7 +220,11 @@ export class CPURasterFractionalZonalStatisticsOperation extends GPUCPUOperation
       count: props.coverage.status.count,
       requiredCount: props.coverage.status.requiredCount,
       overflow: props.coverage.status.overflow,
-      ...(props.parameters !== undefined ? {parameters: props.parameters} : {})
+      ...(props.coverage.status.candidateOverflow !== undefined
+        ? {candidateOverflow: props.coverage.status.candidateOverflow}
+        : {}),
+      ...(props.parameters !== undefined ? {parameters: props.parameters} : {}),
+      ...(props.cellAreas !== undefined ? {cellAreas: props.cellAreas} : {})
     };
     super({
       id,
@@ -189,6 +247,10 @@ export class CPURasterFractionalZonalStatisticsOperation extends GPUCPUOperation
               props.parameters !== undefined
                 ? getCPUOperationFloat32Rows(id, rows, 'parameters')
                 : undefined,
+            cellAreas:
+              props.cellAreas !== undefined
+                ? getCPUOperationFloat32Rows(id, rows, 'cellAreas')
+                : undefined,
             coverage: {
               zoneIds: getCPUOperationUint32Rows(id, rows, 'zoneIds'),
               cellIds: getCPUOperationUint32Rows(id, rows, 'cellIds'),
@@ -196,7 +258,11 @@ export class CPURasterFractionalZonalStatisticsOperation extends GPUCPUOperation
               zoneValidity: getCPUOperationUint32Rows(id, rows, 'zoneValidity'),
               count: getCPUOperationUint32Rows(id, rows, 'count'),
               requiredCount: getCPUOperationUint32Rows(id, rows, 'requiredCount'),
-              overflow: getCPUOperationUint32Rows(id, rows, 'overflow')
+              overflow: getCPUOperationUint32Rows(id, rows, 'overflow'),
+              candidateOverflow:
+                props.coverage.status.candidateOverflow !== undefined
+                  ? getCPUOperationUint32Rows(id, rows, 'candidateOverflow')
+                  : undefined
             }
           },
           props

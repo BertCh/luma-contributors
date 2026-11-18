@@ -4,29 +4,29 @@
 
 import {
   createTransientView,
+  GraphDataView,
   GraphVectorView,
   type GPUCommandGraph,
-  type GPUCommandNode,
-  type GraphDataView
+  type GPUCommandNode
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {createFillNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
   validateRequirement,
-  validateGraphOutputsDisjointFromInputs,
+  validateMaximumCount,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
-  getCoreDefaultBuffer,
-  getGPUNetworkTopologyViews,
   validateGPUNetworkTopology,
   type GPUNetworkTopology
-} from '../../analysis-core/network-topology';
+} from '../../analysis-core/contracts/network-topology';
 import {
   GPUIsobandRings,
   GPUIsobands,
+  getGPUIsobandRingsMaximumEdgeCapacity,
+  getGPUIsobandRingsMaximumRingCapacity,
   GPU_ISOBANDS_PARAMETER_LENGTH
 } from '../../raster-analysis/isolines/index';
 import type {GPUIsobandRingsOutput, GPUIsobandsOutput} from '../../raster-analysis/isolines/index';
@@ -35,7 +35,6 @@ import {GPUCellAggregation} from '../../gpu-spatial-analysis/cell-aggregation/in
 import type {GPUCellTable} from '../../gpu-spatial-analysis/cell-aggregation/index';
 import {GPUPointToCell} from '../../gpu-spatial-analysis/cell-indexing/index';
 import {GPUCellSetOutline} from '../../gpu-spatial-analysis/cell-set-outline/index';
-import type {GPUSegmentRingAssemblyOutput} from '../../analysis-core/ring-assembly/index';
 import type {
   GPUCellSetOutlineOutput,
   GPUCellSetOutlineRings
@@ -48,6 +47,13 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 import {GPUNetworkServiceAreas} from '../network-analysis/gpu-network-service-areas';
 import {GPUNetworkReachability} from '../network-reachability/gpu-network-reachability';
+import {
+  getNetworkPhysicalBuffer,
+  validateNetworkViewBindings,
+  validateNetworkWritableViews
+} from '../network-view-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH} from './network-isochrones-parameters';
 import {
   createIsochronesBandParametersNode,
@@ -358,8 +364,13 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
   readonly mode: GPUNetworkIsochronesMode;
   /** Resolved context: native planar for raster, longitude/latitude for cell outlines alone. */
   readonly spatialContext: GPUSpatialContext;
+  private readonly cellTableCapacity: number;
 
   constructor(props: GPUNetworkIsochronesProps) {
+    // Contexts are resolved public identities; only option/port maps are owned snapshots.
+    // Uploaded topologies may also carry ownership metadata (buffers, devices, graphs). Only
+    // declared topology ports belong in this snapshot; resource owners can contain cycles.
+    props = snapshotIsochroneOptions(props, ISOCHRONE_OPTION_FIELDS);
     this.id = props.id ?? DEFAULT_ID;
     this.props = props;
     const {id} = this;
@@ -570,6 +581,8 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
         }
       }
     }
+    this.cellTableCapacity =
+      cellOutline?.table?.cells.length ?? cellOutline?.tableCapacity ?? this.nodeCount;
     if (cellOutline) {
       if (cellOutline.family !== 'h3' && cellOutline.family !== 'quadbin') {
         throw new Error(`${id} cellOutline.family must be 'h3' or 'quadbin'`);
@@ -583,54 +596,112 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
       if (cellOutline.byFacility && !cellOutline.output.groups) {
         throw new Error(`${id} cellOutline.byFacility needs cellOutline.output.groups`);
       }
-      if (cellOutline.tableCapacity !== undefined) {
+      if (!cellOutline.table && cellOutline.tableCapacity !== undefined) {
         validateCapacity(id, 'cellOutline.tableCapacity', cellOutline.tableCapacity);
       }
+      validateCapacity(id, 'cellOutline table row capacity', this.cellTableCapacity);
+      validateRequirement(
+        id,
+        Boolean(cellOutline.table) || this.cellTableCapacity >= this.nodeCount,
+        `cellOutline.tableCapacity must be at least the node count (${this.nodeCount}) when table is omitted, because transient cell loss cannot be reported`
+      );
+      if (cellOutline.cellFacilities) {
+        validateSinglePackedView(
+          cellOutline.cellFacilities,
+          ['uint32'],
+          `${id} cellOutline.cellFacilities`
+        );
+        validateRequirement(
+          id,
+          cellOutline.cellFacilities.length === this.cellTableCapacity,
+          `cellOutline.cellFacilities must contain exactly ${this.cellTableCapacity} table rows`
+        );
+      }
     }
-    const inputs = [
-      ...getGPUNetworkTopologyViews(props.topology),
-      ...collectGraphViews(raster?.sourcePaths),
-      props.costBreaks,
-      props.parameters,
-      props.startNodes,
-      props.startCosts,
-      typeof props.startCount === 'object' ? props.startCount : undefined,
-      props.costLimit,
-      ...(props.startNodes ? [] : [props.costs, props.assignments])
-    ];
-    const geometryOutputs = [
-      ...(props.startNodes ? [props.costs, props.assignments] : []),
-      cellOutline?.cellFacilities,
-      ...collectGraphViews(raster?.output),
-      ...collectGraphViews(cellOutline?.output),
-      ...getRingOutputViews(cellOutline?.rings?.output),
-      ...getRingOutputViews(raster?.rings?.output),
-      ...collectGraphViews(cellOutline?.table)
-    ];
-    const searchStatus = Object.values(props.output?.status ?? {}).filter(
-      view => view !== undefined
-    );
-    const searchStatusBuffers = searchStatus.map(view =>
-      view.buffer.defaultBuffer ? getCoreDefaultBuffer(view.buffer.defaultBuffer) : view.buffer
-    );
-    const reservedBuffers = new Set(
-      [...inputs, ...geometryOutputs]
-        .filter(view => view !== undefined)
-        .map(view =>
-          view.buffer.defaultBuffer ? getCoreDefaultBuffer(view.buffer.defaultBuffer) : view.buffer
-        )
-    );
-    validateRequirement(
+    const inputs = collectNamedIsochroneViews({
+      topology: props.topology,
+      raster: {sourcePaths: raster?.sourcePaths},
+      costBreaks: props.costBreaks,
+      parameters: props.parameters,
+      startNodes: props.startNodes,
+      startCosts: props.startCosts,
+      startCount: typeof props.startCount === 'object' ? props.startCount : undefined,
+      costLimit: props.costLimit,
+      ...(!props.startNodes ? {costs: props.costs, assignments: props.assignments} : {})
+    });
+    const geometryOutputs = collectNamedIsochroneViews({
+      ...(props.startNodes ? {costs: props.costs, assignments: props.assignments} : {}),
+      raster: {output: raster?.output, rings: {output: raster?.rings?.output}},
+      cellOutline: {
+        table: cellOutline?.table,
+        cellFacilities: cellOutline?.cellFacilities,
+        output: cellOutline?.output,
+        rings: {output: cellOutline?.rings?.output}
+      }
+    });
+    const searchStatus = collectNamedIsochroneViews({output: props.output});
+    const previousStatus: Record<string, GraphDataView> = {};
+    for (const [name, view] of Object.entries(searchStatus)) {
+      validateIsochronePhysicalSeparation(
+        id,
+        {[name]: view},
+        previousStatus,
+        'output.status views must use separate buffers'
+      );
+      previousStatus[name] = view;
+    }
+    validateIsochronePhysicalSeparation(
       id,
-      new Set(searchStatusBuffers).size === searchStatusBuffers.length,
-      'output.status views must use separate buffers'
-    );
-    validateRequirement(
-      id,
-      searchStatusBuffers.every(buffer => !reservedBuffers.has(buffer)),
+      searchStatus,
+      {...inputs, ...geometryOutputs},
       'output.status views must not share buffers with inputs or geometry outputs'
     );
-    validateGraphOutputsDisjointFromInputs(id, [...geometryOutputs, ...searchStatus], inputs);
+    validateIsochronePhysicalSeparation(
+      id,
+      geometryOutputs,
+      inputs,
+      'outputs must not share buffers with inputs'
+    );
+    // Compare logical ranges across the whole composition, including outputs written in
+    // different passes. Each child contributor validates the bindings it uses together.
+    validateNetworkWritableViews(id, {...geometryOutputs, ...searchStatus}, [
+      ...(raster
+        ? [
+            {
+              outputs: {
+                'raster.output.values': raster.output.values,
+                'raster.output.pixelFacilities': raster.output.pixelFacilities
+              }
+            }
+          ]
+        : []),
+      ...(raster?.output.triangleFacilities
+        ? [
+            {
+              outputs: {'raster.output.triangleFacilities': raster.output.triangleFacilities},
+              inputs: {
+                'raster.output.triangles': raster.output.triangles,
+                'raster.output.status.count': raster.output.status?.count,
+                'raster.output.pixelFacilities': raster.output.pixelFacilities,
+                parameters: props.parameters
+              }
+            }
+          ]
+        : []),
+      ...(cellOutline?.byFacility
+        ? [
+            {
+              outputs: {'cellOutline.cellFacilities': cellOutline.cellFacilities},
+              inputs: {
+                costs: props.costs,
+                assignments: props.assignments,
+                'cellOutline.table.cells': cellOutline.table?.cells,
+                'cellOutline.table.status.count': cellOutline.table?.status.count
+              }
+            }
+          ]
+        : [])
+    ]);
   }
 
   /**
@@ -644,25 +715,62 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
     const {id, props, nodeCount, mode} = this;
     const {raster, cellOutline} = props;
     const {offsets, neighbors, weights, nodePositions} = props.topology;
-    validateGraphViewsBelongToGraph(id, graph, [
-      ...getGPUNetworkTopologyViews(props.topology),
-      ...collectGraphViews(raster?.sourcePaths),
-      props.costs,
-      props.startNodes,
-      props.startCosts,
-      typeof props.startCount === 'object' ? props.startCount : undefined,
-      props.costLimit,
-      ...Object.values(props.output?.status ?? {}),
-      props.costBreaks,
-      props.parameters,
-      props.assignments,
-      cellOutline?.cellFacilities,
-      ...collectGraphViews(raster?.output),
-      ...collectGraphViews(cellOutline?.output),
-      ...getRingOutputViews(cellOutline?.rings?.output),
-      ...getRingOutputViews(raster?.rings?.output),
-      ...collectGraphViews(cellOutline?.table)
-    ]);
+    const namedViews = collectNamedIsochroneViews(props);
+    const views = Object.values(namedViews);
+    validateGraphViewsBelongToGraph(id, graph, views);
+    validateGraphChunkBindingRanges(graph, id, namedViews);
+    if (raster?.rings) {
+      validateCapacity(
+        id,
+        'raster.rings.edgeCapacity',
+        raster.rings.edgeCapacity,
+        1,
+        getGPUIsobandRingsMaximumEdgeCapacity(graph.device)
+      );
+      validateMaximumCount(
+        id,
+        'raster.rings.output ring capacity',
+        raster.rings.output.ringOffsets.length - 1,
+        getGPUIsobandRingsMaximumRingCapacity(graph.device)
+      );
+    }
+    const pixelCount = raster ? raster.width * raster.height : 0;
+    const capacity = this.cellTableCapacity;
+    validateNetworkViewBindings(id, graph, views, {
+      ...(raster
+        ? {
+            'raster encoded': pixelCount * 4,
+            ...(!raster.output.values ? {'raster values': pixelCount * 4} : {}),
+            'raster bandParameters': GPU_ISOBANDS_PARAMETER_LENGTH * 4,
+            'raster inclusiveBreaks': props.costBreaks.length * 4
+          }
+        : {}),
+      ...(cellOutline
+        ? {
+            'cellOutline reachedMask': nodeCount * 4,
+            ...(!cellOutline.table
+              ? {
+                  'cellOutline table.cells': capacity * 8,
+                  'cellOutline table.counts': capacity * 4,
+                  'cellOutline table.status.count': 4,
+                  'cellOutline table.status.overflow': 4,
+                  'cellOutline table.status.candidateOverflow': 4
+                }
+              : {}),
+            ...(cellOutline.family === 'h3' || cellOutline.byFacility
+              ? {'cellOutline nodeCells': nodeCount * 8}
+              : {}),
+            ...(cellOutline.byFacility
+              ? {
+                  'cellOutline cellMinimumCosts': capacity * 4,
+                  ...(!cellOutline.cellFacilities
+                    ? {'cellOutline cellFacilities': capacity * 4}
+                    : {})
+                }
+              : {})
+          }
+        : {})
+    });
     const nodes: GPUCommandNode<Parameters>[] = [];
     if (props.startNodes && props.assignments) {
       nodes.push(
@@ -851,14 +959,20 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
           mask
         })
       );
-      const capacity = cellOutline.tableCapacity ?? nodeCount;
+      const capacity = this.cellTableCapacity;
       let cellFacilities: GraphDataView<'uint32'> | undefined;
       const table: GPUCellTable = cellOutline.table ?? {
         cells: createTransientView(graph, `${id}-reached-cells`, 'uint32x2', capacity),
         counts: createTransientView(graph, `${id}-reached-counts`, 'uint32', capacity),
         status: {
           count: createTransientView(graph, `${id}-reached-count`, 'uint32', 1),
-          overflow: createTransientView(graph, `${id}-reached-overflow`, 'uint32', 1)
+          overflow: createTransientView(graph, `${id}-reached-overflow`, 'uint32', 1),
+          candidateOverflow: createTransientView(
+            graph,
+            `${id}-reached-candidate-overflow`,
+            'uint32',
+            1
+          )
         }
       };
       const byFacility = Boolean(cellOutline.byFacility);
@@ -932,21 +1046,154 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
   }
 }
 
-/** Returns every graph view in a bag of views, descending into nested status bags. */
-function collectGraphViews(bag: object | undefined): GraphDataView[] {
-  if (!bag) {
-    return [];
+type IsochroneOptionFields = {readonly [name: string]: true | IsochroneOptionFields};
+
+const ISOCHRONE_TOPOLOGY_FIELDS = {
+  offsets: true,
+  neighbors: true,
+  weights: true,
+  nodePositions: true
+} as const;
+const ISOCHRONE_COMPACT_STATUS_FIELDS = {
+  count: true,
+  requiredCount: true,
+  overflow: true
+} as const;
+const ISOCHRONE_RING_OUTPUT_FIELDS = {
+  ringOffsets: true,
+  positions: true,
+  ringAreas: true,
+  ringIsHole: true,
+  ringShells: true,
+  ringGroups: true,
+  segmentRings: true,
+  segmentVertices: true,
+  segmentFlags: true,
+  polygons: {
+    kind: true,
+    positions: true,
+    ringOffsets: true,
+    polygonOffsets: true,
+    featureOffsets: true,
+    sourceIds: true
+  },
+  status: {
+    ...ISOCHRONE_COMPACT_STATUS_FIELDS,
+    openSegmentCount: true,
+    touchingSegmentCount: true,
+    edgeCount: true,
+    edgeOverflow: true
   }
-  return Object.values(bag).flatMap(value => {
-    if (!value || typeof value !== 'object') {
-      return [];
-    }
-    // A view carries its buffer; any other object is a nested bag such as `status`.
-    return 'buffer' in value ? [value as GraphDataView] : collectGraphViews(value);
-  });
+} as const;
+/** Read declared fields by name so inherited/non-enumerable getters survive the snapshot. */
+const ISOCHRONE_OPTION_FIELDS = {
+  id: true,
+  topology: ISOCHRONE_TOPOLOGY_FIELDS,
+  spatialContext: true,
+  costs: true,
+  startNodes: true,
+  assignments: true,
+  maximumLabelIterations: true,
+  startCosts: true,
+  startCount: true,
+  costLimit: true,
+  maximumIterations: true,
+  localIterations: true,
+  output: {status: {converged: true, iterationLimitReached: true}},
+  costBreaks: true,
+  parameters: true,
+  raster: {
+    width: true,
+    height: true,
+    mode: true,
+    maximumBufferPixels: true,
+    maximumSamplesPerEdge: true,
+    unreachedCost: true,
+    sourcePaths: {topology: ISOCHRONE_TOPOLOGY_FIELDS, costs: true, assignments: true},
+    output: {
+      bandClasses: true,
+      triangles: true,
+      triangleBands: true,
+      edges: true,
+      edgeBands: true,
+      values: true,
+      pixelFacilities: true,
+      triangleFacilities: true,
+      status: {
+        ...ISOCHRONE_COMPACT_STATUS_FIELDS,
+        vertexCount: true,
+        edgeCount: true,
+        edgeOverflow: true,
+        edgeRequiredCount: true
+      }
+    },
+    rings: {edgeCapacity: true, vertexTolerance: true, output: ISOCHRONE_RING_OUTPUT_FIELDS}
+  },
+  cellOutline: {
+    family: true,
+    resolution: true,
+    tableCapacity: true,
+    byFacility: true,
+    cellFacilities: true,
+    table: {
+      cells: true,
+      counts: true,
+      sums: true,
+      sumValues: true,
+      minimums: true,
+      maximums: true,
+      status: {...ISOCHRONE_COMPACT_STATUS_FIELDS, candidateOverflow: true}
+    },
+    output: {
+      rows: true,
+      cells: true,
+      edgeIndices: true,
+      endpoints: true,
+      groups: true,
+      status: ISOCHRONE_COMPACT_STATUS_FIELDS
+    },
+    rings: {vertexTolerance: true, normalizeWinding: true, output: ISOCHRONE_RING_OUTPUT_FIELDS}
+  }
+} as const satisfies Record<keyof GPUNetworkIsochronesProps, true | IsochroneOptionFields>;
+
+/** Freeze declared option/port maps, retaining graph views and the resolved context identity. */
+function snapshotIsochroneOptions<Value>(value: Value, fields: IsochroneOptionFields): Value {
+  if (!value || typeof value !== 'object') return value;
+  const snapshot = snapshotConstructionFields(value, Object.keys(fields) as (keyof Value)[]);
+  return Object.freeze(
+    Object.fromEntries(
+      Object.entries(snapshot).map(([name, child]) => [
+        name,
+        fields[name] === true ? child : snapshotIsochroneOptions(child, fields[name])
+      ])
+    )
+  ) as Value;
 }
 
-/** Views of an optional ring output, with the nested polygon layout and status flattened. */
-function getRingOutputViews(output: GPUSegmentRingAssemblyOutput | undefined): GraphDataView[] {
-  return collectGraphViews(output);
+/** Retain caller-facing paths for ownership, usage, and alias diagnostics. */
+function collectNamedIsochroneViews(bag: object, prefix = ''): Record<string, GraphDataView> {
+  return Object.fromEntries(
+    Object.entries(bag).flatMap(([field, value]) => {
+      const name = prefix ? `${prefix}.${field}` : field;
+      if (value instanceof GraphDataView) return [[name, value]];
+      if (!value || typeof value !== 'object' || value instanceof GraphVectorView) return [];
+      return Object.entries(collectNamedIsochroneViews(value, name));
+    })
+  );
+}
+
+/** Physical read/write and scalar-status separation, with both offending port paths. */
+function validateIsochronePhysicalSeparation(
+  id: string,
+  outputs: Record<string, GraphDataView>,
+  inputs: Record<string, GraphDataView>,
+  message: string
+): void {
+  const inputNames = new Map(
+    Object.entries(inputs).map(([name, view]) => [getNetworkPhysicalBuffer(view), name])
+  );
+  for (const [name, view] of Object.entries(outputs)) {
+    const inputName = inputNames.get(getNetworkPhysicalBuffer(view));
+    validateRequirement(id, inputName === undefined, `${message}: ${name} and ${inputName}`);
+  }
 }

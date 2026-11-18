@@ -9,7 +9,11 @@ export {
 export type {GPUMaximumInscribedCircleProps} from './gpu-maximum-inscribed-circle';
 export {GPUNormalizePolygons} from './gpu-normalize-polygons';
 export type {GPUNormalizePolygonsProps} from './gpu-normalize-polygons';
-export {GPUSegmentSnap} from './gpu-segment-snap';
+export {
+  GPUSegmentSnap,
+  GPU_SEGMENT_SNAP_ISSUE,
+  decodeGPUSegmentSnapIssueCode
+} from './gpu-segment-snap';
 export type {GPUSegmentSnapProps} from './gpu-segment-snap';
 export {GPURatioConcaveHull} from './gpu-ratio-concave-hull';
 export type {GPURatioConcaveHullProps} from './gpu-ratio-concave-hull';

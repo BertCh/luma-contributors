@@ -17,7 +17,10 @@ import {
   type CoregionalizationFitOptions
 } from './coregionalization-parameters';
 import {getVariogramModelShape} from './variogram-model';
-import type {CoregionalizationFitOperationProps} from './gpu-coregionalization-fit-operation';
+import {
+  snapshotCoregionalizationFitOperationProps,
+  type CoregionalizationFitOperationProps
+} from './gpu-coregionalization-fit-operation';
 
 /** Packed input layout shared with GPUCoregionalizationFit. */
 export type CPUCoregionalizationFitInput = {
@@ -282,6 +285,7 @@ export function fitLinearModelOfCoregionalization(
  */
 export class CPUCoregionalizationFitOperation extends GPUCPUOperation {
   constructor(props: CoregionalizationFitOperationProps) {
+    props = snapshotCoregionalizationFitOperationProps(props);
     const id = props.id ?? 'coregionalization-fit';
     validateCoregionalizationFitOptions(id, props, false);
     const length = props.structureCount * props.variableCount ** 2;

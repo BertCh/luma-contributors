@@ -129,9 +129,9 @@ it('bounded raster expansion variants parse, preserve eight bindings and fit pri
   for (const contributor of contributors) {
     const sources = getParsedKernelSources(contributor.getCommandNodes(graph));
     expect(sources.size).toBeGreaterThan(0);
-    for (const [name, source] of sources) {
+    for (const {id: name, source: source, constants} of sources.configurations) {
       expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
-      expect(getPrivateMemoryBytes(source), name).toBeLessThanOrEqual(
+      expect(getPrivateMemoryBytes(source, constants), name).toBeLessThanOrEqual(
         CORE_PRIVATE_MEMORY_LIMIT_BYTES
       );
     }

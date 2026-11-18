@@ -90,8 +90,9 @@ for (const branching of [false, true]) {
           expect(family.map(node => node.workload?.maximumWorkgroupCount)).toEqual(
             widths.map(width => Math.ceil(width / 256))
           );
-          for (const [identifier, source] of getParsedKernelSources(family)) {
-            expect(auditWGSLModule(source), identifier).toEqual([]);
+          for (const {id: identifier, source, constants} of getParsedKernelSources(family)
+            .configurations) {
+            expect(auditWGSLModule(source, constants), identifier).toEqual([]);
             expect(source).not.toContain('override');
           }
         }
@@ -266,9 +267,9 @@ for (const mode of ['transport', 'fractional-catchment'] as const) {
         }
       });
       const sources = getParsedKernelSources(contributor.getCommandNodes(graph));
-      for (const [identifier, source] of sources) {
+      for (const {id: identifier, source, constants} of sources.configurations) {
         expect(source).not.toContain('fn getGroundEdgeLength');
-        expect(auditWGSLModule(source), identifier).toEqual([]);
+        expect(auditWGSLModule(source, constants), identifier).toEqual([]);
       }
     } finally {
       device.destroy();
@@ -392,9 +393,10 @@ it('does not compile unused path kernels for a burn-only breach with the largest
     const nodes = contributor.getCommandNodes(graph);
     expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
     expect(nodes.some(node => /edit-proposals|verify-paths/.test(node.id))).toBe(false);
-    for (const [identifier, source] of getParsedKernelSources(nodes)) {
+    for (const {id: identifier, source, constants} of getParsedKernelSources(nodes)
+      .configurations) {
       expect(source).not.toContain('4294967296u');
-      expect(auditWGSLModule(source), identifier).toEqual([]);
+      expect(auditWGSLModule(source, constants), identifier).toEqual([]);
     }
   } finally {
     device.destroy();

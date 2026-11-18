@@ -57,3 +57,115 @@ it('reconstruction operations honor native uint32 bands, calibration, nodata and
     expect(Array.from(result['limit'])).toEqual([0]);
   }
 });
+
+for (const layout of ['exact', 'padded', 'offset'] as const) {
+  it(`F8 both reconstruction operations calibrate the ${layout} logical band prefix`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const values =
+      layout === 'exact'
+        ? Float32Array.of(1)
+        : layout === 'padded'
+          ? Float32Array.of(1, 99)
+          : Float32Array.of(99, 1, 77).subarray(1);
+    const flags =
+      layout === 'exact'
+        ? Uint32Array.of(1)
+        : layout === 'padded'
+          ? Uint32Array.of(1, 0)
+          : Uint32Array.of(0, 1, 0).subarray(1);
+    const props: RasterReconstructionOperationProps = {
+      grid: {width: 1, height: 1, affine: [1, 0, 0, 0, -1, 1], pixelInterpretation: 'area'},
+      marker: {
+        id: 'marker-band',
+        format: 'float32',
+        storage: {kind: 'buffer', values: 'marker'},
+        validity: 'marker-validity',
+        noDataValue: 99
+      },
+      mask: {
+        id: 'mask-band',
+        format: 'float32',
+        storage: {kind: 'buffer', values: 'mask'},
+        validity: 'mask-validity',
+        noDataValue: 99
+      },
+      maximumIterations: 1,
+      output: {
+        values: 'result',
+        validity: 'validity',
+        status: {converged: 'converged', iterationCount: 'rounds', iterationLimitReached: 'limit'}
+      }
+    };
+    for (const Operation of [GPURasterReconstructionOperation, CPURasterReconstructionOperation]) {
+      const result = await runOperationGraph(device, {
+        inputs: {
+          marker: {format: 'float32', values},
+          mask: {format: 'float32', values},
+          'marker-validity': {format: 'uint32', values: flags},
+          'mask-validity': {format: 'uint32', values: flags}
+        },
+        operations: [new Operation(props)],
+        outputs: ['result', 'validity', 'converged', 'rounds', 'limit']
+      });
+      for (const [port, expected] of Object.entries({
+        result: 1,
+        validity: 1,
+        converged: 1,
+        rounds: 1,
+        limit: 0
+      }))
+        expect(Array.from(result[port])).toEqual([expected]);
+    }
+  });
+}
+
+it('F8 reconstruction operation parity rejects undersized band values and validity', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props: RasterReconstructionOperationProps = {
+    grid: {width: 2, height: 1, affine: [1, 0, 0, 0, -1, 1], pixelInterpretation: 'area'},
+    marker: {
+      id: 'marker-band',
+      format: 'float32',
+      storage: {kind: 'buffer', values: 'marker'},
+      validity: 'marker-validity'
+    },
+    mask: {
+      id: 'mask-band',
+      format: 'float32',
+      storage: {kind: 'buffer', values: 'mask'},
+      validity: 'mask-validity'
+    },
+    maximumIterations: 1,
+    output: {values: 'result', validity: 'validity', status: {converged: 'converged'}}
+  };
+  for (const shortPort of ['marker', 'mask', 'marker-validity', 'mask-validity']) {
+    for (const Operation of [GPURasterReconstructionOperation, CPURasterReconstructionOperation]) {
+      await expect(
+        runOperationGraph(device, {
+          inputs: {
+            marker: {
+              format: 'float32',
+              values: new Float32Array(shortPort === 'marker' ? 1 : 2).fill(1)
+            },
+            mask: {
+              format: 'float32',
+              values: new Float32Array(shortPort === 'mask' ? 1 : 2).fill(1)
+            },
+            'marker-validity': {
+              format: 'uint32',
+              values: new Uint32Array(shortPort === 'marker-validity' ? 1 : 2).fill(1)
+            },
+            'mask-validity': {
+              format: 'uint32',
+              values: new Uint32Array(shortPort === 'mask-validity' ? 1 : 2).fill(1)
+            }
+          },
+          operations: [new Operation(props)],
+          outputs: ['result', 'validity', 'converged']
+        })
+      ).rejects.toThrow(/marker|mask/);
+    }
+  }
+});

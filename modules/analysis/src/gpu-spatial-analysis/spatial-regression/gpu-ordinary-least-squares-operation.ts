@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   GPUOrdinaryLeastSquares,
   type GPUOrdinaryLeastSquaresProps
@@ -27,12 +28,45 @@ export type OrdinaryLeastSquaresOperationProps = Pick<
     summary: string;
     residuals?: string;
     fitted?: string;
+    predictions?: string;
   };
 };
+
+/** Capture configuration and nested port names before declaring or executing the contract. @internal */
+export function snapshotOrdinaryLeastSquaresOperationProps(
+  props: OrdinaryLeastSquaresOperationProps
+): OrdinaryLeastSquaresOperationProps {
+  const captured = snapshotConstructionFields(props, [
+    'id',
+    'predictorCount',
+    'tileRowCount',
+    'rowCount',
+    'predictors',
+    'response',
+    'mask',
+    'parameters',
+    'output'
+  ]);
+  const output = snapshotConstructionFields(captured.output, [
+    'status',
+    'coefficients',
+    'standardErrors',
+    'tStatistics',
+    'summary',
+    'residuals',
+    'fitted',
+    'predictions'
+  ]);
+  return Object.freeze({
+    ...captured,
+    output: Object.freeze({...output, status: snapshotConstructionFields(output.status, ['code'])})
+  });
+}
 
 /** GPU OLS as a graph operation; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUOrdinaryLeastSquaresOperation extends GPUContributorOperation {
   constructor(props: OrdinaryLeastSquaresOperationProps) {
+    props = snapshotOrdinaryLeastSquaresOperationProps(props);
     const id = props.id ?? 'ordinary-least-squares';
     super({
       id,
@@ -73,6 +107,15 @@ export class GPUOrdinaryLeastSquaresOperation extends GPUContributorOperation {
               }
             }
           : {}),
+        ...(props.output.predictions
+          ? {
+              predictions: {
+                value: props.output.predictions,
+                format: 'float32' as const,
+                length: props.rowCount
+              }
+            }
+          : {}),
         ...(props.output.fitted
           ? {
               fitted: {
@@ -99,7 +142,8 @@ export class GPUOrdinaryLeastSquaresOperation extends GPUContributorOperation {
             tStatistics: getView<'float32'>('tStatistics'),
             summary: getView<'float32'>('summary'),
             residuals: props.output.residuals ? getView<'float32'>('residuals') : undefined,
-            fitted: props.output.fitted ? getView<'float32'>('fitted') : undefined
+            fitted: props.output.fitted ? getView<'float32'>('fitted') : undefined,
+            predictions: props.output.predictions ? getView<'float32'>('predictions') : undefined
           }
         })
     });

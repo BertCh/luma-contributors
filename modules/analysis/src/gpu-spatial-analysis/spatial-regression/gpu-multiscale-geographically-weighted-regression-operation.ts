@@ -39,7 +39,7 @@ export type MultiscaleGeographicallyWeightedRegressionOperationProps = Pick<
   output: {
     coefficients: string;
     fitted: string;
-    status: {codes: string; iterationCount: string};
+    status: {codes: string; iterationCount: string; componentSearchIterationLimitReached?: string};
     selectedBandwidths?: string;
     conditionalStandardErrors?: string;
   };
@@ -52,6 +52,15 @@ export type MultiscaleGeographicallyWeightedRegressionOperationProps = Pick<
  */
 export class GPUMultiscaleGeographicallyWeightedRegressionOperation extends GPUContributorOperation {
   constructor(props: MultiscaleGeographicallyWeightedRegressionOperationProps) {
+    props = {
+      ...props,
+      maximumIterations: props.maximumIterations ?? 32,
+      bandwidthSelection: props.bandwidthSelection ? {...props.bandwidthSelection} : undefined,
+      output: {...props.output, status: {...props.output.status}},
+      inference: props.inference
+        ? {...props.inference, output: {...props.inference.output}}
+        : undefined
+    };
     const id = props.id ?? 'multiscale-geographically-weighted-regression';
     const coefficientCount = props.rowCount * (props.predictorCount + 1);
     super({
@@ -74,6 +83,15 @@ export class GPUMultiscaleGeographicallyWeightedRegressionOperation extends GPUC
         fitted: {value: props.output.fitted, format: 'float32', length: props.rowCount},
         codes: {value: props.output.status.codes, format: 'uint32', length: props.rowCount},
         iterationCount: {value: props.output.status.iterationCount, format: 'uint32', length: 1},
+        ...(props.output.status.componentSearchIterationLimitReached
+          ? {
+              componentSearchIterationLimitReached: {
+                value: props.output.status.componentSearchIterationLimitReached,
+                format: 'uint32' as const,
+                length: props.predictorCount + 1
+              }
+            }
+          : {}),
         ...(props.output.selectedBandwidths
           ? {
               selectedBandwidths: {
@@ -146,7 +164,11 @@ export class GPUMultiscaleGeographicallyWeightedRegressionOperation extends GPUC
             fitted: getView<'float32'>('fitted'),
             status: {
               codes: getView<'uint32'>('codes'),
-              iterationCount: getView<'uint32'>('iterationCount')
+              iterationCount: getView<'uint32'>('iterationCount'),
+              componentSearchIterationLimitReached: props.output.status
+                .componentSearchIterationLimitReached
+                ? getView<'uint32'>('componentSearchIterationLimitReached')
+                : undefined
             },
             selectedBandwidths: props.output.selectedBandwidths
               ? getView<'float32'>('selectedBandwidths')

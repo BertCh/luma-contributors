@@ -17,7 +17,7 @@ import {
   getRasterGroundCellSizeWGSL,
   writeRasterGridParameterValues,
   type GPURasterCellSizeMode
-} from '../../analysis-core/raster-grid';
+} from '../../analysis-core/contracts/raster-grid';
 import {
   validateCapacity,
   validateFiniteNumber,

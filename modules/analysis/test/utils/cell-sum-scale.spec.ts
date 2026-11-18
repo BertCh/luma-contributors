@@ -8,11 +8,11 @@ import {
   getFixedPointWGSL,
   getGPUCellSumScale,
   GPU_CELL_DEFAULT_SUM_SCALE
-} from '../../src/analysis-core/cell-key-wgsl';
+} from '../../src/analysis-core/kernels/cell-key-wgsl';
 import {requireTestDevice} from './require-test-device';
 import {getFloatWords, runWGSLModuleKernel} from './wgsl-module-harness';
 
-// The 64-bit fixed-point sum of analysis-core/cell-key-wgsl.ts on a column of small values (math
+// The 64-bit fixed-point sum of analysis-core/kernels/cell-key-wgsl.ts on a column of small values (math
 // review finding core-numerics-03). With the default scale every row is rounded to a multiple of
 // 1 / 65536, which the documentation used to call exact; with a scale from getGPUCellSumScale the
 // rows are added without rounding. Expected values are hand arithmetic on the documented rule.

@@ -8,7 +8,7 @@ import {expect, it} from 'vitest';
 import {
   createLonLatPolygonCheckNode,
   LON_LAT_RING_WGSL
-} from '../../../src/analysis-core/lon-lat-ring-wgsl';
+} from '../../../src/analysis-core/kernels/lon-lat-ring-wgsl';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
 import {createOutputBuffer, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';

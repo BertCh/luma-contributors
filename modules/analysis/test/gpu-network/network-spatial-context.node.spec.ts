@@ -29,7 +29,7 @@ import {
   GPUNetworkLineGraph
 } from '../../src/gpu-network/network-line-graph/index';
 import {GPUNetworkNoding} from '../../src/gpu-network/network-noding/index';
-import {createNullWebGPUDevice} from '../utils/gpu-contributor-test-utils';
+import {createNullWebGPUDevice, getParsedKernelSources} from '../utils/gpu-contributor-test-utils';
 import {
   getLineGraphEdgeDirections,
   getLineGraphTurnAngle
@@ -249,13 +249,30 @@ describe('network contributor spatial contexts', () => {
         snappedPositions: createView(graph, 'float32x2', 6)
       }
     };
-    expectDistanceFrames(
-      'map-matching',
-      spatialContext => new GPUMapMatching({...props, spatialContext})
+    // Matching snapshots compile-time context metadata rather than retaining caller identity.
+    const equidistant = new GPUMapMatching({...props, spatialContext: EQUIDISTANT});
+    expect(equidistant.spatialContext).toStrictEqual(EQUIDISTANT);
+    expect(equidistant.spatialContext).not.toBe(EQUIDISTANT);
+    expect(() => new GPUMapMatching({...props, spatialContext: EQUAL_AREA})).toThrow(
+      'map-matching measures distance; project into an azimuthal-equidistant frame, not lambert-equal-area'
     );
-    const kilometers = new GPUMapMatching({...props, id: 'kilometers', spatialContext: KILOMETERS});
-    expect(kilometers.spatialContext).toBe(KILOMETERS);
-    expect(kilometers.getCommandNodes(graph).length).toBeGreaterThan(0);
+    const kilometerContext: GPUSpatialContext = {...KILOMETERS};
+    const kilometers = new GPUMapMatching({
+      ...props,
+      id: 'kilometers',
+      spatialContext: kilometerContext
+    });
+    expect(kilometers.spatialContext).toStrictEqual(KILOMETERS);
+    expect(kilometers.spatialContext).not.toBe(kilometerContext);
+    kilometerContext.units = 'meters';
+    expect(kilometers.spatialContext.units).toBe('kilometers');
+    const kilometerNodes = kilometers.getCommandNodes(graph);
+    expect(kilometerNodes.length).toBeGreaterThan(0);
+    expect(
+      [...getParsedKernelSources(kilometerNodes).values()].some(source =>
+        source.includes(`const NETWORK_EARTH_RADIUS: f32 = ${Math.fround(6371.0088)};`)
+      )
+    ).toBe(true);
     const matching = new GPUMapMatching({...props, spatialContext: GREAT_CIRCLE});
     expect(matching.spatialContext).toEqual(GREAT_CIRCLE);
     expect(matching.getCommandNodes(graph).map(node => node.id)).toContain(

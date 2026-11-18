@@ -7,12 +7,13 @@ import {GPUCommandGraph, addGPUCommandNodes} from '@luma.gl/graph/gpu-core';
 import {GPUTransferMask} from '@luma-contributors/analysis/computation-record';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, test} from 'vitest';
+import {requireTestDevice} from '../../src/testing/require-test-device';
 
 for (const layout of ['index', 'csr'] as const) {
   for (const mode of ['any', 'count'] as const) {
     test(`GPUTransferMask ${layout}-${mode} matches a CPU relation oracle`, async () => {
       const device = await getWebGPUTestDevice();
-      if (!device) return;
+      requireTestDevice(device);
       const graph = new GPUCommandGraph(device);
       const buffers: Buffer[] = [];
       const byteOffset = 260;

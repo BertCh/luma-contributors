@@ -18,7 +18,7 @@ import {
   validateCatchmentStorage
 } from './catchment-accessibility-validation';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {SPATIAL_ANALYSIS_QUOTIENT_WGSL} from '../geographic-distribution/spatial-analysis-quotient';
 import {
   validateGraphViewsBelongToGraph,
@@ -66,20 +66,24 @@ export type GPUHuffTradeAreasOutput = {
   /**
    * Trade area per demand location: the facility with the highest probability (the lowest ID wins
    * ties), or {@link GPU_HUFF_NO_TRADE_AREA} when none is reachable.
+   * Also NO_TRADE_AREA when supplied demand-weights loss flags are nonzero.
    */
   tradeArea: GraphDataView<'uint32'>;
   /**
    * Optional Huff probability per demand-weights slot, aligned with `demandWeights.neighbors`:
    * `p_ij = A_j^alpha w_ij / sum_k A_k^alpha w_ik` (0 for slots past the last row, and for rows
-   * whose denominator is 0). Rows sum to 1.
+   * whose denominator is 0). Rows sum to 1. A supplied nonzero demand-weights overflow or
+   * candidateOverflow suppresses the whole view with NaN, including padding.
    */
   probabilities?: GraphDataView<'float32'>;
-  /** Optional probability `p_ij` of the trade-area facility per demand location. */
+  /** Optional probability `p_ij` of the trade-area facility per demand location; NaN after forward weights loss. */
   tradeAreaProbability?: GraphDataView<'float32'>;
   /**
    * Optional expected demand `E_j = sum_i P_i p_ij` captured per facility. Needs `facilityWeights`
    * and `demand`. A demand location whose `demand` is NaN or infinite is missing: it adds nothing
    * to any facility (the rule of `GPUCatchmentAccessibility`) and its `validity` row is 0.
+   * Nonzero supplied overflow/candidateOverflow on either weights table suppresses this view
+   * with NaN. Contributions incorporate demand scale before rounding a small share to float32.
    */
   expectedDemand?: GraphDataView<'float32'>;
   /**
@@ -132,12 +136,17 @@ export type GPUHuffTradeAreasProps = {
  *
  * The weights carry the decay and the catchment cut-off, so a Euclidean kernel from
  * `GPUNeighborSearch` gives the classic distance-decay Huff model. Rows accumulate in slot order,
- * so results are deterministic and match a sequential CPU evaluation within f32 rounding.
+ * so results are deterministic within f32 rounding. Relative log scores are computed from the
+ * original mantissas before exponentiation, preserving close values when attractiveness units change.
  * Facilities with zero attractiveness have probability 0. A non-finite `demand` is missing: it adds
  * nothing to `expectedDemand` and its `validity` row is 0, the no-data rule of
  * `GPUCatchmentAccessibility`.
  *
  * When both weights declare spatial contexts, they must be compatible.
+ * Supplied overflow/candidateOverflow on demandWeights suppresses trade areas to NO_TRADE_AREA
+ * and their probabilities to NaN. Either weights table's loss flags suppress expectedDemand to
+ * NaN. Demand validity still describes only whether demand is finite. Clearing the flags restores
+ * ordinary results on the next submission without recompiling.
  *
  * Spatial context: this operator reads no positions, only the weights, so it has no
  * `spatialContext` prop; distance units and the coordinate space are those of the weights' producer.
@@ -247,7 +256,7 @@ export class GPUHuffTradeAreas implements GPUCommandNodeProducer {
     ]);
   }
 
-  /** Returns `denominators`, `trade-area`, `probabilities` and `expected-demand` nodes as requested. */
+  /** Returns attraction, trade-area, probability clearing/scatter and expected-demand nodes as requested. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -259,25 +268,84 @@ export class GPUHuffTradeAreas implements GPUCommandNodeProducer {
       ...Object.fromEntries(getInputs(props).map((view, index) => [`input.${index}`, view])),
       ...output
     });
-    validateCatchmentStorage(graph.device, id, 'denominators scratch', demandCount * 4);
+    validateCatchmentStorage(graph.device, id, 'normalization scratch', demandCount * 4 * 4);
     validateCatchmentStorage(graph.device, id, 'attraction scratch', facilityCount * 4);
-    const denominators = createTransientView(graph, `${id}-denominators`, 'float32', demandCount);
+    // Per demand row: reference attractiveness, reference weight, maximum log score, scaled total.
+    const normalization = createTransientView(
+      graph,
+      `${id}-normalization`,
+      'float32',
+      demandCount * 4
+    );
     const parameterBinding = parameters
       ? [{name: 'parameters', view: parameters, type: 'f32' as const, access: 'read' as const}]
       : [];
-    // The attraction pow is evaluated once per facility, not once per table slot.
+    // Keep the original values: rounding absolute logarithms loses nearby attractiveness values.
     const attraction = createTransientView(graph, `${id}-attraction`, 'float32', facilityCount);
     const declarations = `const FACILITIES: u32 = ${facilityCount}u;
 const DEMANDS: u32 = ${demandCount}u;
 ${IS_FINITE_VALUE_WGSL}
-${SPATIAL_ANALYSIS_QUOTIENT_WGSL}`;
+${SPATIAL_ANALYSIS_QUOTIENT_WGSL}
+// Mantissas are in [0.5, 1); their difference is exact. The atanh series computes the log
+// ratio without rounding away near-equal values or depending on their common power-of-two scale.
+fn getHuffLogRatio(value: f32, reference: f32) -> f32 {
+  let first = frexp(value);
+  let second = frexp(reference);
+  var firstFraction = first.fract;
+  var differencePower = first.exp - second.exp;
+  // Put near-equal values on the same binary scale, including across a power-of-two boundary.
+  // The remaining mantissa ratio stays in [0.5, 2], so |difference| <= 1/3.
+  if (differencePower < 0 && firstFraction > second.fract) {
+    firstFraction *= 0.5;
+    differencePower += 1;
+  } else if (differencePower > 0 && firstFraction < second.fract) {
+    firstFraction *= 2.0;
+    differencePower -= 1;
+  }
+  let difference = (firstFraction - second.fract) / (firstFraction + second.fract);
+  let square = difference * difference;
+  let series = 1.0 + square * (1.0 / 3.0 + square * (1.0 / 5.0 + square * (1.0 / 7.0 +
+    square * (1.0 / 9.0 + square * (1.0 / 11.0 + square * (1.0 / 13.0 + square / 15.0))))));
+  return 2.0 * difference * series + f32(differencePower) * 0.6931471805599453;
+}
+fn getHuffScore(value: f32, weight: f32, reference: f32, referenceWeight: f32, exponent: f32) -> f32 {
+  if (exponent == 1.0) {
+    // Bounded products preserve exact weighted ties at the default exponent, even if A*w
+    // itself would overflow. Multiplying both attractiveness values by 2^k leaves this unchanged.
+    let first = frexp(value);
+    let second = frexp(weight);
+    let firstReference = frexp(reference);
+    let secondReference = frexp(referenceWeight);
+    return getHuffLogRatio(first.fract * second.fract, firstReference.fract * secondReference.fract) +
+      f32(first.exp + second.exp - firstReference.exp - secondReference.exp) * 0.6931471805599453;
+  }
+  return exponent * getHuffLogRatio(value, reference) + getHuffLogRatio(weight, referenceWeight);
+}
+fn getHuffShare(value: f32, weight: f32, reference: f32, referenceWeight: f32, maximum: f32, exponent: f32) -> f32 {
+  if (!(value > 0.0) || !(weight > 0.0)) { return 0.0; }
+  return exp(min(getHuffScore(value, weight, reference, referenceWeight, exponent) - maximum, 0.0));
+}
+fn getHuffContribution(value: f32, weight: f32, reference: f32, referenceWeight: f32, maximum: f32, total: f32, exponent: f32, demand: f32) -> f32 {
+  if (!(value > 0.0) || !(weight > 0.0) || demand == 0.0) { return 0.0; }
+  let score = min(getHuffScore(value, weight, reference, referenceWeight, exponent) - maximum, 0.0);
+  // Below exp(-256), even the largest finite demand cannot produce a float32 subnormal.
+  // This also keeps conversion to an integer exponent finite and in range.
+  if (score < -256.0) { return 0.0; }
+  let power = i32(floor(score * 1.4426950408889634));
+  let fraction = exp(score - f32(power) * 0.6931471805599453);
+  let demandParts = frexp(demand);
+  return getScaledQuotient(demandParts.fract * fraction, total, 1.0, demandParts.exp + power);
+}`;
     const rowLoop = (
       inner: string
     ) => `for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
     let partner = neighbors[neighborsOffset + slot];
     if (partner < FACILITIES) {
-      let share = attraction[attractionOffset + partner] * weights[weightsOffset + slot];
+      let value = attraction[attractionOffset + partner];
+      let weight = weights[weightsOffset + slot];
+      if (value > 0.0 && weight > 0.0) {
       ${inner}
+      }
     }
   }`;
     const demandBindings = [
@@ -289,7 +357,8 @@ ${SPATIAL_ANALYSIS_QUOTIENT_WGSL}`;
         access: 'read' as const
       },
       {name: 'weights', view: demandWeights.weights, type: 'f32' as const, access: 'read' as const},
-      {name: 'attraction', view: attraction, type: 'f32' as const, access: 'read' as const}
+      {name: 'attraction', view: attraction, type: 'f32' as const, access: 'read' as const},
+      ...parameterBinding
     ];
     const nodes: (GPUCommandNode<Parameters> | GPUCommandNode<Parameters>[])[] = [
       getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
@@ -298,13 +367,10 @@ ${SPATIAL_ANALYSIS_QUOTIENT_WGSL}`;
         variant: 'attraction',
         bindings: [
           {name: 'attractiveness', view: attractiveness, type: 'f32', access: 'read'},
-          ...parameterBinding,
           {name: 'attraction', view: attraction, type: 'f32', access: 'read_write'}
         ],
         invocationCount: facilityCount,
-        body: `let value = attractiveness[attractivenessOffset + index];
-  let exponent = ${parameters ? 'parameters[parametersOffset]' : '1.0'};
-  attraction[attractionOffset + index] = select(0.0, pow(value, exponent), value > 0.0);`
+        body: 'attraction[attractionOffset + index] = attractiveness[attractivenessOffset + index];'
       }),
       getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
         id: `${id}-trade-area`,
@@ -312,7 +378,7 @@ ${SPATIAL_ANALYSIS_QUOTIENT_WGSL}`;
         variant: 'trade-area',
         bindings: [
           ...demandBindings,
-          {name: 'denominators', view: denominators, type: 'f32', access: 'read_write'},
+          {name: 'normalization', view: normalization, type: 'f32', access: 'read_write'},
           {name: 'tradeArea', view: output.tradeArea, type: 'u32', access: 'read_write'},
           ...(output.tradeAreaProbability
             ? [
@@ -327,15 +393,25 @@ ${SPATIAL_ANALYSIS_QUOTIENT_WGSL}`;
         ],
         invocationCount: demandCount,
         declarations,
-        body: `var total = 0.0;
+        body: `let exponent = ${parameters ? 'parameters[parametersOffset]' : '1.0'};
+  var reference = 0.0;
+  var referenceWeight = 0.0;
+  ${rowLoop('reference = max(reference, value); referenceWeight = max(referenceWeight, weight);')}
+  var maximum = -3.4e38;
+  ${rowLoop('maximum = max(maximum, getHuffScore(value, weight, reference, referenceWeight, exponent));')}
+  var total = 0.0;
   var best = 0.0;
   var bestFacility = ${GPU_HUFF_NO_TRADE_AREA}u;
-  ${rowLoop(`total += share;
-      if (share > best) {
+  ${rowLoop(`let share = getHuffShare(value, weight, reference, referenceWeight, maximum, exponent);
+      total += share;
+      if (share > best || (share == best && share > 0.0 && partner < bestFacility)) {
         best = share;
         bestFacility = partner;
       }`)}
-  denominators[denominatorsOffset + index] = total;
+  normalization[normalizationOffset + 4u * index] = reference;
+  normalization[normalizationOffset + 4u * index + 1u] = referenceWeight;
+  normalization[normalizationOffset + 4u * index + 2u] = maximum;
+  normalization[normalizationOffset + 4u * index + 3u] = total;
   tradeArea[tradeAreaOffset + index] = select(${GPU_HUFF_NO_TRADE_AREA}u, bestFacility, total > 0.0);
   ${output.tradeAreaProbability ? 'tradeProbability[tradeProbabilityOffset + index] = select(0.0, getSpatialAnalysisQuotient(best,total), total > 0.0);' : ''}`
       })
@@ -343,22 +419,36 @@ ${SPATIAL_ANALYSIS_QUOTIENT_WGSL}`;
     if (output.probabilities) {
       nodes.push(
         getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
+          id: `${id}-clear-probabilities`,
+          operation: OPERATION,
+          variant: 'clear-probabilities',
+          bindings: [
+            {name: 'probabilities', view: output.probabilities, type: 'f32', access: 'read_write'}
+          ],
+          invocationCount: output.probabilities.length,
+          body: 'probabilities[probabilitiesOffset + index] = 0.0;'
+        }),
+        getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
           id: `${id}-probabilities`,
           operation: OPERATION,
           variant: 'probabilities',
           bindings: [
             ...demandBindings,
-            {name: 'denominators', view: denominators, type: 'f32', access: 'read'},
+            {name: 'normalization', view: normalization, type: 'f32', access: 'read'},
             {name: 'probabilities', view: output.probabilities, type: 'f32', access: 'read_write'}
           ],
           invocationCount: demandCount,
           declarations,
-          body: `let total = denominators[denominatorsOffset + index];
+          body: `let reference = normalization[normalizationOffset + 4u * index];
+  let referenceWeight = normalization[normalizationOffset + 4u * index + 1u];
+  let maximum = normalization[normalizationOffset + 4u * index + 2u];
+  let total = normalization[normalizationOffset + 4u * index + 3u];
+  let exponent = ${parameters ? 'parameters[parametersOffset]' : '1.0'};
   for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
     let partner = neighbors[neighborsOffset + slot];
     var probability = 0.0;
     if (partner < FACILITIES && total > 0.0) {
-      probability = getSpatialAnalysisQuotient(attraction[attractionOffset + partner] * weights[weightsOffset + slot],total);
+      probability = getSpatialAnalysisQuotient(getHuffShare(attraction[attractionOffset + partner], weights[weightsOffset + slot], reference, referenceWeight, maximum, exponent),total);
     }
     probabilities[probabilitiesOffset + slot] = probability;
   }`
@@ -378,21 +468,25 @@ ${SPATIAL_ANALYSIS_QUOTIENT_WGSL}`;
             {name: 'weights', view: facilityWeights.weights, type: 'f32', access: 'read'},
             {name: 'attraction', view: attraction, type: 'f32', access: 'read'},
             {name: 'demand', view: props.demand, type: 'f32', access: 'read'},
-            {name: 'denominators', view: denominators, type: 'f32', access: 'read'},
+            {name: 'normalization', view: normalization, type: 'f32', access: 'read'},
+            ...parameterBinding,
             {name: 'expectedDemand', view: output.expectedDemand, type: 'f32', access: 'read_write'}
           ],
           invocationCount: facilityCount,
           declarations,
-          body: `var captured = 0.0;
+          body: `let exponent = ${parameters ? 'parameters[parametersOffset]' : '1.0'};
+  var captured = 0.0;
   for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
     let partner = neighbors[neighborsOffset + slot];
     if (partner < DEMANDS) {
-      let total = denominators[denominatorsOffset + partner];
+      let reference = normalization[normalizationOffset + 4u * partner];
+      let referenceWeight = normalization[normalizationOffset + 4u * partner + 1u];
+      let maximum = normalization[normalizationOffset + 4u * partner + 2u];
+      let total = normalization[normalizationOffset + 4u * partner + 3u];
       let partnerDemand = demand[demandOffset + partner];
       // A non-finite demand is missing and adds nothing, as in GPUCatchmentAccessibility.
       if (total > 0.0 && isFiniteValue(partnerDemand)) {
-        let share = getSpatialAnalysisQuotient(attraction[attractionOffset + index] * weights[weightsOffset + slot],total);
-        captured += partnerDemand * share;
+        captured += getHuffContribution(attraction[attractionOffset + index], weights[weightsOffset + slot], reference, referenceWeight, maximum, total, exponent, partnerDemand);
       }
     }
   }
@@ -413,6 +507,42 @@ ${SPATIAL_ANALYSIS_QUOTIENT_WGSL}`;
           invocationCount: demandCount,
           declarations: IS_FINITE_VALUE_WGSL,
           body: 'validity[validityOffset + index] = u32(isFiniteValue(demand[demandOffset + index]));'
+        })
+      );
+    }
+    // Incomplete forward weights invalidate the normalized row and every derived capture.
+    // Incomplete reverse weights affect only expected demand. Never publish either partial sum.
+    const forwardLoss = getHuffWeightLossFlags(demandWeights);
+    const reverseLoss =
+      output.expectedDemand && props.facilityWeights
+        ? getHuffWeightLossFlags(props.facilityWeights)
+        : [];
+    for (const [name, view, flags, type, value] of [
+      ['tradeArea', output.tradeArea, forwardLoss, 'u32', `${GPU_HUFF_NO_TRADE_AREA}u`],
+      ['probabilities', output.probabilities, forwardLoss, 'f32', 'getNaN()'],
+      ['tradeAreaProbability', output.tradeAreaProbability, forwardLoss, 'f32', 'getNaN()'],
+      ['expectedDemand', output.expectedDemand, [...forwardLoss, ...reverseLoss], 'f32', 'getNaN()']
+    ] as const) {
+      if (!view || flags.length === 0) continue;
+      nodes.push(
+        getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
+          id: `${id}-suppress-${name}`,
+          operation: OPERATION,
+          variant: 'incomplete-input',
+          bindings: [
+            ...flags.map((flag, index) => ({
+              name: `loss${index}`,
+              view: flag,
+              type: 'u32' as const,
+              access: 'read' as const
+            })),
+            {name: 'result', view, type, access: 'read_write'}
+          ],
+          invocationCount: view.length,
+          declarations: type === 'f32' ? GET_NAN_WGSL : undefined,
+          body: `if (${flags.map((_, index) => `loss${index}[loss${index}Offset] != 0u`).join(' || ')}) {
+  result[resultOffset + index] = ${value};
+}`
         })
       );
     }
@@ -440,12 +570,21 @@ function getInputs(props: GPUHuffTradeAreasProps): (GraphDataView | undefined)[]
     props.demandWeights.offsets,
     props.demandWeights.neighbors,
     props.demandWeights.weights,
+    ...getHuffWeightLossFlags(props.demandWeights),
     ...(props.output.expectedDemand
       ? [
           props.facilityWeights?.offsets,
           props.facilityWeights?.neighbors,
-          props.facilityWeights?.weights
+          props.facilityWeights?.weights,
+          ...(props.facilityWeights ? getHuffWeightLossFlags(props.facilityWeights) : [])
         ]
       : [])
   ];
+}
+
+/** The supplied loss flags are GPU inputs, not host-side metadata. */
+function getHuffWeightLossFlags(weights: GPUSpatialWeights): GraphDataView<'uint32'>[] {
+  return [weights.status?.overflow, weights.status?.candidateOverflow].filter(
+    (view): view is GraphDataView<'uint32'> => view !== undefined
+  );
 }

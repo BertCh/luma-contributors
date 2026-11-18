@@ -33,7 +33,7 @@ export type RasterFractionalZonalDistributionOperationProps = {
     cellIds: string;
     fractions: string;
     zoneValidity: string;
-    status: {count: string; requiredCount: string; overflow: string};
+    status: {count: string; requiredCount: string; overflow: string; candidateOverflow?: string};
   };
   probabilities: string;
   output: {[Port in keyof GPURasterFractionalZonalDistributionOutput]: string};
@@ -55,6 +55,9 @@ export class GPURasterFractionalZonalDistributionOperation extends GPUContributo
         count: props.coverage.status.count,
         requiredCount: props.coverage.status.requiredCount,
         overflow: props.coverage.status.overflow,
+        ...(props.coverage.status.candidateOverflow !== undefined
+          ? {candidateOverflow: props.coverage.status.candidateOverflow}
+          : {}),
         ...(props.input.validity !== undefined ? {inputValidity: props.input.validity} : {}),
         ...(props.observationWeights !== undefined
           ? {observationWeights: props.observationWeights}
@@ -100,7 +103,11 @@ export class GPURasterFractionalZonalDistributionOperation extends GPUContributo
             status: {
               count: getView<'uint32'>('count'),
               requiredCount: getView<'uint32'>('requiredCount'),
-              overflow: getView<'uint32'>('overflow')
+              overflow: getView<'uint32'>('overflow'),
+              candidateOverflow:
+                props.coverage.status.candidateOverflow !== undefined
+                  ? getView<'uint32'>('candidateOverflow')
+                  : undefined
             }
           },
           output: {

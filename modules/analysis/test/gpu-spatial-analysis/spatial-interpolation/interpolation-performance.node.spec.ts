@@ -140,7 +140,7 @@ it('maximal interpolation options fit core binding and shader scratch budgets', 
       expect(usage.storageBuffers).toBeLessThanOrEqual(8);
       expect(usage.privateBytes).toBeLessThanOrEqual(8192);
       expect(usage.functionBytes).toBeLessThanOrEqual(8192);
-      expect(usage.workgroupBytes).toBeLessThanOrEqual(16384);
+      expect(usage.workgroupStorageBytes).toBeLessThanOrEqual(16384);
       budgets.push({operation: kernel.operation, ...usage});
     }
   }

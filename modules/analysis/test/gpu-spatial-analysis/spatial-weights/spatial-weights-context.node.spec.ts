@@ -108,7 +108,8 @@ it('weights algebra checks two declared contexts and preserves either declared i
         right: weights(rightContext),
         output: weights()
       });
-      expect(result.outputWeights.spatialContext, operation).toBe(spatialContext);
+      expect(result.outputWeights.spatialContext, operation).toStrictEqual(spatialContext);
+      expect(Object.isFrozen(result.outputWeights.spatialContext)).toBe(true);
     }
     expect(
       () =>
@@ -128,7 +129,7 @@ it('weights algebra checks two declared contexts and preserves either declared i
       selfWeight: 1,
       output: weights()
     }).outputWeights.spatialContext
-  ).toBe(spatialContext);
+  ).toStrictEqual(spatialContext);
   expect(
     new GPUSpatialWeightsAlgebra({
       operation: 'subgraph',
@@ -136,7 +137,7 @@ it('weights algebra checks two declared contexts and preserves either declared i
       mask: view('uint32', 3),
       output: weights()
     }).outputWeights.spatialContext
-  ).toBe(spatialContext);
+  ).toStrictEqual(spatialContext);
   expect(
     new GPUSpatialWeightsAlgebra({
       operation: 'higherOrder',
@@ -144,6 +145,6 @@ it('weights algebra checks two declared contexts and preserves either declared i
       order: 2,
       output: {...weights(), distances: undefined}
     }).outputWeights.spatialContext
-  ).toBe(spatialContext);
+  ).toStrictEqual(spatialContext);
   device.destroy();
 });

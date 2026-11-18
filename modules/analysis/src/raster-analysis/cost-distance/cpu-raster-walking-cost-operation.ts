@@ -11,7 +11,7 @@ import {
   getCPUOperationFloat32Rows,
   getCPUOperationUint32Rows
 } from '../../analysis-core/operations/cpu-operation-rows';
-import {getRasterGroundScale} from '../../analysis-core/raster-grid';
+import {getRasterGroundScale} from '../../analysis-core/contracts/raster-grid';
 import {GPU_RASTER_WALKING_COST_PARAMETER_LENGTH} from '../gpu-raster-walking-cost';
 import {
   calibrateRasterOperationBand,

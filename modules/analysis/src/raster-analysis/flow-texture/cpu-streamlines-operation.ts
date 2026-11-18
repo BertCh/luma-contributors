@@ -17,7 +17,11 @@ import {
   GPU_STREAMLINES_UINT32_PARAMETER_LENGTH,
   STREAMLINES_SEED_PURPOSE
 } from './streamlines-parameters';
-import {GPUStreamlinesOperation, type StreamlinesOperationProps} from './gpu-streamlines-operation';
+import {
+  GPUStreamlinesOperation,
+  snapshotStreamlinesOperationProps,
+  type StreamlinesOperationProps
+} from './gpu-streamlines-operation';
 
 /** Priority keys reserve the low 16 bits for 0xffff minus the seed index. */
 export const CPU_STREAMLINES_MAXIMUM_SEED_COUNT = 65535;
@@ -38,6 +42,7 @@ export type CPUStreamlinesOptions = Pick<
   | 'stepsPerDirection'
   | 'lineCapacity'
   | 'pointCapacity'
+  | 'maximumIterations'
 >;
 export type CPUStreamlinesResult = {
   ids: Uint32Array;
@@ -47,6 +52,7 @@ export type CPUStreamlinesResult = {
   count: Uint32Array;
   requiredCount: Uint32Array;
   overflow: Uint32Array;
+  candidateOverflow: Uint32Array;
   iterationLimitReached: Uint32Array;
   candidatePositions: Float32Array;
   candidateSpans: Uint32Array;
@@ -58,7 +64,8 @@ export type CPUStreamlinesResult = {
  * order, stopping at the first line that exceeds either capacity. Only active rows are defined.
  *
  * What differs from the GPU contributor:
- * - No pruning round limit: iterationLimitReached is zero and overflow never contains bit 2.
+ * - Pruning honors maximumIterations (default 32); unresolved seeds are dropped and reported by
+ *   candidateOverflow and iterationLimitReached. Final overflow reports capacity alone.
  *   Candidate spans contain traced backward/forward counts, then final kept counts for accepted
  *   seeds and zeros for rejected seeds; GPU rejected seeds can retain intermediate kept counts.
  * - Seed placement, interpolation, normalization and RK2 arithmetic use float64,
@@ -69,7 +76,7 @@ export type CPUStreamlinesResult = {
  *   and reciprocal multiplication, so the exclusive bound is checked in that representation.
  * - The 65535 seed limit remains because priorities reserve 16 bits for seed index. GPU dimension
  *   caps are dropped; field rows still fit uint32 and occupancy indices must be safe integers.
- *   No maximumIterations limit is imposed by the CPU. Unused output rows are zero-initialized.
+ *   Unused output rows are zero-initialized.
  * - NaN field corners invalidate a sample even at zero interpolation weight. Nonfinite
  *   directions/positions terminate tracing; subnormal finite velocities remain usable.
  *
@@ -214,9 +221,6 @@ export function computeStreamlinesOnCPU(
     }
   }
   const candidatePositions = Float32Array.from(points);
-  const order = Array.from({length: seedCount}, (_, seed) => seed).sort(
-    (first, second) => keys[second] - keys[first]
-  );
   const occupied = new Set<number>();
   const kept = new Uint32Array(seedCount * 2);
   const accepted = new Uint8Array(seedCount);
@@ -224,24 +228,49 @@ export function computeStreamlinesOnCPU(
     const position = 2 * (seed * stride + options.stepsPerDirection + step);
     return getPublishedCell(candidatePositions[position], candidatePositions[position + 1]);
   };
-  for (const seed of order) {
-    const cell = getCandidateCell(seed, 0);
-    if (cell < 0 || occupied.has(cell)) continue;
-    const counts = [0, 0];
-    for (const sign of [-1, 1]) {
-      const direction = Number(sign > 0);
-      while (
-        counts[direction] < spans[seed * 2 + direction] &&
-        !occupied.has(getCandidateCell(seed, sign * (counts[direction] + 1)))
-      )
-        counts[direction]++;
+  const states = new Uint8Array(seedCount); // 0 undecided, 1 accepted, 2 rejected
+  for (let round = 0; round < (options.maximumIterations ?? 32); round++) {
+    const claims = new Map<number, number>();
+    for (let seed = 0; seed < seedCount; seed++) {
+      if (states[seed] !== 0) continue;
+      const cell = getCandidateCell(seed, 0);
+      if (cell < 0 || occupied.has(cell)) {
+        states[seed] = 2;
+        continue;
+      }
+      const counts = [0, 0];
+      for (const sign of [-1, 1]) {
+        const direction = Number(sign > 0);
+        while (
+          counts[direction] < spans[seed * 2 + direction] &&
+          !occupied.has(getCandidateCell(seed, sign * (counts[direction] + 1)))
+        )
+          counts[direction]++;
+      }
+      if (1 + counts[0] + counts[1] < minimumPoints) {
+        states[seed] = 2;
+        continue;
+      }
+      kept.set(counts, seed * 2);
+      for (let step = -counts[0]; step <= counts[1]; step++) {
+        const claim = getCandidateCell(seed, step);
+        claims.set(claim, Math.max(claims.get(claim) ?? 0, keys[seed]));
+      }
     }
-    if (1 + counts[0] + counts[1] < minimumPoints) continue;
-    accepted[seed] = 1;
-    kept.set(counts, seed * 2);
-    for (let step = -counts[0]; step <= counts[1]; step++)
-      occupied.add(getCandidateCell(seed, step));
+    let changed = false;
+    for (let seed = 0; seed < seedCount; seed++) {
+      if (states[seed] !== 0) continue;
+      const cells = Array.from({length: 1 + kept[seed * 2] + kept[seed * 2 + 1]}, (_, index) =>
+        getCandidateCell(seed, index - kept[seed * 2])
+      );
+      if (!cells.every(cell => claims.get(cell) === keys[seed])) continue;
+      states[seed] = accepted[seed] = 1;
+      for (const cell of cells) occupied.add(cell);
+      changed = true;
+    }
+    if (!changed) break;
   }
+  const incomplete = Number(states.some(state => state === 0));
   const result: CPUStreamlinesResult = {
     ids: new Uint32Array(options.lineCapacity),
     lineOffsets: new Uint32Array(options.lineCapacity + 1),
@@ -250,7 +279,8 @@ export function computeStreamlinesOnCPU(
     count: new Uint32Array(1),
     requiredCount: new Uint32Array(1),
     overflow: new Uint32Array(1),
-    iterationLimitReached: new Uint32Array(1),
+    candidateOverflow: new Uint32Array([incomplete]),
+    iterationLimitReached: new Uint32Array([incomplete]),
     candidatePositions,
     candidateSpans: new Uint32Array(seedCount * 4)
   };
@@ -311,11 +341,13 @@ function validateOptions(id: string, options: CPUStreamlinesOptions): void {
   );
   for (const port of ['stepsPerDirection', 'lineCapacity', 'pointCapacity'] as const)
     validateCapacity(id, port, options[port]);
+  validateCapacity(id, 'maximumIterations', options.maximumIterations ?? 32);
 }
 
-/** Exact greedy streamline pruning without the GPU round budget. */
+/** CPU streamline pruning with the GPU's round budget and independent loss signals. */
 export class CPUStreamlinesOperation extends GPUCPUOperation {
   constructor(props: StreamlinesOperationProps) {
+    props = snapshotStreamlinesOperationProps(props);
     const operation = new GPUStreamlinesOperation(props);
     const {id} = operation;
     validateOptions(id, props);

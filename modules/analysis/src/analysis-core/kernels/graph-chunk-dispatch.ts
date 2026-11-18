@@ -19,7 +19,7 @@ import {
   validateRequirement
 } from './gpu-contributor-utils';
 import {createSpatialStatisticsParameterNodes} from './spatial-statistics-parameter-nodes';
-import {getCoreDefaultBuffer} from '../network-topology';
+import {getCoreDefaultBuffer} from '../contracts/network-topology';
 
 /** Row bases, lengths and totals are stored in uint32 shader parameters without wrapping. */
 export const GRAPH_CHUNK_MAXIMUM_ROW_COUNT = 0xffffffff;

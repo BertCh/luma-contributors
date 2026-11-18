@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUContributorOperation} from '../operations/gpu-contributor-operation';
+import {validateCapacity} from '../kernels/gpu-contributor-utils';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../kernels/construction-snapshot';
 import {
   GPUPolygonTriangulation,
   type GPUPolygonTriangulationProps
@@ -35,6 +40,40 @@ export type PolygonTriangulationOperationProps = Pick<
   };
 };
 
+/** @internal Capture one shape/port contract for both operation implementations. */
+export function snapshotPolygonTriangulationOperationProps(
+  props: PolygonTriangulationOperationProps
+): PolygonTriangulationOperationProps {
+  const snapshot = snapshotConstructionFields(props, [
+    'id',
+    'spatialContext',
+    'maximumWork',
+    'useZOrderHash',
+    'largePolygonMethod',
+    'monotoneMinimumVertices',
+    'monotoneMaximumVertices',
+    'positions',
+    'featureOffsets',
+    'polygonOffsets',
+    'ringOffsets',
+    'polygonCount',
+    'indexCapacity',
+    'output'
+  ]);
+  return Object.freeze({
+    ...snapshot,
+    ...(snapshot.spatialContext
+      ? {spatialContext: snapshotConstructionSpatialContext(snapshot.spatialContext)}
+      : {}),
+    output: snapshotConstructionFields(snapshot.output, [
+      'indices',
+      'valid',
+      'triangleCount',
+      'triangleOffsets'
+    ])
+  });
+}
+
 /**
  * Polygon triangulation as a graph operation. Compile with GPU_CONTRIBUTOR_OPERATION_LOWERING.
  * Every numeric property is compile-time; all input contents are per-frame graph values.
@@ -44,7 +83,9 @@ export type PolygonTriangulationOperationProps = Pick<
  */
 export class GPUPolygonTriangulationOperation extends GPUContributorOperation {
   constructor(props: PolygonTriangulationOperationProps) {
+    props = snapshotPolygonTriangulationOperationProps(props);
     const id = props.id ?? 'polygon-triangulation';
+    if (props.maximumWork !== undefined) validateCapacity(id, 'maximumWork', props.maximumWork);
     const {output, polygonCount, indexCapacity} = props;
     super({
       id,

@@ -113,8 +113,8 @@ async function runJoin(
     buffers.push(buffer);
     return {buffer, view: importGraphBuffer(graph, name, buffer, 'uint32', length)};
   };
-  const leftIds = output('left-ids', pairCapacity);
-  const rightIds = output('right-ids', pairCapacity);
+  const leftRows = output('left-ids', pairCapacity);
+  const rightRows = output('right-ids', pairCapacity);
   const count = output('count', 1);
   const overflow = output('overflow', 1);
   const candidateOverflow = output('candidate-overflow', 1);
@@ -137,8 +137,8 @@ async function runJoin(
     leafCapacity: options.leafCapacity,
     output: {
       pairs: {
-        leftIds: leftIds.view,
-        rightIds: rightIds.view,
+        leftRows: leftRows.view,
+        rightRows: rightRows.view,
         status: {
           count: count.view,
           overflow: overflow.view,
@@ -163,8 +163,8 @@ async function runJoin(
   submitGraph(device, compiled, undefined);
   const [countValue] = await readUint32(count.buffer, 1);
   const [totalValue] = await readUint32(total.buffer, 1);
-  const lefted = await readUint32(leftIds.buffer, pairCapacity);
-  const righted = await readUint32(rightIds.buffer, pairCapacity);
+  const lefted = await readUint32(leftRows.buffer, pairCapacity);
+  const righted = await readUint32(rightRows.buffer, pairCapacity);
   const weightBytes = await weightBuffer.readAsync();
   // `status.overflow` is set exactly when the pair list or the candidate list is incomplete.
   expect((await readUint32(anyOverflow.buffer, 1))[0]).toBe(
@@ -553,11 +553,11 @@ it('GPUSpatialPredicateJoin updates per frame', async () => {
     [rectangle(0, 0, 4, 4)],
     buffers
   );
-  const leftIds = createOutputBuffer(device, 4);
-  const rightIds = createOutputBuffer(device, 4);
+  const leftRows = createOutputBuffer(device, 4);
+  const rightRows = createOutputBuffer(device, 4);
   const count = createOutputBuffer(device, 1);
   const overflow = createOutputBuffer(device, 1);
-  buffers.push(leftIds, rightIds, count, overflow);
+  buffers.push(leftRows, rightRows, count, overflow);
   graph.add(
     new GPUSpatialPredicateJoin({
       left,
@@ -566,8 +566,8 @@ it('GPUSpatialPredicateJoin updates per frame', async () => {
       candidateCapacity: 4,
       output: {
         pairs: {
-          leftIds: importGraphBuffer(graph, 'l', leftIds, 'uint32', 4),
-          rightIds: importGraphBuffer(graph, 'r', rightIds, 'uint32', 4),
+          leftRows: importGraphBuffer(graph, 'l', leftRows, 'uint32', 4),
+          rightRows: importGraphBuffer(graph, 'r', rightRows, 'uint32', 4),
           status: {
             count: importGraphBuffer(graph, 'c', count, 'uint32', 1),
             overflow: importGraphBuffer(graph, 'o', overflow, 'uint32', 1)
@@ -579,12 +579,12 @@ it('GPUSpatialPredicateJoin updates per frame', async () => {
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
   expect(await readUint32(count, 1)).toEqual([1]);
-  expect((await readUint32(leftIds, 1))[0]).toBe(0);
+  expect((await readUint32(leftRows, 1))[0]).toBe(0);
   // buffers[0] holds the left positions: move the second point into the polygon.
   buffers[0].write(Float32Array.from([1, 1, 2, 2]));
   submitGraph(device, compiled, undefined);
   expect(await readUint32(count, 1)).toEqual([2]);
-  expect(await readUint32(leftIds, 2)).toEqual([0, 1]);
+  expect(await readUint32(leftRows, 2)).toEqual([0, 1]);
   compiled.destroy();
   for (const buffer of buffers) {
     buffer.destroy();

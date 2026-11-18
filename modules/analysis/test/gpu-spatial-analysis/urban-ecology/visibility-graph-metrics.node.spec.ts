@@ -7,7 +7,7 @@ import {GPUCommandGraph, createTransientView, type GraphDataView} from '@luma.gl
 import {expect, it} from 'vitest';
 import {GPUSnapshotArena, GPUSnapshotTap} from '../../../src/computation-record';
 import {addVisibilityGraphCSRRecipe} from '../../../src/gpu-spatial-analysis/urban-morphology/visibility-graph-csr';
-import {getCoreDefaultBuffer} from '../../../src/analysis-core/network-topology';
+import {getCoreDefaultBuffer} from '../../../src/analysis-core/contracts/network-topology';
 import {createWGSLKernelNode} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
 import {
   VISIBILITY_GRAPH_PIVOT_WGSL,

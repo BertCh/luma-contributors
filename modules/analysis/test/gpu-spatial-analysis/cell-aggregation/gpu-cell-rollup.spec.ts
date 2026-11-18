@@ -68,28 +68,45 @@ function createSourceBuffers(device: Device, buffers: Buffer[], capacity: number
     minimums: input(minimums),
     maximums: input(maximums),
     count: input(Uint32Array.of(fixture.source.length)),
-    overflow: input(Uint32Array.of(0))
+    overflow: input(Uint32Array.of(0)),
+    candidateOverflow: input(Uint32Array.of(0))
   };
 }
 
-async function runRollup(device: Device, resolution: number, outputCapacity: number) {
+async function runRollup(
+  device: Device,
+  resolution: number,
+  outputCapacity: number,
+  sourceStatus?: {count: number; overflow: number; candidateOverflow: number},
+  adjacentLossFlags = false,
+  packedCountsAndSums = false
+) {
   const buffers: Buffer[] = [];
   const sourceCapacity = fixture.source.length + 3;
   const sourceBuffers = createSourceBuffers(device, buffers, sourceCapacity);
+  if (sourceStatus) {
+    sourceBuffers.count.write(Uint32Array.of(sourceStatus.count));
+    sourceBuffers.overflow.write(Uint32Array.of(sourceStatus.overflow));
+    sourceBuffers.candidateOverflow.write(Uint32Array.of(sourceStatus.candidateOverflow));
+  }
   const output = (length: number) => {
     const buffer = createOutputBuffer(device, length);
     buffers.push(buffer);
     return buffer;
   };
+  const flags = adjacentLossFlags ? output(2) : undefined;
+  const sumWordOffset = packedCountsAndSums ? Math.ceil(outputCapacity / 64) * 64 : 0;
+  const packed = packedCountsAndSums ? output(sumWordOffset + 2 * outputCapacity) : undefined;
   const outputBuffers = {
     cells: output(2 * outputCapacity),
-    counts: output(outputCapacity),
-    sums: output(2 * outputCapacity),
+    counts: packed ?? output(outputCapacity),
+    sums: packed ?? output(2 * outputCapacity),
     sumValues: output(outputCapacity),
     minimums: output(outputCapacity),
     maximums: output(outputCapacity),
     count: output(1),
-    overflow: output(1),
+    overflow: flags ?? output(1),
+    candidateOverflow: flags ?? output(1),
     required: output(1)
   };
   const graph = new GPUCommandGraph(device, {id: 'cell-rollup-property'});
@@ -125,13 +142,28 @@ async function runRollup(device: Device, resolution: number, outputCapacity: num
     ),
     status: {
       count: importGraphBuffer(graph, 'source-count', sourceBuffers.count, 'uint32', 1),
-      overflow: importGraphBuffer(graph, 'source-overflow', sourceBuffers.overflow, 'uint32', 1)
+      overflow: importGraphBuffer(graph, 'source-overflow', sourceBuffers.overflow, 'uint32', 1),
+      candidateOverflow: importGraphBuffer(
+        graph,
+        'source-candidate-overflow',
+        sourceBuffers.candidateOverflow,
+        'uint32',
+        1
+      )
     }
   };
+  const overflow = importGraphBuffer(graph, 'overflow', outputBuffers.overflow, 'uint32', 1);
+  const counts = importGraphBuffer(graph, 'counts', outputBuffers.counts, 'uint32', outputCapacity);
   const table: GPUCellTable = {
     cells: importGraphBuffer(graph, 'cells', outputBuffers.cells, 'uint32x2', outputCapacity),
-    counts: importGraphBuffer(graph, 'counts', outputBuffers.counts, 'uint32', outputCapacity),
-    sums: importGraphBuffer(graph, 'sums', outputBuffers.sums, 'uint32x2', outputCapacity),
+    counts,
+    sums: packedCountsAndSums
+      ? graph.createDataView(counts.buffer, {
+          format: 'uint32x2',
+          length: outputCapacity,
+          byteOffset: sumWordOffset * 4
+        })
+      : importGraphBuffer(graph, 'sums', outputBuffers.sums, 'uint32x2', outputCapacity),
     sumValues: importGraphBuffer(
       graph,
       'sum-values',
@@ -155,39 +187,129 @@ async function runRollup(device: Device, resolution: number, outputCapacity: num
     ),
     status: {
       count: importGraphBuffer(graph, 'count', outputBuffers.count, 'uint32', 1),
-      overflow: importGraphBuffer(graph, 'overflow', outputBuffers.overflow, 'uint32', 1),
+      overflow,
+      candidateOverflow: adjacentLossFlags
+        ? graph.createDataView(overflow.buffer, {format: 'uint32', length: 1, byteOffset: 4})
+        : importGraphBuffer(
+            graph,
+            'candidate-overflow',
+            outputBuffers.candidateOverflow,
+            'uint32',
+            1
+          ),
       requiredCount: importGraphBuffer(graph, 'required', outputBuffers.required, 'uint32', 1)
     }
   };
-  graph.add(
-    new GPUCellRollup({
-      family: 'h3',
-      sourceResolution: fixture.sourceResolution,
-      resolution,
-      source,
-      sumScale: fixture.sumScale,
-      output: table
-    })
-  );
+  if (packedCountsAndSums) {
+    Object.assign(table, {label: 'packed trial table'});
+    Object.assign(table.status, {label: 'packed trial status'});
+  }
+  const contributor = new GPUCellRollup({
+    family: 'h3',
+    sourceResolution: fixture.sourceResolution,
+    resolution,
+    source,
+    sumScale: fixture.sumScale,
+    output: table
+  });
+  if (packedCountsAndSums) {
+    // Caller mutation after validation must not redirect either publisher or the sum accumulator.
+    table.status.overflow = table.status.candidateOverflow!;
+    table.sums = source.sums;
+  }
+  graph.add(contributor);
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
   const result = {
     count: (await readUint32(outputBuffers.count, 1))[0],
     overflow: (await readUint32(outputBuffers.overflow, 1))[0],
+    candidateOverflow: (
+      await readUint32(outputBuffers.candidateOverflow, adjacentLossFlags ? 2 : 1)
+    )[adjacentLossFlags ? 1 : 0],
     required: (await readUint32(outputBuffers.required, 1))[0],
     cells: await readUint32(outputBuffers.cells, 2 * outputCapacity),
     counts: await readUint32(outputBuffers.counts, outputCapacity),
-    sums: await readUint32(outputBuffers.sums, 2 * outputCapacity),
+    sums: (await readUint32(outputBuffers.sums, sumWordOffset + 2 * outputCapacity)).slice(
+      sumWordOffset
+    ),
     sumValues: await readFloat32(outputBuffers.sumValues, outputCapacity),
     minimums: await readFloat32(outputBuffers.minimums, outputCapacity),
     maximums: await readFloat32(outputBuffers.maximums, outputCapacity)
   };
+  const resubmittedStatus: number[][] = [];
+  if (sourceStatus) {
+    for (const [overflow, candidateOverflow] of [
+      [0, 1],
+      [0, 0]
+    ]) {
+      sourceBuffers.overflow.write(Uint32Array.of(overflow));
+      sourceBuffers.candidateOverflow.write(Uint32Array.of(candidateOverflow));
+      submitGraph(device, compiled, undefined);
+      resubmittedStatus.push([
+        (await readUint32(outputBuffers.overflow, 1))[0],
+        (await readUint32(outputBuffers.candidateOverflow, adjacentLossFlags ? 2 : 1))[
+          adjacentLossFlags ? 1 : 0
+        ]
+      ]);
+    }
+  }
   compiled.destroy();
   for (const buffer of buffers) {
     buffer.destroy();
   }
-  return result;
+  return {...result, resubmittedStatus};
 }
+
+it.each([
+  false,
+  true
+])('GPUCellRollup keeps source loss separate when four destination slots fit the retained cell (adjacent flags=%s)', async adjacentLossFlags => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const actual = await runRollup(
+    device,
+    fixture.sourceResolution,
+    4,
+    {count: 1, overflow: 1, candidateOverflow: 0},
+    adjacentLossFlags
+  );
+  expect([actual.count, actual.required, actual.overflow, actual.candidateOverflow]).toEqual([
+    1, 1, 0, 1
+  ]);
+  expect(actual.resubmittedStatus).toEqual([
+    [0, 1],
+    [0, 0]
+  ]);
+  device.destroy();
+});
+
+it('GPUCellRollup submits counts and sums packed in disjoint aligned ranges', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  try {
+    // One retained fixture cell, unchanged resolution. Counts start at 0, sums at 256 bytes.
+    const actual = await runRollup(
+      device,
+      fixture.sourceResolution,
+      1,
+      {count: 1, overflow: 1, candidateOverflow: 0},
+      false,
+      true
+    );
+    expect([actual.count, actual.required, actual.overflow, actual.candidateOverflow]).toEqual([
+      1, 1, 0, 1
+    ]);
+    expect(actual.counts).toEqual([47]);
+    expect(actual.sums).toEqual(splitWords(838444606326n));
+    expect(actual.cells).toEqual(splitWords(0x8808000001fffffn));
+    expect(actual.resubmittedStatus).toEqual([
+      [0, 1],
+      [0, 0]
+    ]);
+  } finally {
+    device.destroy();
+  }
+});
 
 it('GPUCellRollup equals h3 cell_to_parent folds of the source table (counts, int64 sums, extremes)', async () => {
   const device = await getWebGPUTestDevice();

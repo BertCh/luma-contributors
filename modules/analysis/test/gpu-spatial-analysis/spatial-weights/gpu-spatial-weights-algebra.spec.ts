@@ -4,6 +4,7 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
+import {expectNumericArrayClose} from '../../../src/testing/expect-numeric-array-close';
 import {
   GPUSpatialWeightsAlgebra,
   GPUSpatialWeightsSummary,
@@ -34,12 +35,11 @@ import {
 import {requireTestDevice} from '../../utils/require-test-device';
 
 function expectClose(actual: number[], expected: number[], label: string, relative = 2e-5): void {
-  expect(actual.length, `${label} length`).toBe(expected.length);
-  for (let index = 0; index < expected.length; index++) {
-    if (Math.abs(actual[index] - expected[index]) > 1e-6 + relative * Math.abs(expected[index])) {
-      throw new Error(`${label}: [${index}] ${actual[index]} != ${expected[index]}`);
-    }
-  }
+  expectNumericArrayClose(actual, expected, {
+    absoluteTolerance: 1e-6,
+    relativeTolerance: relative,
+    label
+  });
 }
 
 function expectSameCSR(actual: OracleCSR, expected: OracleCSR, label: string, distances = false) {

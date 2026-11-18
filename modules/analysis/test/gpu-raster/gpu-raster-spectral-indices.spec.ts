@@ -19,6 +19,8 @@ import {
   submitGraph
 } from '../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../utils/require-test-device';
+import {RecipeTestFixture} from '../gpu-spatial-analysis/recipes/recipe-harness';
+import {GPURasterNBR} from '../../src/raster-analysis/gpu-raster-spectral-indices';
 import {
   createSpectralIndex,
   SPECTRAL_CASES,
@@ -38,6 +40,54 @@ function makeArray(format: GPURasterScalarFormat, values: number[]) {
       return Float32Array.from([913, ...values]);
   }
 }
+
+it('G3 NBR retains its validated output and bands after physical-alias mutation', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new RecipeTestFixture(device, 'spectral-snapshot');
+  try {
+    const nearInfrared = fixture.output('nir', 'float32', 1);
+    nearInfrared.buffer.write(Float32Array.of(0.8));
+    const output = fixture.output('index', 'float32', 1);
+    const validity = fixture.output('validity', 'uint32', 1);
+    const band = {
+      id: 'nir',
+      format: 'float32' as const,
+      storage: {kind: 'buffer' as const, values: nearInfrared.view}
+    };
+    const props = {
+      width: 1,
+      height: 1,
+      nearInfrared: band,
+      shortwaveInfrared2: {
+        id: 'swir',
+        format: 'float32' as const,
+        storage: {
+          kind: 'buffer' as const,
+          values: fixture.input('swir', Float32Array.of(0.2), 'float32', 1)
+        }
+      },
+      output: output.view,
+      outputValidity: validity.view
+    };
+    const contributor = new GPURasterNBR(props);
+    props.output = fixture.graph.createDataView(
+      fixture.graph.importBuffer(
+        {id: 'alias', byteLength: 4, usage: nearInfrared.buffer.usage},
+        nearInfrared.buffer
+      ),
+      {format: 'float32', length: 1}
+    );
+    band.storage.values = output.view;
+    fixture.graph.add(contributor);
+    fixture.run();
+    expect((await fixture.readFloat32(output, 1))[0]).toBeCloseTo(0.6, 6);
+    expect(await fixture.readUint32(validity, 1)).toEqual([1]);
+    expect((await fixture.readFloat32(nearInfrared, 1))[0]).toBeCloseTo(0.8, 6);
+  } finally {
+    fixture.destroy();
+  }
+});
 
 function importOffsetView<Format extends GPURasterScalarFormat>(
   graph: GPUCommandGraph,
@@ -143,7 +193,7 @@ async function runCase(device: Device, scene: SpectralCase) {
     buffers.push(output, validity);
     output.write(Float32Array.from({length: length + 1}, () => 913));
     validity.write(Uint32Array.from({length: length + 1}, () => 913));
-    createSpectralIndex(
+    const contributor = createSpectralIndex(
       scene.index,
       {
         width: scene.width,
@@ -155,7 +205,10 @@ async function runCase(device: Device, scene: SpectralCase) {
       },
       bands,
       scene.soilAdjustment
-    ).addToGraph(graph);
+    );
+    const inspected = contributor.getCommandNodes(graph);
+    expect(() => Array.prototype.pop.call(inspected)).toThrow(TypeError);
+    graph.add(contributor);
     compiled = graph.compile();
     submitGraph(device, compiled, undefined);
     await checkOutput(output, validity, scene.expected);

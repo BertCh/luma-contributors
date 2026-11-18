@@ -16,7 +16,7 @@ import {
   GPUCellLevelSelection,
   GPUCellPyramid,
   type GPUCellAggregationProps,
-  type GPUCellFamily,
+  type GPUCellAggregationFamily,
   type GPUCellTable
 } from '../../../src/gpu-spatial-analysis/cell-aggregation/index';
 import {
@@ -61,6 +61,7 @@ type TableBuffers = Record<
   | 'maximums'
   | 'count'
   | 'overflow'
+  | 'candidateOverflow'
   | 'total',
   Buffer
 > & {capacity: number};
@@ -68,6 +69,7 @@ type TableBuffers = Record<
 type ActualTable = {
   count: number;
   overflow: number;
+  candidateOverflow: number;
   total: number;
   rows: OracleCell[];
   sumValues: number[];
@@ -102,6 +104,7 @@ class Fixture {
       maximums: this.output(capacity),
       count: this.output(1),
       overflow: this.output(1),
+      candidateOverflow: this.output(1),
       total: this.output(1)
     };
   }
@@ -131,6 +134,13 @@ function importTable(graph: GPUCommandGraph, prefix: string, table: TableBuffers
     status: {
       count: importGraphBuffer(graph, `${prefix}-count`, table.count, 'uint32', 1),
       overflow: importGraphBuffer(graph, `${prefix}-overflow`, table.overflow, 'uint32', 1),
+      candidateOverflow: importGraphBuffer(
+        graph,
+        `${prefix}-candidate-overflow`,
+        table.candidateOverflow,
+        'uint32',
+        1
+      ),
       requiredCount: importGraphBuffer(graph, `${prefix}-total`, table.total, 'uint32', 1)
     }
   };
@@ -140,6 +150,7 @@ async function readTable(table: TableBuffers): Promise<ActualTable> {
   const {capacity} = table;
   const [count] = await readUint32(table.count, 1);
   const [overflow] = await readUint32(table.overflow, 1);
+  const [candidateOverflow] = await readUint32(table.candidateOverflow, 1);
   const [total] = await readUint32(table.total, 1);
   const cells = await readUint32(table.cells, 2 * capacity);
   const counts = await readUint32(table.counts, capacity);
@@ -165,6 +176,7 @@ async function readTable(table: TableBuffers): Promise<ActualTable> {
   return {
     count,
     overflow,
+    candidateOverflow,
     total,
     rows,
     sumValues: sumValues.slice(0, count),
@@ -210,7 +222,7 @@ type AggregationScene = {
   chunkLength?: number;
   emptyInputChunks?: boolean;
   scratchTileSize?: number;
-  family: GPUCellFamily;
+  family: GPUCellAggregationFamily;
   resolution: number;
   positions?: Float32Array;
   cells?: Uint32Array;
@@ -279,8 +291,12 @@ function createAggregation(fixture: Fixture, scene: AggregationScene) {
     async run(values: Float32Array, mask: Uint32Array): Promise<ActualTable> {
       valuesBuffer.write(values);
       maskBuffer.write(mask);
+      // Raw tables have no inherited loss; stale flags must clear on packed and tiled paths.
+      table.candidateOverflow.write(Uint32Array.of(1));
       submitGraph(device, compiled, undefined);
-      return readTable(table);
+      const actual = await readTable(table);
+      expect(actual.candidateOverflow, 'raw aggregation clears inherited loss').toBe(0);
+      return actual;
     }
   };
 }
@@ -469,7 +485,7 @@ it('GPUCellAggregation aggregates pre-keyed H3 and Quadbin rows (CARTO columns)'
   requireTestDevice(device);
   const random = createRandom(5);
   const scenes: {
-    family: GPUCellFamily;
+    family: GPUCellAggregationFamily;
     resolution: number;
     keys: (bigint | null)[];
     highLow?: boolean;
@@ -647,7 +663,7 @@ it('GPUCellPyramid roll-ups equal direct aggregation and switch levels per frame
   }
 });
 
-it('GPUCellAggregation and roll-ups clamp to capacity and propagate overflow', async () => {
+it('GPUCellAggregation and roll-ups separate destination overflow from inherited loss', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const fixture = new Fixture(device);
@@ -686,7 +702,8 @@ it('GPUCellAggregation and roll-ups clamp to capacity and propagate overflow', a
   const level0 = await readTable(tables[0]);
   // The 25 smallest keys survive, exactly.
   expectTable(level0, finest, capacities[0], 'finest');
-  // Level 1 rolls up only the surviving cells and inherits the overflow flag.
+  expect(level0.candidateOverflow).toBe(0);
+  // Level 1 rolls up only surviving cells; its large destination cannot recover source loss.
   const surviving = new Set(finest.slice(0, capacities[0]).map(cell => cell.key));
   const survivingKeys = keys.map(key => (key !== null && surviving.has(key) ? key : null));
   const level1Expected = aggregateCellsOnCPU({
@@ -697,12 +714,13 @@ it('GPUCellAggregation and roll-ups clamp to capacity and propagate overflow', a
     sumScale: SUM_SCALE
   });
   const level1 = await readTable(tables[1]);
-  expect(level1.overflow).toBe(1);
+  expect([level1.overflow, level1.candidateOverflow]).toEqual([0, 1]);
   expect(level1.rows.map(cell => [cell.key, cell.count, cell.sum])).toEqual(
     level1Expected.map(cell => [cell.key, cell.count, cell.sum])
   );
   const level2 = await readTable(tables[2]);
-  expect(level2.overflow).toBe(1);
+  expect(level2.overflow).toBe(Number(level2.total > capacities[2]));
+  expect(level2.candidateOverflow).toBe(1);
   compiled.destroy();
   fixture.destroy();
 });
@@ -831,10 +849,14 @@ it.each([
               'maximums',
               'count',
               'overflow',
+              'candidateOverflow',
               'total'
             ] as const) {
               const length =
-                column === 'count' || column === 'overflow' || column === 'total'
+                column === 'count' ||
+                column === 'overflow' ||
+                column === 'candidateOverflow' ||
+                column === 'total'
                   ? 1
                   : capacity * (column === 'cells' || column === 'sums' ? 2 : 1);
               expect(await readUint32(table[column], length)).toEqual(
@@ -1004,7 +1026,7 @@ it('GPUCellAggregation has closed-form counts, sums and extremes over 30 million
 it.each([
   'quadbin',
   'h3'
-] as const)('GPUCellPyramid %s chunked levels match direct aggregation and propagate overflow', async family => {
+] as const)('GPUCellPyramid %s chunked levels match retained-input aggregation and propagate candidate loss', async family => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const rows = 769;
@@ -1090,10 +1112,10 @@ it.each([
           try {
             const expected = await direct.run(values, currentMask);
             const actual = await readTable(tables[level]);
+            expect(actual).toEqual({...expected, candidateOverflow: inheritedOverflow});
             inheritedOverflow |= expected.overflow;
-            expect(actual).toEqual({...expected, overflow: inheritedOverflow});
             expectTable(
-              {...actual, overflow: expected.overflow},
+              actual,
               aggregateCellsOnCPU({
                 family,
                 resolution,
@@ -1107,7 +1129,7 @@ it.each([
             );
             counts.push(actual.count);
             // Only rows belonging to retained finer cells reach the next level. This is the
-            // documented overflow contract; direct aggregation must use the same surviving rows.
+            // documented candidate-loss contract; direct aggregation uses the same surviving rows.
             const retainedKeys = new Set(actual.rows.map(cell => cell.key));
             currentMask = Uint32Array.from(currentMask, (keep, row) => {
               const key = keys[row];

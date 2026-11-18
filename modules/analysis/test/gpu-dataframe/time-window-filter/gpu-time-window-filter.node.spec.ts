@@ -19,7 +19,7 @@ function createProps(
     timestamps: createTransientView(graph, 'timestamps', 'float32', rows),
     window: createTransientView(graph, 'window', 'float32', 8),
     output: {
-      ids: createTransientView(graph, 'ids', 'uint32', rows),
+      rows: createTransientView(graph, 'rows', 'uint32', rows),
       status: {
         count: createTransientView(graph, 'count', 'uint32', 1),
         overflow: createTransientView(graph, 'overflow', 'uint32', 1)
@@ -58,6 +58,44 @@ it('GPUTimeWindowFilter schedules classify, visibility, and publish nodes', () =
     true
   );
   device.destroy();
+});
+
+it('final1b F9 requires a separate caller-ID destination and preserves a row-named port', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const base = createProps(graph);
+    const sourceIds = createTransientView(graph, 'source-identities', 'uint32', 4);
+    const ids = createTransientView(graph, 'mapped-identities', 'uint32', 4);
+    expect(() => new GPUTimeWindowFilter({...base, sourceIds})).toThrow(/supplied together/);
+    expect(() => new GPUTimeWindowFilter({...base, output: {...base.output, ids}})).toThrow(
+      /supplied together/
+    );
+    expect(
+      () =>
+        new GPUTimeWindowFilter({
+          ...base,
+          sourceIds,
+          output: {...base.output, ids: base.output.rows}
+        })
+    ).toThrow(/share buffers|overlap/);
+    expect(
+      () =>
+        new GPUTimeWindowFilter({
+          ...base,
+          sourceIds,
+          output: {...base.output, ids: createTransientView(graph, 'short-identities', 'uint32', 1)}
+        })
+    ).toThrow(/length must equal/);
+    const nodes = new GPUTimeWindowFilter({
+      ...base,
+      sourceIds,
+      output: {...base.output, ids}
+    }).getCommandNodes(graph);
+    expect(nodes.at(-1)?.id).toContain('identities');
+  } finally {
+    device.destroy();
+  }
 });
 
 it('GPUTimeWindowFilter wires track counts and vector chunks', () => {
@@ -103,6 +141,21 @@ it('GPUTimeWindowFilter validates props', () => {
   const create = (overrides: Partial<GPUTimeWindowFilterProps>) =>
     new GPUTimeWindowFilter({...base, ...overrides});
 
+  expect(() =>
+    create({
+      output: {
+        ...base.output,
+        status: {
+          ...base.output.status,
+          candidateOverflow: graph.createDataView(base.output.rows.buffer, {
+            format: 'uint32',
+            length: 1
+          })
+        }
+      }
+    })
+  ).toThrow(/overlap/);
+
   expect(() => create({window: createTransientView(graph, 'w4', 'float32', 4)})).toThrow(/window/);
   expect(() => create({timestampsLow: createTransientView(graph, 'low', 'float32', 3)})).toThrow(
     /topology/
@@ -145,7 +198,7 @@ it('GPUTimeWindowFilter validates props', () => {
       }),
       output: {
         ...base.output,
-        ids: graph.createDataView(shared, {format: 'uint32', length: 4})
+        rows: graph.createDataView(shared, {format: 'uint32', length: 4})
       }
     })
   ).toThrow(/share buffers/);

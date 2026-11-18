@@ -29,7 +29,7 @@ import {
   validateCellReadWriteDispatch,
   getCellPackedFields
 } from '../cell-indexing/cell-dispatch-validation';
-import type {GPUCellFamily} from '../cell-indexing/cell-index-families';
+import type {GPUCellTopologyFamily} from '../cell-indexing/cell-index-families';
 import {S2_GEOMETRY_WGSL} from '../cell-indexing/gpu-cell-geometry';
 import {S2_NEIGHBORS_WGSL} from '../cell-topology/s2-neighbor-wgsl';
 import {CELL_KEY_WGSL} from '../cell-aggregation/cell-keys';
@@ -52,7 +52,7 @@ const OPERATION = 'GPUCellSetOutline';
 const MAXIMUM_OUTLINE_COMPONENT_COUNT = 0xffffffff;
 
 /** Cell families {@link GPUCellSetOutline} supports. */
-export type GPUCellSetOutlineFamily = GPUCellFamily;
+export type GPUCellSetOutlineFamily = GPUCellTopologyFamily;
 
 /**
  * Most boundary edges one cell contributes: 10 for H3 (a hexagon has 6, a cell that crosses an

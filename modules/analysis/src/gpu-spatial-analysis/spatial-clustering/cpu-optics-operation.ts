@@ -18,7 +18,11 @@ import {
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
 } from '../../analysis-core/contracts/spatial-context';
 import {resolveGPUTemporalContext} from '../../analysis-core/contracts/temporal-context';
-import {GPUOPTICSOperation, type OPTICSOperationProps} from './gpu-optics-operation';
+import {
+  GPUOPTICSOperation,
+  snapshotOPTICSOperationProps,
+  type OPTICSOperationProps
+} from './gpu-optics-operation';
 import {GPU_OPTICS_BRUTE_FORCE_MAXIMUM_ROWS, OPTICS_ITERATION_STATUS_FIELDS} from './gpu-optics';
 
 const MISSING_ROW = 0xffffffff;
@@ -138,8 +142,9 @@ function validateOPTICSOptions(
  *   Ordinary planar distances allow 2e-5 relative error, spherical distances 2e-4 relative.
  *   Near distance ties, radius boundaries or xi thresholds, float32 arithmetic can change discrete
  *   ordering, predecessors, intervals and labels; the strict tie and inclusive bound rules match.
- * - Computes the complete ordering regardless of maximumIterations, frontierBatchSize,
- *   neighborIndex, orderingMethod or neighborCapacity. candidateOverflow and iterationLimitReached are always 0, converged and status.complete are 1.
+ * - Honors maximumIterations as a visited-row budget. An incomplete order withholds all labels
+ *   and xi intervals. frontierBatchSize, neighborIndex, orderingMethod and neighborCapacity do
+ *   not affect the exhaustive CPU route; candidateOverflow is always 0.
  * - Drops the GPU row limits (4096/65536), minimumSamples limit (256), batch and command budgets.
  *   The implementation is exhaustive and intended for small collections, with O(n² log n) work.
  * - Xi still has rowCount interval capacity, required by the output layout. Summary is the
@@ -215,7 +220,8 @@ export function computeOPTICSOnCPU(
   const reachability = new Float64Array(rowCount).fill(Infinity);
   const labels = new Uint32Array(rowCount).fill(MISSING_ROW);
   let visitedCount = 0;
-  for (;;) {
+  const maximumIterations = options.maximumIterations ?? rowCount;
+  while (visitedCount < maximumIterations) {
     let focus = MISSING_ROW;
     for (let row = 0; row < rowCount; row++) {
       if (!processed[row] && (focus === MISSING_ROW || reachability[row] < reachability[focus]))
@@ -238,7 +244,8 @@ export function computeOPTICSOnCPU(
   }
   const clusterIntervals = new Uint32Array(rowCount * 2).fill(MISSING_ROW);
   const clusterSummary = new Uint32Array(2);
-  if (options.extractionMethod === 'xi') {
+  const complete = visitedCount + invalidCount === rowCount;
+  if (complete && options.extractionMethod === 'xi') {
     computeOPTICSXiExtraction(
       ordering,
       visitedCount,
@@ -249,7 +256,7 @@ export function computeOPTICSOnCPU(
       clusterSummary,
       options
     );
-  } else {
+  } else if (complete) {
     let cluster = -1;
     for (let rank = 0; rank < visitedCount; rank++) {
       const row = ordering[rank];
@@ -264,12 +271,12 @@ export function computeOPTICSOnCPU(
     labels,
     coreDistances: Float32Array.from(coreDistances),
     reachability: Float32Array.from(reachability),
-    status: Uint32Array.of(visitedCount, 1, invalidCount),
+    status: Uint32Array.of(visitedCount, Number(complete), invalidCount),
     clusterIntervals,
     clusterSummary,
     iterationCount: Uint32Array.of(visitedCount),
-    converged: Uint32Array.of(1),
-    iterationLimitReached: Uint32Array.of(0),
+    converged: Uint32Array.of(Number(complete)),
+    iterationLimitReached: Uint32Array.of(Number(!complete && visitedCount === maximumIterations)),
     candidateOverflow: Uint32Array.of(0)
   };
 }
@@ -387,9 +394,10 @@ function computeOPTICSXiExtraction(
   if (summary[1] !== 0) labels.fill(MISSING_ROW);
 }
 
-/** CPU twin; GPU scheduling/candidate budgets are ignored and the complete result is returned. */
+/** CPU twin; the visit budget binds, while GPU scheduling/candidate capacities do not apply. */
 export class CPUOPTICSOperation extends GPUCPUOperation {
   constructor(props: OPTICSOperationProps) {
+    props = snapshotOPTICSOperationProps(props);
     const id = props.id ?? 'optics';
     validateOPTICSOptions(id, props.rowCount, props.times !== undefined, props);
     const {output} = props;

@@ -38,10 +38,12 @@ for (const omitFirstReferencePoint of [false, true])
           radius: reference.radius,
           halfDepth: reference.halfDepth,
           minimumSupport: 2,
-          changes: changes.view,
-          roughness: roughness.view,
-          counts: counts.view,
-          status: status.view
+          output: {
+            changes: changes.view,
+            roughness: roughness.view,
+            counts: counts.view,
+            status: status.view
+          }
         })
       );
       await fixture.run();

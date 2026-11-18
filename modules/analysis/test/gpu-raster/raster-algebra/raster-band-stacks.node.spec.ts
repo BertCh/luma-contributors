@@ -113,7 +113,7 @@ it.each([
       const sources = getParsedKernelSources(nodes);
       expect([...sources.values()].some(source => source.includes('sourceValidity'))).toBe(true);
       expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
-      for (const source of sources.values())
+      for (const {source} of sources.configurations)
         expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
       for (const node of nodes) graph.add(node);
     }
@@ -248,7 +248,7 @@ it.each([1, 16, 64])('bounds node count for %i published bands', layerCount => {
       expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
       const sources = getParsedKernelSources(nodes);
       expect(sources.size).toBeGreaterThan(layerCount);
-      for (const source of sources.values())
+      for (const {source} of sources.configurations)
         expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
       for (const node of nodes) fixture.graph.add(node);
     }

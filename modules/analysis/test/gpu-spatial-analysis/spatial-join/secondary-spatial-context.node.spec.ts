@@ -95,8 +95,8 @@ function createContextFixture(
       left: points,
       right: features,
       output: {
-        leftIds: scalar('left-ids'),
-        rightIds: scalar('right-ids'),
+        leftRows: scalar('left-ids'),
+        rightRows: scalar('right-ids'),
         status: {count: scalar('count'), overflow: scalar('overflow')}
       }
     });
@@ -165,7 +165,7 @@ for (const {name, side, linearEdges} of OPERATIONS) {
             const graph = new GPUCommandGraph(device);
             const {create} = createContextFixture(graph, name, spatialContext);
             const operation = create(secondary);
-            expect(operation.spatialContext).toBe(baseline.spatialContext);
+            expect(operation.spatialContext).toStrictEqual(baseline.spatialContext);
             expect(operation.getCommandNodes(graph).map(node => node.id)).toEqual(expected);
           }
         }
@@ -173,6 +173,28 @@ for (const {name, side, linearEdges} of OPERATIONS) {
         device.destroy();
       }
     });
+
+    if (name === 'GPUSpatialPredicateJoin' || name === 'GPUSpatialJoinCandidates') {
+      it('retains an immutable context snapshot when the caller changes its datum', () => {
+        const device = createNullWebGPUDevice();
+        try {
+          const suppliedContext = {...primary};
+          const {baseline} = createContextFixture(
+            new GPUCommandGraph(device),
+            name,
+            suppliedContext
+          );
+          const expectedContext = {...baseline.spatialContext};
+          expect(baseline.spatialContext).not.toBe(suppliedContext);
+          expect(Object.isFrozen(baseline.spatialContext)).toBe(true);
+          suppliedContext.datum = 'EPSG:4267';
+          expect(baseline.spatialContext).toStrictEqual(expectedContext);
+          expect(baseline.props.spatialContext?.datum).toBe('EPSG:4326');
+        } finally {
+          device.destroy();
+        }
+      });
+    }
 
     it('rejects mismatched datums at construction with the outer operator id', () => {
       const device = createNullWebGPUDevice();
