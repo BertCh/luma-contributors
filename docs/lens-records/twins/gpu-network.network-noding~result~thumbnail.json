@@ -19,7 +19,7 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T16:33:05.711Z",
+    "date": "2026-11-18T20:29:16.674Z",
     "runId": "run-f56221ac",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
