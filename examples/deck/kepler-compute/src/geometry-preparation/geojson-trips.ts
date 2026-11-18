@@ -272,6 +272,7 @@ function parseTripPart(
   }
   return trip;
 }
+/** Numeric seconds select the nearest safe integer millisecond only when it round-trips exactly. */
 export function parseTripTime(value: unknown, encoding: TripTimestampEncoding): number {
   let milliseconds: number;
   if (encoding === 'iso8601') {
@@ -311,7 +312,7 @@ export function parseTripTime(value: unknown, encoding: TripTimestampEncoding): 
   } else {
     if (typeof value !== 'number' || !Number.isFinite(value))
       throw new Error('Numeric trip timestamps require finite numbers');
-    milliseconds = encoding === 'unix-second' ? value * 1000 : value;
+    milliseconds = encoding === 'unix-second' ? Math.round(value * 1000) : value;
     if (encoding === 'unix-second' && milliseconds / 1000 !== value)
       throw new Error('Trip seconds must round-trip exactly through epoch milliseconds');
   }

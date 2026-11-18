@@ -169,7 +169,8 @@ graph.add(new GPUKernelFlowSmoothing({
         name: 'traversedEdges',
         type: 'GPUMapMatchedEdgeVolumesTraversedEdges',
         required: true,
-        description: 'The edges and counts of GPUMapMatching.'
+        description:
+          'Forward the edges, counts and both traversal status words from GPUMapMatching.'
       },
       {name: 'trackCount', type: 'number', required: true, description: 'Tracks of the matching.'},
       {
@@ -202,20 +203,20 @@ graph.add(new GPUKernelFlowSmoothing({
         description: 'Busiest edge-to-edge movements.'
       },
       {
-        name: 'truncated',
-        type: "GraphDataView<'uint32'> | undefined",
-        description: '1 when a track route overflowed its capacity.'
+        name: 'status.candidateOverflow',
+        type: "GraphDataView<'uint32'>",
+        description: 'Required flag: capacity or matching loss makes volumes incomplete.'
       }
     ],
     example: `import {GPUMapMatching, GPUMapMatchedEdgeVolumes} from '@luma-contributors/analysis/gpu-network';
 
-// matching ran with traversedEdgeCapacity: 64 and wrote routeEdges, routeCounts
+// Forward the matching traversal output, including its two status words.
 graph.add(new GPUMapMatchedEdgeVolumes({
-  traversedEdges: {edges: routeEdges, counts: routeCounts},
+  traversedEdges: {edges: routeEdges, counts: routeCounts, status: {overflow: routeOverflow, candidateOverflow: routeCandidateOverflow}},
   trackCount: 200,
   traversedEdgeCapacity: 64,
   edgeCount: network.slotCount, // directed CSR rows, not undirected roads
-  output: {edgeVolumes} // one row per directed edge
+  output: {edgeVolumes, status: {candidateOverflow}} // one row per directed edge
 }));`,
     preview: {kind: 'network', seed: 4412, caption: 'Street traffic volumes from matched tracks.'},
     related: ['map-matching', 'flow-aggregation'],

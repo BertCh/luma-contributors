@@ -30,13 +30,14 @@ const POLYGON_COMPACTNESS_CLASSES = makeClassTable({
   labels: ['< 0.10', '0.10–0.25', '0.25–0.40', '0.40–0.60', '0.60–1.00']
 });
 const POLYGON_VALIDITY_CLASSES = makeClassTable({
-  breaks: [0.5, 1.5],
+  breaks: [0.5, 1.5, 2.5],
   colors: [
     [140, 149, 160, 255],
     [230, 159, 0, 255],
-    [213, 94, 0, 255]
+    [213, 94, 0, 255],
+    [96, 96, 96, 255]
   ],
-  labels: ['Valid', 'Orientation convention only', 'Structural defect']
+  labels: ['Valid', 'Orientation convention only', 'Structural defect', 'Incomplete check']
 });
 
 const METRIC_TITLES: Record<PolygonMetric, string> = {
@@ -837,7 +838,7 @@ graph.add(new GPULabelPoint({
 `;
     const validity = `graph.add(new GPUGeometryValidity({
   polygons: {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets},
-  output: {mask, status: {overflow}}, intersectionCapacity: 4096,
+  output: {issueCode, validity, status: {overflow}}, intersectionCapacity: 4096,
   orientation: '${state.orientation}', ringClosure: '${state.ringClosure}'
 }));
 // Weights rows are features, so a multi-part feature is one row of the colouring.

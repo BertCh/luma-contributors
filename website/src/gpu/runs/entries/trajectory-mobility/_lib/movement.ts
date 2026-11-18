@@ -83,6 +83,7 @@ export type StaypointBuffers = {
   tracks: RunBuffer<'uint32'>;
   count: RunBuffer<'uint32'>;
   overflow: RunBuffer<'uint32'>;
+  candidateOverflow: RunBuffer<'uint32'>;
   startRows: RunBuffer<'uint32'>;
   endRows: RunBuffer<'uint32'>;
   finishRows: RunBuffer<'uint32'>;
@@ -103,6 +104,7 @@ export function addStaypoints(
     tracks: builder.allocate('staypoint-tracks', 'uint32', STAYPOINT_CAPACITY),
     count: builder.allocate('staypoint-count', 'uint32', 1),
     overflow: builder.allocate('staypoint-overflow', 'uint32', 1),
+    candidateOverflow: builder.allocate('staypoint-candidate-overflow', 'uint32', 1),
     startRows: builder.allocate('staypoint-start-rows', 'uint32', STAYPOINT_CAPACITY),
     endRows: builder.allocate('staypoint-end-rows', 'uint32', STAYPOINT_CAPACITY),
     finishRows: builder.allocate('staypoint-finish-rows', 'uint32', STAYPOINT_CAPACITY),
@@ -119,7 +121,11 @@ export function addStaypoints(
       maximumSearchRows,
       output: {
         ids: staypoints.tracks.view,
-        status: {count: staypoints.count.view, overflow: staypoints.overflow.view},
+        status: {
+          count: staypoints.count.view,
+          overflow: staypoints.overflow.view,
+          candidateOverflow: staypoints.candidateOverflow.view
+        },
         startRows: staypoints.startRows.view,
         endRows: staypoints.endRows.view,
         finishRows: staypoints.finishRows.view,
@@ -266,10 +272,13 @@ export type SegmentBuffers = {
   parameters: RunBuffer<'float32'>;
   triplegTracks: RunBuffer<'uint32'>;
   triplegCount: RunBuffer<'uint32'>;
+  triplegOverflow: RunBuffer<'uint32'>;
   triplegStartRows: RunBuffer<'uint32'>;
   triplegEndRows: RunBuffer<'uint32'>;
   rowTriplegIds: RunBuffer<'uint32'>;
   tripCount: RunBuffer<'uint32'>;
+  tripCandidateOverflow: RunBuffer<'uint32'>;
+  triplegCandidateOverflow: RunBuffer<'uint32'>;
   triplegTripIds: RunBuffer<'uint32'>;
 };
 
@@ -284,14 +293,17 @@ export function addSegments(
     parameters: builder.allocate('segment-parameters', 'float32', 4),
     triplegTracks: builder.allocate('tripleg-tracks', 'uint32', TRIPLEG_CAPACITY),
     triplegCount: builder.allocate('tripleg-count', 'uint32', 1),
+    triplegOverflow: builder.allocate('tripleg-overflow', 'uint32', 1),
     triplegStartRows: builder.allocate('tripleg-start-rows', 'uint32', TRIPLEG_CAPACITY),
     triplegEndRows: builder.allocate('tripleg-end-rows', 'uint32', TRIPLEG_CAPACITY),
     rowTriplegIds: builder.allocate('row-tripleg-ids', 'uint32', fleet.rowCount),
     tripCount: builder.allocate('trip-count', 'uint32', 1),
+    tripCandidateOverflow: builder.allocate('trip-candidate-overflow', 'uint32', 1),
+    triplegCandidateOverflow: builder.allocate('tripleg-candidate-overflow', 'uint32', 1),
     triplegTripIds: builder.allocate('tripleg-trip-ids', 'uint32', TRIPLEG_CAPACITY)
   };
   const tripTracks = builder.allocate('trip-tracks', 'uint32', TRIP_CAPACITY);
-  const triplegOverflow = builder.allocate('tripleg-overflow', 'uint32', 1);
+  const triplegOverflow = segments.triplegOverflow;
   const tripOverflow = builder.allocate('trip-overflow', 'uint32', 1);
   builder.graph.add(
     new GPUTrajectorySegments({
@@ -304,20 +316,32 @@ export function addSegments(
         startRows: staypoints.startRows.view,
         finishRows: staypoints.finishRows.view,
         durations: staypoints.durations.view,
-        status: {count: staypoints.count.view}
+        status: {
+          count: staypoints.count.view,
+          overflow: staypoints.overflow.view,
+          candidateOverflow: staypoints.candidateOverflow.view
+        }
       },
       parameters: segments.parameters.view,
       output: {
         triplegs: {
           ids: segments.triplegTracks.view,
-          status: {count: segments.triplegCount.view, overflow: triplegOverflow.view},
+          status: {
+            count: segments.triplegCount.view,
+            overflow: triplegOverflow.view,
+            candidateOverflow: segments.triplegCandidateOverflow.view
+          },
           startRows: segments.triplegStartRows.view,
           endRows: segments.triplegEndRows.view,
           rowTriplegIds: segments.rowTriplegIds.view
         },
         trips: {
           ids: tripTracks.view,
-          status: {count: segments.tripCount.view, overflow: tripOverflow.view},
+          status: {
+            count: segments.tripCount.view,
+            overflow: tripOverflow.view,
+            candidateOverflow: segments.tripCandidateOverflow.view
+          },
           triplegTripIds: segments.triplegTripIds.view
         }
       }

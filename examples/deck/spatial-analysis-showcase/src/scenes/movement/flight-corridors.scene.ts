@@ -495,7 +495,7 @@ trailGraph.add(new GPUTimeWindowFilter({
   window: windowParameters.importToGraph(trailGraph),
   additionalPredicates: [{kind: 'selection', mask: directionMask}],    // ${state.direction} flights
   output: {
-    ids: trailIds, status: {count: trailCount, overflow: trailOverflow},
+    rows: trailIds, status: {count: trailCount, overflow: trailOverflow},
     fadeWeights, clipFractions, drawInstanceCount: trailDrawCount
   }
 }));

@@ -9,6 +9,7 @@ import {addFleetDwellZoneEventsRecipe} from '@luma-contributors/analysis/gpu-spa
 import {defineOperationRun} from '../../define-run';
 import type {RunGlyph} from '../../interaction';
 import {createFleet} from './lib/fleet';
+import {formatZoneEventReadout} from './lib/zone-event-readout';
 import {
   chooseZoneCenters,
   createZoneRectangles,
@@ -40,6 +41,10 @@ export default defineOperationRun({
     const eventZones = builder.allocate('event-zones', 'uint32', capacity);
     const eventTypes = builder.allocate('event-types', 'uint32', capacity);
     const zoneTotals = builder.allocate('zone-totals', 'float32', ZONE_COUNT);
+    const eventCount = builder.allocate('event-count', 'uint32', 1);
+    const eventOverflow = builder.allocate('event-overflow', 'uint32', 1);
+    const eventCandidateOverflow = builder.allocate('event-candidate-overflow', 'uint32', 1);
+    const scratchCandidateOverflow = builder.allocate('scratch-candidate-overflow', 'uint32', 1);
     const triangles = createZoneTriangles();
     addFleetDwellZoneEventsRecipe(builder.graph, {
       trajectories: {
@@ -59,11 +64,17 @@ export default defineOperationRun({
       trackEventCapacity: values.trackEventCapacity,
       outputs: {
         events: {
+          status: {
+            count: eventCount.view,
+            overflow: eventOverflow.view,
+            candidateOverflow: eventCandidateOverflow.view
+          },
           eventPositions: eventPositions.view,
           eventZones: eventZones.view,
           eventTypes: eventTypes.view
         },
-        table: {sumValues: zoneTotals.view}
+        table: {sumValues: zoneTotals.view},
+        status: {candidateOverflow: scratchCandidateOverflow.view}
       }
     });
     return {
@@ -72,6 +83,10 @@ export default defineOperationRun({
         eventZones,
         eventTypes,
         zoneTotals,
+        eventCount,
+        eventOverflow,
+        eventCandidateOverflow,
+        scratchCandidateOverflow,
         zonePositions,
         zoneOutline,
         indices: builder.upload('zone-indices', 'uint32', triangles.indices),
@@ -99,6 +114,7 @@ export default defineOperationRun({
       const eventPositions = peek(outputs.eventPositions);
       const eventZones = peek(outputs.eventZones);
       const totals = peek(outputs.zoneTotals);
+      const eventCount = peek(outputs.eventCount);
       const glyphs: RunGlyph[] = [
         {
           shape: 'box',
@@ -106,12 +122,30 @@ export default defineOperationRun({
           maximum: [centerX + halfWidth, centerY + halfHeight]
         }
       ];
-      let crossingCount = 0;
-      if (eventPositions && eventZones) {
-        for (let event = 0; event < eventZones.length; event++) {
+      let crossingCount: number | undefined;
+      if (
+        eventZones &&
+        eventCount &&
+        Number.isInteger(eventCount[0]) &&
+        eventCount[0] >= 0 &&
+        eventCount[0] <= eventZones.length &&
+        eventCount[0] !== 0xffffffff
+      ) {
+        crossingCount = 0;
+        for (let event = 0; event < eventCount[0]; event++) {
+          if (eventZones[event] === 0xffffffff) {
+            crossingCount = undefined;
+            break;
+          }
           if (eventZones[event] !== zone) continue;
           crossingCount++;
-          if (glyphs.length < 30) {
+          if (
+            eventPositions &&
+            eventPositions.length >= 2 * event + 2 &&
+            Number.isFinite(eventPositions[2 * event]) &&
+            Number.isFinite(eventPositions[2 * event + 1]) &&
+            glyphs.length < 30
+          ) {
             glyphs.push({
               shape: 'dot',
               at: [eventPositions[event * 2], eventPositions[event * 2 + 1]]
@@ -119,11 +153,20 @@ export default defineOperationRun({
           }
         }
       }
-      const dwell = totals ? Math.round(totals[zone]) : 0;
+      const dwell = totals && Number.isFinite(totals[zone]) ? Math.round(totals[zone]) : null;
       return {
         rerun: true,
         glyphs,
-        readout: `zone ${'ABC'[zone]} · ${crossingCount} crossings · dwell ${dwell} s`
+        readout: formatZoneEventReadout(
+          'ABC'[zone],
+          crossingCount,
+          {
+            eventOverflow: peek(outputs.eventOverflow)?.[0],
+            eventCandidateOverflow: peek(outputs.eventCandidateOverflow)?.[0],
+            scratchCandidateOverflow: peek(outputs.scratchCandidateOverflow)?.[0]
+          },
+          dwell
+        )
       };
     }
   },

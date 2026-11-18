@@ -146,7 +146,7 @@ export default defineScene<CountyRegionalizationOptions>({
       textAlternative:
         'County units are colored by Max-P growth-region labels; the status distinguishes a fully feasible population floor from regions that remain below it.',
       evidence:
-        'The GPU status reports count, threshold feasibility, below-threshold regions, invalid units, selected start and improvement moves; readback sums actual 1990 population for each returned label.',
+        'The GPU status reports count, threshold feasibility, below-threshold regions, invalid units, selected start and successful improvement rounds; one round can move several rows. Readback sums actual 1990 population for each returned label.',
       caveat:
         'A threshold can be infeasible on a given adjacency graph. Under-threshold or unassigned mass must remain visible as a status limitation, not be read as a successful region.',
       options: {algorithm: 'max-p'},
@@ -207,7 +207,7 @@ export default defineScene<CountyRegionalizationOptions>({
       id: 'minimumStatus',
       label: 'Partition status',
       format: 'text',
-      help: 'AZP/Ward words are iterations, converged, iteration-limit flag and invalid count; Ward adds merge rounds. Max-P words are region count, feasibility, infeasible-region count, invalid count, selected start and improvement moves. Convergence is not proof of a global optimum.'
+      help: 'AZP/Ward words are iterations, converged, iteration-limit flag and invalid count; Ward adds merge rounds. Max-P words are region count, feasibility, infeasible-region count, invalid count, selected start and successful improvement rounds. One round can move several rows. Convergence is not proof of a global optimum.'
     }
   ],
   snippet:

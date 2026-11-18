@@ -88,13 +88,15 @@ export default defineOperationRun<Inputs, Outputs>({
         positions: positions.view,
         radius: values.radius,
         capacity: values.capacity,
-        indices: indices.view,
-        squaredDistances: builder.allocate(
-          'squared-distances',
-          'float32',
-          POINT_COUNT * values.capacity
-        ).view,
-        counts: counts.view
+        output: {
+          indices: indices.view,
+          squaredDistances: builder.allocate(
+            'squared-distances',
+            'float32',
+            POINT_COUNT * values.capacity
+          ).view,
+          counts: counts.view
+        }
       })
     );
     return {

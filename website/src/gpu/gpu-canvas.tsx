@@ -73,7 +73,7 @@ function formatValue(parameter: GpuSceneParameter, value: number): string {
 }
 
 function getTheme(): GpuTheme {
-  const attribute = document.documentElement.dataset.theme;
+  const attribute = document.documentElement.dataset['theme'];
   if (attribute === 'light' || attribute === 'dark') return attribute;
   return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 }

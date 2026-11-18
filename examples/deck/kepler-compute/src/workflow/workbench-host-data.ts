@@ -17,6 +17,7 @@ import {
 } from '@luma-contributors/kepler';
 import {analysisDatasetContext, guessAnalysisPointColumns} from '../analysis-dataset-context';
 import {makeArrowTableFromCatalogTable} from '../analysis-catalog-table';
+import {readOriginalColumnValues} from '../original-column-values';
 
 /** Structural boundary shared by native Kepler tables and the Arrow readback adapter. */
 export type NativeWorkflowDataset = {
@@ -613,7 +614,10 @@ export function makeWorkflowDataFromDrawings(
   );
 }
 
-/** SQL scalars use portable workflow types; wide integers retain exact text when numbers are unsafe. */
+/**
+ * SQL scalars use portable workflow types; wide integers retain exact text when numbers are unsafe.
+ * Plain and dictionary timestamps become containing-millisecond ISO text within Date's range.
+ */
 export function makeWorkflowDataFromSqlTable(
   table: arrow.Table,
   request: WorkflowSqlRequest
@@ -621,8 +625,22 @@ export function makeWorkflowDataFromSqlTable(
   validateRowCapacity('SQL', table.numRows, request.maximumRows);
   const fields = table.schema.fields.map((field, column) => {
     const vector = table.getChildAt(column);
-    const values: unknown[] = Array.from({length: table.numRows}, (_, row) => vector?.get(row));
     const type = field.type;
+    let valueType = type;
+    while (arrow.DataType.isDictionary(valueType)) valueType = valueType.dictionary;
+    const timestamp = arrow.DataType.isTimestamp(valueType);
+    const values: unknown[] = Array.from({length: table.numRows}, (_, row) => {
+      if (!vector || !timestamp) return vector?.get(row);
+      try {
+        return readOriginalColumnValues(vector, [row])[0];
+      } catch (error) {
+        if (!(error instanceof RangeError)) throw error;
+        throw new WorkflowError(
+          'operation-failed',
+          `SQL: Column "${field.name}" contains a date outside the supported ISO date range.`
+        );
+      }
+    });
     const wideInteger = arrow.DataType.isInt(type) && type.bitWidth === 64;
     const safeInteger =
       wideInteger && values.every(value => value == null || Number.isSafeInteger(Number(value)));
@@ -642,7 +660,7 @@ export function makeWorkflowDataFromSqlTable(
           // Arrow's public Decimal vector returns the unscaled signed integer as a BigNum.
           return Number(String(value)) * 10 ** -type.scale;
         }
-        if (arrow.DataType.isDate(type) || arrow.DataType.isTimestamp(type)) {
+        if (arrow.DataType.isDate(type) || timestamp) {
           const milliseconds = value instanceof Date ? value.getTime() : Number(value);
           if (!Number.isFinite(milliseconds) || Math.abs(milliseconds) > 8640000000000000)
             throw new WorkflowError(

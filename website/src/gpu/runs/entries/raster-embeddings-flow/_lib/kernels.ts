@@ -37,11 +37,11 @@ export function addComponentExtract(
   });
 }
 
-/** Pixel id to the world position of its center (NaN for `0xffffffff`); the raster fills the world. */
+/** Pixel row to the world position of its center (NaN for `0xffffffff`); the raster fills the world. */
 export function addPixelPositions(
   builder: RunBuilder,
   id: string,
-  pixelIds: RunBuffer,
+  pixelRows: RunBuffer,
   raster: {columns: number; rows: number},
   world: {width: number; height: number},
   target: RunBuffer
@@ -54,11 +54,11 @@ export function addPixelPositions(
         id,
         operation: 'embedding-pixel-positions',
         bindings: [
-          {name: 'pixelIds', view: pixelIds.view, type: 'u32', access: 'read'},
+          {name: 'pixelRows', view: pixelRows.view, type: 'u32', access: 'read'},
           {name: 'targetValues', view: target.view, type: 'f32', access: 'read_write'}
         ],
-        invocationCount: pixelIds.length,
-        body: `let pixel = pixelIds[pixelIdsOffset + index];
+        invocationCount: pixelRows.length,
+        body: `let pixel = pixelRows[pixelRowsOffset + index];
   let missing = bitcast<f32>(0x7fc00000u | (index & 0u));
   let column = f32(pixel % ${raster.columns}u);
   let row = f32(pixel / ${raster.columns}u);

@@ -3,7 +3,12 @@
 
 // One record's parts, counted from a real view model, and what no record holds.
 
-import {formatBytes, formatCount} from '../../../../lens/format';
+import {
+  formatBytes,
+  formatCount,
+  formatResourceBytes,
+  formatResourceCount
+} from '../../../../lens/format';
 import type {LensViewModel} from '../../../../lens/types';
 import {Term} from '../../page-kit';
 
@@ -54,10 +59,11 @@ export function RecordParts({model}: {model: LensViewModel}) {
         <li className="lenses-part">
           <span className="lenses-part__name">Buffers</span>
           <span className="lenses-part__value">
-            {model.resources.count}, {formatBytes(model.resources.totalBytes)}
+            {formatResourceCount(model.resources)},{' '}
+            {formatResourceBytes(model.resources.totalBytes, model.resources.totalBytesKind)}
           </span>
           <p className="lenses-part__text">
-            An id and a size for each. All are recorded as imported.
+            Recorded resource ids and sizes, with ownership and size precision when available.
           </p>
         </li>
         <li className="lenses-part" data-tone="signal">

@@ -583,7 +583,7 @@ ${
 // Flashes in a window feed the density as a mask.
 flashes.add(new GPUTimeWindowFilter({
   timestamps: flashTimes, window: flashWindow.importToGraph(flashes),
-  output: {ids, status: {count, overflow}, outputMask: mask}
+  output: {rows, status: {count, overflow}, outputMask: mask}
 }));
 density.add(new GPUPointDensity({
   spatialContext: STORM_DENSITY_PROJECTION.spatialContext,

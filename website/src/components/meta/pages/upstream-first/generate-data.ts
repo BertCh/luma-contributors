@@ -3,7 +3,7 @@
 
 // Writes upstream-data.json from the repository. Run from website/:
 //   node --experimental-strip-types src/components/meta/pages/upstream-first/generate-data.ts
-// Reads: modules/analysis/package.json (luma.gl version, entry points), modules/analysis/src/**
+// Reads: package.json (the tested luma.gl pin), modules/analysis/package.json (entry points), modules/analysis/src/**
 // (imports of @luma.gl by entry point, source files, contributor classes) and
 // dev-docs/upstream-workarounds.md (one row per capability, by Status column).
 
@@ -18,7 +18,12 @@ const analysisSource = path.join(root, 'modules/analysis/src');
 const packageJson = JSON.parse(
   fs.readFileSync(path.join(root, 'modules/analysis/package.json'), 'utf8')
 ) as {peerDependencies: Record<string, string>; exports: Record<string, unknown>};
-const lumaVersion = packageJson.peerDependencies['@luma.gl/graph'].replace(/^[~^]/, '');
+// The version shown is the exact luma.gl pin this workspace is tested against (the root
+// development dependency), not the peer range the analysis package accepts.
+const workspaceManifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')) as {
+  devDependencies: Record<string, string>;
+};
+const lumaVersion = workspaceManifest.devDependencies['@luma.gl/graph'];
 const entryPoints = Object.keys(packageJson.exports).length;
 
 function listSourceFiles(folder: string): string[] {

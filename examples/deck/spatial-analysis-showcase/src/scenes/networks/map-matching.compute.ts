@@ -473,7 +473,7 @@ export async function createMapMatching(
           matchedCount: view('matched-count', matchedCount, 'uint32', 1),
           breakCount: view('break-count', breakCount, 'uint32', 1),
           status: {
-            overflow: view('overflow', overflow, 'uint32', 1),
+            candidateOverflow: view('overflow', overflow, 'uint32', 1),
             routeOverflow: view('route-overflow', routeOverflow, 'uint32', 1)
           }
         }
@@ -718,7 +718,7 @@ const NONE: u32 = ${NONE}u;`,
       routeOverflowNodes > 0
         ? `route budget exceeded (${formatCount(routeOverflowNodes)} nodes dropped)`
         : overflowFlag
-          ? 'edge grid overflowed'
+          ? 'candidate or route-recovery loss'
           : 'none'
     );
     ctx.setReadout('exact', `${((100 * exact) / pointCount).toFixed(1)}%`);

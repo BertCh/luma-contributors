@@ -969,7 +969,7 @@ parameters.write(getGPUCalendarBucketsParameterValues(-300, 0));`,
       {
         name: 'sourceIds',
         type: 'GPUUint32Rows',
-        description: 'Optional stable ids aligned with rows.'
+        description: 'Optional caller identities aligned with source rows; requires output.ids.'
       },
       {name: 'trackIds', type: 'GPUUint32Rows', description: 'Optional dense track id per row.'},
       {
@@ -986,7 +986,16 @@ parameters.write(getGPUCalendarBucketsParameterValues(-300, 0));`,
       }
     ],
     outputs: [
-      {name: 'ids', type: "GraphDataView<'uint32'>", description: 'Accepted row ids, compacted.'},
+      {
+        name: 'rows',
+        type: "GraphDataView<'uint32'>",
+        description: 'Accepted source-row indices, compacted.'
+      },
+      {
+        name: 'ids',
+        type: "GraphDataView<'uint32'>",
+        description: 'Caller identities from sourceIds; capacity matches rows.'
+      },
       {
         name: 'status',
         type: 'GPUCompactOutput status',
@@ -998,12 +1007,12 @@ parameters.write(getGPUCalendarBucketsParameterValues(-300, 0));`,
     example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues, GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH} from '@luma-contributors/analysis/dataframe-analysis';
 
-// timestamps, ids, status: views on graph
+// timestamps, rows, status: views on graph
 const window = new GPUParameterBuffer(device, {id: 'window', format: 'float32',
   length: GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH});
 graph.add(new GPUTimeWindowFilter({
   timestamps, window: window.importToGraph(graph),
-  output: {ids, status}
+  output: {rows, status}
 }));
 const compiled = await graph.compileAsync();
 // every frame
@@ -1996,22 +2005,10 @@ parameters.write(getGPUSpatialCorrelogramParameterValues({
         description: "'serial' or 'cooperative' (dense candidate sets)."
       },
       {
-        name: 'indices',
-        type: "GraphDataView<'uint32'>",
+        name: 'output',
+        type: 'GPUPointCloudNeighborhoodsOutput',
         required: true,
-        description: 'Row-major original ids; missing slots are 0xffffffff.'
-      },
-      {
-        name: 'squaredDistances',
-        type: "GraphDataView<'float32'>",
-        required: true,
-        description: 'Squared distance of each retained neighbor.'
-      },
-      {
-        name: 'counts',
-        type: "GraphDataView<'uint32'>",
-        required: true,
-        description: 'Full radius support, including candidates over capacity.'
+        description: 'Caller-owned indices, squaredDistances and counts, with optional status.'
       }
     ],
     outputs: [
@@ -2041,7 +2038,7 @@ parameters.write(getGPUSpatialCorrelogramParameterValues({
 // positions (float32x3 in a local frame), indices, squaredDistances, counts: views on graph
 graph.add(new GPUPointCloudNeighborhoods({
   positions, radius: 5, capacity: 8,
-  indices, squaredDistances, counts
+  output: {indices, squaredDistances, counts}
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
@@ -2105,25 +2102,12 @@ device.submit();`,
         description: 'Orient normals toward this point.'
       },
       {
-        name: 'normals',
-        type: "GraphDataView<'float32x3'>",
+        name: 'output',
+        type: 'GPUPointCloudFeaturesOutput',
         required: true,
-        description: 'Unit normal per point.'
-      },
-      {
-        name: 'eigenvalues',
-        type: "GraphDataView<'float32x3'>",
-        required: true,
-        description: 'Descending eigenvalues per point.'
-      },
-      {
-        name: 'shapes',
-        type: "GraphDataView<'float32x3'>",
-        required: true,
-        description: 'Linearity, planarity, scattering per point.'
+        description: 'Caller-owned normals, eigenvalues, shapes and status.'
       }
     ],
-    moreRequired: ['status'],
     outputs: [
       {name: 'normals', type: "GraphDataView<'float32x3'>", description: 'Unit normals.'},
       {
@@ -2146,11 +2130,11 @@ device.submit();`,
 
 // positions, indices, squaredDistances, counts, normals, eigenvalues, shapes, status: views on graph
 graph.add(new GPUPointCloudNeighborhoods({
-  positions, radius: 5, capacity: 8, indices, squaredDistances, counts
+  positions, radius: 5, capacity: 8, output: {indices, squaredDistances, counts}
 }));
 graph.add(new GPUPointCloudFeatures({
   positions, indices, counts, capacity: 8,
-  normals, eigenvalues, shapes, status
+  output: {normals, eigenvalues, shapes, status}
 }));`,
     preview: {
       kind: 'point-cloud',
@@ -2200,16 +2184,10 @@ graph.add(new GPUPointCloudFeatures({
         description: 'Threshold in standard deviations above the mean.'
       },
       {
-        name: 'meanDistances',
-        type: "GraphDataView<'float32'>",
+        name: 'output',
+        type: 'GPUPointCloudStatisticalFilterOutput',
         required: true,
-        description: 'Mean retained neighbor distance; -1 means none.'
-      },
-      {
-        name: 'validity',
-        type: "GraphDataView<'uint32'>",
-        required: true,
-        description: 'Original-row inlier flags.'
+        description: 'Caller-owned meanDistances and original-row validity flags.'
       }
     ],
     outputs: [
@@ -2228,11 +2206,11 @@ graph.add(new GPUPointCloudFeatures({
 
 // positions, indices, squaredDistances, counts, meanDistances, validity: views on graph
 graph.add(new GPUPointCloudNeighborhoods({
-  positions, radius: 2, capacity: 16, indices, squaredDistances, counts
+  positions, radius: 2, capacity: 16, output: {indices, squaredDistances, counts}
 }));
 graph.add(new GPUPointCloudStatisticalFilter({
   squaredDistances, counts, capacity: 16,
-  standardDeviations: 2, meanDistances, validity
+  standardDeviations: 2, output: {meanDistances, validity}
 }));`,
     preview: {
       kind: 'point-cloud',
@@ -2265,38 +2243,15 @@ graph.add(new GPUPointCloudStatisticalFilter({
       },
       {
         name: 'parts',
-        type: 'readonly {counts, centroids, representatives, sourceRowOffset, attribute?}}[]',
+        type: 'readonly {counts, centroids, representatives, sourceRowOffset, attribute?}[]',
         required: true,
         description: 'Per-partition counts, centroids and representatives.'
       },
       {
-        name: 'counts',
-        type: "GraphDataView<'uint32'>",
+        name: 'output',
+        type: 'GPUPointCloudVoxelMergeOutput',
         required: true,
-        description: 'Merged point count per voxel.'
-      },
-      {
-        name: 'centroids',
-        type: "GraphDataView<'float32x3'>",
-        required: true,
-        description: 'Merged centroid per voxel.'
-      },
-      {
-        name: 'representatives',
-        type: "GraphDataView<'uint32'>",
-        required: true,
-        description: 'Global representative point id per voxel.'
-      },
-      {
-        name: 'attribute',
-        type: "{means: GraphDataView<AttributeFormat>; counts: GraphDataView<'uint32'>}",
-        description: 'Optional merged attribute means and counts.'
-      },
-      {
-        name: 'status',
-        type: "GraphDataView<'uint32'>",
-        required: true,
-        description: 'Bit 1 count overflow, bit 2 representative id overflow.'
+        description: 'Counts, centroids, representatives, status and optional attribute.'
       }
     ],
     outputs: [
@@ -2314,6 +2269,11 @@ graph.add(new GPUPointCloudStatisticalFilter({
         name: 'representatives',
         type: "GraphDataView<'uint32'>",
         description: 'Representative original id per voxel.'
+      },
+      {
+        name: 'status',
+        type: "GraphDataView<'uint32'>",
+        description: 'Per-voxel bits: 1 count overflow, 2 representative row overflow.'
       }
     ],
     example: `import {GPUPointCloudVoxelMerge} from '@luma-contributors/analysis/pointcloud-analysis';
@@ -2322,7 +2282,7 @@ graph.add(new GPUPointCloudStatisticalFilter({
 graph.add(new GPUPointCloudVoxelMerge({
   partitionPolicy: 'disjoint-owned-rows',
   parts: [{...tileA, sourceRowOffset: 0}, {...tileB, sourceRowOffset: 500000}],
-  counts, centroids, representatives, status
+  output: {counts, centroids, representatives, status}
 }));`,
     preview: {
       kind: 'point-cloud',
@@ -2367,28 +2327,10 @@ graph.add(new GPUPointCloudVoxelMerge({
         description: '{origin, cellSize, width, height} planar grid.'
       },
       {
-        name: 'terrain',
-        type: "GraphDataView<'float32'>",
+        name: 'output',
+        type: 'GPUPointCloudSurfacesOutput',
         required: true,
-        description: 'Minimum ground elevation per cell.'
-      },
-      {
-        name: 'surface',
-        type: "GraphDataView<'float32'>",
-        required: true,
-        description: 'Maximum elevation per cell.'
-      },
-      {
-        name: 'canopy',
-        type: "GraphDataView<'float32'>",
-        required: true,
-        description: 'Surface minus terrain; negatives are preserved.'
-      },
-      {
-        name: 'coverage',
-        type: "GraphDataView<'uint32'>",
-        required: true,
-        description: 'Bit 1 has any point, bit 2 has ground.'
+        description: 'Caller-owned terrain, surface, canopy and coverage rasters.'
       }
     ],
     outputs: [
@@ -2407,7 +2349,7 @@ graph.add(new GPUPointCloudVoxelMerge({
 graph.add(new GPUPointCloudSurfaces({
   positions, classifications: classes,
   grid: {origin: [0, 0], cellSize: 1, width: 256, height: 256},
-  terrain, surface, canopy, coverage
+  output: {terrain, surface, canopy, coverage}
 }));`,
     preview: {
       kind: 'terrain',
@@ -2467,16 +2409,10 @@ graph.add(new GPUPointCloudSurfaces({
         description: 'Bilinear or IDW sampling instead of cell-constant.'
       },
       {
-        name: 'heights',
-        type: "GraphDataView<'float32'>",
+        name: 'output',
+        type: 'GPUPointCloudHeightOutput',
         required: true,
-        description: 'Signed height per point.'
-      },
-      {
-        name: 'status',
-        type: "GraphDataView<'uint32'>",
-        required: true,
-        description: '0 valid, 1 outside, 2 unsupported, 3 nonfinite.'
+        description: 'Caller-owned signed heights and per-point status.'
       }
     ],
     outputs: [
@@ -2494,7 +2430,7 @@ graph.add(new GPUPointCloudHeight({
   positions,
   grid: {origin: [0, 0], cellSize: 1, width: 256, height: 256},
   terrain, coverage, coverageBit: 2,
-  heights, status
+  output: {heights, status}
 }));`,
     preview: {
       kind: 'terrain',
@@ -2568,7 +2504,7 @@ graph.add(new GPUPointCloudHeight({
         description: 'Upper limit of the threshold.'
       }
     ],
-    moreRequired: ['coverage', 'groundMask', 'outputClassifications', 'status'],
+    moreRequired: ['coverage'],
     outputs: [
       {name: 'groundMask', type: "GraphDataView<'uint32'>", description: 'Ground flag per point.'},
       {
@@ -2590,7 +2526,7 @@ graph.add(new GPUPointCloudGround({
   grid: {origin: [0, 0], cellSize: 1, width: 256, height: 256},
   minimumSurface: minimum, coverage,
   radii: [1, 2, 4], initialThreshold: 0.2, slope: 0.1, maximumThreshold: 1,
-  groundMask, outputClassifications: outputClasses, status
+  output: {groundMask, outputClassifications: outputClasses, status}
 }));`,
     preview: {
       kind: 'terrain',
@@ -2642,9 +2578,13 @@ graph.add(new GPUPointCloudGround({
       },
       {name: 'threshold', type: 'number', description: 'Elevation threshold above the surface.'},
       {name: 'cut', type: 'number', description: 'Net-cut spacing; zero disables.'},
-      {name: 'groundClass', type: 'number', description: 'Class written for ground points.'}
+      {
+        name: 'output',
+        type: 'GPUPointCloudSMRFOutput',
+        required: true,
+        description: 'Caller-owned groundSurface, groundMask, outputClassifications and status.'
+      }
     ],
-    moreRequired: ['groundSurface', 'groundMask', 'outputClassifications', 'status'],
     outputs: [
       {
         name: 'groundSurface',
@@ -2670,7 +2610,7 @@ graph.add(new GPUPointCloudSMRF({
   positions, classifications: classes,
   grid: {origin: [0, 0], cellSize: 1, width: 256, height: 256},
   slope: 0.15, threshold: 0.5, window: 16,
-  groundSurface, groundMask, outputClassifications: outputClasses, status
+  output: {groundSurface, groundMask, outputClassifications: outputClasses, status}
 }));`,
     preview: {kind: 'terrain', seed: 9132, caption: 'SMRF ground surface under a vegetated cloud.'},
     related: ['pointcloud-ground', 'pointcloud-surfaces', 'pointcloud-height'],
@@ -2726,9 +2666,13 @@ graph.add(new GPUPointCloudSMRF({
         description: 'Huber or Tukey reweighting and its scale.'
       },
       {name: 'iterations', type: 'number', description: 'Iteration budget.'},
-      {name: 'targetGrid', type: 'PointCloudGrid', description: 'Exact static target index.'}
+      {
+        name: 'output',
+        type: 'GPUPointCloudICPOutput',
+        required: true,
+        description: 'Caller-owned transform, history, inlierMask and status.'
+      }
     ],
-    moreRequired: ['transform', 'history', 'inlierMask', 'status'],
     outputs: [
       {
         name: 'transform',
@@ -2756,7 +2700,7 @@ graph.add(new GPUPointCloudSMRF({
 // source, target (shared local frame), transform, history, inlierMask, status: views on graph
 graph.add(new GPUPointCloudICP({
   source, target, maximumDistance: 1, iterations: 20,
-  transform, history, inlierMask, status
+  output: {transform, history, inlierMask, status}
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
@@ -2823,7 +2767,6 @@ device.submit();`,
         description: 'Registration uncertainty added to the bound.'
       }
     ],
-    moreRequired: ['changes', 'roughness', 'counts', 'status'],
     outputs: [
       {
         name: 'changes',
@@ -2852,7 +2795,7 @@ device.submit();`,
 graph.add(new GPUPointCloudChange({
   reference, comparison, cores, normals, alignment: 'already-aligned',
   radius: 1, halfDepth: 2, registrationError: 0.02,
-  changes, roughness, counts, status
+  output: {changes, roughness, counts, status}
 }));`,
     preview: {
       kind: 'point-cloud',
@@ -3143,22 +3086,36 @@ const record = createGPUComputationRecord({
         description: 'Graph descriptions from describeGPUCommandGraph.'
       },
       {
-        name: 'formulas',
-        type: 'readonly GPUComputationFormulaRef[]',
-        description: 'Formula references.'
+        name: 'parameters',
+        type: 'GPUComputationAttributes',
+        description: 'All per-frame scalar settings, included in deterministic run identity.'
       },
       {
-        name: 'sources',
-        type: 'readonly GPUComputationSourceRef[]',
-        description: 'Source references, deduplicated by id.'
+        name: 'implementationRevision',
+        type: 'string',
+        default: "'analysis-2026-11-18-review-1'",
+        description: 'Comparison revision; advance it after implementation correctness fixes.'
       },
-      {name: 'datasetVersion', type: 'string', description: 'Version of the input data.'},
+      {
+        name: 'executionId',
+        type: 'string',
+        default: 'fresh UUID',
+        description: 'Unique execution identity; set explicitly for reproducible fixtures.'
+      },
       {name: 'seed', type: 'string | number', description: 'Random seed of the run.'}
     ],
     outputs: [
-      {name: 'schema', type: 'string', description: 'Schema identifier.'},
-      {name: 'id', type: 'string', description: 'Record id.'},
-      {name: 'runId', type: 'string', description: 'Run identity hash; sidecars join on it.'},
+      {name: 'schema, id', type: 'string', description: 'Schema identifier and record id.'},
+      {
+        name: 'runId',
+        type: 'string',
+        description: 'Comparison identity including parameters and implementation revision.'
+      },
+      {
+        name: 'executionId',
+        type: 'string',
+        description: 'Execution identity; copy to every metrics/captures sidecar.'
+      },
       {name: 'createdAt', type: 'string', description: 'ISO 8601 creation time.'},
       {
         name: 'adapter',
@@ -3215,7 +3172,12 @@ const report = validateGPUComputationRecord(record);`,
         name: 'runId',
         type: 'string',
         required: true,
-        description: 'Run id shared with the record.'
+        description: 'Comparison id shared with the record.'
+      },
+      {
+        name: 'executionId',
+        type: 'string',
+        description: 'Copy record.executionId; omit only for legacy /1 sidecars.'
       },
       {name: 'graph', type: 'string', required: true, description: 'Id of the timed graph.'},
       {
@@ -3240,16 +3202,12 @@ const report = validateGPUComputationRecord(record);`,
         name: 'counters',
         type: 'Readonly<Record<string, Readonly<Record<string, number>>>>',
         description: 'Optional counters per node.'
-      },
-      {
-        name: 'passIndices',
-        type: 'Readonly<Record<string, number>>',
-        description: 'Node id to physical pass index.'
       }
     ],
     outputs: [
       {name: 'schema', type: 'string', description: 'Schema identifier.'},
       {name: 'runId', type: 'string', description: 'Run the metrics measure.'},
+      {name: 'executionId', type: 'string', description: 'Execution the metrics measure.'},
       {name: 'graph', type: 'string', description: 'Id of the measured graph.'},
       {name: 'timebase', type: '"ns" | "ms"', description: 'Unit of GPU begin and end times.'},
       {
@@ -3266,17 +3224,13 @@ const report = validateGPUComputationRecord(record);`,
         name: 'nodes',
         type: 'Record<string, GPUComputationNodeMetrics>',
         description: 'Timings and counters keyed by node id.'
-      },
-      {
-        name: 'series',
-        type: 'readonly GPUComputationSeries[]',
-        description: 'Optional per-iteration counter series.'
       }
     ],
     example: `import {createGPUComputationMetrics} from '@luma-contributors/analysis/computation-record';
 
 const metrics = createGPUComputationMetrics({
   runId: record.runId,
+  executionId: record.executionId,
   graph: 'compiled',
   encoding: {coalesced: false, timestamped: true, taps: 0, lensTwin: true},
   timing: {nodes: [{
@@ -3302,7 +3256,7 @@ const metrics = createGPUComputationMetrics({
     summary:
       'Builds the captures sidecar of a record: snapshots, stamps and replays, with empty arrays filled in.',
     explanation:
-      'Bundles the data frames you read back from snapshot taps with the run id. Validate record and captures together with validateGPUComputationSidecars.',
+      'Bundles readback frames with the comparison and execution ids. Validate both ids with validateGPUComputationSidecars to reject captures from an earlier execution.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['summarize'],
     domains: ['data-engineering'],
@@ -3311,7 +3265,12 @@ const metrics = createGPUComputationMetrics({
         name: 'runId',
         type: 'string',
         required: true,
-        description: 'Run id shared with the record.'
+        description: 'Comparison id shared with the record.'
+      },
+      {
+        name: 'executionId',
+        type: 'string',
+        description: 'Copy record.executionId; omit only for legacy /1 sidecars.'
       },
       {
         name: 'snapshots',
@@ -3332,6 +3291,7 @@ const metrics = createGPUComputationMetrics({
     outputs: [
       {name: 'schema', type: 'string', description: 'Schema identifier.'},
       {name: 'runId', type: 'string', description: 'Run the captures belong to.'},
+      {name: 'executionId', type: 'string', description: 'Execution the captures belong to.'},
       {
         name: 'snapshots',
         type: 'readonly GPUComputationCapture[]',
@@ -3351,7 +3311,7 @@ const metrics = createGPUComputationMetrics({
     example: `import {createGPUComputationCaptures, validateGPUComputationSidecars} from '@luma-contributors/analysis/computation-record';
 
 // snapshots: captures read back from a GPUSnapshotArena
-const captures = createGPUComputationCaptures({runId: record.runId, snapshots});
+const captures = createGPUComputationCaptures({runId: record.runId, executionId: record.executionId, snapshots});
 const report = validateGPUComputationSidecars(record, {captures});`,
     preview: {
       kind: 'pipeline',
@@ -3437,7 +3397,8 @@ graph.add(new GPUSnapshotTap({
         name: 'views',
         type: 'Readonly<Record<string, GraphDataView | GraphBufferHandle>>',
         required: true,
-        description: 'Views to copy, keyed by slot name.'
+        description:
+          'Views/buffers keyed by arena slots; slots in range and offsets 4-byte aligned.'
       },
       {name: 'afterNode', type: 'string', description: 'Node the observation follows.'},
       {name: 'label', type: 'string', description: 'Frame description.'},

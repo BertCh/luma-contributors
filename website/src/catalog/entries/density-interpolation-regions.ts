@@ -1097,7 +1097,7 @@ graph.add(new GPUArealInterpolation({
   output: {weights: {offsets, neighbors, weights}, status: {overflow}}
 }));
 graph.add(new GPUSpatialLag({
-  weights: {offsets, neighbors, weights},
+  weights: {offsets, neighbors, weights, status: {overflow}},
   values: populationBySource,
   output: populationByTarget
 }));
@@ -2535,7 +2535,12 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     useCases: ['find-patterns', 'classify'],
     domains: ['spatial-statistics', 'demographics'],
     params: [
-      {name: 'weights', type: WEIGHTS, required: true, description: 'Contiguity graph.'},
+      {
+        name: 'weights',
+        type: WEIGHTS,
+        required: true,
+        description: 'Loss suppresses labels (0xffffffff), objective (NaN) and convergence.'
+      },
       {name: 'values', type: F32, required: true, description: 'Attribute columns, row-major.'},
       {
         name: 'targetRegionCount',

@@ -1296,6 +1296,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
       weights: resources.createBuffer('block-weights', blockSlots * 4)
     };
     const blockOverflowBuffer = resources.createBuffer('block-overflow', 4);
+    const blockCandidateOverflowBuffer = resources.createBuffer('block-candidate-overflow', 4);
     const blockTotalBuffer = resources.createBuffer('block-total', 4);
     const blockProducers = new Map<GPUContiguityCriterion, CompiledGPUCommandGraph<void>>();
     for (const criterion of ['rook', 'queen'] as const) {
@@ -1340,6 +1341,13 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
             ...importCsr(graph, 'p', blockCsr, blockSlots, blockCount),
             status: {
               overflow: importGraphBuffer(graph, 'overflow', blockOverflowBuffer, 'uint32', 1),
+              candidateOverflow: importGraphBuffer(
+                graph,
+                'candidate-overflow',
+                blockCandidateOverflowBuffer,
+                'uint32',
+                1
+              ),
               requiredCount: importGraphBuffer(graph, 'total', blockTotalBuffer, 'uint32', 1)
             }
           }
@@ -1362,7 +1370,11 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
         positions: blockCentroidsBuffer,
         values: blockValuesBuffer,
         csr: blockCsr,
-        producer: {overflow: blockOverflowBuffer, total: blockTotalBuffer},
+        producer: {
+          overflow: blockOverflowBuffer,
+          total: blockTotalBuffer,
+          candidateOverflow: blockCandidateOverflowBuffer
+        },
         drawAllLinks: false
       }),
       getValues: () => (valueColumn === 'trips' ? blockTrips : blockPois),

@@ -33,21 +33,25 @@ export default defineOperationRun({
       epsilon: values.epsilon,
       nearInfrared: nearInfrared.band
     };
-    new GPURasterNDWI({
-      ...common,
-      method: 'mcfeeters',
-      green: green.band,
-      output: mcfeeters.view,
-      outputValidity: builder.allocate('mcfeeters-valid', 'uint32', cellCount).view
-    }).addToGraph(builder.graph);
-    new GPURasterNDWI({
-      ...common,
-      id: 'ndwi-gao',
-      method: 'gao',
-      shortwaveInfrared: shortwave.band,
-      output: gao.view,
-      outputValidity: builder.allocate('gao-valid', 'uint32', cellCount).view
-    }).addToGraph(builder.graph);
+    builder.graph.add(
+      new GPURasterNDWI({
+        ...common,
+        method: 'mcfeeters',
+        green: green.band,
+        output: mcfeeters.view,
+        outputValidity: builder.allocate('mcfeeters-valid', 'uint32', cellCount).view
+      })
+    );
+    builder.graph.add(
+      new GPURasterNDWI({
+        ...common,
+        id: 'ndwi-gao',
+        method: 'gao',
+        shortwaveInfrared: shortwave.band,
+        output: gao.view,
+        outputValidity: builder.allocate('gao-valid', 'uint32', cellCount).view
+      })
+    );
     return {outputs: {mcfeeters, gao}};
   },
   interaction: {

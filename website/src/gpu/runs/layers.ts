@@ -57,7 +57,7 @@ export class MeshLayer extends DemoLayer {
     this.model.setVertexCount(Math.max(triangleCount, 1) * 3);
   }
 
-  protected get usesSolid(): boolean {
+  protected override get usesSolid(): boolean {
     return true;
   }
 }
@@ -128,7 +128,7 @@ export class EdgeLayer extends DemoLayer {
     super(device, 'run-edges', getEdgeShader(valueFormat), {nodes, edges, values}, edgeCount);
   }
 
-  protected get usesSolid(): boolean {
+  protected override get usesSolid(): boolean {
     return true;
   }
 }
@@ -315,7 +315,7 @@ export class ChartLayer extends DemoLayer {
     this.plotBuffer = plotBuffer;
   }
 
-  protected get usesSolid(): boolean {
+  protected override get usesSolid(): boolean {
     return true;
   }
 
@@ -325,7 +325,7 @@ export class ChartLayer extends DemoLayer {
     this.plotBuffer.write(this.plotValues);
   }
 
-  destroy(): void {
+  override destroy(): void {
     super.destroy();
     this.plotBuffer.destroy();
   }

@@ -7,7 +7,10 @@
 // east (a small bandwidth follows it). Right: the surface of the second slope, which is constant
 // (a large bandwidth keeps it flat; a small one adds noise).
 
-import {GPUMultiscaleGeographicallyWeightedRegression} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
+  GPUMultiscaleGeographicallyWeightedRegression,
+  decodeGPUMultiscaleGeographicallyWeightedRegressionStatus
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun, type RunBuffer} from '../../define-run';
 import {bindAxes} from '../../interaction';
 import {createLegend, mergeText} from '../../text';
@@ -100,9 +103,9 @@ export default defineOperationRun({
         parameterBuffer.write(
           Float32Array.of(
             1e-2,
-            current.interceptBandwidth,
-            current.firstBandwidth,
-            current.secondBandwidth
+            current['interceptBandwidth'],
+            current['firstBandwidth'],
+            current['secondBandwidth']
           )
         );
       }
@@ -116,11 +119,29 @@ export default defineOperationRun({
     y: 'interceptBandwidth',
     decorate: (values, pointer, {outputs, peek}) => {
       const codes = peek(outputs.codes);
+      let converged = 0;
+      let excluded = 0;
+      let iterationLimit = 0;
       let failed = 0;
-      for (let row = 0; codes && row < codes.length; row++) if (codes[row] !== 0) failed++;
+      for (let row = 0; codes && row < codes.length; row++) {
+        switch (decodeGPUMultiscaleGeographicallyWeightedRegressionStatus(codes[row])) {
+          case 'converged':
+            converged++;
+            break;
+          case 'excluded':
+            excluded++;
+            break;
+          case 'iteration-limit':
+            iterationLimit++;
+            break;
+          default:
+            failed++;
+            break;
+        }
+      }
       return {
         glyphs: [{shape: 'crosshair', at: [pointer.x, pointer.y]}],
-        readout: `x1 bandwidth ${values.firstBandwidth} · intercept ${values.interceptBandwidth} · ${failed} rows failed`
+        readout: `x1 bandwidth ${values['firstBandwidth']} · intercept ${values['interceptBandwidth']} · ${converged} converged · ${excluded} excluded · ${iterationLimit} iteration-limit estimate${iterationLimit === 1 ? '' : 's'} displayed · ${failed} failed`
       };
     }
   }),

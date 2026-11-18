@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {formatBytes} from '../../../../lens/format';
+import {formatResourceBytes} from '../../../../lens/format';
 import type {LensViewModel} from '../../../../lens/types';
 
 /** The buffers one recorded kernel reads and writes: its whole declaration to the command graph. */
@@ -58,7 +58,9 @@ export function KernelDeclares({model, label}: {model: LensViewModel; label: str
                 {id}
                 <tspan fill="var(--color-muted)">
                   {writes.has(id) ? '  read_write' : '  read'}
-                  {bytes(id) !== undefined ? `  ${formatBytes(bytes(id) ?? 0)}` : ''}
+                  {bytes(id) !== undefined
+                    ? `  ${formatResourceBytes(bytes(id) ?? 0, model.bufferBytesKind?.[id])}`
+                    : ''}
                 </tspan>
               </text>
               <line

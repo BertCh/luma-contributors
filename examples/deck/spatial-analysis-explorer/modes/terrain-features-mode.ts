@@ -1007,7 +1007,7 @@ export const terrainFeaturesMode: SpatialAnalysisModeDefinition = {
     ): void {
       const peaks: {index: number; value: number; prominence: number}[] = [];
       for (let sample = 0; sample < count; sample++) {
-        if (mask[sample] && peaks.length < PROFILE_PEAK_CAPACITY) {
+        if (mask[sample] === 1) {
           peaks.push({
             index: refinedIndex[sample],
             value: refinedValue[sample],
@@ -1035,23 +1035,23 @@ export const terrainFeaturesMode: SpatialAnalysisModeDefinition = {
             radius: peaks.map(peak => 2.5 + 3.5 * Math.sqrt(peak.prominence / maximumProminence))
           }
         ],
-        caption: `${peaks.length} peaks`
+        caption: `${peaks.length} peaks${converged ? '' : ' (incomplete suppression)'}`
       });
       const markers: number[] = [];
       const length = Math.max(pixelLength, 1e-6);
       const directionX = (profileEnd[0] - profileStart[0]) / length;
       const directionY = (profileEnd[1] - profileStart[1]) / length;
-      for (const peak of peaks) {
+      for (const peak of peaks.slice(0, PROFILE_PEAK_CAPACITY)) {
         markers.push(
           profileStart[0] + directionX * peak.index,
           profileStart[1] + directionY * peak.index
         );
       }
-      profilePeakCount = peaks.length;
+      profilePeakCount = markers.length / 2;
       if (markers.length) profilePeakMarkers.write(Float32Array.from(markers));
       readouts.profile.setValue(
         `${count} samples over ${(pixelLength * cell).toFixed(0)} m, ${peaks.length} peaks` +
-          (converged ? '' : ' (suppression not converged)')
+          (converged ? '' : ' (incomplete suppression)')
       );
       context.updateLayers();
     }

@@ -169,6 +169,7 @@ type Latest = {
   offsets: Uint32Array;
   neighbors: Uint32Array;
   weightsOverflow: boolean;
+  weightsCandidateOverflow: boolean;
   weight: Float32Array;
   local: LocalPooling;
   sorted: {raw: Float64Array; smoothed: Float64Array; spatial: Float64Array; z: Float64Array};
@@ -324,6 +325,7 @@ export async function createRateSmoothing(
   const neighborsBuffer = resources.createBuffer('weights-neighbors', neighborCapacity * 4);
   const weightsBuffer = resources.createBuffer('weights-values', neighborCapacity * 4);
   const weightsOverflowBuffer = resources.createBuffer('weights-overflow', 4);
+  const weightsCandidateOverflowBuffer = resources.createBuffer('weights-candidate-overflow', 4);
   const zScoresBuffer = resources.createBuffer('z-scores', n * 4);
   const quadrantsBuffer = resources.createBuffer('quadrants', n * 4);
   const colorsBuffer = resources.createBuffer('cluster-colors', n * 4);
@@ -457,7 +459,14 @@ export async function createRateSmoothing(
       outputs: {
         standardizedRates: standardized,
         smoothedRates: smoothed,
-        status: {weightsOverflow: word('weights-overflow', weightsOverflowBuffer, 1)},
+        status: {
+          weightsOverflow: word('weights-overflow', weightsOverflowBuffer, 1),
+          weightsCandidateOverflow: word(
+            'weights-candidate-overflow',
+            weightsCandidateOverflowBuffer,
+            1
+          )
+        },
         zScores: float('z-scores', zScoresBuffer),
         quadrants: word('quadrants', quadrantsBuffer),
         colors: word('cluster-colors', colorsBuffer),
@@ -647,7 +656,7 @@ export async function createRateSmoothing(
       selectionBuffer.write(own);
       selectionCount = own.length / 4;
       const members: number[] = [];
-      if (latest) {
+      if (latest && !latest.weightsOverflow && !latest.weightsCandidateOverflow) {
         for (let slot = latest.offsets[row]; slot < latest.offsets[row + 1]; slot++) {
           members.push(latest.neighbors[slot]);
         }
@@ -678,7 +687,9 @@ export async function createRateSmoothing(
     );
     ctx.setReadout(
       'localPool',
-      `${(latest.local.pooledRates[selectedRow] * RATE_SCALE).toFixed(1)} per 1,000 among ${neighborCount} neighbours`
+      latest.weightsOverflow || latest.weightsCandidateOverflow
+        ? 'unavailable: incomplete weights'
+        : `${(latest.local.pooledRates[selectedRow] * RATE_SCALE).toFixed(1)} per 1,000 among ${neighborCount} neighbours`
     );
   };
 
@@ -768,10 +779,19 @@ export async function createRateSmoothing(
     let islands = 0;
     for (let row = 0; row < n; row++)
       if (latest.offsets[row + 1] === latest.offsets[row]) islands++;
-    ctx.setReadout('neighbourMean', (latest.offsets[n] / n).toFixed(1));
+    ctx.setReadout(
+      'neighbourMean',
+      latest.weightsOverflow
+        ? 'unavailable: incomplete weights'
+        : (latest.offsets[n] / n).toFixed(1)
+    );
     ctx.setReadout(
       'neighbourDetail',
-      `${islands} counties without neighbours${latest.weightsOverflow ? ' (CAPACITY OVERFLOW)' : ''}`
+      latest.weightsOverflow
+        ? latest.weightsCandidateOverflow
+          ? 'unavailable: pair capacity loss'
+          : 'unavailable: neighbor capacity overflow'
+        : `${islands} counties without neighbours`
     );
     const getFiniteRange = (values: ArrayLike<number>, scale = 1) => {
       let minimum = Number.POSITIVE_INFINITY;
@@ -805,7 +825,9 @@ export async function createRateSmoothing(
     ctx.setReadout(
       'neighborRateRange',
       latest.weightsOverflow
-        ? 'unavailable: weights capacity overflow'
+        ? latest.weightsCandidateOverflow
+          ? 'unavailable: pair capacity loss'
+          : 'unavailable: neighbor capacity overflow'
         : neighborSummary.finiteCount
           ? `${neighborSummary.minimum.toFixed(1)} to ${neighborSummary.maximum.toFixed(1)} per 1,000`
           : 'unavailable'
@@ -813,7 +835,9 @@ export async function createRateSmoothing(
     ctx.setReadout(
       'neighborRateStatus',
       latest.weightsOverflow
-        ? 'unavailable: invalid/incomplete weights graph'
+        ? latest.weightsCandidateOverflow
+          ? 'unavailable: pair capacity loss'
+          : 'unavailable: neighbor capacity overflow'
         : `${neighborSummary.finiteCount} finite; ${n - neighborSummary.finiteCount} NaN / excluded (${ctx.options.islandPolicy})`
     );
     const isolatedRows: number[] = [];
@@ -823,7 +847,9 @@ export async function createRateSmoothing(
     ctx.setReadout(
       'islandRows',
       latest.weightsOverflow
-        ? 'unavailable: weights capacity overflow'
+        ? latest.weightsCandidateOverflow
+          ? 'unavailable: pair capacity loss'
+          : 'unavailable: neighbor capacity overflow'
         : isolatedRows.length
           ? isolatedRows.map(countyName).join('; ')
           : 'none in the valid current weights graph'
@@ -837,7 +863,9 @@ export async function createRateSmoothing(
     ctx.setReadout(
       'islandRateStatus',
       latest.weightsOverflow
-        ? 'unavailable: weights capacity overflow'
+        ? latest.weightsCandidateOverflow
+          ? 'unavailable: pair capacity loss'
+          : 'unavailable: neighbor capacity overflow'
         : `${isolatedRows.length} isolate rows; undefined: ${isolatedRows.length - undefinedFinite} NaN, ${undefinedFinite} finite; own-rate: ${ownRateFinite} finite, ${isolatedRows.length - ownRateFinite} NaN`
     );
     const above = zCounts.slice(4).reduce((total, count) => total + count, 0);
@@ -890,6 +918,26 @@ export async function createRateSmoothing(
       description:
         'Bar chart of counties by local Moran cluster type: high-high and low-low clusters, high-low and low-high outliers.'
     });
+    if (latest.weightsOverflow) {
+      const reason = latest.weightsCandidateOverflow
+        ? 'unavailable: pair capacity loss'
+        : 'unavailable: neighbor capacity overflow';
+      for (const key of [
+        'moranRaw',
+        'moranEb',
+        'moranSpatial',
+        'moranZ',
+        'hhCount',
+        'llCount',
+        'outlierCount',
+        'notSignificantShare',
+        'hhRegion',
+        'llRegion'
+      ])
+        ctx.setReadout(key, reason);
+      ctx.setChart('moranComparison', {kind: 'bars', title: reason, values: [], labels: []});
+      ctx.setChart('clusterBars', {kind: 'bars', title: reason, values: [], labels: []});
+    }
   };
 
   const getEffectiveMap = (): RateSmoothingOptions['map'] => {
@@ -1105,6 +1153,7 @@ export async function createRateSmoothing(
       {buffer: offsetsBuffer, size: (n + 1) * 4},
       {buffer: neighborsBuffer, size: neighborCapacity * 4},
       {buffer: weightsOverflowBuffer, size: 4},
+      {buffer: weightsCandidateOverflowBuffer, size: 4},
       {buffer: generationOutput, size: 8}
     ],
     bytes => {
@@ -1125,6 +1174,7 @@ export async function createRateSmoothing(
       const offsets = read.words(n + 1).slice();
       const neighbors = read.words(neighborCapacity).slice();
       const overflow = read.words(1)[0] !== 0;
+      const candidateOverflow = read.words(1)[0] !== 0;
       const generationCode = read.words(1)[0];
       const resultGeneration = read.words(1)[0];
       if (
@@ -1158,7 +1208,8 @@ export async function createRateSmoothing(
         },
         offsets,
         neighbors,
-        weightsOverflow: overflow,
+        weightsOverflow: overflow || candidateOverflow,
+        weightsCandidateOverflow: candidateOverflow,
         weight: getEmpiricalBayesWeights(priorVariance, pooledRate, womenYears),
         local: getLocalPooling(events, womenYears, offsets, neighbors),
         sorted: {
@@ -1404,6 +1455,18 @@ export async function createRateSmoothing(
 
   const describeCounty = (row: number): TooltipContent | null => {
     if (!latest || !legendData) return null;
+    if (latest.weightsOverflow)
+      return {
+        title: countyName(row),
+        rows: [
+          {
+            label: 'Weights',
+            value: latest.weightsCandidateOverflow
+              ? 'unavailable: pair capacity loss'
+              : 'unavailable: neighbor capacity overflow'
+          }
+        ]
+      };
     const map = getEffectiveMap();
     const {rateTable: table, zTable} = legendData;
     const swatchOf = (value: number, source: ClassTable) => {

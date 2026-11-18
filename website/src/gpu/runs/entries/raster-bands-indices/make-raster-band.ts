@@ -62,16 +62,18 @@ export default defineOperationRun({
       settings: {scale?: number; offset?: number; noDataValue?: number}
     ) => {
       const output = builder.allocate(`ndwi-${id}`, 'float32', cellCount);
-      new GPURasterNDWI({
-        id: `ndwi-${id}`,
-        method: 'mcfeeters',
-        width: inputs.columns,
-        height: inputs.rows,
-        green: makeGPURasterBand(green.view, grid, {id: `green-${id}`, ...settings}),
-        nearInfrared: makeGPURasterBand(nearInfrared.view, grid, {id: `nir-${id}`, ...settings}),
-        output: output.view,
-        outputValidity: builder.allocate(`ndwi-${id}-valid`, 'uint32', cellCount).view
-      }).addToGraph(builder.graph);
+      builder.graph.add(
+        new GPURasterNDWI({
+          id: `ndwi-${id}`,
+          method: 'mcfeeters',
+          width: inputs.columns,
+          height: inputs.rows,
+          green: makeGPURasterBand(green.view, grid, {id: `green-${id}`, ...settings}),
+          nearInfrared: makeGPURasterBand(nearInfrared.view, grid, {id: `nir-${id}`, ...settings}),
+          output: output.view,
+          outputValidity: builder.allocate(`ndwi-${id}-valid`, 'uint32', cellCount).view
+        })
+      );
       return output;
     };
     return {outputs: {raw: addIndex('raw', {}), output: addIndex('calibrated', calibration)}};

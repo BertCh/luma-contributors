@@ -4,7 +4,7 @@
 // Buffer lifetimes of a recorded run: one row per buffer, one column per step of the execution order.
 // A bar fills when the first kernel writes the buffer and fades once its last reader has run.
 
-import {formatBytes} from '../../lens/format';
+import {formatResourceBytes} from '../../lens/format';
 import type {LensResourceLifetime, LensViewModel} from '../../lens/types';
 
 const LABEL_WIDTH = 188;
@@ -84,6 +84,10 @@ export function LifetimeChart({model, step}: {model: LensViewModel; step: number
           ))}
           {lifetimes.map((lifetime, row) => {
             const state = getLifetimeState(lifetime, step);
+            const ownership =
+              lifetime.bytesKind === undefined && lifetime.ownership === 'imported'
+                ? 'unknown'
+                : lifetime.ownership;
             const y = TOP + row * ROW_HEIGHT;
             const x = LABEL_WIDTH + lifetime.first * COLUMN_WIDTH;
             const fullWidth = (lifetime.last - lifetime.first + 1) * COLUMN_WIDTH;
@@ -92,7 +96,7 @@ export function LifetimeChart({model, step}: {model: LensViewModel; step: number
               COLUMN_WIDTH;
             return (
               <g key={lifetime.id} className="lifetime-row" data-state={state}>
-                <title>{`${lifetime.id}: ${formatBytes(lifetime.bytes)}, steps ${lifetime.first + 1} to ${lifetime.last + 1}`}</title>
+                <title>{`${lifetime.id}: ${formatResourceBytes(lifetime.bytes, lifetime.bytesKind)}, ownership ${ownership}, steps ${lifetime.first + 1} to ${lifetime.last + 1}`}</title>
                 <text className="lifetime-name" x={LABEL_WIDTH - 8} y={y + 11} textAnchor="end">
                   {shortenName(lifetime.id, slug)}
                 </text>
@@ -106,7 +110,7 @@ export function LifetimeChart({model, step}: {model: LensViewModel; step: number
                 />
                 <rect
                   className="lifetime-bar"
-                  data-ownership={lifetime.ownership}
+                  data-ownership={ownership}
                   x={x + 2}
                   y={y + 2}
                   width={Math.max(0, filledWidth - 4)}

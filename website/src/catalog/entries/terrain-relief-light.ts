@@ -954,7 +954,7 @@ parameters.write(getGPUTerrainPeakSnapParameterValues(
       {
         name: 'prominence',
         type: 'GraphDataView<"float32">',
-        description: 'Windowed prominence per sample.'
+        description: 'Prominence at 1 kept; NaN at 0 absent; +Infinity at 0xffffffff undecided.'
       },
       {
         name: 'refinedIndex',
@@ -964,7 +964,7 @@ parameters.write(getGPUTerrainPeakSnapParameterValues(
       {
         name: 'peakMask',
         type: 'GraphDataView<"uint32">',
-        description: 'Nonzero at surviving peaks.'
+        description: '1 kept, 0 absent, 0xffffffff undecided with +Infinity prominence.'
       },
       {name: 'peaks', type: 'GPUCompactOutput', description: 'Compact list of peaks.'}
     ],

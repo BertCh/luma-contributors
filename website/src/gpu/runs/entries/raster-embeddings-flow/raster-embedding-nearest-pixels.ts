@@ -33,24 +33,26 @@ export default defineOperationRun({
     return {...raster, queryPixel};
   },
   build(builder, raster, values) {
-    const resultCount = RESULT_COUNTS[Math.round(values.resultCount)];
+    const resultCount = RESULT_COUNTS[Math.round(values['resultCount'])];
     const vectors = builder.upload('vectors', 'float32', raster.vectors);
     const queries = builder.allocate('queries', 'float32', DIMENSIONS);
-    const pixelIds = builder.allocate('pixel-ids', 'uint32', resultCount);
+    const pixelRows = builder.allocate('pixel-rows', 'uint32', resultCount);
     const scores = builder.allocate('scores', 'float32', resultCount);
     const resultCounts = builder.allocate('result-counts', 'uint32', 1);
-    new GPURasterEmbeddingNearestPixels({
-      pixelCount: raster.pixelCount,
-      dimensions: DIMENSIONS,
-      vectors: vectors.view,
-      queryCount: 1,
-      queries: queries.view,
-      resultCount,
-      output: {pixelIds: pixelIds.view, scores: scores.view, resultCounts: resultCounts.view}
-    }).addToGraph(builder.graph);
+    builder.graph.add(
+      new GPURasterEmbeddingNearestPixels({
+        pixelCount: raster.pixelCount,
+        dimensions: DIMENSIONS,
+        vectors: vectors.view,
+        queryCount: 1,
+        queries: queries.view,
+        resultCount,
+        output: {pixelRows: pixelRows.view, scores: scores.view, resultCounts: resultCounts.view}
+      })
+    );
     const world = {width: raster.columns / raster.rows, height: 1};
     const positions = builder.allocate('positions', 'float32x2', resultCount);
-    addPixelPositions(builder, 'result-positions', pixelIds, raster, world, positions);
+    addPixelPositions(builder, 'result-positions', pixelRows, raster, world, positions);
     return {
       outputs: {
         positions,
@@ -75,7 +77,7 @@ export default defineOperationRun({
         rerun: changed,
         spotlight: null,
         glyphs: [getPixelBox(inputs, world, index, 1)],
-        readout: `resultCount ${RESULT_COUNTS[Math.round(values.resultCount)]} | lowest score ${Number.isFinite(last) ? last.toFixed(3) : '-'}`
+        readout: `resultCount ${RESULT_COUNTS[Math.round(values['resultCount'])]} | lowest score ${Number.isFinite(last) ? last.toFixed(3) : '-'}`
       };
     }
   },
@@ -83,7 +85,7 @@ export default defineOperationRun({
     {
       layer: 'raster',
       context: true,
-      values: values.context === 0 ? outputs.nearInfrared : outputs.vegetationIndex,
+      values: values['context'] === 0 ? outputs.nearInfrared : outputs.vegetationIndex,
       columns: inputs.columns,
       rows: inputs.rows,
       ramp: 'grey',

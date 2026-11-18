@@ -31,6 +31,7 @@ import {fetchBytes} from '../../data/loaders';
 import type {SceneContext, SceneInstance} from '../scene';
 import {createGraphViewer, createUtmFrame, UtmRasterLayer} from './b16-common';
 import {addMissingSurfacePreparation} from './missing-surface-preparation';
+import {updateMissingObservationsStructureChart} from './missing-observations-chart';
 
 const DATASET_ID = 'dixie-spectral';
 const SOURCE_WIDTH = 250;
@@ -248,7 +249,7 @@ export async function createMissingObservations(
     throw new Error('The selected July NIR crop must be fully observed for withheld-truth checks');
   }
 
-  const rasterSpec = dataset.rasterSpecs.nir_before;
+  const rasterSpec = dataset.rasterSpecs['nir_before'];
   const bounds = rasterSpec?.['boundsProjected'];
   if (
     !Array.isArray(bounds) ||
@@ -1073,25 +1074,13 @@ export async function createMissingObservations(
         description: `GPU fill maps are compared with the July values deliberately withheld from ${patternLabel}. Only these removed July cells contribute to the error; no metric is computed for real September gaps.`
       });
     } else ctx.setChart('fillErrorChart', null);
-    const sampleSeries = [
-      ['measured July', julyValues[selectedCell]],
-      ['dilate', latestSummary.morphology.dilate.values[selectedCell]],
-      ['erode', latestSummary.morphology.erode.values[selectedCell]],
-      ['opening', latestSummary.morphology.opening.values[selectedCell]],
-      ['closing', latestSummary.morphology.closing.values[selectedCell]],
-      ['reconstruction', latestSummary.reconstruction.values[selectedCell]]
-    ] as const;
-    ctx.setChart('structureChart', {
-      kind: 'bars',
-      title: 'NIR reflectance at selected cell',
-      labels: sampleSeries.map(([label]) => label),
-      values: sampleSeries.map(([, value]) => (Number.isFinite(value) ? value : Number.NaN)),
-      horizontal: true,
-      xDomain: [0, NIR_RANGE[1]],
-      formatX: value => value.toFixed(3),
-      description:
-        'The map and chart share the selected cell. Morphology and grayscale reconstruction operate on measured July NIR; bars are GPU outputs except the directly loaded July reference.'
-    });
+    updateMissingObservationsStructureChart(
+      ctx,
+      selectedCell,
+      julyValues,
+      latestSummary,
+      NIR_RANGE[1]
+    );
     const reconstructionState = latestSummary.reconstruction.converged
       ? `converged within ${ctx.options.maximumIterations} rounds`
       : `not converged within ${ctx.options.maximumIterations} rounds; the contributor publishes the unfinished iterate, which this scene hides because it is not final`;

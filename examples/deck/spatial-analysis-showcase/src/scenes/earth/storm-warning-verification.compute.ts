@@ -223,8 +223,8 @@ export async function createStormWarningVerification(
   const edgePolygonBuffer = resources.createBuffer('edge-polygons', Uint32Array.from(edgePolygons));
 
   // Join outputs (shared by every spatial-test variant) and the verification results.
-  const leftIds = resources.createBuffer('pair-left', PAIR_CAPACITY * 4);
-  const rightIds = resources.createBuffer('pair-right', PAIR_CAPACITY * 4);
+  const leftRows = resources.createBuffer('pair-left', PAIR_CAPACITY * 4);
+  const rightRows = resources.createBuffer('pair-right', PAIR_CAPACITY * 4);
   const pairCount = resources.createBuffer('pair-count', 4);
   const pairOverflow = resources.createBuffer('pair-overflow', 4);
   const pairTotal = resources.createBuffer('pair-total', 4);
@@ -321,8 +321,8 @@ export async function createStormWarningVerification(
     };
     const prepared = new GPUSpatialJoinPrepared({id: 'warning-index', geometry: right});
     graph.add(prepared);
-    const leftView = importGraphBuffer(graph, 'pair-left', leftIds, 'uint32', PAIR_CAPACITY);
-    const rightView = importGraphBuffer(graph, 'pair-right', rightIds, 'uint32', PAIR_CAPACITY);
+    const leftView = importGraphBuffer(graph, 'pair-left', leftRows, 'uint32', PAIR_CAPACITY);
+    const rightView = importGraphBuffer(graph, 'pair-right', rightRows, 'uint32', PAIR_CAPACITY);
     const countView = importGraphBuffer(graph, 'pair-count', pairCount, 'uint32', 1);
     graph.add(
       new GPUSpatialPredicateJoin({
@@ -336,8 +336,8 @@ export async function createStormWarningVerification(
         prepared,
         output: {
           pairs: {
-            leftIds: leftView,
-            rightIds: rightView,
+            leftRows: leftView,
+            rightRows: rightView,
             status: {
               count: countView,
               overflow: importGraphBuffer(graph, 'pair-overflow', pairOverflow, 'uint32', 1),
@@ -370,8 +370,8 @@ export async function createStormWarningVerification(
       id: 'verify-reports',
       invocationCount: reportCount,
       bindings: [
-        {name: 'leftIds', view: leftView, type: 'u32', access: 'read'},
-        {name: 'rightIds', view: rightView, type: 'u32', access: 'read'},
+        {name: 'leftRows', view: leftView, type: 'u32', access: 'read'},
+        {name: 'rightRows', view: rightView, type: 'u32', access: 'read'},
         {name: 'pairCount', view: countView, type: 'u32', access: 'read'},
         {name: 'reportInfo', view: reportInfoView, type: 'f32', access: 'read'},
         {name: 'polygonInfo', view: polygonInfoView, type: 'f32', access: 'read'},
@@ -404,10 +404,10 @@ export async function createStormWarningVerification(
   var bestLead = -1.0e9;
   var chain = -1.0;
   for (var pair = 0u; pair < total; pair = pair + 1u) {
-    let owner = leftIds[leftIdsOffset + pair];
+    let owner = leftRows[leftRowsOffset + pair];
     if (owner < index) { continue; }
     if (owner > index) { break; }
-    let polygon = rightIds[rightIdsOffset + pair];
+    let polygon = rightRows[rightRowsOffset + pair];
     spatial = 1.0;
     let base = polygon * 8u;
     let validFrom = polygonInfo[polygonInfoOffset + base];
@@ -435,8 +435,8 @@ export async function createStormWarningVerification(
       id: 'verify-warnings',
       invocationCount: warningCount,
       bindings: [
-        {name: 'leftIds', view: leftView, type: 'u32', access: 'read'},
-        {name: 'rightIds', view: rightView, type: 'u32', access: 'read'},
+        {name: 'leftRows', view: leftView, type: 'u32', access: 'read'},
+        {name: 'rightRows', view: rightView, type: 'u32', access: 'read'},
         {name: 'pairCount', view: countView, type: 'u32', access: 'read'},
         {name: 'reportInfo', view: reportInfoView, type: 'f32', access: 'read'},
         {name: 'polygonInfo', view: polygonInfoView, type: 'f32', access: 'read'},
@@ -455,8 +455,8 @@ export async function createStormWarningVerification(
   let total = min(pairCount[pairCountOffset], ${PAIR_CAPACITY}u);
   var count = 0u;
   for (var pair = 0u; pair < total; pair = pair + 1u) {
-    if (rightIds[rightIdsOffset + pair] != index) { continue; }
-    let owner = leftIds[leftIdsOffset + pair];
+    if (rightRows[rightRowsOffset + pair] != index) { continue; }
+    let owner = leftRows[leftRowsOffset + pair];
     let reportTime = reportInfo[reportInfoOffset + owner * 4u];
     if (reportTime < validFrom || reportTime > validUntil) { continue; }
     let kind = u32(reportInfo[reportInfoOffset + owner * 4u + 1u]);
@@ -547,7 +547,7 @@ export async function createStormWarningVerification(
       ),
       window: warningWindow.importToGraph(displayGraph),
       output: {
-        ids: importGraphBuffer(displayGraph, 'warning-ids', warningIds, 'uint32', warningCount),
+        rows: importGraphBuffer(displayGraph, 'warning-ids', warningIds, 'uint32', warningCount),
         outputMask: maskView,
         status: {
           count: importGraphBuffer(displayGraph, 'warning-active', warningActive, 'uint32', 1),
@@ -607,7 +607,7 @@ export async function createStormWarningVerification(
       ),
       window: reportWindow.importToGraph(displayGraph),
       output: {
-        ids: importGraphBuffer(displayGraph, 'report-ids', reportIds, 'uint32', reportCount),
+        rows: importGraphBuffer(displayGraph, 'report-ids', reportIds, 'uint32', reportCount),
         drawInstanceCount: displayGraph.importGPUData(
           'report-draw-count',
           reportDraw.getInstanceCountData(0)

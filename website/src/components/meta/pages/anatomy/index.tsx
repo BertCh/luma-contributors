@@ -5,7 +5,7 @@
 // that one `graph.add` declared in the recorded run, and the raster it produced.
 
 import {useMemo, useState} from 'react';
-import {formatBytes, formatCount} from '../../../../lens/format';
+import {formatResourceBytes, formatCount} from '../../../../lens/format';
 import {FEATURED_LENS_SCENARIOS} from '../../../../lens/featured';
 import {Section} from '../../../ui/section';
 import {findExampleLines} from '../../examples';
@@ -211,7 +211,10 @@ export function Page({topic, models, code}: TopicPageProps) {
                     label: 'raster cells, one float each'
                   },
                   {
-                    value: formatBytes(density.bufferBytes?.density ?? 0),
+                    value: formatResourceBytes(
+                      density.bufferBytes?.density ?? 0,
+                      density.bufferBytesKind?.density
+                    ),
                     label: 'the density buffer, yours to draw or read'
                   },
                   {
@@ -219,7 +222,10 @@ export function Page({topic, models, code}: TopicPageProps) {
                     label: 'workgroups in the gather dispatch'
                   },
                   {
-                    value: formatBytes(density.bufferBytes?.['kde-parameters'] ?? 0),
+                    value: formatResourceBytes(
+                      density.bufferBytes?.['kde-parameters'] ?? 0,
+                      density.bufferBytesKind?.['kde-parameters']
+                    ),
                     label: 'to write for a new bandwidth'
                   }
                 ]}

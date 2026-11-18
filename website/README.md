@@ -32,7 +32,9 @@ Pages serves from the `gh-pages` branch; if a push there does not start a build,
 `gh api -X POST repos/<owner>/<repository>/pages/builds`.
 
 `SITE_BASE_PATH` becomes Vite's `base`: the router, asset URLs and links in rendered docs follow
-it. A plain `src` or `href` to a file in `public/` must go through `getPublicUrl`
+it. Markdown site routes such as `/explore/` and `/fn/point-density` receive this base at build time;
+external URLs, fragment links and already-prefixed site routes retain their destinations.
+A plain `src` or `href` to a file in `public/` must go through `getPublicUrl`
 (`src/public-url.ts`). Without the variable the site builds for `/`, as before.
 
 ## What is on the site
@@ -75,10 +77,29 @@ cd website
 node --experimental-strip-types scripts/extract-inventory.ts   # after analysis API changes
 node --experimental-strip-types scripts/check-catalog.ts       # validates every entry against the source
 node --experimental-strip-types src/lens/generate-view-models.ts   # after lens records change
-for page in building-blocks contract iteration lenses upstream-first; do   # how-it-works page data
+for page in building-blocks contract iteration upstream-first; do   # other how-it-works page data
   node --experimental-strip-types src/components/meta/pages/$page/generate-data.ts
 done
 ```
+
+Full lens view-model generation also rewrites `summary.json` and the lenses page's
+`lenses-data.json` after its models are written successfully. Run it without scenario arguments
+to refresh aggregate byte totals. File sizes count UTF-8 bytes, including non-ASCII text;
+the page histogram and median count compute nodes, and featured sizes use the files on disk.
+Selected-scenario generation refreshes the lenses page metadata but leaves full summary totals
+to a full generation. The workflow page's `WorkflowRecord.nodeCount` instead counts all graph
+nodes, including copy nodes, and is displayed as “graph nodes”.
+
+Inventory extraction follows generic constructor constraints before collecting props. For union
+contracts such as forest inference, it includes both input arms and keeps shared fields such as
+`model` and `rowCount` required; a field optional in any arm is displayed as optional. The API guide
+states the relationship between mutually exclusive inputs.
+
+After regenerating lens models, run the read-only parity check from the repository root:
+`node_modules/.bin/vitest run --project node --maxWorkers=2 modules/lenses/test/computation-lenses/website-view-model-parity.node.spec.ts`.
+It compares scenario membership and graph counts/data against every committed recording, checks
+`src/lens/summary.json`, and verifies the nearest-weights capture and row-input contract. A full
+generator run adds missing models and removes models whose recordings no longer exist.
 
 Live operation runs (run from `website`; reports land in `website/.reports/`):
 

@@ -864,19 +864,24 @@ device.submit();`,
     ],
     outputs: [
       {
-        name: 'tile.output.accumulation',
+        name: 'tiles[].output.accumulation',
         type: 'GraphDataView<"float32">',
         description: 'Global upstream weight for each tile.'
       },
       {
-        name: 'tile.output.status',
+        name: 'tiles[].output.status',
         type: 'GraphDataView<"uint32">',
         description: '0 halo, 1 resolved, 2 cycle or budget exhausted.'
       },
       {
-        name: 'tile.output.reachIds',
+        name: 'tiles[].output.reachIds',
         type: 'GraphDataView<"uint32">',
         description: 'Source cell of each stream chain; 0xffffffff otherwise.'
+      },
+      {
+        name: 'status',
+        type: '{invalidCount?, converged?, iterationLimitReached?}',
+        description: 'Optional aggregate diagnostics over global owned cells, excluding halos.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -1772,7 +1777,7 @@ device.submit();`,
       {
         name: 'status',
         type: 'GPUCardinalityPort & GPUOverflowStatusPort & GPUIsobandRingsStatus',
-        description: 'Ring count, overflow flag and edgeOverflow (1 if edgeCapacity too small).'
+        description: 'Ring count; check final overflow and intermediate edgeOverflow before use.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';

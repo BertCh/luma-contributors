@@ -118,6 +118,8 @@ export default defineOperationRun<Inputs, Outputs>({
       trackCount * TRAVERSED_EDGE_CAPACITY
     );
     const routeCounts = builder.allocate('route-counts', 'uint32', trackCount);
+    const routeOverflow = builder.allocate('route-overflow', 'uint32', 1);
+    const routeCandidateOverflow = builder.allocate('route-candidate-overflow', 'uint32', 1);
     builder.graph.add(
       new GPUMapMatching({
         positions: positions.view,
@@ -139,7 +141,11 @@ export default defineOperationRun<Inputs, Outputs>({
           matchedEdges: builder.allocate('matched-edges', 'uint32', fixCount).view,
           snapDistances: builder.allocate('snap-distances', 'float32', fixCount).view,
           snappedPositions: builder.allocate('snapped-positions', 'float32x2', fixCount).view,
-          traversedEdges: {edges: routeEdges.view, counts: routeCounts.view}
+          traversedEdges: {
+            edges: routeEdges.view,
+            counts: routeCounts.view,
+            status: {overflow: routeOverflow.view, candidateOverflow: routeCandidateOverflow.view}
+          }
         }
       })
     );
@@ -147,11 +153,15 @@ export default defineOperationRun<Inputs, Outputs>({
     const truncated = builder.allocate('truncated', 'uint32', 1);
     builder.graph.add(
       new GPUMapMatchedEdgeVolumes({
-        traversedEdges: {edges: routeEdges.view, counts: routeCounts.view},
+        traversedEdges: {
+          edges: routeEdges.view,
+          counts: routeCounts.view,
+          status: {overflow: routeOverflow.view, candidateOverflow: routeCandidateOverflow.view}
+        },
         trackCount,
         traversedEdgeCapacity: TRAVERSED_EDGE_CAPACITY,
         edgeCount: network.slotCount,
-        output: {edgeVolumes: volumes.view, truncated: truncated.view}
+        output: {edgeVolumes: volumes.view, status: {candidateOverflow: truncated.view}}
       })
     );
     return {
@@ -203,7 +213,7 @@ export default defineOperationRun<Inputs, Outputs>({
           {shape: 'ring', at: hit.point, radius: 0.025}
         ],
         readout: `edge ${hit.slot} · ${volumes ? `${volumes[hit.slot]} ${volumes[hit.slot] === 1 ? 'traversal' : 'traversals'}` : '…'} · ${TRACK_COUNTS[values.trackCount]} tracks${
-          truncated ? ' · truncated' : ''
+          truncated ? ' · incomplete traversals' : ''
         }`
       };
     }

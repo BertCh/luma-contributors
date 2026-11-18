@@ -756,7 +756,7 @@ export async function createStormCellTracks(
       ),
       window: trailParameters.importToGraph(trailGraph),
       output: {
-        ids: importGraphBuffer(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
+        rows: importGraphBuffer(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
         fadeWeights: importGraphBuffer(
           trailGraph,
           'fade-weights',
@@ -880,7 +880,7 @@ export async function createStormCellTracks(
       ),
       window: flashParameters.importToGraph(flashGraph),
       output: {
-        ids: importGraphBuffer(flashGraph, 'flash-ids', flashIds, 'uint32', flashCount),
+        rows: importGraphBuffer(flashGraph, 'flash-ids', flashIds, 'uint32', flashCount),
         outputMask: importGraphBuffer(flashGraph, 'flash-mask', flashMask, 'uint32', flashCount),
         drawInstanceCount: flashGraph.importGPUData(
           'flash-draw-count',

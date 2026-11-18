@@ -11,7 +11,11 @@ import {
 } from '@luma-contributors/analysis/pointcloud-analysis';
 import {defineOperationRun, type RunBuffer} from '../../define-run';
 import {chooseSticky} from '../../pick';
-import {addFloatCopy} from './_lib/convert';
+import {
+  getPointCloudFeatureClass,
+  getPointCloudFeatureSupportText
+} from './_lib/pointcloud-display';
+import {addPointCloudDisplayCopy} from './_lib/pointcloud-display-run';
 import {
   createCloudLayout,
   createCloudProbe,
@@ -64,7 +68,8 @@ type Outputs = Record<
   | 'scattering'
   | 'neighborMap'
   | 'neighborProfile'
-  | 'dominant',
+  | 'dominant'
+  | 'status',
   RunBuffer
 >;
 
@@ -75,7 +80,7 @@ export default defineOperationRun<Inputs, Outputs>({
   createInputs,
   build(builder, inputs, values) {
     const cloud = inputs.cloud;
-    const capacity = values.capacity;
+    const capacity = values['capacity'];
     const positions = builder.allocate('positions', 'float32x3', POINT_COUNT);
     const indices = builder.allocate('indices', 'uint32', POINT_COUNT * capacity);
     const counts = builder.allocate('counts', 'uint32', POINT_COUNT);
@@ -84,37 +89,66 @@ export default defineOperationRun<Inputs, Outputs>({
         positions: positions.view,
         radius: RADIUS,
         capacity,
-        indices: indices.view,
-        squaredDistances: builder.allocate('squared-distances', 'float32', POINT_COUNT * capacity)
-          .view,
-        counts: counts.view
+        output: {
+          indices: indices.view,
+          squaredDistances: builder.allocate('squared-distances', 'float32', POINT_COUNT * capacity)
+            .view,
+          counts: counts.view
+        }
       })
     );
     const shapes = builder.allocate('shapes', 'float32x3', POINT_COUNT);
+    const status = builder.allocate('status', 'uint32', POINT_COUNT);
     builder.graph.add(
       new GPUPointCloudFeatures({
         positions: positions.view,
         indices: indices.view,
         counts: counts.view,
         capacity,
-        normals: builder.allocate('normals', 'float32x3', POINT_COUNT).view,
-        eigenvalues: builder.allocate('eigenvalues', 'float32x3', POINT_COUNT).view,
-        shapes: shapes.view,
-        status: builder.allocate('status', 'uint32', POINT_COUNT).view
+        output: {
+          normals: builder.allocate('normals', 'float32x3', POINT_COUNT).view,
+          eigenvalues: builder.allocate('eigenvalues', 'float32x3', POINT_COUNT).view,
+          shapes: shapes.view,
+          status: status.view
+        }
       })
     );
     return {
       outputs: {
-        map: builder.upload('map', 'float32x2', inputs.mapPositions),
-        profile: builder.upload('profile', 'float32x2', inputs.profilePositions),
+        status,
+        map: addPointCloudDisplayCopy(
+          builder,
+          'usable-map',
+          builder.upload('map', 'float32x2', inputs.mapPositions),
+          status,
+          POINT_COUNT,
+          {components: 2, invalidBits: 5}
+        ),
+        profile: addPointCloudDisplayCopy(
+          builder,
+          'usable-profile',
+          builder.upload('profile', 'float32x2', inputs.profilePositions),
+          status,
+          POINT_COUNT,
+          {components: 2, invalidBits: 5}
+        ),
         neighborMap: builder.allocate('neighbor-map', 'float32x2', NEIGHBOR_LIMIT),
         neighborProfile: builder.allocate('neighbor-profile', 'float32x2', NEIGHBOR_LIMIT),
         dominant: builder.allocate('dominant', 'float32', POINT_COUNT),
-        linearity: addFloatCopy(builder, 'linearity', shapes, POINT_COUNT, {componentStart: 0}),
-        planarity: addFloatCopy(builder, 'planarity', shapes, POINT_COUNT, {componentStart: 1}),
-        scattering: addFloatCopy(builder, 'scattering', shapes, POINT_COUNT, {componentStart: 2})
+        linearity: addPointCloudDisplayCopy(builder, 'linearity', shapes, status, POINT_COUNT, {
+          componentStart: 0,
+          invalidBits: 5
+        }),
+        planarity: addPointCloudDisplayCopy(builder, 'planarity', shapes, status, POINT_COUNT, {
+          componentStart: 1,
+          invalidBits: 5
+        }),
+        scattering: addPointCloudDisplayCopy(builder, 'scattering', shapes, status, POINT_COUNT, {
+          componentStart: 2,
+          invalidBits: 5
+        })
       },
-      update: current => positions.write(getJitteredPositions(cloud, current.noise))
+      update: current => positions.write(getJitteredPositions(cloud, current['noise']))
     };
   },
   rebuildOn: ['capacity'],
@@ -138,14 +172,11 @@ export default defineOperationRun<Inputs, Outputs>({
       const linearity = peek(outputs.linearity);
       const planarity = peek(outputs.planarity);
       const scattering = peek(outputs.scattering);
+      const status = peek(outputs.status);
       if (linearity && planarity && scattering) {
         outputs.dominant.write(
           Float32Array.from(linearity, (line, index) =>
-            planarity[index] >= line && planarity[index] >= scattering[index]
-              ? 1
-              : scattering[index] > line
-                ? 2
-                : 0
+            getPointCloudFeatureClass(line, planarity[index], scattering[index], status?.[index])
           )
         );
       }
@@ -178,14 +209,14 @@ export default defineOperationRun<Inputs, Outputs>({
             maximum: [profileCenter[0] + halfWidth, profileCenter[1] + halfHeight]
           }
         ],
-        readout: `lin ${text(outputs.linearity)} · planar ${text(outputs.planarity)} · scatter ${text(outputs.scattering)} · ${count} neighbors`
+        readout: `${getPointCloudFeatureSupportText(status?.[row])} · ${status && (status[row] & 5) === 0 ? `lin ${text(outputs.linearity)} · planar ${text(outputs.planarity)} · scatter ${text(outputs.scattering)}` : 'shape unavailable'} · ${count} neighbors`
       };
     }
   },
   draw: ({outputs, values, interaction}) => {
-    const isDominant = values.shape === 3;
+    const isDominant = values['shape'] === 3;
     const shape = [outputs.linearity, outputs.planarity, outputs.scattering, outputs.dominant][
-      values.shape
+      values['shape']
     ];
     const look = isDominant
       ? ({ramp: 'categorical', categories: DESCRIPTOR_COLORS} as const)

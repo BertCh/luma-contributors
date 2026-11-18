@@ -204,7 +204,11 @@ export const entries: CatalogEntry[] = [
       makeParam('resultCount', 'number', 'Matches kept per query.', {required: true})
     ],
     outputs: [
-      makeOutput('pixelIds', UINT, 'Pixel of each match, `query * resultCount + rank`.'),
+      makeOutput(
+        'pixelRows',
+        UINT,
+        'Source pixel row of each match, `query * resultCount + rank`.'
+      ),
       makeOutput('scores', FLOAT, 'Cosine similarity of each match, best first.'),
       makeOutput('resultCounts', UINT, 'Matches found per query.')
     ],
@@ -212,13 +216,12 @@ export const entries: CatalogEntry[] = [
       symbols: ['GPURasterEmbeddingNearestPixels'],
       setup: [SHAPE_LINE, 'const resultCount = 100;'],
       constructorSymbol: 'GPURasterEmbeddingNearestPixels',
-      addToGraph: true,
       props: [
         'pixelCount, dimensions, queryCount: 1, resultCount,',
         VECTORS_PROP,
         "queries: view('query', 'float32', dimensions),",
         'output: {',
-        "  pixelIds: view('ids', 'uint32', resultCount),",
+        "  pixelRows: view('rows', 'uint32', resultCount),",
         "  scores: view('scores', 'float32', resultCount),",
         "  resultCounts: view('found', 'uint32', 1)",
         '}'
@@ -304,7 +307,6 @@ export const entries: CatalogEntry[] = [
       symbols: ['GPURasterEmbeddingKMeans'],
       setup: [SHAPE_LINE, 'const clusterCount = 8;'],
       constructorSymbol: 'GPURasterEmbeddingKMeans',
-      addToGraph: true,
       props: [
         'pixelCount, dimensions, clusterCount, maximumIterations: 20,',
         VECTORS_PROP,
@@ -578,7 +580,7 @@ export const entries: CatalogEntry[] = [
     title: 'Embedding pyramid level',
     summary: 'One overview level of an embedding raster: renormalized mean of each footprint.',
     explanation:
-      'Builds overviews the right way for unit-length embeddings: decode, average the valid vectors in each `scale x scale` footprint, renormalize. `meanLength` flags footprints that average unlike things.',
+      'Decode and sum original vectors, then normalize the displayed direction; meanLength measures coherence. Chain levels using aggregation sums and counts independently of vector validity: [east, west] retains count 2 and sum [0, 0] with direction validity 0. Each output supports at most 2^32 - 1 original pixels.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['transform', 'summarize'],
     domains: ['remote-sensing', 'data-engineering'],
@@ -594,14 +596,40 @@ export const entries: CatalogEntry[] = [
           required: true
         }
       ),
-      makeParam('vectors', FLOAT, 'Decoded vectors; give this or `quantized`.'),
+      makeParam(
+        'vectors',
+        FLOAT,
+        'Decoded vectors; give exactly one of vectors, quantized, aggregation.'
+      ),
       makeParam('quantized', UINT, 'Packed int8 AlphaEarth bytes, decoded in the kernel.'),
+      makeParam(
+        'aggregation',
+        `{vectorSums: ${FLOAT}; validCount: ${UINT}}`,
+        'Original sums/counts retain cancelling-child support; ignore direction validity.'
+      ),
       makeParam('mask', UINT, 'Source QA; zero excludes the pixel.')
     ],
     outputs: [
-      makeOutput('vectors', FLOAT, 'Unit-length overview vectors; NaN where nothing is valid.'),
-      makeOutput('validity', UINT, '1 where the footprint holds a valid source pixel.'),
-      makeOutput('validCount', UINT, 'Valid source pixels in each footprint.'),
+      makeOutput(
+        'vectors',
+        FLOAT,
+        'Unit-length overview vectors; NaN for empty or cancelling footprints.'
+      ),
+      makeOutput(
+        'vectorSums',
+        FLOAT,
+        'Unnormalized vector sums; pair with validCount to chain levels.'
+      ),
+      makeOutput(
+        'validity',
+        UINT,
+        '1 for nonempty support with a nonzero sum and usable direction; 0 if cancelled.'
+      ),
+      makeOutput(
+        'validCount',
+        UINT,
+        'Valid original pixels, including support whose vectors cancel.'
+      ),
       makeOutput('meanLength', FLOAT, 'Length of the mean before renormalization, 0 to 1.')
     ],
     example: makeExample({

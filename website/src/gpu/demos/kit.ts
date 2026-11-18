@@ -756,7 +756,7 @@ export class RasterLayer extends DemoLayer {
     this.rows = rows;
   }
 
-  protected writeGrid(values: Float32Array): void {
+  protected override writeGrid(values: Float32Array): void {
     values[12] = this.columns;
     values[13] = this.rows;
   }
@@ -774,7 +774,7 @@ export class DotLayer extends DemoLayer {
     super(device, 'demo-dots', getDotShader(valueFormat), {positions, values}, count);
   }
 
-  protected get usesSolid(): boolean {
+  protected override get usesSolid(): boolean {
     return true;
   }
 }
@@ -785,7 +785,7 @@ export class SegmentLayer extends DemoLayer {
     super(device, 'demo-segments', SEGMENT_SHADER, {nodes, edges, values}, edgeCount);
   }
 
-  protected get usesSolid(): boolean {
+  protected override get usesSolid(): boolean {
     return true;
   }
 }
@@ -796,7 +796,7 @@ export class SegmentListLayer extends DemoLayer {
     super(device, 'demo-segment-list', SEGMENT_LIST_SHADER, {segments, counts}, capacity);
   }
 
-  protected get usesSolid(): boolean {
+  protected override get usesSolid(): boolean {
     return true;
   }
 }
@@ -807,7 +807,7 @@ export class PathLayer extends DemoLayer {
     super(device, 'demo-path', PATH_SHADER, {nodes, ids, counts}, capacity);
   }
 
-  protected get usesSolid(): boolean {
+  protected override get usesSolid(): boolean {
     return true;
   }
 }
@@ -830,7 +830,7 @@ export class TriangleEdgeLayer extends DemoLayer {
     );
   }
 
-  protected get usesSolid(): boolean {
+  protected override get usesSolid(): boolean {
     return true;
   }
 }

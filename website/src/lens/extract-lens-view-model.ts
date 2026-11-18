@@ -6,6 +6,7 @@
 
 import {deflateSync, crc32} from 'node:zlib';
 import {sampleValueRamp} from './ramp.ts';
+import {getResourceBytesKind} from './format.ts';
 import type {
   LensMap,
   LensNodeKind,
@@ -14,6 +15,8 @@ import type {
   LensRaster,
   LensResourceLifetime,
   LensResourceSummary,
+  LensResourceBytesKind,
+  LensResourceOwnership,
   LensSeries,
   LensViewEdge,
   LensViewModel,
@@ -46,7 +49,8 @@ type RecordGraph = {
   resources?: readonly {
     id: string;
     bytes: number;
-    ownership: 'imported' | 'transient';
+    ownership: LensResourceOwnership;
+    bytesKind?: LensResourceBytesKind;
     allocation?: string;
     allocationBytes?: number;
   }[];
@@ -58,6 +62,7 @@ type RecordCapture = {
   keySpace?: string;
   elementType: string;
   components?: number;
+  meaning?: string;
   values: ArrayLike<number>;
   geometry?: {
     kind: string;
@@ -67,16 +72,21 @@ type RecordCapture = {
     rowDirection?: string;
     offsetsCapture?: string;
     valuesCapture?: string;
+    countCapture?: string;
   };
 };
 export type LensRecordLike = {
   runId: string;
+  executionId?: string;
   adapter?: {backend?: string; description?: string};
   graphs: readonly RecordGraph[];
+  axes?: {keySpaces: readonly {id: string; size?: number}[]};
   choices?: readonly {name: string; label?: string; value?: unknown; unit?: string}[];
   refs?: {formulas?: readonly {id: string; ascii?: string}[]};
-  captures?: {snapshots: readonly RecordCapture[]};
+  captures?: {runId: string; executionId?: string; snapshots: readonly RecordCapture[]};
   metrics?: readonly {
+    runId: string;
+    executionId?: string;
     graph: string;
     timebase: 'ns' | 'ms';
     nodes: Record<string, {gpuBegin?: number; gpuEnd?: number}>;
@@ -93,6 +103,15 @@ const MAXIMUM_ROUND_VALUES = 512;
 const PACK_FORMULA_COUNT = 8;
 
 export function extractLensViewModel(scenarioId: string, record: LensRecordLike): LensViewModel {
+  for (const sidecar of [
+    ...(record.metrics ?? []),
+    ...(record.captures ? [record.captures] : [])
+  ]) {
+    if (!sidecar.runId || sidecar.runId !== record.runId)
+      throw new Error(`${scenarioId} sidecar runId does not match`);
+    if (sidecar.executionId !== record.executionId)
+      throw new Error(`${scenarioId} sidecar executionId does not match`);
+  }
   const graph = record.graphs.find(candidate => candidate.form === 'compiled') ?? record.graphs[0];
   const resourceById = new Map((graph.resources ?? []).map(resource => [resource.id, resource]));
   const timings = readTimings(record, graph.id);
@@ -151,6 +170,7 @@ export function extractLensViewModel(scenarioId: string, record: LensRecordLike)
       from: entry.from,
       to: entry.to,
       bytes: sum(names, name => resourceById.get(name)?.bytes ?? 0),
+      bytesKind: getResourceBytesKind(names.map(name => resourceById.get(name) ?? {})),
       resources: names.slice(0, 3),
       resourceCount: names.length,
       hazards: [...entry.hazards].sort()
@@ -171,10 +191,12 @@ export function extractLensViewModel(scenarioId: string, record: LensRecordLike)
     }));
   const gatedNodeCount = graph.nodes.filter(isGated).length;
   const bufferBytes: Record<string, number> = {};
+  const bufferBytesKind: Record<string, LensResourceBytesKind> = {};
   if (!grouping.collapsed) {
     for (const node of graph.nodes) {
       for (const id of [...node.reads, ...node.writes]) {
         bufferBytes[id] = resourceById.get(id)?.bytes ?? 0;
+        bufferBytesKind[id] = resourceById.get(id)?.bytesKind ?? 'unspecified';
       }
     }
   }
@@ -201,6 +223,7 @@ export function extractLensViewModel(scenarioId: string, record: LensRecordLike)
     nodes,
     edges,
     resources: summarizeResources(graph),
+    bufferBytesKind,
     ...summarizeLifetimes(graph, grouping.groups),
     hazards: countHazards(graph),
     totals: {
@@ -210,7 +233,7 @@ export function extractLensViewModel(scenarioId: string, record: LensRecordLike)
     },
     formulas,
     parameters,
-    ...extractMap(scenarioId, snapshots),
+    ...extractMap(scenarioId, snapshots, record.axes?.keySpaces),
     series: extractSeries(snapshots),
     ...(rounds.length > 0 ? {rounds} : {}),
     ...(gatedNodeCount > 0 ? {gatedNodeCount} : {}),
@@ -331,32 +354,97 @@ function readTimings(record: LensRecordLike, graphId: string): Map<string, numbe
 }
 
 function summarizeResources(graph: RecordGraph): LensResourceSummary {
+  if (graph.resources === undefined)
+    return {
+      inventoryKnown: false,
+      count: 0,
+      totalBytes: 0,
+      totalBytesKind: 'unavailable',
+      importedBytes: 0,
+      importedBytesKind: 'unavailable',
+      transientBytes: 0,
+      transientBytesKind: 'unavailable',
+      unknownBytes: 0,
+      unknownBytesKind: 'unavailable',
+      allocatedBytes: 0,
+      allocatedBytesKind: 'unavailable',
+      largest: []
+    };
   const resources = graph.resources ?? [];
-  const allocations = new Map<string, number>();
+  const allocations = new Map<
+    string,
+    {recordedBytes?: number; memberBytes: number; bytesKind?: LensResourceBytesKind}
+  >();
+  let allocationIdentityUnknown = false;
   for (const resource of resources) {
-    if (resource.ownership === 'transient')
-      allocations.set(
-        resource.allocation ?? resource.id,
-        resource.allocationBytes ?? resource.bytes
-      );
+    if (getResourceOwnership(resource) === 'unknown') allocationIdentityUnknown = true;
+    if (resource.ownership !== 'transient') continue;
+    if (resource.allocation === undefined) allocationIdentityUnknown = true;
+    const key = resource.allocation ?? resource.id;
+    const previous = allocations.get(key);
+    allocations.set(key, {
+      recordedBytes:
+        resource.allocationBytes === undefined
+          ? previous?.recordedBytes
+          : Math.max(previous?.recordedBytes ?? 0, resource.allocationBytes),
+      memberBytes: Math.max(previous?.memberBytes ?? 0, resource.bytes),
+      bytesKind: getResourceBytesKind([...(previous ? [previous] : []), resource])
+    });
   }
+  const physicalSizes = [...allocations.values()].map(allocation => ({
+    bytes: allocation.recordedBytes ?? allocation.memberBytes,
+    bytesKind:
+      allocation.recordedBytes !== undefined
+        ? ('logical' as const)
+        : allocation.bytesKind === 'logical'
+          ? ('lower-bound' as const)
+          : allocation.bytesKind
+  }));
   return {
+    inventoryKnown: true,
     count: resources.length,
     totalBytes: sum(resources, resource => resource.bytes),
+    totalBytesKind: getResourceBytesKind(resources),
     importedBytes: sum(
-      resources.filter(resource => resource.ownership === 'imported'),
+      resources.filter(resource => getResourceOwnership(resource) === 'imported'),
       resource => resource.bytes
+    ),
+    importedBytesKind: getResourceBytesKind(
+      resources.filter(resource => getResourceOwnership(resource) === 'imported')
     ),
     transientBytes: sum(
       resources.filter(resource => resource.ownership === 'transient'),
       resource => resource.bytes
     ),
-    allocatedBytes: [...allocations.values()].reduce((total, bytes) => total + bytes, 0),
+    transientBytesKind: getResourceBytesKind(
+      resources.filter(resource => getResourceOwnership(resource) === 'transient')
+    ),
+    unknownBytes: sum(
+      resources.filter(resource => getResourceOwnership(resource) === 'unknown'),
+      resource => resource.bytes
+    ),
+    unknownBytesKind: getResourceBytesKind(
+      resources.filter(resource => getResourceOwnership(resource) === 'unknown')
+    ),
+    allocatedBytes: sum(physicalSizes, allocation => allocation.bytes),
+    allocatedBytesKind: allocationIdentityUnknown
+      ? 'unspecified'
+      : getResourceBytesKind(physicalSizes),
     largest: summarizeLargest(resources)
   };
 }
 
 const MAXIMUM_LIFETIMES = 28;
+
+function getResourceOwnership(resource: {
+  ownership: LensResourceOwnership;
+  bytesKind?: LensResourceBytesKind;
+}): LensResourceOwnership {
+  // Older unannotated graph descriptions incorrectly asserted caller ownership.
+  return resource.ownership === 'imported' && resource.bytesKind === undefined
+    ? 'unknown'
+    : resource.ownership;
+}
 
 /** Per buffer first write and last use in group steps, for the largest buffers. */
 function summarizeLifetimes(
@@ -395,7 +483,8 @@ function summarizeLifetimes(
     const lifetime: LensResourceLifetime = {
       id: resource.id,
       bytes: resource.bytes,
-      ownership: resource.ownership,
+      ownership: getResourceOwnership(resource),
+      bytesKind: resource.bytesKind ?? 'unspecified',
       first: firstWrite.get(resource.id) ?? firstUse.get(resource.id) ?? 0,
       last: lastUse.get(resource.id) ?? 0
     };
@@ -411,18 +500,19 @@ function summarizeLifetimes(
 function summarizeLargest(
   resources: NonNullable<RecordGraph['resources']>
 ): LensResourceSummary['largest'] {
-  const bySize = new Map<
-    number,
-    {id: string; bytes: number; ownership: 'imported' | 'transient'; count: number}
-  >();
+  const bySize = new Map<string, LensResourceSummary['largest'][number]>();
   for (const resource of resources) {
-    const entry = bySize.get(resource.bytes);
+    const ownership = getResourceOwnership(resource);
+    const bytesKind = resource.bytesKind ?? 'unspecified';
+    const key = `${resource.bytes}:${ownership}:${bytesKind}`;
+    const entry = bySize.get(key);
     if (entry) entry.count++;
     else
-      bySize.set(resource.bytes, {
+      bySize.set(key, {
         id: resource.id,
         bytes: resource.bytes,
-        ownership: resource.ownership,
+        ownership,
+        bytesKind,
         count: 1
       });
   }
@@ -431,7 +521,11 @@ function summarizeLargest(
 
 // Snapshots
 
-function extractMap(scenarioId: string, snapshots: readonly RecordCapture[]): {map?: LensMap} {
+function extractMap(
+  scenarioId: string,
+  snapshots: readonly RecordCapture[],
+  keySpaces: readonly {id: string; size?: number}[] = []
+): {map?: LensMap} {
   const byName = new Map(snapshots.map(capture => [capture.name, capture]));
   const byId = new Map(snapshots.map(capture => [capture.id, capture]));
   const geometric = snapshots.filter(capture => capture.geometry);
@@ -479,10 +573,34 @@ function extractMap(scenarioId: string, snapshots: readonly RecordCapture[]): {m
 
   const allPoints: {name: string; xy: number[]; values?: number[]}[] = [];
   for (const source of pointSources.slice(0, 3)) {
+    const first = getCaptureFirstKey(source.capture);
+    let rows = Math.floor(source.capture.values.length / (source.capture.components ?? 2));
+    const countReference = source.capture.geometry?.countCapture;
+    if (countReference !== undefined) {
+      const count = lookup(byName, byId, countReference);
+      const active = count?.values[0];
+      const capacity = keySpaces.find(space => space.id === source.capture.keySpace)?.size;
+      // A missing/invalid published count withholds the points, including finite spare slots.
+      rows =
+        count &&
+        count.values.length === 1 &&
+        (count.components ?? 1) === 1 &&
+        active !== undefined &&
+        Number.isSafeInteger(active) &&
+        active >= 0 &&
+        active !== 0xffffffff &&
+        (capacity === undefined || active <= capacity)
+          ? Math.min(rows, Math.max(0, active - first))
+          : 0;
+    }
+    const valueStart = source.values ? first - getCaptureFirstKey(source.values) : -1;
     allPoints.push({
       name: source.capture.name,
-      xy: toArray(source.capture.values),
-      values: source.values ? toArray(source.values.values) : undefined
+      xy: toArray(source.capture.values).slice(0, rows * 2),
+      values:
+        source.values && valueStart >= 0
+          ? toArray(source.values.values).slice(valueStart, valueStart + rows)
+          : undefined
     });
   }
   if (polygonLayer) allPoints.push(polygonLayer);
@@ -500,6 +618,10 @@ function extractMap(scenarioId: string, snapshots: readonly RecordCapture[]): {m
       layers
     }
   };
+}
+
+function getCaptureFirstKey(capture: RecordCapture): number {
+  return Number(capture.meaning?.match(/(?:^|\s)first:(\d+)(?=\s|$)/)?.[1] ?? 0);
 }
 
 type Frame = {

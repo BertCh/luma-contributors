@@ -196,8 +196,10 @@ Both derive `rest` for you.
 `isInsideRing`, `getChartPosition`, `getChartWorldX`. Build indexes once in `createInputs`.
 
 **Reading the operation's output.** `peek(outputs.buffer)` returns the latest CPU copy of a buffer
-(a typed array, or `null` until the first readback) and subscribes it: it is read back after every
-run and `resolve` is called again when it arrives. Use it for readouts (`visible 34%`) and for
+(a typed array, or `null` until the first readback or after a failed read) and subscribes it:
+it is read back after every run and `resolve` is called again when it arrives. A completed failed
+read replaces that buffer's previous copy with `null`; it never certifies a prior result as current.
+Use it for readouts (`visible 34%`) and for
 probes that follow GPU results (the links, label or path of the hovered element).
 
 **Pointer-owned inputs.** When the pointer is an input that has no slider (one extra query point, a

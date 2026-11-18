@@ -127,7 +127,7 @@ export const timeMode: SpatialAnalysisModeDefinition = {
         window: windowBuffer.importToGraph(graph),
         trackIds: importGraphBuffer(graph, 'track-ids', trackIdsBuffer, 'uint32', segmentCount),
         output: {
-          ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', segmentCount),
+          rows: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', segmentCount),
           fadeWeights: importGraphBuffer(
             graph,
             'fade-weights',

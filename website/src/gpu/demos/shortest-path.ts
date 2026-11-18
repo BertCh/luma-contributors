@@ -9,6 +9,7 @@ import {
   GPUNetworkPathExtraction,
   GPUNetworkReachability
 } from '@luma-contributors/analysis/gpu-network';
+import {createTransientView} from '@luma.gl/graph/gpu-core';
 import type {RunGlyph} from '../runs/interaction';
 import {chooseSticky, createPointIndex} from '../runs/pick';
 import {createPointerDriver} from '../runs/pointer-driver';
@@ -94,7 +95,8 @@ const scene: GpuScene = async context => {
         predecessorsComplete: converged,
         maximumPathLength: MAXIMUM_PATH_LENGTH,
         output: {
-          ids: importBufferView(graph, 'path-ids', pathIds, 'uint32', MAXIMUM_PATH_LENGTH),
+          ids: createTransientView(graph, 'path-identities', 'uint32', MAXIMUM_PATH_LENGTH),
+          nodeRows: importBufferView(graph, 'path-rows', pathIds, 'uint32', MAXIMUM_PATH_LENGTH),
           status: {
             count: importBufferView(graph, 'path-count', pathCount, 'uint32', 1),
             overflow: importBufferView(graph, 'path-overflow', pathOverflow, 'uint32', 1)

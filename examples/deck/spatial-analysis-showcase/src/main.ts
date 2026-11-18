@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+/// <reference path="./showcase-globals.d.ts" />
+
 import './styles.css';
 import {createDataCatalog} from './data/catalog';
 import type {DeckHost} from './engine/deck-host';
@@ -10,19 +12,6 @@ import {renderHome} from './shell/home-view';
 import {getStoryHash, navigate, startRouter, type Route} from './shell/router';
 import type {StoryView} from './shell/story-view';
 import {getTheme, initializeTheme, onThemeChange, toggleTheme} from './shell/theme';
-
-declare global {
-  // eslint-disable-next-line no-var
-  var spatialAnalysisShowcase:
-    | {
-        sceneId: string | null;
-        ready: boolean;
-        error: string | null;
-        rebuildCount: number;
-        selectScene: (id: string) => void;
-      }
-    | undefined;
-}
 
 const searchParameters = new URLSearchParams(window.location.search);
 const forceSynthetic = searchParameters.get('data') === 'synthetic';

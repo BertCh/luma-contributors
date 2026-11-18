@@ -288,7 +288,7 @@ export async function createFlightCorridors(
         }
       ],
       output: {
-        ids: importView(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
+        rows: importView(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
         fadeWeights: importView(trailGraph, 'fade-weights', fadeWeights, 'float32', segmentCount),
         clipFractions: importView(
           trailGraph,

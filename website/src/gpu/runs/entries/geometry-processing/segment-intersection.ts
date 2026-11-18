@@ -49,8 +49,8 @@ export default defineOperationRun({
       positions: builder.upload('right-positions', 'float32x2', rightPositions),
       lineOffsets: builder.upload('right-offsets', 'uint32', rightOffsets)
     };
-    const leftIds = builder.allocate('left-ids', 'uint32', CAPACITY);
-    const rightIds = builder.allocate('right-ids', 'uint32', CAPACITY);
+    const leftRows = builder.allocate('left-ids', 'uint32', CAPACITY);
+    const rightRows = builder.allocate('right-ids', 'uint32', CAPACITY);
     const count = builder.allocate('count', 'uint32', 1);
     const overflow = builder.allocate('overflow', 'uint32', 1);
     const requiredCount = builder.allocate('required-count', 'uint32', 1);
@@ -73,8 +73,8 @@ export default defineOperationRun({
           : {}),
         output: {
           pairs: {
-            leftIds: leftIds.view,
-            rightIds: rightIds.view,
+            leftRows: leftRows.view,
+            rightRows: rightRows.view,
             status: {count: count.view, overflow: overflow.view, requiredCount: requiredCount.view}
           },
           points: points.view

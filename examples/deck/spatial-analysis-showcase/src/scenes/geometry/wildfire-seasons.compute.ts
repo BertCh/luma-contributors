@@ -207,7 +207,7 @@ export async function createWildfireSeasons(
         timestamps: imp('days', daysBuffer, 'float32', count),
         window: windowParameters.importToGraph(graph),
         output: {
-          ids: imp('filter-ids', filterIds, 'uint32', count),
+          rows: imp('filter-ids', filterIds, 'uint32', count),
           status: {
             count: imp('filter-count', filterCount, 'uint32', 1),
             overflow: imp('filter-overflow', filterOverflow, 'uint32', 1)

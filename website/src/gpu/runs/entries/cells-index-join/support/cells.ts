@@ -101,6 +101,7 @@ export type CellTableBuffers = {
   maximums: RunBuffer<'float32'>;
   count: RunBuffer<'uint32'>;
   overflow: RunBuffer<'uint32'>;
+  candidateOverflow: RunBuffer<'uint32'>;
   requiredCount: RunBuffer<'uint32'>;
 };
 
@@ -119,6 +120,7 @@ export function allocateCellTable(
     maximums: builder.allocate(`${prefix}-maximums`, 'float32', capacity),
     count: builder.allocate(`${prefix}-count`, 'uint32', 1),
     overflow: builder.allocate(`${prefix}-overflow`, 'uint32', 1),
+    candidateOverflow: builder.allocate(`${prefix}-candidate-overflow`, 'uint32', 1),
     requiredCount: builder.allocate(`${prefix}-required-count`, 'uint32', 1)
   };
 }
@@ -142,6 +144,7 @@ export function getCountTableViews(table: CellTableBuffers) {
     status: {
       count: table.count.view,
       overflow: table.overflow.view,
+      candidateOverflow: table.candidateOverflow.view,
       requiredCount: table.requiredCount.view
     }
   };

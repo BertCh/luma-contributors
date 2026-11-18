@@ -77,9 +77,11 @@ export default defineOperationRun<Inputs, Outputs>({
         positions: positions.view,
         radius: RADIUS,
         capacity,
-        indices: builder.allocate('indices', 'uint32', POINT_COUNT * capacity).view,
-        squaredDistances: squaredDistances.view,
-        counts: counts.view
+        output: {
+          indices: builder.allocate('indices', 'uint32', POINT_COUNT * capacity).view,
+          squaredDistances: squaredDistances.view,
+          counts: counts.view
+        }
       })
     );
     const mask = builder.allocate('mask', 'uint32', POINT_COUNT);
@@ -90,8 +92,7 @@ export default defineOperationRun<Inputs, Outputs>({
         counts: counts.view,
         capacity,
         standardDeviations: values.standardDeviations,
-        meanDistances: meanDistances.view,
-        validity: mask.view
+        output: {meanDistances: meanDistances.view, validity: mask.view}
       })
     );
     return {

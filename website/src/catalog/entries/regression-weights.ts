@@ -824,7 +824,7 @@ export const entries: CatalogEntry[] = [
     title: 'Join attributes by pairs',
     summary: 'Turns matched pairs from a spatial join into attribute rows, like GeoPandas sjoin.',
     explanation:
-      'A join gives pairs of row ids; this gathers the columns for both sides into aligned outputs. `inner` keeps matches only; `left` keeps every left row, unmatched marked with a sentinel. Also takes dense neighbor lists from a nearest join.',
+      'A join gives pairs of row indices or dense nearest-neighbor lists; this gathers columns for both sides into aligned outputs. `inner` keeps matches only; `left` keeps every left row, unmatched marked with a sentinel. Final capacity loss and input candidate loss are reported separately.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['relate'],
     domains: ['data-engineering'],
@@ -850,10 +850,23 @@ export const entries: CatalogEntry[] = [
       param('output', 'GPUPairGatherOutput', 'Caller-owned bounded row outputs.', {required: true})
     ],
     outputs: [
-      output('leftRows', "GraphDataView<'uint32'>", 'Left row id per output row.'),
-      output('rightRows', "GraphDataView<'uint32'>", 'Right row id, sentinel when unmatched.'),
+      output('leftRows', "GraphDataView<'uint32'>", 'Left input row index per output row.'),
+      output(
+        'rightRows',
+        "GraphDataView<'uint32'>",
+        'Right input row index, sentinel when unmatched.'
+      ),
       output('rowCount', "GraphDataView<'uint32'>", 'Number of valid output rows.'),
-      output('status.overflow', "GraphDataView<'uint32'>", '1 if any capacity overflowed.')
+      output(
+        'status.overflow',
+        "GraphDataView<'uint32'>",
+        'Final gathered or input output-capacity loss.'
+      ),
+      output(
+        'status.candidateOverflow',
+        "GraphDataView<'uint32'>",
+        'Input candidate loss, separate from final output capacity.'
+      )
     ],
     example: makeExample(
       ['GPUPairGather'],
@@ -867,7 +880,7 @@ export const entries: CatalogEntry[] = [
         "      leftRows: output('left', 'uint32', capacity),",
         "      rightRows: output('right', 'uint32', capacity),",
         "      rowCount: output('count', 'uint32', 1),",
-        "      status: {overflow: output('overflow', 'uint32', 1)}",
+        "      status: {overflow: output('overflow', 'uint32', 1), candidateOverflow: output('candidate-overflow', 'uint32', 1)}",
         '    }',
         '  })',
         ');'

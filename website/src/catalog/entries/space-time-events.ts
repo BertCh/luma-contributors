@@ -310,7 +310,14 @@ parameterBuffer.write(getGPUSpaceTimeParameterValues({seed: 5, permutationCount:
       {
         name: 'logLikelihood',
         type: 'GraphDataView<"float32">',
-        description: 'Optional log-likelihood at the last iterate.'
+        description:
+          'Optional diagnostic log-likelihood at the parameters entering the last update.'
+      },
+      {
+        name: 'fittedLogLikelihood',
+        type: 'GraphDataView<"float32">',
+        description:
+          'Optional log-likelihood at the published fitted estimates, for fit comparison.'
       }
     ],
     example: `import {

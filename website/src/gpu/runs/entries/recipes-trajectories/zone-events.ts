@@ -8,6 +8,7 @@ import {GPUZoneEvents} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import type {RunGlyph} from '../../interaction';
 import {createFleet} from './lib/fleet';
+import {formatZoneEventReadout} from './lib/zone-event-readout';
 import {
   chooseZoneCenters,
   createZoneRectangles,
@@ -37,6 +38,8 @@ export default defineOperationRun({
     const ids = builder.allocate('event-ids', 'uint32', EVENT_CAPACITY);
     const count = builder.allocate('event-count', 'uint32', 1);
     const overflow = builder.allocate('event-overflow', 'uint32', 1);
+    const eventCandidateOverflow = builder.allocate('event-candidate-overflow', 'uint32', 1);
+    const scratchCandidateOverflow = builder.allocate('scratch-candidate-overflow', 'uint32', 1);
     const eventZones = builder.allocate('event-zones', 'uint32', EVENT_CAPACITY);
     const eventPositions = builder.allocate('event-positions', 'float32x2', EVENT_CAPACITY);
     builder.graph.add(
@@ -59,10 +62,15 @@ export default defineOperationRun({
         output: {
           events: {
             ids: ids.view,
-            status: {count: count.view, overflow: overflow.view},
+            status: {
+              count: count.view,
+              overflow: overflow.view,
+              candidateOverflow: eventCandidateOverflow.view
+            },
             eventZones: eventZones.view,
             eventPositions: eventPositions.view
-          }
+          },
+          status: {candidateOverflow: scratchCandidateOverflow.view}
         }
       })
     );
@@ -70,6 +78,9 @@ export default defineOperationRun({
       outputs: {
         zoneOutline,
         count,
+        eventOverflow: overflow,
+        eventCandidateOverflow,
+        scratchCandidateOverflow,
         eventZones,
         eventPositions,
         segments: builder.upload('segments', 'float32x4', fleet.segments)
@@ -92,7 +103,6 @@ export default defineOperationRun({
       inputs.centers = centers;
       const [halfWidth, halfHeight] = getZoneHalfSize(inputs.world, values.zoneSize);
       const [centerX, centerY] = centers[zone];
-      const eventPositions = peek(outputs.eventPositions);
       const eventZones = peek(outputs.eventZones);
       const eventCount = peek(outputs.count);
       const glyphs: RunGlyph[] = [
@@ -102,16 +112,32 @@ export default defineOperationRun({
           maximum: [centerX + halfWidth, centerY + halfHeight]
         }
       ];
-      let crossingCount = 0;
-      if (eventPositions && eventZones && eventCount) {
-        for (let event = 0; event < Math.min(eventCount[0], eventZones.length); event++) {
+      let crossingCount: number | undefined;
+      if (
+        eventZones &&
+        eventCount &&
+        Number.isInteger(eventCount[0]) &&
+        eventCount[0] >= 0 &&
+        eventCount[0] <= eventZones.length &&
+        eventCount[0] !== 0xffffffff
+      ) {
+        crossingCount = 0;
+        for (let event = 0; event < eventCount[0]; event++) {
+          if (eventZones[event] === 0xffffffff) {
+            crossingCount = undefined;
+            break;
+          }
           if (eventZones[event] === zone) crossingCount++;
         }
       }
       return {
         rerun: true,
         glyphs,
-        readout: `zone ${'ABC'[zone]} · ${crossingCount} crossings`
+        readout: formatZoneEventReadout('ABC'[zone], crossingCount, {
+          eventOverflow: peek(outputs.eventOverflow)?.[0],
+          eventCandidateOverflow: peek(outputs.eventCandidateOverflow)?.[0],
+          scratchCandidateOverflow: peek(outputs.scratchCandidateOverflow)?.[0]
+        })
       };
     }
   },

@@ -319,7 +319,7 @@ export async function createHurricaneSeason(
         }
       ],
       output: {
-        ids: importGraphBuffer(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
+        rows: importGraphBuffer(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
         fadeWeights: importGraphBuffer(
           trailGraph,
           'fade-weights',

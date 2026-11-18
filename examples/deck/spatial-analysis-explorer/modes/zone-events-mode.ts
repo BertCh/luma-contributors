@@ -34,6 +34,7 @@ import {formatCount, SpatialAnalysisResources} from '../spatial-analysis-resourc
 import {addKernelPass} from './mode-kernels';
 import {SummaryReader} from './summary-reader';
 import {ZoneChoroplethLayer, ZoneEventMarkerLayer} from './zone-events-layers';
+import {formatZoneEventsStatus} from './zone-events-status';
 
 const ZONE_COLUMNS = 8;
 const ZONE_ROWS = 6;
@@ -275,6 +276,9 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
     const eventPositions = resources.createBuffer('event-positions', maximumCapacity * 8);
     const eventCount = resources.createBuffer('event-count', 4);
     const eventOverflow = resources.createBuffer('event-overflow', 4);
+    const eventCandidateOverflow = resources.createBuffer('event-candidate-overflow', 4);
+    const trackOverflow = resources.createBuffer('event-track-overflow', 4);
+    const scratchOverflow = resources.createBuffer('event-scratch-overflow', 4);
     const visitTracks = resources.createBuffer('visit-tracks', tableCapacity * 4);
     const visitZones = resources.createBuffer('visit-zones', tableCapacity * 4);
     const visitDwell = resources.createBuffer('visit-dwell', tableCapacity * 4);
@@ -369,7 +373,13 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
               ),
               status: {
                 count: view('event-count', eventCount, 'uint32', 1),
-                overflow: view('event-overflow', eventOverflow, 'uint32', 1)
+                overflow: view('event-overflow', eventOverflow, 'uint32', 1),
+                candidateOverflow: view(
+                  'event-candidate-overflow',
+                  eventCandidateOverflow,
+                  'uint32',
+                  1
+                )
               }
             },
             visitTable: {
@@ -380,6 +390,10 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
                 count: visitCountView,
                 overflow: view('visit-overflow', visitOverflow, 'uint32', 1)
               }
+            },
+            status: {
+              trackOverflow: view('event-track-overflow', trackOverflow, 'uint32', 1),
+              candidateOverflow: view('event-scratch-overflow', scratchOverflow, 'uint32', 1)
             }
           }
         })
@@ -596,6 +610,9 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
         {buffer: eventOverflow, size: 4},
         {buffer: tableCount, size: 4},
         {buffer: tableOverflow, size: 4},
+        {buffer: eventCandidateOverflow, size: 4},
+        {buffer: trackOverflow, size: 4},
+        {buffer: scratchOverflow, size: 4},
         {buffer: tableKeys, size: ZONE_COUNT * 4},
         {buffer: tableCounts, size: ZONE_COUNT * 4},
         {buffer: tableSums, size: ZONE_COUNT * 4},
@@ -605,7 +622,7 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
         if (destroyed) return;
         const words = new Uint32Array(bytes);
         const floats = new Float32Array(bytes);
-        const zone = (index: number) => 4 + index * ZONE_COUNT;
+        const zone = (index: number) => 7 + index * ZONE_COUNT;
         table = {
           keys: words.slice(zone(0), zone(1)),
           counts: words.slice(zone(1), zone(2)),
@@ -631,7 +648,7 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
         writeChoropleth();
         eventReadout.setValue(
           `${formatCount(words[0])} kept (${maxEventsPerTrack} per trip max)` +
-            `${words[1] ? ', OVERFLOW (a trip exceeds the cap, or candidates ran out)' : ', no overflow'}`
+            `, ${formatZoneEventsStatus(words[1], words[4], words[5], words[6])}`
         );
         visitReadout.setValue(
           `${formatCount(visits)} (${occupied} of ${ZONE_COUNT} zones) / ${formatDuration(dwell)}` +

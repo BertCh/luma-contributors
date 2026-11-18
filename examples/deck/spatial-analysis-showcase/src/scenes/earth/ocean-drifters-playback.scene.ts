@@ -391,7 +391,7 @@ trailGraph.add(new GPUTimeWindowFilter({
   timestamps: segmentStarts, endTimestamps: segmentEnds,      // interval mode: one row per segment
   window: windowParameters.importToGraph(trailGraph),
   output: {
-    ids: trailIds, status: {count: trailCount, overflow: trailOverflow},
+    rows: trailIds, status: {count: trailCount, overflow: trailOverflow},
     fadeWeights, clipFractions, drawInstanceCount: trailDrawCount
   }
 }));

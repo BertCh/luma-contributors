@@ -267,17 +267,17 @@ const drawCommands = new DrawCommandBuffer(device, {
 const graph = new GPUCommandGraph(device, {id: 'near-transit'});
 graph.add(
   new GPUBufferSelection({spatialContext: projection.spatialContext,
-    points: {kind: 'points', positions},     // ${POINT_LABELS[state.points]}, float32x2 meters, uploaded once
-    features: ${state.features === 'lines' ? "{kind: 'segments', starts, ends}" : "{kind: 'points', positions}"},
+    points: {kind: 'points', positions: observationPositions}, // ${POINT_LABELS[state.points]}, float32x2 meters
+    features: ${state.features === 'lines' ? "{kind: 'segments', starts: transitStarts, ends: transitEnds}" : `{kind: 'points', positions: ${state.features === 'stations' ? 'stationPositions' : 'busPositions'}}`},
     distance: distance.importToGraph(graph), // one float32, rewritten per frame
-    candidateCapacity: points.length * ${state.features === 'lines' ? 40 : 24},
+    candidateCapacity: observationPositions.length * ${state.features === 'lines' ? 40 : 24},
     spatialSort: ${state.spatialSort},
     output: {
       outputMask,                            // per point: 0 or 1
-      matches: {ids, status: {count, overflow, requiredCount}}, // selected ids, ascending
+      matches: {ids, status: {count, overflow: matchOverflow, requiredCount, candidateOverflow: matchCandidateOverflow}}, // selected ids, ascending
       // the clamped count goes straight into the indirect draw record:
       drawInstanceCount: graph.importGPUData('count', drawCommands.getInstanceCountData(0)),
-      distances, nearestFeatureIds, status: {overflow}
+      distances, nearestFeatureRows, status: {overflow: joinOverflow, candidateOverflow: joinCandidateOverflow}
     }
   })
 );

@@ -158,6 +158,8 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
     const weightNeighbors = resources.createBuffer('weight-neighbors', neighborCapacity * 4);
     const weightValues = resources.createBuffer('weight-values', neighborCapacity * 4);
     const weightOverflow = resources.createBuffer('weight-overflow', 4);
+    const weightCandidateOverflow = resources.createBuffer('weight-candidate-overflow', 4);
+    let weightsComplete = false;
     const colors = resources.createBuffer('colors', featureCount * 4);
     const colorCount = resources.createBuffer('color-count', 4);
     const conflictCount = resources.createBuffer('conflict-count', 4);
@@ -214,7 +216,14 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
         ),
         weights: importAll(graph, 'weight-values', weightValues, 'float32', neighborCapacity),
         status: {
-          overflow: importAll(graph, 'weight-overflow', weightOverflow, 'uint32', 1)
+          overflow: importAll(graph, 'weight-overflow', weightOverflow, 'uint32', 1),
+          candidateOverflow: importAll(
+            graph,
+            'weight-candidate-overflow',
+            weightCandidateOverflow,
+            'uint32',
+            1
+          )
         }
       };
       graph.add(
@@ -540,6 +549,7 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
         keptOverflow: next(1),
         coverageMask: next(vertexCount),
         independentMask: next(vertexCount),
+        weightCandidateOverflow: next(1),
         total: words
       };
     })();
@@ -561,25 +571,37 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
         {buffer: importanceConverged, size: 4},
         {buffer: keptOverflow, size: 4},
         {buffer: coverageKeepMask, size: vertexCount * 4},
-        {buffer: independentKeepMask, size: vertexCount * 4}
+        {buffer: independentKeepMask, size: vertexCount * 4},
+        {buffer: weightCandidateOverflow, size: 4}
       ],
       bytes => {
         if (destroyed) return;
         const words = new Uint32Array(bytes);
         const at = (offset: number) => words[offset];
+        weightsComplete =
+          at(layoutWords.weightOverflow) === 0 && at(layoutWords.weightCandidateOverflow) === 0;
         const colorIds = words.subarray(layoutWords.colors, layoutWords.colors + featureCount);
         const uncolored = colorIds.filter(value => value === GPU_MAP_COLORING_UNCOLORED).length;
+        const unavailable = 'Unavailable (incomplete adjacency)';
         neighborsReadout.setValue(
-          `${formatCount(at(layoutWords.offsets + featureCount))} directed (${(
-            at(layoutWords.offsets + featureCount) / Math.max(featureCount, 1)
-          ).toFixed(1)} per feature)${at(layoutWords.weightOverflow) ? ', OVERFLOW' : ''}`
+          weightsComplete
+            ? `${formatCount(at(layoutWords.offsets + featureCount))} directed (${(
+                at(layoutWords.offsets + featureCount) / Math.max(featureCount, 1)
+              ).toFixed(1)} per feature)`
+            : unavailable
         );
         colorsReadout.setValue(
-          `${at(layoutWords.colorCount)}${uncolored ? ` (${uncolored} uncolored)` : ''}`
+          weightsComplete
+            ? `${at(layoutWords.colorCount)}${uncolored ? ` (${uncolored} uncolored)` : ''}`
+            : unavailable
         );
-        conflictsReadout.setValue(`${at(layoutWords.conflicts)} (seed ${seedShown})`);
+        conflictsReadout.setValue(
+          weightsComplete ? `${at(layoutWords.conflicts)} (seed ${seedShown})` : unavailable
+        );
         coloringReadout.setValue(
-          `${at(layoutWords.converged) ? 'yes' : 'NO'} / ${at(layoutWords.rounds)}`
+          weightsComplete
+            ? `${at(layoutWords.converged) ? 'yes' : 'NO'} / ${at(layoutWords.rounds)}`
+            : unavailable
         );
         const coverageMask = words.subarray(
           layoutWords.coverageMask,
@@ -730,7 +752,7 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
               triangleVertices,
               triangleOwners,
               zoneColors: colors,
-              triangleCount,
+              triangleCount: weightsComplete ? triangleCount : 0,
               palette: FILL_PALETTE,
               fillOpacity: 0.55
             })

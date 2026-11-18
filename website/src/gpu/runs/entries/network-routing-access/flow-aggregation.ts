@@ -34,13 +34,18 @@ export default defineOperationRun({
     };
   },
   build(builder, inputs, values) {
-    const columns = COLUMN_OPTIONS[values.gridSize];
+    const columns = COLUMN_OPTIONS[values['gridSize']];
     const rows = Math.max(2, Math.round((columns * 9) / 16));
     const zoneCount = columns * rows;
     const {world} = inputs;
     const origins = builder.upload('origins', 'float32x2', inputs.origins);
     const destinations = builder.upload('destinations', 'float32x2', inputs.destinations);
-    const weights = builder.allocate('workers', 'float32', COMMUTE_FLOWS.length);
+    const weights = builder.upload(
+      'workers',
+      'float32',
+      Float32Array.from(COMMUTE_FLOWS, ([, , jobs]) => jobs)
+    );
+    const mask = builder.allocate('accepted-workers', 'uint32', COMMUTE_FLOWS.length);
     const ids = builder.allocate('ids', 'uint32', TOP_COUNT);
     const count = builder.allocate('count', 'uint32', 1);
     const overflow = builder.allocate('overflow', 'uint32', 1);
@@ -56,7 +61,8 @@ export default defineOperationRun({
         origins: origins.view,
         destinations: destinations.view,
         weights: weights.view,
-        excludeSelfFlows: values.excludeSelfFlows === 1,
+        mask: mask.view,
+        excludeSelfFlows: values['excludeSelfFlows'] === 1,
         pairCapacity: 4096,
         output: {
           ids: ids.view,
@@ -77,6 +83,9 @@ export default defineOperationRun({
     }
     return {
       outputs: {
+        count,
+        overflow,
+        pairOverflow,
         zoneOutWeights,
         flowWeights,
         centers: builder.upload('centers', 'float32x2', centers),
@@ -90,8 +99,8 @@ export default defineOperationRun({
         destinationZones
       },
       update: current => {
-        weights.write(
-          Float32Array.from(COMMUTE_FLOWS, ([, , jobs]) => (jobs >= current.minimumJobs ? jobs : 0))
+        mask.write(
+          Uint32Array.from(COMMUTE_FLOWS, ([, , jobs]) => Number(jobs >= current['minimumJobs']))
         );
         originZones.write(new Uint32Array(TOP_COUNT).fill(0xffffffff));
         destinationZones.write(new Uint32Array(TOP_COUNT).fill(0xffffffff));
@@ -105,7 +114,7 @@ export default defineOperationRun({
     hint: 'hover a zone',
     rest: [0.5, 0.5],
     resolve(pointer, {outputs, values, world, peek}) {
-      const columns = COLUMN_OPTIONS[values.gridSize];
+      const columns = COLUMN_OPTIONS[values['gridSize']];
       const rows = Math.max(2, Math.round((columns * 9) / 16));
       const cell = getRasterCell(columns, rows, [0, 0, world.width, 1], pointer.x, pointer.y);
       const zone = cell.index;
@@ -117,6 +126,9 @@ export default defineOperationRun({
       const destinations = peek(outputs.destinationZones);
       const weights = peek(outputs.flowWeights);
       const totals = peek(outputs.zoneOutWeights);
+      const count = peek(outputs.count)?.[0];
+      const overflow = peek(outputs.overflow)?.[0];
+      const pairOverflow = peek(outputs.pairOverflow)?.[0];
       const glyphs: RunGlyph[] = [
         {
           shape: 'box',
@@ -124,25 +136,43 @@ export default defineOperationRun({
           maximum: [(cell.column + 1) * (world.width / columns), 1 - cell.row / rows]
         }
       ];
+      if (
+        count === undefined ||
+        overflow === undefined ||
+        pairOverflow === undefined ||
+        !origins ||
+        !destinations ||
+        !weights ||
+        !totals
+      ) {
+        return {spotlight: null, glyphs, readout: `zone ${zone} · pending aggregation`};
+      }
+      const truncated = overflow !== 0;
+      const incomplete = pairOverflow !== 0;
       let flowCount = 0;
       let strongest = 0;
-      if (origins && destinations) {
-        for (let flow = 0; flow < origins.length; flow++) {
-          if (origins[flow] !== zone) continue;
+      if (origins && destinations && weights) {
+        for (let flow = 0; flow < Math.min(count, origins.length); flow++) {
+          if (
+            origins[flow] !== zone ||
+            destinations[flow] >= columns * rows ||
+            !(weights[flow] > 0)
+          )
+            continue;
           flowCount++;
-          if (weights) strongest = Math.max(strongest, weights[flow]);
+          strongest = Math.max(strongest, weights[flow]);
           glyphs.push({shape: 'arrow', from: center(zone), to: center(destinations[flow])});
         }
       }
       return {
         spotlight: null,
         glyphs,
-        readout: `zone ${zone} · out ${totals ? Math.round(totals[zone]) : 0} jobs · ${flowCount} flows${strongest ? ` · top ${Math.round(strongest)}` : ''}`
+        readout: `zone ${zone} · out ${Math.round(totals[zone])} jobs · ${flowCount} ${truncated || incomplete ? 'displayed flows' : 'flows'}${strongest ? ` · top ${Math.round(strongest)}` : ''}${incomplete ? ' · incomplete pair aggregation' : ''}`
       };
     }
   },
   draw: ({inputs, outputs, values}) => {
-    const columns = COLUMN_OPTIONS[values.gridSize];
+    const columns = COLUMN_OPTIONS[values['gridSize']];
     const rows = Math.max(2, Math.round((columns * 9) / 16));
     return [
       {
@@ -151,7 +181,7 @@ export default defineOperationRun({
         columns,
         rows,
         ramp: 'sequential',
-        range: [0, getZoneMaximum(inputs, columns, rows, values.excludeSelfFlows === 1)]
+        range: [0, getZoneMaximum(inputs, columns, rows, values['excludeSelfFlows'] === 1)]
       },
       {
         layer: 'segments',

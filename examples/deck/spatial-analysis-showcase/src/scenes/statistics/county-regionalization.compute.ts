@@ -22,6 +22,7 @@ import {SpatialAnalysisPolygonLayer, SpatialAnalysisSegmentLayer} from '../../en
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
+import {formatMaxPImprovementRounds} from './county-regionalization-summary';
 
 export type CountyRegionalizationOptions = {
   algorithm: 'azp' | 'ward-sequential' | 'ward-mutual-nearest' | 'max-p';
@@ -324,7 +325,7 @@ export async function createCountyRegionalization(
     }
   );
   const names = geojson.features.map(feature =>
-    String(feature.properties?.NAME ?? feature.properties?.name ?? 'County unit')
+    String(feature.properties?.['NAME'] ?? feature.properties?.['name'] ?? 'County unit')
   );
   const means = [
     dataset.column<Float32Array>('unemployment1990'),
@@ -394,7 +395,7 @@ export async function createCountyRegionalization(
     if (ctx.options.algorithm === 'max-p') {
       ctx.setReadout(
         'minimumStatus',
-        `regions ${status[0]}; ${status[1] === 1 ? 'feasible' : 'infeasible'}; infeasible regions ${status[2]}; invalid ${status[3]}; selected start ${status[4]}; improvement moves ${status[5]}; ${populations.every(value => value >= ctx.options.minimumPopulation) ? 'population check passes' : 'population check fails'}`
+        `regions ${status[0]}; ${status[1] === 1 ? 'feasible' : 'infeasible'}; infeasible regions ${status[2]}; invalid ${status[3]}; selected start ${status[4]}; ${formatMaxPImprovementRounds(status)}; ${populations.every(value => value >= ctx.options.minimumPopulation) ? 'population check passes' : 'population check fails'}`
       );
     } else if (ctx.options.algorithm.startsWith('ward')) {
       ctx.setReadout(

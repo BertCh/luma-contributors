@@ -56,6 +56,7 @@ export default defineOperationRun({
       weights: builder.allocate('weights', 'float32', capacity)
     };
     const targetValues = builder.allocate('target-values', 'float32', target.zoneCount);
+    const overflow = builder.allocate('overflow', 'uint32', 1);
     builder.graph.add(
       new GPUArealInterpolation({
         grid: grid.grid,
@@ -71,7 +72,7 @@ export default defineOperationRun({
             neighbors: weights.neighbors.view,
             weights: weights.weights.view
           },
-          status: {overflow: builder.allocate('overflow', 'uint32', 1).view}
+          status: {overflow: overflow.view}
         }
       })
     );
@@ -80,7 +81,8 @@ export default defineOperationRun({
         weights: {
           offsets: weights.offsets.view,
           neighbors: weights.neighbors.view,
-          weights: weights.weights.view
+          weights: weights.weights.view,
+          status: {overflow: overflow.view}
         },
         values: sourceValues.view,
         output: targetValues.view

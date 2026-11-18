@@ -11,7 +11,11 @@ import {
   GPUSpatialJoinCandidates,
   type GPUNearestFeatureGeometry
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  createTransientView,
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {
   SpatialAnalysisPointLayer,
@@ -199,7 +203,7 @@ export async function createNearestFacility(
   const shapeOffsets = transit.column<Uint32Array>('shapePathOffsets');
   const shapeRoute = transit.column<Uint16Array>('shapeRoute');
   const shapeDirection = transit.column<Uint8Array>('shapeDirection');
-  const routes = (transit.properties.routes as {type: string; name: string}[]) ?? [];
+  const routes = (transit.properties['routes'] as {type: string; name: string}[]) ?? [];
   const railRoutes = new Set(
     routes.flatMap((route, index) => (route.type === 'rail' ? [index] : []))
   );
@@ -566,6 +570,13 @@ export async function createNearestFacility(
         rows
       );
       const neighborIds = own.createBuffer('neighbor-ids', rows * capacity * 4);
+      const neighborRowsView = importGraphBuffer(
+        graph,
+        'neighbor-rows',
+        own.createBuffer('neighbor-rows', rows * capacity * 4),
+        'uint32',
+        rows * capacity
+      );
       const neighborCounts = own.createBuffer('neighbor-counts', rows * 4);
       const neighborDistances = own.createBuffer('neighbor-distances', rows * capacity * 4);
       const csrOffsets = own.createBuffer('csr-offsets', (rows + 1) * 4);
@@ -573,6 +584,9 @@ export async function createNearestFacility(
       const csrWeights = own.createBuffer('csr-weights', rows * k * 4);
       const csrDistances = own.createBuffer('csr-distances', rows * k * 4);
       const weightsOverflow = own.createBuffer('weights-overflow', 4);
+      const neighborStatus = {
+        overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)
+      };
       const neighborIdsView = importGraphBuffer(
         graph,
         'neighbor-ids',
@@ -603,9 +617,10 @@ export async function createNearestFacility(
           k: capacity,
           output: {
             neighborIds: neighborIdsView,
+            neighborRows: neighborRowsView,
             neighborCounts: neighborCountsView,
             neighborDistances: neighborDistancesView,
-            status: {overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)}
+            status: neighborStatus
           }
         })
       );
@@ -613,7 +628,8 @@ export async function createNearestFacility(
         new GPUNearestFeatureWeights({
           spatialContext: projection.spatialContext,
           id: 'nearest-weights',
-          neighborIds: neighborIdsView,
+          neighborStatus,
+          neighborRows: neighborRowsView,
           neighborCounts: neighborCountsView,
           neighborDistances: neighborDistancesView,
           slotCapacity: capacity,
@@ -627,7 +643,13 @@ export async function createNearestFacility(
             weights: importGraphBuffer(graph, 'csr-weights', csrWeights, 'float32', rows * k),
             distances: importGraphBuffer(graph, 'csr-distances', csrDistances, 'float32', rows * k),
             status: {
-              overflow: importGraphBuffer(graph, 'weights-overflow', weightsOverflow, 'uint32', 1)
+              overflow: importGraphBuffer(graph, 'weights-overflow', weightsOverflow, 'uint32', 1),
+              candidateOverflow: createTransientView(
+                graph,
+                'weights-candidate-overflow',
+                'uint32',
+                1
+              )
             }
           }
         })
@@ -703,8 +725,8 @@ export async function createNearestFacility(
         set.count
       );
       const capacity = Math.max(2048, set.count * 64);
-      const leftIds = own.createBuffer('pairs-left', capacity * 4);
-      const rightIds = own.createBuffer('pairs-right', capacity * 4);
+      const leftRows = own.createBuffer('pairs-left', capacity * 4);
+      const rightRows = own.createBuffer('pairs-right', capacity * 4);
       const count = own.createBuffer('pairs-count', 4);
       const total = own.createBuffer('pairs-total', 4);
       const polygons = importPolygons(graph, 'tracts', tractBuffers);
@@ -716,8 +738,8 @@ export async function createNearestFacility(
           right: polygons,
           distance,
           output: {
-            leftIds: importGraphBuffer(graph, 'pairs-left', leftIds, 'uint32', capacity),
-            rightIds: importGraphBuffer(graph, 'pairs-right', rightIds, 'uint32', capacity),
+            leftRows: importGraphBuffer(graph, 'pairs-left', leftRows, 'uint32', capacity),
+            rightRows: importGraphBuffer(graph, 'pairs-right', rightRows, 'uint32', capacity),
             status: {
               count: importGraphBuffer(graph, 'pairs-count', count, 'uint32', 1),
               overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
@@ -739,8 +761,8 @@ export async function createNearestFacility(
           {buffer: count, size: 4},
           {buffer: total, size: 4},
           {buffer: overflow, size: 4},
-          {buffer: leftIds, size: capacity * 4},
-          {buffer: rightIds, size: capacity * 4}
+          {buffer: leftRows, size: capacity * 4},
+          {buffer: rightRows, size: capacity * 4}
         ],
         bytes => {
           if (destroyed || variant !== result) return;
@@ -784,7 +806,7 @@ export async function createNearestFacility(
           ctx.requestLayers();
         }
       );
-      result.candidates = {pairs: leftIds, capacity, reader: pairsReader};
+      result.candidates = {pairs: leftRows, capacity, reader: pairsReader};
       readerSources = [
         {buffer: overflow, size: 4},
         {buffer: candidateCount, size: 4}

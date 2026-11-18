@@ -343,38 +343,36 @@ export async function createTradeAreas(
   const facilityWeights = weightsOf('facility-rows', facilityRows);
   const searchParametersView = searchParameters.importToGraph(graph);
   // Demand rows list the facilities within reach; facility rows list the demand.
-  graph.add(
-    new GPUNeighborSearch({
-      spatialContext: projection.spatialContext,
-      id: 'demand-to-facility',
-      mode: 'radius',
-      positions: facilityPositionsView,
-      queryPositions: demandPositionsView,
-      mask: facilityMaskView,
-      parameters: searchParametersView,
-      gridSize: [64, 64],
-      output: {
-        ...demandWeights,
-        status: {overflow: view('demand-overflow', demandRows.overflow, 'uint32', 1)}
-      }
-    })
-  );
-  graph.add(
-    new GPUNeighborSearch({
-      spatialContext: projection.spatialContext,
-      id: 'facility-to-demand',
-      mode: 'radius',
-      positions: demandPositionsView,
-      queryPositions: facilityPositionsView,
-      queryMask: facilityMaskView,
-      parameters: searchParametersView,
-      gridSize: [64, 64],
-      output: {
-        ...facilityWeights,
-        status: {overflow: view('facility-overflow', facilityRows.overflow, 'uint32', 1)}
-      }
-    })
-  );
+  const demandSearch = new GPUNeighborSearch({
+    spatialContext: projection.spatialContext,
+    id: 'demand-to-facility',
+    mode: 'radius',
+    positions: facilityPositionsView,
+    queryPositions: demandPositionsView,
+    mask: facilityMaskView,
+    parameters: searchParametersView,
+    gridSize: [64, 64],
+    output: {
+      ...demandWeights,
+      status: {overflow: view('demand-overflow', demandRows.overflow, 'uint32', 1)}
+    }
+  });
+  graph.add(demandSearch);
+  const facilitySearch = new GPUNeighborSearch({
+    spatialContext: projection.spatialContext,
+    id: 'facility-to-demand',
+    mode: 'radius',
+    positions: demandPositionsView,
+    queryPositions: facilityPositionsView,
+    queryMask: facilityMaskView,
+    parameters: searchParametersView,
+    gridSize: [64, 64],
+    output: {
+      ...facilityWeights,
+      status: {overflow: view('facility-overflow', facilityRows.overflow, 'uint32', 1)}
+    }
+  });
+  graph.add(facilitySearch);
   const reachableView = view('reachable', reachable, 'uint32', demandCount);
   for (const [method, accessBuffer, ratiosBuffer] of [
     ['2sfca', access2, ratios2],
@@ -386,8 +384,8 @@ export async function createTradeAreas(
         method,
         supply: supplyView,
         demand: demandView,
-        facilityWeights,
-        demandWeights,
+        facilityWeights: facilitySearch.outputWeights,
+        demandWeights: demandSearch.outputWeights,
         output: {
           accessibility: view(`access-${method}`, accessBuffer, 'float32', demandCount),
           ratios: view(`ratios-${method}`, ratiosBuffer, 'float32', facilityCount),
@@ -407,8 +405,8 @@ export async function createTradeAreas(
     new GPUHuffTradeAreas({
       id: 'huff',
       attractiveness: supplyView,
-      demandWeights,
-      facilityWeights,
+      demandWeights: demandSearch.outputWeights,
+      facilityWeights: facilitySearch.outputWeights,
       demand: demandView,
       parameters: huffExponent.importToGraph(graph),
       output: {
@@ -591,6 +589,11 @@ export async function createTradeAreas(
         `${formatInteger(captured)} of ${formatInteger(reachedDemand)} (busiest site ${formatInteger(busiest)})`
       );
       const overflow = get('overflows').u32[0] || get('facilityOverflow').u32[0];
+      if (overflow) {
+        for (const name of ['meanAccess', 'unreached', 'conservation', 'equity', 'captured']) {
+          ctx.setReadout(name, 'n/a: incomplete weights');
+        }
+      }
       ctx.setReadout(
         'overflow',
         overflow ? 'overflow: reduce the bandwidth or pick a rarer facility' : 'ok'
@@ -742,7 +745,7 @@ export async function createTradeAreas(
         `Tract ${geoids[row]}`,
         `${ctx.options.demand}: ${formatInteger(measures[ctx.options.demand][row])}, poverty ${Number.isFinite(poverty[row]) ? poverty[row].toFixed(0) : 'n/a'}%`,
         `Access per 1,000: 2SFCA ${per1000(latest.access2[row])}, 3SFCA ${per1000(latest.access3[row])}`,
-        `Facilities in reach: ${latest.reachable[row]}`,
+        `Facilities in reach: ${latest.reachable[row] === 0xffffffff ? 'n/a: incomplete weights' : latest.reachable[row]}`,
         latest.tradeArea[row] === GPU_HUFF_NO_TRADE_AREA
           ? 'No Huff trade area'
           : `Huff: site ${latest.tradeArea[row]}, probability ${(100 * latest.probability[row]).toFixed(0)}%`

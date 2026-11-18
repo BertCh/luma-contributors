@@ -675,7 +675,7 @@ export async function createBixiBundles(
       ),
       window: windowParameters.importToGraph(trailGraph),
       output: {
-        ids: importGraphBuffer(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
+        rows: importGraphBuffer(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
         status: {
           count: importGraphBuffer(trailGraph, 'trail-count', trailCount, 'uint32', 1),
           overflow: importGraphBuffer(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)

@@ -11,6 +11,8 @@
 // add*Recipe / add*ToGraph / create* / make*, or any class or function listed as an operator in the
 // spatial-analysis ontology. Analysis-core internals (kernels, contracts, graph support,
 // ring assembly), low-level helpers, WGSL builders, types and constants are skipped.
+// Eligible declarations without qualified metadata fail extraction after actual re-exports are
+// deduplicated. Function overloads are retained, including literal mode discriminants.
 //
 // Operation forms are skipped too: `GPU<Name>Operation` in a `gpu-<name>-operation.ts` file, its
 // CPU twin in `cpu-<name>-operation.ts`, and `analysis-core/operations` (contributor contract,
@@ -23,17 +25,25 @@ import {fileURLToPath} from 'node:url';
 import ts from 'typescript';
 import {build} from 'esbuild';
 import type {CatalogAnalysisMetadata} from '../src/catalog/analysis-metadata';
+import type {GPUAnalysisOperator} from '../../modules/analysis/src/gpu-spatial-analysis/ontology/index';
 
 // The extracted operations use domain verbs rather than create/make. Their word arithmetic,
 // selection-expression builders and upload helpers remain implementation building blocks.
-const WIDE_NUMERIC_HELPER_FILE_PATTERN = /\/column-profile\/(?:gpu-wide-numeric-scan|wide-numeric-gpu-|numeric-narrowing-diagnostics)/;
+const WIDE_NUMERIC_HELPER_FILE_PATTERN =
+  /\/column-profile\/(?:gpu-wide-numeric-scan|wide-numeric-gpu-|numeric-narrowing-diagnostics)/;
 
 const websiteDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repositoryRoot = resolve(websiteDirectory, '..');
 const analysisSource = join(repositoryRoot, 'modules/analysis/src');
 const packageName = '@luma-contributors/analysis';
 
-type InventoryProp = {name: string; type: string; optional: boolean; jsdoc: string};
+export type InventoryProp = {name: string; type: string; optional: boolean; jsdoc: string};
+export type InventoryContract = {
+  propsType: string | null;
+  props: InventoryProp[];
+  outputs: InventoryProp[];
+  mode?: {values: string[]; optional: boolean};
+};
 type InventoryOntology = {
   capability: string;
   domain: string;
@@ -51,6 +61,7 @@ type InventorySymbol = CatalogAnalysisMetadata & {
   props: InventoryProp[];
   /** Resolved output fields: the class \`output\`/\`outputs\` prop type, or the function return type. */
   outputs: InventoryProp[];
+  overloads?: InventoryContract[];
   summary: string;
   docsSlug: string | null;
   lensScenarios: string[];
@@ -59,14 +70,17 @@ type InventorySymbol = CatalogAnalysisMetadata & {
 
 const FUNCTION_NAME_PATTERN = /^(add\w+Recipe|add\w+ToGraph|create[A-Z]\w*|make[A-Z]\w*)$/;
 const LOW_LEVEL_PATTERN = /(Wgsl|WGSL|Shader|Kernel|Descriptor|Annotation|Ref$|Validator|Hash)/;
-const OPERATION_FORM_FILE_PATTERN = /\/analysis-core\/operations\/|\/(gpu|cpu)-[a-z0-9-]+-operation\.ts$/;
+const OPERATION_FORM_FILE_PATTERN =
+  /\/analysis-core\/operations\/|\/(gpu|cpu)-[a-z0-9-]+-operation\.ts$/;
 const MAX_TYPE_LENGTH = 60;
 const MAX_JSDOC_LENGTH = 70;
 const MAX_LENS_SCENARIOS = 3;
 const MAX_CONTENT_LENS_MATCHES = 3;
 
 function listEntryPoints(): {importPath: string; file: string}[] {
-  const packageJson = JSON.parse(readFileSync(join(repositoryRoot, 'modules/analysis/package.json'), 'utf8'));
+  const packageJson = JSON.parse(
+    readFileSync(join(repositoryRoot, 'modules/analysis/package.json'), 'utf8')
+  );
   const entryPoints: {importPath: string; file: string}[] = [];
   for (const exportKey of Object.keys(packageJson.exports)) {
     const importPath = exportKey === '.' ? packageName : `${packageName}/${exportKey.slice(2)}`;
@@ -77,12 +91,17 @@ function listEntryPoints(): {importPath: string; file: string}[] {
   return entryPoints;
 }
 
-function listFilesRecursive(directory: string, extension: string, skipDirectories: string[] = []): string[] {
+function listFilesRecursive(
+  directory: string,
+  extension: string,
+  skipDirectories: string[] = []
+): string[] {
   const files: string[] = [];
   for (const name of readdirSync(directory)) {
     const path = join(directory, name);
     if (statSync(path).isDirectory()) {
-      if (!skipDirectories.includes(name)) files.push(...listFilesRecursive(path, extension, skipDirectories));
+      if (!skipDirectories.includes(name))
+        files.push(...listFilesRecursive(path, extension, skipDirectories));
     } else if (name.endsWith(extension)) {
       files.push(path);
     }
@@ -91,14 +110,22 @@ function listFilesRecursive(directory: string, extension: string, skipDirectorie
 }
 
 function summarizeText(text: string, maxLength: number): string {
-  const firstSentence = text.replace(/\s+/g, ' ').trim().split(/(?<=\.)\s/)[0] ?? '';
-  return firstSentence.length > maxLength ? `${firstSentence.slice(0, maxLength - 1)}…` : firstSentence;
+  const firstSentence =
+    text
+      .replace(/\s+/g, ' ')
+      .trim()
+      .split(/(?<=\.)\s/)[0] ?? '';
+  return firstSentence.length > maxLength
+    ? `${firstSentence.slice(0, maxLength - 1)}…`
+    : firstSentence;
 }
 
-async function readAnalysisLibrary(): Promise<typeof import('../src/catalog/analysis-metadata') & {
-  getGPUAnalysisCapabilityCatalog: typeof import('../../modules/analysis/src/gpu-spatial-analysis/ontology/index')['getGPUAnalysisCapabilityCatalog'];
-  getGPUAnalysisOperatorCatalog: typeof import('../../modules/analysis/src/gpu-spatial-analysis/ontology/index')['getGPUAnalysisOperatorCatalog'];
-}> {
+async function readAnalysisLibrary(): Promise<
+  typeof import('../src/catalog/analysis-metadata') & {
+    getGPUAnalysisCapabilityCatalog: typeof import('../../modules/analysis/src/gpu-spatial-analysis/ontology/index')['getGPUAnalysisCapabilityCatalog'];
+    getGPUAnalysisOperatorCatalog: typeof import('../../modules/analysis/src/gpu-spatial-analysis/ontology/index')['getGPUAnalysisOperatorCatalog'];
+  }
+> {
   const bundled = await build({
     stdin: {
       contents: `export * from './src/catalog/analysis-metadata.ts';
@@ -110,9 +137,10 @@ async function readAnalysisLibrary(): Promise<typeof import('../src/catalog/anal
     format: 'esm',
     write: false
   });
-  return import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString('base64')}`);
+  return import(
+    `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString('base64')}`
+  );
 }
-
 
 function readDocumentationPages(): {slugs: string[]; pages: {slug: string; text: string}[]} {
   const docsRoot = join(repositoryRoot, 'docs');
@@ -128,11 +156,26 @@ function readLensScenarios(): {ids: string[]; records: {id: string; text: string
   const directory = join(repositoryRoot, 'docs/lens-records');
   const records = readdirSync(directory)
     .filter(name => name.endsWith('.json') && statSync(join(directory, name)).isFile())
-    .map(name => ({id: name.replace(/\.json$/, ''), text: readFileSync(join(directory, name), 'utf8')}));
+    .map(name => ({
+      id: name.replace(/\.json$/, ''),
+      text: readFileSync(join(directory, name), 'utf8')
+    }));
   return {ids: records.map(record => record.id).sort(), records};
 }
 
-async function main(): Promise<void> {
+/** Resolves the object contract behind a generic constructor parameter. */
+export function resolveInventoryParameterType(checker: ts.TypeChecker, type: ts.Type): ts.Type {
+  const visited = new Set<ts.Type>();
+  while ((type.flags & ts.TypeFlags.TypeParameter) !== 0 && !visited.has(type)) {
+    visited.add(type);
+    const constraint = checker.getBaseConstraintOfType(type);
+    if (!constraint) break;
+    type = constraint;
+  }
+  return checker.getNonNullableType(type);
+}
+
+export async function extractInventory(operatorsOverride?: readonly GPUAnalysisOperator[]) {
   const entryPoints = listEntryPoints();
   const configFile = ts.readConfigFile(join(repositoryRoot, 'tsconfig.json'), ts.sys.readFile);
   const parsed = ts.parseJsonConfigFileContent(configFile.config, ts.sys, repositoryRoot);
@@ -142,35 +185,72 @@ async function main(): Promise<void> {
   });
   const checker = program.getTypeChecker();
   const library = await readAnalysisLibrary();
-  const capabilities = new Map(library.getGPUAnalysisCapabilityCatalog().map(capability => [capability.id, capability]));
+  const operators = operatorsOverride ?? library.getGPUAnalysisOperatorCatalog();
+  const operatorByIdentity = new Map(
+    operators.map(operator => [`${operator.package}:${operator.exportName}`, operator])
+  );
+  const ambiguousNames = new Set(
+    operators
+      .filter(operator =>
+        operators.some(
+          other => other.exportName === operator.exportName && other.package !== operator.package
+        )
+      )
+      .map(operator => operator.exportName)
+  );
+  const capabilities = new Map(
+    library.getGPUAnalysisCapabilityCatalog().map(capability => [capability.id, capability])
+  );
   const ontologyByOperator = new Map(
-    library.getGPUAnalysisOperatorCatalog().map(operator => [operator.exportName, {
-      capability: operator.primaryCapability,
-      domain: capabilities.get(operator.primaryCapability)?.domain ?? operator.package,
-      stage: capabilities.get(operator.primaryCapability)?.stage ?? operator.role ?? 'unspecified',
-      inputs: [...library.getCatalogAnalysisMetadata(operator.exportName).dataKinds.input],
-      outputs: [...library.getCatalogAnalysisMetadata(operator.exportName).dataKinds.output]
-    }])
+    operators.map(operator => [
+      `${operator.package}:${operator.exportName}`,
+      {
+        capability: operator.primaryCapability,
+        domain: capabilities.get(operator.primaryCapability)?.domain ?? operator.package,
+        stage:
+          capabilities.get(operator.primaryCapability)?.stage ?? operator.role ?? 'unspecified',
+        inputs: [
+          ...library.getCatalogAnalysisMetadata(operator.exportName, operator.package).dataKinds
+            .input
+        ],
+        outputs: [
+          ...library.getCatalogAnalysisMetadata(operator.exportName, operator.package).dataKinds
+            .output
+        ]
+      }
+    ])
   );
   const documentation = readDocumentationPages();
   const lensScenarios = readLensScenarios();
 
   const formatType = (type: ts.Type): string => {
-    const text = checker.typeToString(type, undefined, ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.UseAliasDefinedOutsideCurrentScope).replace(/\s+/g, ' ');
+    const text = checker
+      .typeToString(
+        type,
+        undefined,
+        ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.UseAliasDefinedOutsideCurrentScope
+      )
+      .replace(/\s+/g, ' ');
     return text.length > MAX_TYPE_LENGTH ? `${text.slice(0, MAX_TYPE_LENGTH - 1)}…` : text;
   };
 
-  const resolveProps = (parameter: ts.Symbol | undefined, location: ts.Node): {propsType: string | null; props: InventoryProp[]} => {
+  const resolveProps = (
+    parameter: ts.Symbol | undefined,
+    location: ts.Node
+  ): {propsType: string | null; props: InventoryProp[]} => {
     if (!parameter) return {propsType: null, props: []};
-    const parameterType = checker.getNonNullableType(checker.getTypeOfSymbolAtLocation(parameter, location));
+    const declaredType = checker.getTypeOfSymbolAtLocation(parameter, location);
+    const parameterType = resolveInventoryParameterType(checker, declaredType);
     const declaration = parameter.valueDeclaration;
     const typeNode = declaration && ts.isParameter(declaration) ? declaration.type : undefined;
-    const propsType = typeNode ? typeNode.getText().replace(/\s+/g, ' ').slice(0, MAX_TYPE_LENGTH) : formatType(parameterType);
+    const propsType = typeNode && (declaredType.flags & ts.TypeFlags.TypeParameter) === 0
+      ? typeNode.getText().replace(/\s+/g, ' ').slice(0, MAX_TYPE_LENGTH)
+      : formatType(parameterType);
     const props: InventoryProp[] = [];
     // Unions (for example discriminated option sets) contribute every member's props; a prop that
     // is missing from some member is reported as optional.
     const members = parameterType.isUnion() ? parameterType.types : [parameterType];
-    const merged = new Map<string, {property: ts.Symbol; count: number}>();
+    const merged = new Map<string, {property: ts.Symbol; count: number; optional: boolean}>();
     for (const member of members) {
       if (!(member.flags & ts.TypeFlags.Object || member.isIntersection())) continue;
       for (const property of checker.getPropertiesOfType(member)) {
@@ -178,17 +258,31 @@ async function main(): Promise<void> {
         const propertyFile = property.declarations?.[0]?.getSourceFile().fileName ?? '';
         if (propertyFile.includes('node_modules')) continue;
         const entry = merged.get(property.name);
-        if (entry) entry.count += 1;
-        else merged.set(property.name, {property, count: 1});
+        if (entry) {
+          entry.count += 1;
+          entry.optional ||= (property.flags & ts.SymbolFlags.Optional) !== 0;
+        } else {
+          merged.set(property.name, {
+            property,
+            count: 1,
+            optional: (property.flags & ts.SymbolFlags.Optional) !== 0
+          });
+        }
       }
     }
-    for (const {property, count} of merged.values()) {
-      const propertyType = checker.getTypeOfSymbolAtLocation(property, location);
+    for (const {property, count, optional} of merged.values()) {
+      // A union's first arm may explicitly forbid this port with `never`; read the combined
+      // symbol so the catalog retains the usable type and documentation from the other arm.
+      const combinedProperty = checker.getPropertyOfType(parameterType, property.name) ?? property;
+      const propertyType = checker.getTypeOfSymbolAtLocation(combinedProperty, location);
       props.push({
         name: property.name,
         type: formatType(propertyType),
-        optional: (property.flags & ts.SymbolFlags.Optional) !== 0 || count < members.length,
-        jsdoc: summarizeText(ts.displayPartsToString(property.getDocumentationComment(checker)), MAX_JSDOC_LENGTH)
+        optional: optional || count < members.length,
+        jsdoc: summarizeText(
+          ts.displayPartsToString(combinedProperty.getDocumentationComment(checker)),
+          MAX_JSDOC_LENGTH
+        )
       });
     }
     return {propsType, props};
@@ -210,7 +304,10 @@ async function main(): Promise<void> {
           name: property.name,
           type: formatType(checker.getTypeOfSymbolAtLocation(property, location)),
           optional: (property.flags & ts.SymbolFlags.Optional) !== 0,
-          jsdoc: summarizeText(ts.displayPartsToString(property.getDocumentationComment(checker)), MAX_JSDOC_LENGTH)
+          jsdoc: summarizeText(
+            ts.displayPartsToString(property.getDocumentationComment(checker)),
+            MAX_JSDOC_LENGTH
+          )
         });
       }
     }
@@ -224,81 +321,165 @@ async function main(): Promise<void> {
     for (const parameter of signature.getParameters()) {
       if (/^(device|graph|commandGraph)$/.test(parameter.name)) continue;
       const declaration = parameter.valueDeclaration;
-      const optional = !!declaration && ts.isParameter(declaration) && (!!declaration.questionToken || !!declaration.initializer);
-      const parameterType = checker.getNonNullableType(checker.getTypeOfSymbolAtLocation(parameter, location));
+      const optional =
+        !!declaration &&
+        ts.isParameter(declaration) &&
+        (!!declaration.questionToken || !!declaration.initializer);
+      const parameterType = checker.getNonNullableType(
+        checker.getTypeOfSymbolAtLocation(parameter, location)
+      );
       props.push({name: parameter.name, type: formatType(parameterType), optional, jsdoc: ''});
-      const isPlainObject = (parameterType.flags & ts.TypeFlags.Object) !== 0 && checker.getSignaturesOfType(parameterType, ts.SignatureKind.Call).length === 0 && parameterType.symbol?.name !== 'Float32Array' && !checker.isArrayLikeType(parameterType);
+      const isPlainObject =
+        (parameterType.flags & ts.TypeFlags.Object) !== 0 &&
+        checker.getSignaturesOfType(parameterType, ts.SignatureKind.Call).length === 0 &&
+        parameterType.symbol?.name !== 'Float32Array' &&
+        !checker.isArrayLikeType(parameterType);
       if (!isPlainObject) continue;
-      for (const field of resolveProps(parameter, location).props) props.push({...field, name: `${parameter.name}.${field.name}`});
+      for (const field of resolveProps(parameter, location).props)
+        props.push({...field, name: `${parameter.name}.${field.name}`});
     }
     return props;
   };
 
-  const resolveOutputs = (isClass: boolean, props: InventoryProp[], parameter: ts.Symbol | undefined, signature: ts.Signature | undefined, location: ts.Node): InventoryProp[] => {
+  const resolveOutputs = (
+    isClass: boolean,
+    props: InventoryProp[],
+    parameter: ts.Symbol | undefined,
+    signature: ts.Signature | undefined,
+    location: ts.Node
+  ): InventoryProp[] => {
     if (isClass) {
-      const outputProp = parameter && checker.getPropertyOfType(checker.getNonNullableType(checker.getTypeOfSymbolAtLocation(parameter, location)), 'outputs') ||
-        parameter && checker.getPropertyOfType(checker.getNonNullableType(checker.getTypeOfSymbolAtLocation(parameter, location)), 'output');
-      return outputProp ? listObjectFields(checker.getNonNullableType(checker.getTypeOfSymbolAtLocation(outputProp, location)), location) : [];
+      const outputProp =
+        (parameter &&
+          checker.getPropertyOfType(
+            checker.getNonNullableType(checker.getTypeOfSymbolAtLocation(parameter, location)),
+            'outputs'
+          )) ||
+        (parameter &&
+          checker.getPropertyOfType(
+            checker.getNonNullableType(checker.getTypeOfSymbolAtLocation(parameter, location)),
+            'output'
+          ));
+      return outputProp
+        ? listObjectFields(
+            checker.getNonNullableType(checker.getTypeOfSymbolAtLocation(outputProp, location)),
+            location
+          )
+        : [];
     }
     if (!signature) return [];
     let returnType = checker.getReturnTypeOfSignature(signature);
-    if (returnType.symbol?.name === 'Promise') returnType = checker.getTypeArguments(returnType as ts.TypeReference)[0] ?? returnType;
+    if (returnType.symbol?.name === 'Promise')
+      returnType = checker.getTypeArguments(returnType as ts.TypeReference)[0] ?? returnType;
     return listObjectFields(returnType, location);
   };
 
-  const symbols = new Map<string, InventorySymbol>();
+  const symbols = new Map<string, Omit<InventorySymbol, keyof CatalogAnalysisMetadata>>();
   for (const entryPoint of entryPoints) {
     const sourceFile = program.getSourceFile(entryPoint.file);
     const moduleSymbol = sourceFile && checker.getSymbolAtLocation(sourceFile);
     if (!moduleSymbol) continue;
     for (const exported of checker.getExportsOfModule(moduleSymbol)) {
       const name = exported.name;
-      const target = exported.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exported) : exported;
-      const declaration = target.declarations?.find(candidate => ts.isClassDeclaration(candidate) || ts.isFunctionDeclaration(candidate));
+      const target =
+        exported.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exported) : exported;
+      const declaration = target.declarations?.find(
+        candidate => ts.isClassDeclaration(candidate) || ts.isFunctionDeclaration(candidate)
+      );
       if (!declaration) continue;
       const declarationFile = declaration.getSourceFile().fileName;
-      if (!declarationFile.startsWith(analysisSource) || declarationFile.includes('/testing/')) continue;
+      if (!declarationFile.startsWith(analysisSource) || declarationFile.includes('/testing/'))
+        continue;
       const isClass = ts.isClassDeclaration(declaration);
-      const isOperator = ontologyByOperator.has(name);
-      const isAbstract = isClass && (ts.getCombinedModifierFlags(declaration) & ts.ModifierFlags.Abstract) !== 0;
+      const identity = `${entryPoint.importPath}:${name}`;
+      const isOperator = ontologyByOperator.has(identity);
+      const isAbstract =
+        isClass && (ts.getCombinedModifierFlags(declaration) & ts.ModifierFlags.Abstract) !== 0;
       const included = isClass
         ? !isAbstract && (/^GPU[A-Z]/.test(name) || isOperator)
         : (FUNCTION_NAME_PATTERN.test(name) && !LOW_LEVEL_PATTERN.test(name)) || isOperator;
-      const isCoreInternal = /\/analysis-core\/(kernels|graph-support|contracts|ring-assembly)\//.test(declarationFile);
+      const isCoreInternal =
+        /\/analysis-core\/(kernels|graph-support|contracts|ring-assembly)\//.test(declarationFile);
       // Exports tagged @internal in their JSDoc (for example the pointcloud grid-index builder that
       // GPUPointCloudICP, GPUPointCloudSurfaces and GPUPointCloudNeighborhoods share) are building
       // blocks of other operations, not operations a reader would call, so they are not catalog symbols.
-      const isMarkedInternal = ts.getJSDocTags(declaration).some(tag => tag.tagName.text === 'internal');
+      const isMarkedInternal = ts
+        .getJSDocTags(declaration)
+        .some(tag => tag.tagName.text === 'internal');
       // GPUGraph operation forms and CPU twins of contributors that have their own entry.
       const isOperationForm = OPERATION_FORM_FILE_PATTERN.test(declarationFile);
       if (WIDE_NUMERIC_HELPER_FILE_PATTERN.test(declarationFile) && !isOperator) continue;
-      if (!included || (isCoreInternal && !isOperator) || isMarkedInternal || isOperationForm) continue;
+      if (!included || (isCoreInternal && !isOperator) || isMarkedInternal || isOperationForm)
+        continue;
 
-      const signature = isClass
-        ? checker.getTypeOfSymbolAtLocation(target, declaration).getConstructSignatures()[0]
-        : checker.getTypeOfSymbolAtLocation(target, declaration).getCallSignatures()[0];
-      // Skip leading infrastructure parameters (device, graph) to reach the options object.
-      const parameter = signature?.getParameters().find(candidate => {
-        const typeText = checker.typeToString(checker.getTypeOfSymbolAtLocation(candidate, declaration));
-        return !/^(device|graph|commandGraph)$/.test(candidate.name) && !/^(Device|GPUCommandGraph)\b/.test(typeText);
+      const signatures = isClass
+        ? checker.getTypeOfSymbolAtLocation(target, declaration).getConstructSignatures()
+        : checker.getTypeOfSymbolAtLocation(target, declaration).getCallSignatures();
+      const contracts: InventoryContract[] = signatures.map(signature => {
+        // Skip leading infrastructure parameters (device, graph) to reach the options object.
+        const parameter = signature?.getParameters().find(candidate => {
+          const typeText = checker.typeToString(
+            checker.getTypeOfSymbolAtLocation(candidate, declaration)
+          );
+          return (
+            !/^(device|graph|commandGraph)$/.test(candidate.name) &&
+            !/^(Device|GPUCommandGraph)\b/.test(typeText)
+          );
+        });
+        const resolved = resolveProps(parameter, declaration);
+        const propsType = resolved.propsType;
+        const props =
+          resolved.props.length > 0 || isClass || !signature
+            ? resolved.props
+            : resolveParameterProps(signature, declaration);
+        const outputs = resolveOutputs(isClass, props, parameter, signature, declaration);
+        const modeProperty = props.find(property => property.name === 'mode');
+        const modeValues = modeProperty
+          ? [...modeProperty.type.matchAll(/["']([^"']+)["']/g)].map(match => match[1])
+          : [];
+        return {
+          propsType,
+          props,
+          outputs,
+          ...(modeValues.length
+            ? {mode: {values: modeValues, optional: modeProperty!.optional}}
+            : {})
+        };
       });
-      const resolved = resolveProps(parameter, declaration);
-      const propsType = resolved.propsType;
-      const props = resolved.props.length > 0 || isClass || !signature ? resolved.props : resolveParameterProps(signature, declaration);
-      const outputs = resolveOutputs(isClass, props, parameter, signature, declaration);
+      const contract = contracts.find(contract => contract.mode?.optional) ??
+        contracts[0] ?? {propsType: null, props: [], outputs: []};
 
-      const existing = symbols.get(name);
       const importPath = entryPoint.importPath;
-      // Prefer the most specific entry point when a symbol is re-exported from the root.
-      if (existing && existing.importPath.length >= importPath.length) continue;
+      // Re-exports of one declaration share a record; distinct same-name declarations do not.
+      const declarationIdentity = `${declarationFile}:${declaration.pos}:${name}`;
+      const existing = symbols.get(declarationIdentity);
+      const existingIsOperator =
+        existing && ontologyByOperator.has(`${existing.importPath}:${name}`);
+      if (
+        existing &&
+        ((existingIsOperator && !isOperator) ||
+          (Boolean(existingIsOperator) === isOperator &&
+            existing.importPath.length >= importPath.length))
+      )
+        continue;
 
       const sourcePath = relative(repositoryRoot, declarationFile);
-      const kind: InventorySymbol['kind'] = isClass ? 'class' : /Recipe$|ToGraph$/.test(name) ? 'recipe' : 'function';
+      const kind: InventorySymbol['kind'] = isClass
+        ? 'class'
+        : /Recipe$|ToGraph$/.test(name)
+          ? 'recipe'
+          : 'function';
       const wordPattern = new RegExp(`\\b${name}\\b`);
       const pageScores = documentation.pages
-        .map(page => ({page, count: (page.text.match(new RegExp(`\\b${name}\\b`, 'g')) ?? []).length}))
+        .map(page => ({
+          page,
+          count: (page.text.match(new RegExp(`\\b${name}\\b`, 'g')) ?? []).length
+        }))
         .filter(({count}) => count > 0)
-        .map(({page, count}) => ({slug: page.slug, score: count - (/catalog|cross-reference|^api$/.test(page.slug) ? 1000 : 0)}))
+        .map(({page, count}) => ({
+          slug: page.slug,
+          score: count - (/catalog|cross-reference|^api$/.test(page.slug) ? 1000 : 0)
+        }))
         .sort((left, right) => right.score - left.score || left.slug.localeCompare(right.slug));
       const kebabName = name
         .replace(/^(GPU|add|create|make)/, '')
@@ -307,53 +488,109 @@ async function main(): Promise<void> {
         .replace(/([A-Z]+)([A-Z][a-z])/g, '$1-$2')
         .toLowerCase();
       const scenarioName = (id: string): string => id.slice(id.indexOf('.') + 1);
-      const nameMatches = lensScenarios.records
+      const qualifiedLensRecords = ambiguousNames.has(name)
+        ? lensScenarios.records.filter(record =>
+            record.id.startsWith(`${importPath.split('/').at(-1)}.`)
+          )
+        : lensScenarios.records;
+      const nameMatches = qualifiedLensRecords
         .filter(record => [kebabName, `${kebabName}-recipe`].includes(scenarioName(record.id)))
         .map(record => record.id);
-      const nearMatches = lensScenarios.records
-        .filter(record => scenarioName(record.id).includes(kebabName) && !nameMatches.includes(record.id))
+      const nearMatches = qualifiedLensRecords
+        .filter(
+          record => scenarioName(record.id).includes(kebabName) && !nameMatches.includes(record.id)
+        )
         .map(record => record.id);
       // Content references are only trusted when specific: a symbol named in many records is noise.
-      const contentMatches = lensScenarios.records
-        .filter(record => wordPattern.test(record.text) && !nameMatches.includes(record.id) && !nearMatches.includes(record.id))
+      const contentMatches = qualifiedLensRecords
+        .filter(
+          record =>
+            wordPattern.test(record.text) &&
+            !nameMatches.includes(record.id) &&
+            !nearMatches.includes(record.id)
+        )
         .map(record => record.id);
       const lensMatches = [
         ...nameMatches,
         ...nearMatches,
         ...(contentMatches.length <= MAX_CONTENT_LENS_MATCHES ? contentMatches : [])
       ];
-      symbols.set(name, {
-        ...library.getCatalogAnalysisMetadata(name),
+      symbols.set(declarationIdentity, {
         symbol: name,
         kind,
         importPath,
         sourceFile: sourcePath,
-        directory: relative(analysisSource, dirname(declarationFile)).split('/').slice(0, 2).join('/'),
-        propsType,
-        props,
-        outputs,
-        summary: summarizeText(ts.displayPartsToString(target.getDocumentationComment(checker)), MAX_JSDOC_LENGTH * 2),
-        docsSlug: pageScores[0]?.slug ?? null,
+        directory: relative(analysisSource, dirname(declarationFile))
+          .split('/')
+          .slice(0, 2)
+          .join('/'),
+        propsType: contract.propsType,
+        props: contract.props,
+        outputs: contract.outputs,
+        ...(contracts.length > 1 ? {overloads: contracts} : {}),
+        summary: summarizeText(
+          ts.displayPartsToString(target.getDocumentationComment(checker)),
+          MAX_JSDOC_LENGTH * 2
+        ),
+        docsSlug: (() => {
+          const declared = operatorByIdentity
+            .get(identity)
+            ?.evidence.documentation.replace(/^docs\//, '')
+            .replace(/\.md$/, '')
+            .replace(/\/README$/, '');
+          return declared && documentation.slugs.includes(declared)
+            ? declared
+            : (pageScores[0]?.slug ?? null);
+        })(),
         lensScenarios: lensMatches.slice(0, MAX_LENS_SCENARIOS),
-        ontology: ontologyByOperator.get(name) ?? null
+        ontology: ontologyByOperator.get(identity) ?? null
       });
     }
   }
 
-  const sorted = [...symbols.values()].sort((left, right) => left.symbol.localeCompare(right.symbol));
+  const missing: string[] = [];
+  const sorted: InventorySymbol[] = [...symbols.values()]
+    .map(symbol => {
+      const identity = `${symbol.importPath}:${symbol.symbol}`;
+      try {
+        // Metadata is checked after declaration-level re-export deduplication, never by bare name.
+        const original = library
+          .getGPUAnalysisOperatorCatalog()
+          .find(
+            operator =>
+              operator.package === symbol.importPath && operator.exportName === symbol.symbol
+          );
+        if (original && !operatorByIdentity.has(identity))
+          throw new Error('missing qualified operator descriptor');
+        return {...library.getCatalogAnalysisMetadata(symbol.symbol, symbol.importPath), ...symbol};
+      } catch (error) {
+        missing.push(`${identity}: ${error instanceof Error ? error.message : String(error)}`);
+        return {questions: [], dataKinds: {input: [], output: []}, ...symbol};
+      }
+    })
+    .sort(
+      (left, right) =>
+        left.symbol.localeCompare(right.symbol) || left.importPath.localeCompare(right.importPath)
+    );
+  if (missing.length) throw new Error(`Inventory metadata missing:\n${missing.join('\n')}`);
   const output = {
     entryPoints: entryPoints.map(entryPoint => entryPoint.importPath),
     docSlugs: documentation.slugs,
     lensScenarioIds: lensScenarios.ids,
     symbols: sorted
   };
-  const outputFile = join(websiteDirectory, 'src/catalog/generated/inventory.json');
-  mkdirSync(dirname(outputFile), {recursive: true});
-  // One symbol per line keeps diffs readable and the file small.
-  const lines = sorted.map(symbol => `  ${JSON.stringify(symbol)}`).join(',\n');
-  const header = JSON.stringify({entryPoints: output.entryPoints, docSlugs: output.docSlugs, lensScenarioIds: output.lensScenarioIds}).slice(0, -1);
-  writeFileSync(outputFile, `${header},"symbols":[\n${lines}\n]}\n`);
-  console.log(`inventory: ${sorted.length} symbols -> ${relative(repositoryRoot, outputFile)}`);
+  return output;
 }
 
-await main();
+async function main(): Promise<void> {
+  const output = await extractInventory();
+  const outputFile = join(websiteDirectory, 'src/catalog/generated/inventory.json');
+  mkdirSync(dirname(outputFile), {recursive: true});
+  // Match the committed JSON layout so regenerated contracts produce focused diffs.
+  writeFileSync(outputFile, `${JSON.stringify(output, null, 2)}\n`);
+  console.log(
+    `inventory: ${output.symbols.length} symbols -> ${relative(repositoryRoot, outputFile)}`
+  );
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();

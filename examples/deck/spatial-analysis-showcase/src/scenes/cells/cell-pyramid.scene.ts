@@ -514,11 +514,12 @@ export default defineScene<CellPyramidOptions>({
       return `import {GPUCellPyramid, GPUCellLevelSelection} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // One aggregation at res 17, then roll-ups to res 4, written into per-level slices of one slab.
+// Read every level's overflow and candidateOverflow; either flag means incomplete.
 graph.add(new GPUCellPyramid({
   family: 'quadbin', positions, mask, values: researchGrade,
   resolutions: [17, 16, /* ... */ 4],      // finest first, strictly decreasing
   output: {
-    levels,       // one table per resolution: {cells, counts, sums, status: {count, overflow}}
+    levels,       // one table per resolution: {cells, counts, sums, status: {count, overflow, candidateOverflow}}
     levelCounts
   }
 }));
@@ -537,7 +538,7 @@ graph.add(new GPUCellLevelSelection({
 // so the parent totals equal the child totals exactly.
 graph.add(new GPUCellRollup({
   family: 'quadbin', sourceResolution: 17, resolution: ${state.rollupResolution},
-  source: finestTable,                    // {cells, counts, sums, status: {count, overflow}}
+  source: finestTable,                    // forward count, overflow and any candidateOverflow
   sumScale: GPU_CELL_DEFAULT_SUM_SCALE,   // 65536 = 16 fractional bits
   output: {cells, counts, sums, sumValues, status: {count: drawRecordInstanceCount, overflow}}
 }));`;
@@ -569,7 +570,7 @@ const recipe = addPeriodComparisonRecipe(graph, {
   before: {positions${state.compareMeasure === 'sum' ? ', values: researchGrade' : ''}, mask: firstHalf},
   after:  {positions${state.compareMeasure === 'sum' ? ', values: researchGrade' : ''}, mask: secondHalf},
   measure: '${state.compareMeasure}', zScore: '${state.zScoreKind}',
-  outputs: {comparison: {cells, delta, ratio, percentChange, zScore, status: {count, overflow}}, colors},  // GPUCellTableCompare columns
+  outputs: {comparison: {cells, delta, ratio, percentChange, zScore, status: {count, overflow, candidateOverflow}}, colors},  // GPUCellTableCompare columns
   classify: 'delta',
   classBreaksParameters,   // custom edges [-4b, -b, b, 4b], or standard-deviation
   maximumClassCount: 5, methods: ['custom', 'standard-deviation'],

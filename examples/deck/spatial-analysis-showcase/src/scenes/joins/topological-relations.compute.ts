@@ -253,8 +253,8 @@ export async function createTopologicalRelations(
       );
       graph.add(prepared);
 
-      const leftIds = own.createBuffer('left-ids', pairCapacity * 4);
-      const rightIds = own.createBuffer('right-ids', pairCapacity * 4);
+      const leftRows = own.createBuffer('left-ids', pairCapacity * 4);
+      const rightRows = own.createBuffer('right-ids', pairCapacity * 4);
       const pairCount = own.createBuffer('pair-count', 4);
       const pairOverflow = own.createBuffer('pair-overflow', 4);
       const pairTotal = own.createBuffer('pair-total', 4);
@@ -285,8 +285,8 @@ export async function createTopologicalRelations(
         id: 'inner',
         output: {
           pairs: {
-            leftIds: importGraphBuffer(graph, 'left-ids', leftIds, 'uint32', pairCapacity),
-            rightIds: importGraphBuffer(graph, 'right-ids', rightIds, 'uint32', pairCapacity),
+            leftRows: importGraphBuffer(graph, 'left-ids', leftRows, 'uint32', pairCapacity),
+            rightRows: importGraphBuffer(graph, 'right-ids', rightRows, 'uint32', pairCapacity),
             status: {
               count: importGraphBuffer(graph, 'pair-count', pairCount, 'uint32', 1),
               overflow: importGraphBuffer(graph, 'pair-overflow', pairOverflow, 'uint32', 1),
@@ -355,8 +355,8 @@ export async function createTopologicalRelations(
         {buffer: candidates, size: 4},
         {buffer: antiCount, size: 4},
         {buffer: antiOverflow, size: 4},
-        {buffer: leftIds, size: pairCapacity * 4},
-        {buffer: rightIds, size: pairCapacity * 4},
+        {buffer: leftRows, size: pairCapacity * 4},
+        {buffer: rightRows, size: pairCapacity * 4},
         {buffer: relateBuffer, size: pairCapacity * 4},
         {buffer: antiIds, size: leftCount * 4},
         {buffer: csrOffsets, size: (leftCount + 1) * 4}

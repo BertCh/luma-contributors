@@ -9,6 +9,7 @@ import './lens-twin.css';
 import './lens-card.css';
 import {mountLiveLens, type LiveLensAttributes} from './live-lens-adapter';
 import {escapeHtml} from '../../../../example-format';
+import {loadLiveLensModules} from './load-live-lens-modules';
 
 /** Validated lens selectors and optional author caption. */
 export type LensDirective = LiveLensAttributes & {caption?: string};
@@ -332,10 +333,7 @@ export function activateLensButtons(container: HTMLElement): () => void {
     button.textContent = 'Starting…';
     figure.querySelector('.lens-twin__error')?.remove();
     try {
-      const [views, lenses] = await Promise.all([
-        import('@luma-contributors/lenses/computation-views'),
-        import('@luma-contributors/lenses/computation-lenses')
-      ]);
+      const {views, lenses} = await loadLiveLensModules();
       if (disposed || !element.isConnected) {
         disposers.delete(dispose);
         restoreTwin();

@@ -397,7 +397,7 @@ export default defineScene<RouteEditingOptions>({
       return `graph.add(new GPUSegmentSnap({
   positions, lineOffsets, referencePositions: stationPositions,
   tolerance: ${Number(state.tolerance)}, maximumVerticesPerLine,
-  output: {positions: insertedPositions, sourceEdges, counts, validity}
+  output: {positions: insertedPositions, sourceEdges, counts, issueCode}
 }));`;
     if (state.edit === 'translation')
       return `graph.add(new GPUAffineTransform({

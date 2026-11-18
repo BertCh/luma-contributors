@@ -14,11 +14,13 @@
  */
 
 import {scheduleReadback} from '../readback-scheduling';
+import {formatNetworkPathReadout} from '../../spatial-analysis-shared/network-path-readout';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
 import {
   DrawCommandBuffer,
   GPUCommandGraph,
+  createTransientView,
   GPUCOOToCSR,
   GPUReadbackRing,
   type CompiledGPUCommandGraph
@@ -204,9 +206,11 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
     const routeNodeIds = resources.createBuffer('route-node-ids', ROUTE_MAXIMUM_PATH * 4);
     const routeNodeCount = resources.createBuffer('route-node-count', 4);
     const routeNodeOverflow = resources.createBuffer('route-node-overflow', 4);
+    const routeNodeCandidateOverflow = resources.createBuffer('route-node-candidate-overflow', 4);
     const routeEdgeIds = resources.createBuffer('route-edge-ids', ROUTE_MAXIMUM_PATH * 4);
     const routeEdgeCount = resources.createBuffer('route-edge-count', 4);
     const routeEdgeOverflow = resources.createBuffer('route-edge-overflow', 4);
+    const routeEdgeCandidateOverflow = resources.createBuffer('route-edge-candidate-overflow', 4);
     const routePathCost = resources.createBuffer('route-path-cost', 4);
     const routePathFound = resources.createBuffer('route-path-found', 4);
     const routeDraw = resources.track(
@@ -302,12 +306,24 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
       ids: Buffer,
       capacity: number,
       count: Buffer,
-      overflow: Buffer
+      overflow: Buffer,
+      candidateOverflow?: Buffer
     ) => ({
       ids: importOutput(graph, `${name}-ids`, ids, 'uint32', capacity),
       status: {
         count: importOutput(graph, `${name}-count`, count, 'uint32', 1),
-        overflow: importOutput(graph, `${name}-overflow`, overflow, 'uint32', 1)
+        overflow: importOutput(graph, `${name}-overflow`, overflow, 'uint32', 1),
+        ...(candidateOverflow
+          ? {
+              candidateOverflow: importOutput(
+                graph,
+                `${name}-candidate-overflow`,
+                candidateOverflow,
+                'uint32',
+                1
+              )
+            }
+          : {})
       }
     });
 
@@ -322,6 +338,13 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
         'uint32',
         nodeCount
       );
+      const routeConvergedView = importOutput(
+        routeGraph,
+        'route-converged',
+        routeConverged,
+        'uint32',
+        1
+      );
       routeGraph.add(
         new GPUNetworkReachability({
           id: 'route-reachability',
@@ -333,7 +356,7 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
             costs: costsView,
             predecessors: predecessorsView,
             status: {
-              converged: importOutput(routeGraph, 'route-converged', routeConverged, 'uint32', 1),
+              converged: routeConvergedView,
               iterationCount: importOutput(
                 routeGraph,
                 'route-iterations',
@@ -349,6 +372,7 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
         new GPUNetworkPathExtraction({
           id: 'route-path',
           predecessors: predecessorsView,
+          predecessorsComplete: routeConvergedView,
           costs: costsView,
           targets: destination.importToGraph(routeGraph),
           maximumPathLength: ROUTE_MAXIMUM_PATH,
@@ -359,21 +383,51 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
               routeNodeIds,
               ROUTE_MAXIMUM_PATH,
               routeNodeCount,
-              routeNodeOverflow
+              routeNodeOverflow,
+              routeNodeCandidateOverflow
+            ),
+            ids: createTransientView(
+              routeGraph,
+              'route-node-identities',
+              'uint32',
+              ROUTE_MAXIMUM_PATH
+            ),
+            nodeRows: importOutput(
+              routeGraph,
+              'route-node-rows',
+              routeNodeIds,
+              'uint32',
+              ROUTE_MAXIMUM_PATH
             ),
             pathCosts: importOutput(routeGraph, 'route-path-cost', routePathCost, 'float32', 1),
             pathFound: importOutput(routeGraph, 'route-path-found', routePathFound, 'uint32', 1)
           },
           edges: {
             topology,
-            output: compact(
-              routeGraph,
-              'route-edges',
-              routeEdgeIds,
-              ROUTE_MAXIMUM_PATH,
-              routeEdgeCount,
-              routeEdgeOverflow
-            )
+            output: {
+              ...compact(
+                routeGraph,
+                'route-edges',
+                routeEdgeIds,
+                ROUTE_MAXIMUM_PATH,
+                routeEdgeCount,
+                routeEdgeOverflow,
+                routeEdgeCandidateOverflow
+              ),
+              ids: createTransientView(
+                routeGraph,
+                'route-edge-identities',
+                'uint32',
+                ROUTE_MAXIMUM_PATH
+              ),
+              edgeRows: importOutput(
+                routeGraph,
+                'route-edge-rows',
+                routeEdgeIds,
+                'uint32',
+                ROUTE_MAXIMUM_PATH
+              )
+            }
           }
         })
       );
@@ -675,7 +729,9 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
             [routeEdgeCount, 1],
             [routeEdgeOverflow, 1],
             [routeConverged, 1],
-            [routeIterations, 1]
+            [routeIterations, 1],
+            [routeNodeCandidateOverflow, 1],
+            [routeEdgeCandidateOverflow, 1]
           ];
         case 'service-areas':
           return [
@@ -700,11 +756,20 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
         case 'route': {
           const found = words[0] === 1;
           routeReadout.setValue(
-            found ? `found, ${(floats[1] / 60).toFixed(1)} min walk` : 'no route found'
+            formatNetworkPathReadout(
+              {
+                found,
+                converged: words[6],
+                candidateOverflow: words[8] || words[9],
+                overflow: words[3] || words[5]
+              },
+              `found, ${(floats[1] / 60).toFixed(1)} min walk`
+            )
           );
           pathReadout.setValue(
             `${formatCount(words[2])} nodes / ${formatCount(words[4])} edges` +
-              `${words[3] || words[5] ? ' (overflow)' : ''}`
+              `${words[3] || words[5] ? ' (output overflow)' : ''}` +
+              `${words[8] || words[9] ? ' (walk budget exhausted)' : ''}`
           );
           solverReadout.setValue(
             `${words[6] ? 'converged' : 'NOT converged'} after ${words[7]} of ${ROUTE_MAXIMUM_ITERATIONS}`

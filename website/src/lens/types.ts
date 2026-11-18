@@ -6,6 +6,14 @@
 
 export type LensNodeKind = 'compute' | 'copy' | 'render' | 'other';
 
+export type LensResourceOwnership = 'imported' | 'transient' | 'unknown';
+export type LensResourceBytesKind =
+  | 'logical'
+  | 'lower-bound'
+  | 'estimated'
+  | 'unspecified'
+  | 'unavailable';
+
 export type LensViewNode = {
   id: string;
   /** Short display label. Collapsed groups show the stem with `#` for the varying number. */
@@ -40,6 +48,7 @@ export type LensViewEdge = {
   to: string;
   /** Bytes of the distinct resources that carry the dependency. */
   bytes: number;
+  bytesKind?: LensResourceBytesKind;
   /** Names of up to three carrying resources. */
   resources: string[];
   /** Number of distinct resources behind the edge. */
@@ -52,7 +61,8 @@ export type LensViewEdge = {
 export type LensResourceLifetime = {
   id: string;
   bytes: number;
-  ownership: 'imported' | 'transient';
+  ownership: LensResourceOwnership;
+  bytesKind?: LensResourceBytesKind;
   /** Step of the first kernel that writes the buffer (first user when only read). */
   first: number;
   /** Step of the last kernel that reads or writes it. */
@@ -62,14 +72,28 @@ export type LensResourceLifetime = {
 };
 
 export type LensResourceSummary = {
+  /** False when the record omitted its resource inventory; numeric zeros then carry no evidence. */
+  inventoryKnown?: boolean;
   count: number;
   totalBytes: number;
+  totalBytesKind?: LensResourceBytesKind;
   importedBytes: number;
+  importedBytesKind?: LensResourceBytesKind;
   transientBytes: number;
+  transientBytesKind?: LensResourceBytesKind;
+  unknownBytes?: number;
+  unknownBytesKind?: LensResourceBytesKind;
   /** Bytes physically allocated for transients after aliasing. */
   allocatedBytes: number;
+  allocatedBytesKind?: LensResourceBytesKind;
   /** Largest distinct sizes; `count` buffers share each size, `id` names one of them. */
-  largest: {id: string; bytes: number; ownership: 'imported' | 'transient'; count: number}[];
+  largest: {
+    id: string;
+    bytes: number;
+    bytesKind?: LensResourceBytesKind;
+    ownership: LensResourceOwnership;
+    count: number;
+  }[];
 };
 
 export type LensFormula = {id: string; ascii: string};
@@ -152,6 +176,7 @@ export type LensViewModel = {
   gatedNodeCount?: number;
   /** Size in bytes of every buffer a node reads or writes; only when the graph is not collapsed. */
   bufferBytes?: Record<string, number>;
+  bufferBytesKind?: Record<string, LensResourceBytesKind>;
 };
 
 /** Totals over every lens record, written to summary.json by generate-view-models.ts. */
@@ -164,6 +189,7 @@ export type LensSummary = {
   dependencies: {raw: number; war: number; waw: number};
   buffers: number;
   bufferBytes: number;
+  bufferBytesKind?: LensResourceBytesKind;
   snapshots: number;
   formulas: number;
   recordsWithFormulas: number;

@@ -5,6 +5,7 @@ import type {Device} from '@luma.gl/core';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   createGPUComputationRecord,
+  createGPUComputationCaptures,
   describeGPUCommandGraph,
   getGPUComputationAdapter,
   GPUSnapshotArena,
@@ -46,9 +47,13 @@ const record = createGPUComputationRecord({
 const commandEncoder = device.createCommandEncoder();
 compiled.encode(commandEncoder, {parameters: undefined});
 device.submit(commandEncoder.finish());
-const captures = await arena.read({
+const snapshots = await arena.read({
   graph: description.graph.id,
-  resources: {density: 'density'},
+  resources: {density: 'density'}
+});
+const captures = createGPUComputationCaptures({
+  executionId: record.executionId,
+  snapshots,
   runId: record.runId
 });
 // example:hide-start

@@ -8,6 +8,7 @@
 // station's forecast against what fell, with its interval as a bar.
 
 import {
+  getConformalPredictionRanks,
   getGPUConformalPredictionParameterValues,
   GPUGeoConformalPredictionIntervals,
   GPU_CONFORMAL_PREDICTION_PARAMETER_LENGTH
@@ -153,7 +154,7 @@ export default defineOperationRun({
         focusWeights: builder.allocate('focus-weights', 'float32', MAXIMUM_NEIGHBORS)
       },
       update: (current: Record<string, number>) => {
-        const count = current.neighborCount;
+        const count = current['neighborCount'];
         const offsetValues = Uint32Array.from({length: test.count + 1}, (_, row) => row * count);
         const indexValues = new Uint32Array(test.count * MAXIMUM_NEIGHBORS);
         const weightValues = new Float32Array(test.count * MAXIMUM_NEIGHBORS);
@@ -162,7 +163,7 @@ export default defineOperationRun({
             indexValues[row * count + slot] = inputs.nearestRows[row * MAXIMUM_NEIGHBORS + slot];
             weightValues[row * count + slot] = getWeight(
               inputs.nearestDistances[row * MAXIMUM_NEIGHBORS + slot],
-              current.bandwidth
+              current['bandwidth']
             );
           }
         }
@@ -171,7 +172,7 @@ export default defineOperationRun({
         weights.write(weightValues);
         parameterBuffer.write(
           getGPUConformalPredictionParameterValues({
-            miscoverage: current.miscoverage
+            miscoverage: current['miscoverage']
           })
         );
       }
@@ -216,10 +217,10 @@ export default defineOperationRun({
       const row = chooseSticky(inputs.index, pointer.x, pointer.y, inputs.focus.row);
       if (row < 0) return {};
       const {test, calibration} = inputs;
-      const count = values.neighborCount;
+      const count = values['neighborCount'];
       const x = test.positions[row * 2];
       const y = test.positions[row * 2 + 1];
-      const key = `${row}|${count}|${values.bandwidth}|${build}`;
+      const key = `${row}|${count}|${values['bandwidth']}|${build}`;
       const glyphs: RunGlyph[] = [{shape: 'ring', at: [x, y], radius: 0.02}];
       const neighborPositions = new Float32Array(MAXIMUM_NEIGHBORS * 2);
       const neighborWeights = new Float32Array(MAXIMUM_NEIGHBORS);
@@ -228,7 +229,7 @@ export default defineOperationRun({
         const other = inputs.nearestRows[row * MAXIMUM_NEIGHBORS + slot];
         const weight = getWeight(
           inputs.nearestDistances[row * MAXIMUM_NEIGHBORS + slot],
-          values.bandwidth
+          values['bandwidth']
         );
         const at: [number, number] = [
           calibration.positions[other * 2],
@@ -260,7 +261,7 @@ export default defineOperationRun({
         });
         if (Number.isFinite(lower) && Number.isFinite(upper)) {
           const sorted = inputs.sortedScores;
-          const rank = Math.ceil((1 - values.miscoverage) * (sorted.length + 1) * (1 - 2 ** -20));
+          const rank = getConformalPredictionRanks(sorted.length, values['miscoverage']).upperRank;
           const globalHalfWidth =
             rank <= sorted.length ? test.scales[row] * sorted[rank - 1] : Number.NaN;
           readout = `±${formatNumber((upper - lower) / 2, 2)} here, ±${formatNumber(globalHalfWidth, 2)} global · station ${row}`;
@@ -321,7 +322,7 @@ export default defineOperationRun({
                   layer: 'dots' as const,
                   positions: outputs.focusPositions,
                   values: outputs.focusWeights,
-                  count: values.neighborCount,
+                  count: values['neighborCount'],
                   ramp: 'sequential' as const,
                   range: [0, 1] as const,
                   radius: 5,

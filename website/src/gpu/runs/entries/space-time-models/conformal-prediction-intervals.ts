@@ -9,6 +9,7 @@
 // slides the rule, which sets `miscoverage`.
 
 import {
+  getConformalPredictionRanks,
   getGPUConformalPredictionParameterValues,
   GPUConformalPredictionIntervals,
   GPU_CONFORMAL_PREDICTION_PARAMETER_LENGTH
@@ -54,24 +55,24 @@ function createInputs({
 type Inputs = ReturnType<typeof createInputs>;
 
 function getKeptCount(inputs: Inputs, values: Readonly<Record<string, number>>): number {
-  return Math.ceil((values.mask / 100) * inputs.calibration.count);
+  return Math.ceil((values['mask'] / 100) * inputs.calibration.count);
 }
 
 /** The kept calibration scores in ascending order (memoized on the parameters that change them). */
 function getSortedScores(inputs: Inputs, values: Readonly<Record<string, number>>): Float32Array {
-  const key = `${values.scales}|${values.mask}`;
+  const key = `${values['scales']}|${values['mask']}`;
   if (inputs.scoreCache.key !== key) {
     inputs.scoreCache = {
       key,
-      sorted: inputs.scores[values.scales].slice(0, getKeptCount(inputs, values)).sort()
+      sorted: inputs.scores[values['scales']].slice(0, getKeptCount(inputs, values)).sort()
     };
   }
   return inputs.scoreCache.sorted;
 }
 
-/** The rank the operation reads, ceil((1 - alpha)(n + 1)), with its 2^-20 slack. */
+/** The exact packed-alpha upper rank read by the operation. */
 function getRank(count: number, miscoverage: number): number {
-  return Math.ceil((1 - miscoverage) * (count + 1) * (1 - 2 ** -20));
+  return getConformalPredictionRanks(count, miscoverage).upperRank;
 }
 
 function getChartRectangle(inputs: Inputs) {
@@ -81,7 +82,7 @@ function getChartRectangle(inputs: Inputs) {
 
 function build(builder: RunBuilder, inputs: Inputs, values: Record<string, number>) {
   const {calibration, test} = inputs;
-  const useScales = values.scales === 1;
+  const useScales = values['scales'] === 1;
   const mask = builder.allocate('mask', 'uint32', calibration.count);
   const scores = builder.allocate('scores', 'float32', calibration.count);
   const parameterBuffer = builder.allocate(
@@ -125,7 +126,7 @@ function build(builder: RunBuilder, inputs: Inputs, values: Record<string, numbe
     },
     update: (current: Record<string, number>) => {
       parameterBuffer.write(
-        getGPUConformalPredictionParameterValues({miscoverage: current.miscoverage})
+        getGPUConformalPredictionParameterValues({miscoverage: current['miscoverage']})
       );
       const kept = getKeptCount(inputs, current);
       mask.write(Uint32Array.from({length: calibration.count}, (_, row) => (row < kept ? 1 : 0)));
@@ -210,7 +211,7 @@ export default defineOperationRun({
       const fraction = 0.5 + (0.48 * (pointer.unitX - 0.05)) / 0.9;
       const miscoverage = snapToParameter(MISCOVERAGE, 1 - clamp(fraction, 0, 1));
       const rank = getRank(sorted.length, miscoverage);
-      const cap = inputs.caps[values.scales];
+      const cap = inputs.caps[values['scales']];
       const ruleX = panel.x0 + (Math.min(rank, sorted.length) - 0.5) * (width / calibration.count);
       const glyphs: RunGlyph[] = [
         getFrameGlyph(panel),
@@ -269,7 +270,7 @@ export default defineOperationRun({
       values: outputs.scores,
       rectangle: getChartRectangle(inputs),
       ramp: 'sequential',
-      range: [0, inputs.caps[values.scales]]
+      range: [0, inputs.caps[values['scales']]]
     }
   ]
 });

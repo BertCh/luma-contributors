@@ -127,6 +127,8 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
     const weightNeighbors = resources.createBuffer('weight-neighbors', neighborCapacity * 4);
     const weightValues = resources.createBuffer('weight-values', neighborCapacity * 4);
     const weightOverflow = resources.createBuffer('weight-overflow', 4);
+    const weightCandidateOverflow = resources.createBuffer('weight-candidate-overflow', 4);
+    let weightsComplete = false;
     const treeFlags = resources.createBuffer('tree-flags', neighborCapacity * 4);
     const componentLabels = resources.createBuffer('component-labels', featureCount * 4);
     const edgeIds = resources.createBuffer('edge-ids', featureCount * 4);
@@ -170,7 +172,17 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
         'uint32',
         neighborCapacity
       ),
-      weights: importGraphBuffer(graph, 'weight-values', weightValues, 'float32', neighborCapacity)
+      weights: importGraphBuffer(graph, 'weight-values', weightValues, 'float32', neighborCapacity),
+      status: {
+        overflow: importGraphBuffer(graph, 'weight-overflow', weightOverflow, 'uint32', 1),
+        candidateOverflow: importGraphBuffer(
+          graph,
+          'weight-candidate-overflow',
+          weightCandidateOverflow,
+          'uint32',
+          1
+        )
+      }
     };
     const treeFlagsView = importGraphBuffer(
       graph,
@@ -238,7 +250,8 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
         output: {
           ...weights,
           status: {
-            overflow: importGraphBuffer(graph, 'weight-overflow', weightOverflow, 'uint32', 1)
+            overflow: weights.status.overflow,
+            candidateOverflow: weights.status.candidateOverflow
           }
         }
       })
@@ -410,7 +423,9 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
       {buffer: cutEdges, size: Math.max(stepCount, 1) * 4},
       {buffer: cutGains, size: Math.max(stepCount, 1) * 4},
       {buffer: edgeCount, size: 4},
-      {buffer: edgeOverflow, size: 4}
+      {buffer: edgeOverflow, size: 4},
+      {buffer: weightOverflow, size: 4},
+      {buffer: weightCandidateOverflow, size: 4}
     ];
     const reader: SummaryReader = new SummaryReader(resources, 'regions', sources, bytes => {
       const words = GPU_REGION_PARTITION_EVALUATION_LAYOUT;
@@ -427,6 +442,15 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
       offset += Math.max(stepCount, 1) * 4;
       const treeEdges = new Uint32Array(bytes, offset, 1)[0];
       const treeOverflow = new Uint32Array(bytes, offset + 4, 1)[0];
+      weightsComplete =
+        new Uint32Array(bytes, offset + 8, 1)[0] === 0 &&
+        new Uint32Array(bytes, offset + 12, 1)[0] === 0;
+      if (!weightsComplete) {
+        for (const readout of Object.values(readouts))
+          readout.setValue('Unavailable (incomplete weights)');
+        context.updateLayers();
+        return;
+      }
 
       const totalSsd = summaryWords[words.totalSumOfSquares];
       const withinSsd = summaryWords[words.withinSumOfSquares];
@@ -541,7 +565,7 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
             triangleVertices,
             triangleOwners,
             zoneColors,
-            triangleCount: triangles.owners.length,
+            triangleCount: weightsComplete ? triangles.owners.length : 0,
             palette: REGION_PALETTE,
             fillOpacity: 0.72
           }),
@@ -554,7 +578,7 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
             color: [255, 255, 255, 70]
           })
         ];
-        if (csrReady) {
+        if (weightsComplete && csrReady) {
           layers.push(
             new SpatialAnalysisSegmentLayer({
               id: 'regions-tree',

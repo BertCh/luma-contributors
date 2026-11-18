@@ -153,7 +153,7 @@ trailGraph.add(new GPUTimeWindowFilter({
   window: window.importToGraph(trailGraph),
   trackIds: segmentTracks,
   output: {
-    ids: trailIds, status: {count: trailCount, overflow: trailOverflow},
+    rows: trailIds, status: {count: trailCount, overflow: trailOverflow},
     fadeWeights, clipFractions, trackVisibleCounts, drawInstanceCount
   }
 }));

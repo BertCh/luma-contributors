@@ -120,6 +120,9 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
     const levelOverflowBuffers = [0, 1].map(parity =>
       resources.createBuffer(`level-overflow-${parity}`, LEVEL_COUNT * 4)
     );
+    const levelCandidateOverflowBuffers = [0, 1].map(parity =>
+      resources.createBuffer(`level-candidate-overflow-${parity}`, LEVEL_COUNT * 4)
+    );
     // Fixed-point sums of the finest level only; coarser pyramid levels do not need them.
     const finestSumsBuffer = resources.createBuffer('finest-sums', capacity * 8);
     // Roll-up output table (shared by every parent resolution; only one graph is encoded at a time).
@@ -128,6 +131,7 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
     const rollupSumsBuffer = resources.createBuffer('rollup-sums', capacity * 8);
     const rollupSumValuesBuffer = resources.createBuffer('rollup-sum-values', capacity * 4);
     const rollupOverflowBuffer = resources.createBuffer('rollup-overflow', 4);
+    const rollupCandidateOverflowBuffer = resources.createBuffer('rollup-candidate-overflow', 4);
     // Words the roll-up layer reads as "active level" and "first row": always zero.
     const zeroWordBuffer = resources.createBuffer('zero-word', 4);
     const rollupDrawCommands = resources.track(
@@ -148,8 +152,8 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
         commands: [{vertexCount: 6, instanceCount: 0}]
       })
     );
-    // level counts, even-level overflow flags, odd-level overflow flags, finest total, indirect record head
-    const readbackByteLength = (LEVEL_COUNT * 3 + 3) * 4;
+    // Level counts, final and inherited loss by parity, finest total, indirect record head.
+    const readbackByteLength = (LEVEL_COUNT * 5 + 3) * 4;
     const readbackRing = resources.track(
       new GPUReadbackRing(device, {id: 'cell-pyramid-summary', byteLength: readbackByteLength})
     );
@@ -186,6 +190,13 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
         status: {
           count: importSlice(tableCountBuffers[parity], 'uint32', 4, levelIndex, 1),
           overflow: importSlice(levelOverflowBuffers[parity], 'uint32', 4, levelIndex, 1),
+          candidateOverflow: importSlice(
+            levelCandidateOverflowBuffers[parity],
+            'uint32',
+            4,
+            levelIndex,
+            1
+          ),
           ...(levelIndex === 0
             ? {requiredCount: importSlice(levelTotalsBuffer, 'uint32', 4, 0, 1)}
             : {})
@@ -303,7 +314,8 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
             sums: view(finestSumsBuffer, 'uint32x2', 8, capacity),
             status: {
               count: view(tableCountBuffers[0], 'uint32', 4, 1),
-              overflow: view(levelOverflowBuffers[0], 'uint32', 4, 1)
+              overflow: view(levelOverflowBuffers[0], 'uint32', 4, 1),
+              candidateOverflow: view(levelCandidateOverflowBuffers[0], 'uint32', 4, 1)
             }
           },
           sumScale: GPU_CELL_DEFAULT_SUM_SCALE,
@@ -319,7 +331,8 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
                 length: 1,
                 byteOffset: Uint32Array.BYTES_PER_ELEMENT
               }),
-              overflow: view(rollupOverflowBuffer, 'uint32', 4, 1)
+              overflow: view(rollupOverflowBuffer, 'uint32', 4, 1),
+              candidateOverflow: view(rollupCandidateOverflowBuffer, 'uint32', 4, 1)
             }
           }
         })
@@ -464,7 +477,9 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
         )}`
       )
     );
-    const overflowReadout = context.controls.addReadout('Overflowed levels');
+    const overflowReadout = context.controls.addReadout(
+      'Incomplete levels (capacity / source loss)'
+    );
     const pyramidReadout = context.controls.addReadout('Pyramid encodes');
     const rollupCellsReadout = context.controls.addReadout('Roll-up parent cells');
     const rollupCountReadout = context.controls.addReadout('Roll-up count total (fine → parent)');
@@ -487,6 +502,8 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
         [levelCountsBuffer, LEVEL_COUNT * 4],
         [levelOverflowBuffers[0], LEVEL_COUNT * 4],
         [levelOverflowBuffers[1], LEVEL_COUNT * 4],
+        [levelCandidateOverflowBuffers[0], LEVEL_COUNT * 4],
+        [levelCandidateOverflowBuffers[1], LEVEL_COUNT * 4],
         [levelTotalsBuffer, 4],
         [drawCommands.buffer, 8] // vertex count, then the GPU-written instance count
       ];
@@ -511,17 +528,24 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
           words.subarray(LEVEL_COUNT, LEVEL_COUNT * 2),
           words.subarray(LEVEL_COUNT * 2, LEVEL_COUNT * 3)
         ];
-        const finestTotal = words[LEVEL_COUNT * 3];
+        const candidateOverflowsByParity = [
+          words.subarray(LEVEL_COUNT * 3, LEVEL_COUNT * 4),
+          words.subarray(LEVEL_COUNT * 4, LEVEL_COUNT * 5)
+        ];
+        const finestTotal = words[LEVEL_COUNT * 5];
         perLevelReadouts.forEach((readout, group) => {
           const parts: string[] = [];
           for (let level = group * 5; level < Math.min(group * 5 + 5, LEVEL_COUNT); level++) {
-            parts.push(formatCount(counts[level]));
+            const incomplete =
+              overflowsByParity[level & 1][level] || candidateOverflowsByParity[level & 1][level];
+            parts.push(`${formatCount(counts[level])}${incomplete ? ' (incomplete)' : ''}`);
           }
           readout.setValue(parts.join(' / '));
         });
         const overflowed: number[] = [];
         for (let level = 0; level < LEVEL_COUNT; level++) {
-          if (overflowsByParity[level & 1][level]) overflowed.push(getLevelResolution(level));
+          if (overflowsByParity[level & 1][level] || candidateOverflowsByParity[level & 1][level])
+            overflowed.push(getLevelResolution(level));
         }
         overflowReadout.setValue(
           overflowed.length
@@ -529,7 +553,7 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
             : 'none'
         );
         activeReadout.setValue(
-          `${formatCount(words[LEVEL_COUNT * 3 + 2])} cells at res ${getLevelResolution(zoomLevelIndex)}`
+          `${formatCount(words[LEVEL_COUNT * 5 + 2])} cells at res ${getLevelResolution(zoomLevelIndex)}${overflowsByParity[zoomLevelIndex & 1][zoomLevelIndex] || candidateOverflowsByParity[zoomLevelIndex & 1][zoomLevelIndex] ? ' (incomplete)' : ''}`
         );
       } catch {
         // The ring or device was destroyed while the read was in flight.
@@ -538,8 +562,8 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
       }
     };
 
-    /** Header words: fine rows, fine overflow, draw record (2 words), parent overflow. */
-    const TOTALS_HEADER_BYTES = 20;
+    /** Fine rows/loss, draw record, parent loss, then inherited loss for fine and parent. */
+    const TOTALS_HEADER_BYTES = 28;
     const totalsByteLength = TOTALS_HEADER_BYTES + capacity * (4 + 8) * 2;
     const totalsRing = resources.track(
       new GPUReadbackRing(device, {id: 'cell-rollup-totals', byteLength: totalsByteLength})
@@ -568,6 +592,8 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
         [levelOverflowBuffers[0], 4, 4],
         [rollupDrawCommands.buffer, 8, 8],
         [rollupOverflowBuffer, 4, 16],
+        [levelCandidateOverflowBuffers[0], 4, 20],
+        [rollupCandidateOverflowBuffer, 4, 24],
         [countsSlabs[0], capacity * 4, TOTALS_HEADER_BYTES],
         [finestSumsBuffer, capacity * 8, TOTALS_HEADER_BYTES + capacity * 4],
         [rollupCountsBuffer, capacity * 4, TOTALS_HEADER_BYTES + capacity * 12],
@@ -587,8 +613,9 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
         const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const copy = bytes.slice();
-        const header = new Uint32Array(copy.buffer, copy.byteOffset, 5);
+        const header = new Uint32Array(copy.buffer, copy.byteOffset, 7);
         const [fineRows, fineOverflow, , , rollupOverflow] = header;
+        const incomplete = Boolean(fineOverflow || rollupOverflow || header[5] || header[6]);
         const parentRows = new Uint32Array(copy.buffer, copy.byteOffset + 8, 2)[1];
         const arrayWords = (byteOffset: number, length: number) =>
           new Uint32Array(copy.buffer, copy.byteOffset + byteOffset, length);
@@ -609,15 +636,15 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
         rollupCellsReadout.setValue(
           `${formatCount(parentRows)} cells at res ${parentResolution} ` +
             `(from ${formatCount(fineRows)} at res ${FINEST_RESOLUTION})` +
-            (fineOverflow || rollupOverflow ? ' (overflowed)' : '')
+            (incomplete ? ' (incomplete)' : '')
         );
         rollupCountReadout.setValue(
           `${formatCount(fineCount)} → ${formatCount(parentCount)} ` +
-            (fineCount === parentCount ? '(conserved)' : '(DIFFERS)')
+            (incomplete ? '(incomplete)' : fineCount === parentCount ? '(conserved)' : '(DIFFERS)')
         );
         rollupSumReadout.setValue(
           `${toMinutes(fineSum).toFixed(1)} → ${toMinutes(parentSum).toFixed(1)} min ` +
-            (fineSum === parentSum ? '(bit-exact)' : '(DIFFERS)')
+            (incomplete ? '(incomplete)' : fineSum === parentSum ? '(bit-exact)' : '(DIFFERS)')
         );
       } catch {
         // The ring or device was destroyed while the read was in flight.

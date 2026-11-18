@@ -247,7 +247,6 @@ export const entries: CatalogEntry[] = [
       symbols: ['GPURasterNDWI', 'makeGPURasterBand', 'makeGPURasterMetadata'],
       setup: [GRID_LINE, PIXEL_COUNT_LINE, BAND_LINE],
       constructorSymbol: 'GPURasterNDWI',
-      addToGraph: true,
       props: [
         `method: 'mcfeeters',`,
         'width: grid.width,',
@@ -308,7 +307,6 @@ export const entries: CatalogEntry[] = [
       symbols: ['GPURasterNBR', 'makeGPURasterBand', 'makeGPURasterMetadata'],
       setup: [GRID_LINE, PIXEL_COUNT_LINE, BAND_LINE],
       constructorSymbol: 'GPURasterNBR',
-      addToGraph: true,
       props: [
         'width: grid.width,',
         'height: grid.height,',
@@ -363,7 +361,6 @@ export const entries: CatalogEntry[] = [
       symbols: ['GPURasterEVI', 'makeGPURasterBand', 'makeGPURasterMetadata'],
       setup: [GRID_LINE, PIXEL_COUNT_LINE, BAND_LINE],
       constructorSymbol: 'GPURasterEVI',
-      addToGraph: true,
       props: [
         'width: grid.width,',
         'height: grid.height,',
@@ -425,7 +422,6 @@ export const entries: CatalogEntry[] = [
       symbols: ['GPURasterSAVI', 'makeGPURasterBand', 'makeGPURasterMetadata'],
       setup: [GRID_LINE, PIXEL_COUNT_LINE, BAND_LINE],
       constructorSymbol: 'GPURasterSAVI',
-      addToGraph: true,
       props: [
         'width: grid.width,',
         'height: grid.height,',

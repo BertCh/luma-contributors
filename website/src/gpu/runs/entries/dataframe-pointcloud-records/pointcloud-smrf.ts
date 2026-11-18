@@ -11,6 +11,8 @@ import {clamp} from '../../interaction';
 import {addFloatCopy} from './_lib/convert';
 import {createCloudGrid, createTerrainCloud} from './_lib/helpers';
 import {parameters} from './pointcloud-smrf.parameters';
+import {summarizePointCloudGround} from './_lib/pointcloud-display';
+import {addPointCloudDisplayCopy} from './_lib/pointcloud-display-run';
 
 // Fixed prop: on this tile the window changes no classification, so it has no slider.
 const SMOOTHING_WINDOW = 0.3;
@@ -41,7 +43,7 @@ function createInputs({
   };
 }
 type Inputs = ReturnType<typeof createInputs>;
-type Outputs = Record<'footprint' | 'groundMask' | 'surface', RunBuffer>;
+type Outputs = Record<'footprint' | 'groundMask' | 'surface' | 'status', RunBuffer>;
 
 export default defineOperationRun<Inputs, Outputs>({
   parameters,
@@ -54,6 +56,7 @@ export default defineOperationRun<Inputs, Outputs>({
     const cellCount = grid.width * grid.height;
     const groundSurface = builder.allocate('ground-surface', 'float32', cellCount);
     const groundMask = builder.allocate('ground-mask', 'uint32', POINT_COUNT);
+    const status = builder.allocate('status', 'uint32', POINT_COUNT);
     builder.graph.add(
       new GPUPointCloudSMRF({
         positions: builder.upload('positions', 'float32x3', inputs.cloud.positions).view,
@@ -64,16 +67,27 @@ export default defineOperationRun<Inputs, Outputs>({
         window: SMOOTHING_WINDOW,
         threshold: values.threshold,
         cut: values.cut,
-        groundSurface: groundSurface.view,
-        groundMask: groundMask.view,
-        outputClassifications: builder.allocate('output-classes', 'uint32', POINT_COUNT).view,
-        status: builder.allocate('status', 'uint32', POINT_COUNT).view
+        output: {
+          groundSurface: groundSurface.view,
+          groundMask: groundMask.view,
+          outputClassifications: builder.allocate('output-classes', 'uint32', POINT_COUNT).view,
+          status: status.view
+        }
       })
     );
+    const footprint = builder.upload('footprint', 'float32x2', inputs.cloud.footprint);
     return {
       outputs: {
-        footprint: builder.upload('footprint', 'float32x2', inputs.cloud.footprint),
+        footprint: addPointCloudDisplayCopy(
+          builder,
+          'supported-footprint',
+          footprint,
+          status,
+          POINT_COUNT,
+          {components: 2}
+        ),
         groundMask,
+        status,
         surface: addFloatCopy(builder, 'surface-grid', groundSurface, cellCount)
       }
     };
@@ -89,13 +103,13 @@ export default defineOperationRun<Inputs, Outputs>({
       const fraction = clamp((0.95 - pointer.unitY) / 0.9, 0, 0.9999);
       const level = Math.floor(fraction * THRESHOLDS.length);
       const mask = peek(outputs.groundMask);
-      let ground = 0;
-      for (let row = 0; mask && row < mask.length; row++) ground += mask[row];
+      const status = peek(outputs.status);
+      const summary = summarizePointCloudGround(mask, status);
       return {
         curtain: pointer.x,
         settle: {threshold: THRESHOLDS[level]},
         glyphs: [{shape: 'curtain', x: pointer.x}],
-        readout: `threshold ${THRESHOLDS[level]} · ground ${mask ? ground : '…'} of ${POINT_COUNT}`
+        readout: `threshold ${THRESHOLDS[level]} · ground ${status ? summary.ground : '…'} of ${summary.supported} supported · ${summary.incomplete} incomplete/unsupported (hidden); raster is provisional`
       };
     }
   },

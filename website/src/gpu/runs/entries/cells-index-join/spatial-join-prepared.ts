@@ -37,8 +37,8 @@ export default defineOperationRun({
     const zones = uploadZones(builder, inputs.zones);
     const prepared = new GPUSpatialJoinPrepared({id: 'zones', geometry: zones.geometry});
     builder.graph.add(prepared);
-    const leftIds = builder.allocate('left-ids', 'uint32', PAIR_CAPACITY);
-    const rightIds = builder.allocate('right-ids', 'uint32', PAIR_CAPACITY);
+    const leftRows = builder.allocate('left-ids', 'uint32', PAIR_CAPACITY);
+    const rightRows = builder.allocate('right-ids', 'uint32', PAIR_CAPACITY);
     const count = builder.allocate('count', 'uint32', 1);
     const overflow = builder.allocate('overflow', 'uint32', 1);
     builder.graph.add(
@@ -50,8 +50,8 @@ export default defineOperationRun({
         candidateCapacity: PAIR_CAPACITY,
         output: {
           pairs: {
-            leftIds: leftIds.view,
-            rightIds: rightIds.view,
+            leftRows: leftRows.view,
+            rightRows: rightRows.view,
             status: {count: count.view, overflow: overflow.view}
           }
         }
@@ -71,8 +71,8 @@ export default defineOperationRun({
         pairs: addPairSegments(builder, 'pairs', {
           leftPositions: points,
           rightPositions: zones.centers,
-          leftIds,
-          rightIds,
+          leftRows,
+          rightRows,
           count
         })
       },

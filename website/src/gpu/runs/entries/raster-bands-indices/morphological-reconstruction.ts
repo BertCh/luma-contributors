@@ -15,6 +15,7 @@ import {bindAxes, formatNumber} from '../../interaction';
 import {parameters} from './morphological-reconstruction.parameters';
 import {drawRaster, makeGridOfRaster} from './support/bands';
 import {addArithmetic} from './support/indices';
+import {readUints} from '../categories-cells-tests/_lib/readback';
 
 const PAD = bindAxes(parameters, {kind: 'level', hint: 'lower the marker', x: 'height'});
 
@@ -30,7 +31,7 @@ export default defineOperationRun({
     const result = builder.allocate('values', 'float32', cellCount);
     const validity = builder.allocate('validity', 'uint32', cellCount);
     const converged = builder.allocate('converged', 'uint32', 1);
-    const erosion = values.method === 1;
+    const erosion = values['method'] === 1;
     builder.graph.add(
       new GPURasterReconstruction({
         grid: makeGridOfRaster(inputs),
@@ -38,18 +39,23 @@ export default defineOperationRun({
         mask: mask.view,
         method: erosion ? 'erosion' : 'dilation',
         connectivity: 8,
-        maximumIterations: values.maximumIterations,
+        maximumIterations: values['maximumIterations'],
         output: {values: result.view, validity: validity.view, status: {converged: converged.view}}
       })
     );
     const removed = addArithmetic(builder, 'removed', 'absoluteDifference', mask, result);
     return {
-      outputs: {mask, marker, result, removed},
+      outputs: {mask, marker, result, removed, converged},
       update: current =>
         marker.write(
-          inputs.values.map(value => (erosion ? value + current.height : value - current.height))
+          inputs.values.map(value =>
+            erosion ? value + current['height'] : value - current['height']
+          )
         )
     };
+  },
+  async afterRun({outputs}) {
+    return {converged: (await readUints(outputs.converged))[0] !== 0};
   },
   // The pointer is the marker offset (x): the further right, the lower the marker sits under the
   // mask and the taller the domes that are cut flat.
@@ -60,17 +66,20 @@ export default defineOperationRun({
       const current = {...state.values, ...base.values};
       const {inputs, outputs, peek} = state;
       const removed = peek(outputs.removed);
+      const converged = peek(outputs.converged)?.[0];
       let cut = 0;
-      if (removed) for (const value of removed) if (value > 0.005) cut++;
+      if (converged && removed) for (const value of removed) if (value > 0.005) cut++;
       return {
         ...base,
         glyphs: [{shape: 'crosshair', at: [pointer.x, pointer.y]}],
-        readout: `height ${current.height.toFixed(2)} | ${formatNumber((100 * cut) / inputs.values.length, 0)}% of cells cut`
+        readout: `height ${current['height'].toFixed(2)} | ${converged === undefined ? 'status pending' : converged === 0 ? 'unfinished propagation; cut count withheld' : `${formatNumber((100 * cut) / inputs.values.length, 0)}% of cells cut`}`
       };
     }
   },
-  draw: ({inputs, outputs}) => [
+  draw: ({inputs, outputs, extra}) => [
     drawRaster(inputs, outputs.result, {range: [0, 1], hillshade: 0.6, elevation: 1.5}),
-    drawRaster(inputs, outputs.removed, {ramp: 'sequential', range: [0, 0.5], fade: true})
+    ...(extra?.converged
+      ? [drawRaster(inputs, outputs.removed, {ramp: 'sequential', range: [0, 0.5], fade: true})]
+      : [])
   ]
 });

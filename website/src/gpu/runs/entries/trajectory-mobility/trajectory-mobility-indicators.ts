@@ -39,6 +39,8 @@ type Outputs = {
   centroids: RunBuffer;
   tracks: RunBuffer;
   staypointCount: RunBuffer;
+  staypointOverflow: RunBuffer;
+  staypointCandidateOverflow: RunBuffer;
   locationIds: RunBuffer;
   radiusOfGyration: RunBuffer;
   realEntropy: RunBuffer;
@@ -118,13 +120,21 @@ export default defineOperationRun({
           startRows: staypoints.startRows.view,
           durations: staypoints.durations.view,
           locationIds: locationIds.view,
-          status: {count: staypoints.count.view}
+          status: {
+            count: staypoints.count.view,
+            overflow: staypoints.overflow.view,
+            candidateOverflow: staypoints.candidateOverflow.view
+          }
         },
         triplegs: {
           tracks: segments.triplegTracks.view,
           startRows: segments.triplegStartRows.view,
           endRows: segments.triplegEndRows.view,
-          status: {count: segments.triplegCount.view},
+          status: {
+            count: segments.triplegCount.view,
+            overflow: segments.triplegOverflow.view,
+            candidateOverflow: segments.triplegCandidateOverflow.view
+          },
           staypointFinishRows: staypoints.finishRows.view
         },
         output: {
@@ -144,6 +154,8 @@ export default defineOperationRun({
       centroids: staypoints.centroids,
       tracks: staypoints.tracks,
       staypointCount: staypoints.count,
+      staypointOverflow: staypoints.overflow,
+      staypointCandidateOverflow: staypoints.candidateOverflow,
       locationIds,
       radiusOfGyration,
       realEntropy,
@@ -168,16 +180,19 @@ export default defineOperationRun({
   },
   // The stays, in map coordinates, are read back to draw them.
   async afterRun({inputs, outputs, upload}) {
-    const [count, centroids] = await Promise.all([
+    const [count, centroids, overflow, candidateOverflow] = await Promise.all([
       readUint32(outputs.staypointCount),
-      readFloat32(outputs.centroids)
+      readFloat32(outputs.centroids),
+      readUint32(outputs.staypointOverflow),
+      readUint32(outputs.staypointCandidateOverflow)
     ]);
-    const stays = Math.min(count[0], STAYPOINT_CAPACITY);
+    const incomplete = Boolean(overflow[0] || candidateOverflow[0]);
+    const stays = incomplete ? 0 : Math.min(count[0], STAYPOINT_CAPACITY);
     const positions = new Float32Array(Math.max(1, stays) * 2);
     for (let stay = 0; stay < stays; stay++) {
       positions.set(inputs.toDisplay(centroids[stay * 2], centroids[stay * 2 + 1]), stay * 2);
     }
-    return {stays, positions: upload('display-stays', 'float32x2', positions)};
+    return {stays, incomplete, positions: upload('display-stays', 'float32x2', positions)};
   },
   // Probe: the nearest track. Its bar lights up, its stays are gathered, and the ring is the radius
   // of gyration around the mean of those stays.
@@ -209,6 +224,14 @@ export default defineOperationRun({
       if (!radius || !real || !quality || !centroids || !tracks || !count) {
         return {};
       }
+      const overflow = peek(outputs.staypointOverflow);
+      const candidateOverflow = peek(outputs.staypointCandidateOverflow);
+      if (!overflow || !candidateOverflow)
+        return {readout: 'Mobility indicators unavailable: status not read'};
+      if (overflow[0] || candidateOverflow[0]) {
+        outputs.selected.write(new Float32Array(inputs.trackCount));
+        return {glyphs: [], readout: 'Mobility indicators unavailable: incomplete staypoint table'};
+      }
       let sumX = 0;
       let sumY = 0;
       let stays = 0;
@@ -235,47 +258,53 @@ export default defineOperationRun({
               ]
             : [])
         ],
-        readout: `track ${track} · gyration ${formatDistance(radius[track], inputs.metersPerUnit)} · ${stays} stays · entropy ${real[track].toFixed(1)} bits · tracked ${Math.round(quality[track] * 100)}%`
+        readout: `track ${track} · gyration ${formatDistance(radius[track], inputs.metersPerUnit)} · ${stays} stays · entropy ${real[track].toFixed(1)} bits · ${Number.isFinite(quality[track]) ? `tracked ${Math.round(quality[track] * 100)}%` : 'tracking quality unavailable: incomplete tripleg table'}`
       };
     }
   },
-  draw: ({inputs, outputs, extra, theme}) => [
-    {layer: 'lines', context: true, segments: outputs.segments, count: inputs.segmentCount},
-    {layer: 'dots', context: true, positions: outputs.positions, radius: 2.5},
-    ...(extra
+  draw: ({inputs, outputs, extra, theme}) =>
+    extra?.incomplete
       ? [
+          {layer: 'lines', context: true, segments: outputs.segments, count: inputs.segmentCount},
+          {layer: 'dots', context: true, positions: outputs.positions, radius: 2.5}
+        ]
+      : [
+          {layer: 'lines', context: true, segments: outputs.segments, count: inputs.segmentCount},
+          {layer: 'dots', context: true, positions: outputs.positions, radius: 2.5},
+          ...(extra
+            ? [
+                {
+                  layer: 'dots' as const,
+                  positions: extra.positions,
+                  count: extra.stays,
+                  radius: 7,
+                  color: [1, 0.7, 0.2, 0.9] as const
+                }
+              ]
+            : []),
           {
-            layer: 'dots' as const,
-            positions: extra.positions,
-            count: extra.stays,
-            radius: 7,
-            color: [1, 0.7, 0.2, 0.9] as const
+            layer: 'chart',
+            kind: 'bars',
+            values: outputs.realEntropy,
+            range: [0, 4],
+            rectangle: ENTROPY_BARS,
+            color: [...theme.categories[1], 1]
+          },
+          {
+            layer: 'chart',
+            kind: 'bars',
+            values: outputs.radiusOfGyration,
+            range: [0, 0.3],
+            rectangle: BARS,
+            color: [...theme.categories[0], 1]
+          },
+          {
+            layer: 'chart',
+            kind: 'bars',
+            values: outputs.selected,
+            range: [0, 0.3],
+            rectangle: BARS,
+            color: [1, 0.7, 0.2, 1]
           }
         ]
-      : []),
-    {
-      layer: 'chart',
-      kind: 'bars',
-      values: outputs.realEntropy,
-      range: [0, 4],
-      rectangle: ENTROPY_BARS,
-      color: [...theme.categories[1], 1]
-    },
-    {
-      layer: 'chart',
-      kind: 'bars',
-      values: outputs.radiusOfGyration,
-      range: [0, 0.3],
-      rectangle: BARS,
-      color: [...theme.categories[0], 1]
-    },
-    {
-      layer: 'chart',
-      kind: 'bars',
-      values: outputs.selected,
-      range: [0, 0.3],
-      rectangle: BARS,
-      color: [1, 0.7, 0.2, 1]
-    }
-  ]
 });

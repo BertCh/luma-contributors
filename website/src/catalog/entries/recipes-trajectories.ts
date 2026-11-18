@@ -1197,7 +1197,7 @@ ${COMPILE_AND_ENCODE}
     params: [
       {
         name: 'family',
-        type: 'GPUCellFamily',
+        type: 'GPUCellAggregationFamily',
         required: true,
         description: 'Cell family shared by both periods.'
       },
@@ -1216,9 +1216,10 @@ ${COMPILE_AND_ENCODE}
       {name: 'before', type: 'GPUPeriodRows', required: true, description: 'Earlier period rows.'},
       {name: 'after', type: 'GPUPeriodRows', required: true, description: 'Later period rows.'},
       {
-        name: 'measure',
-        type: 'GPUCellTableCompareMeasure | undefined',
-        description: 'Compared column.'
+        name: 'sumScale',
+        type: 'number',
+        default: '65536',
+        description: 'One fixed-point scale shared by both aggregations and the comparison.'
       },
       {
         name: 'classBreaksParameters',
@@ -3121,9 +3122,9 @@ ${COMPILE_AND_ENCODE}`,
     importPath: IMPORT_PATH,
     title: 'Population support alignment',
     summary:
-      'Joins population tables to a common set of units by explicit ID; missing or duplicate IDs are errors.',
+      'Aligns population tables by ID; matchedMask selects unique matches and named stages count incomplete support.',
     explanation:
-      'Best before comparing censuses whose rows are in different orders. Rows are gathered by ID, never aggregated or interpolated, so a mismatch fails loudly instead of skewing a result.',
+      'Gather census rows by ID before comparing them in different orders. Missing or ambiguous targets receive NaN populations, alignmentCode and matchedMask = 0; pass matchedMask downstream to retain unique matches. Read packedStatus for the whole-support certificate and status.stages for named diagnostic counts.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['relate'],
     domains: ['demographics', 'data-engineering'],
@@ -3155,19 +3156,39 @@ ${COMPILE_AND_ENCODE}`,
         description: 'Rows reordered to the target IDs.'
       },
       {
-        name: 'outputs.validity',
+        name: 'outputs.alignmentCode',
         type: 'GraphDataView<"uint32">',
-        description: 'Nonzero where the ID join failed.'
+        description: 'Diagnostic: 0 matched, 1 missing source, 2 ambiguous source or target.'
       },
       {
-        name: 'status',
+        name: 'outputs.matchedMask',
+        type: 'GraphDataView<"uint32">',
+        description: '1 for a unique ID match, otherwise 0; pass as a downstream mask.'
+      },
+      {
+        name: 'packedStatus',
         type: 'GraphDataView<"uint32x4">',
-        description: 'GPU status words; zero means complete.'
+        description: '[complete, missingTargetRows, ambiguousTargetRows, excludedSourceRows].'
       },
       {
-        name: 'provenance',
-        type: 'Record<string, GraphDataView>',
-        description: 'Stage ports that show how the result was built.'
+        name: 'status.stages',
+        type: 'readonly GPURecipeStageStatusPort[]',
+        description: 'missing-targets, ambiguous-targets, excluded-sources: invalidCount per stage.'
+      },
+      {
+        name: 'provenance.sourceIds, provenance.targetIds',
+        type: 'GraphDataView<"uint32">',
+        description: 'Original source/target ID views; provenance.alignment names the join.'
+      },
+      {
+        name: 'contributors',
+        type: 'readonly GPUCommandNodeProducer[]',
+        description: 'Contributors declared on the graph.'
+      },
+      {
+        name: 'intermediates',
+        type: 'Record<string, never>',
+        description: 'Empty: no retained intermediate views.'
       }
     ],
     example: `import {addPopulationSupportAlignmentRecipe} from '${IMPORT_PATH}';
@@ -3179,7 +3200,11 @@ const aligned = addPopulationSupportAlignmentRecipe(graph, {
   targetIds: boundaryIds
 });
 ${COMPILE_AND_ENCODE}
-// aligned.outputs.populations now follows boundaryIds row for row`,
+// aligned.outputs.populations follows boundaryIds row for row.
+// Pass aligned.outputs.matchedMask as the mask of downstream operators.
+// If every support row must match, read aligned.packedStatus and require its first word to be 1.
+// Remaining packed words count missing targets, ambiguous targets and excluded source rows.
+// Generic recipe inspection uses aligned.status.stages and each stage.status.invalidCount.`,
     preview: {kind: 'polygons', caption: 'Rows matched to units by ID.', seed: 428},
     related: [
       'segregation-counterfactual-recipe',
@@ -3707,7 +3732,7 @@ ${COMPILE_AND_ENCODE}
       {
         name: 'status',
         type: 'GPUZoneEventsStatus | undefined',
-        description: 'GPU status words; zero means complete.'
+        description: 'Scratch loss can invalidate dwell; track and final loss truncate crossings.'
       }
     ],
     example: `import {GPUZoneEvents} from '${IMPORT_PATH}';
@@ -3719,8 +3744,9 @@ graph.add(new GPUZoneEvents({
   candidateCapacity: 65536,
   trackEventCapacity: 16,
   output: {
-    events: {ids, status: {count, overflow}, eventZones, eventTypes, eventTimes},
-    dwellTimes, visitCounts
+    events: {ids, status: {count, overflow, candidateOverflow: eventCandidateOverflow}, eventZones, eventTypes, eventTimes},
+    dwellTimes, visitCounts,
+    status: {candidateOverflow: candidateScratchOverflow}
   }
 }));
 ${COMPILE_AND_ENCODE}`,
@@ -3843,9 +3869,9 @@ ${COMPILE_AND_ENCODE}
     params: [
       {
         name: 'trajectories',
-        type: 'GPUFleetDwellTrajectories',
+        type: 'GPUFleetDwellZoneEventsTrajectories',
         required: true,
-        description: 'Planar tracks.'
+        description: 'Planar tracks: float32-relative or Int64 time; double-single unsupported.'
       },
       {
         name: 'zones',
@@ -3910,7 +3936,7 @@ ${COMPILE_AND_ENCODE}
     ],
     example: `import {addFleetDwellZoneEventsRecipe} from '${IMPORT_PATH}';
 
-// graph: GPUCommandGraph; same trajectories and zones as the stops variant
+// graph: GPUCommandGraph; float32-relative or Int64 timestamps, plus the same zones as the stops variant
 const dwell = addFleetDwellZoneEventsRecipe(graph, {
   trajectories: {kind: 'trajectories', positions, timestamps, trackOffsets},
   zones,
@@ -4134,7 +4160,7 @@ ${COMPILE_AND_ENCODE}
         name: 'timeCellSize',
         type: 'number',
         required: true,
-        description: 'Time cell length, in seconds.'
+        description: 'Time cell length, in the declared timestamp unit.'
       },
       {
         name: 'entryCapacity',

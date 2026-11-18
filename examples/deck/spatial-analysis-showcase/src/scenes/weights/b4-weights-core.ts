@@ -97,13 +97,13 @@ export type WeightsCore = {
   positions: Buffer;
   /** Slot capacity of `csr`. */
   slots: number;
-  /** Producer `status.overflow`: one when the neighbors or the contiguity pair list did not fit. */
+  /** Producer `status.overflow`: one when final neighbor slots did not fit. */
   overflow: Buffer;
   /** Producer `status.requiredCount`: the unclamped neighbor slot total. */
   total: Buffer;
   /**
    * Contiguity `status.candidateOverflow`: one when the intermediate pair list overflowed, which
-   * makes `total` a lower bound. Never written by the search producers.
+   * makes `total` a lower bound. Search producers overwrite this word with zero each submission.
    */
   candidateOverflow: Buffer;
   /** Compiles any graph the configuration needs (no-op when cached). Resolves true when it compiled. */
@@ -290,7 +290,7 @@ export function createWeightsCore(props: {
         gridSize: SEARCH_GRID,
         positions: importGraphBuffer(graph, 'positions', positions, 'float32x2', rowCount),
         parameters: searchParameters.importToGraph(graph),
-        output: importOutput(graph, csr, {overflow, total}, true)
+        output: importOutput(graph, csr, {overflow, total, candidateOverflow}, true)
       })
     );
     return graph;

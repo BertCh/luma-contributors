@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Layer} from '@deck.gl/core';
+import {formatNetworkPathReadout} from '../../../../spatial-analysis-shared/network-path-readout';
 import type {Buffer} from '@luma.gl/core';
 import {
   getGPUNetworkLineGraphParameterValues,
@@ -15,6 +16,7 @@ import {
 } from '@luma-contributors/analysis/gpu-network';
 import {
   GPUCommandGraph,
+  createTransientView,
   type CompiledGPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
@@ -244,9 +246,11 @@ export async function createRouting(
   const pathNodeIds = resources.createBuffer('path-node-ids', pathCapacity * 4);
   const pathNodeCount = resources.createBuffer('path-node-count', 4);
   const pathNodeOverflow = resources.createBuffer('path-node-overflow', 4);
+  const pathNodeCandidateOverflow = resources.createBuffer('path-node-candidate-overflow', 4);
   const pathEdgeIds = resources.createBuffer('path-edge-ids', pathCapacity * 4);
   const pathEdgeCount = resources.createBuffer('path-edge-count', 4);
   const pathEdgeOverflow = resources.createBuffer('path-edge-overflow', 4);
+  const pathEdgeCandidateOverflow = resources.createBuffer('path-edge-candidate-overflow', 4);
   const pathOffsets = resources.createBuffer('path-offsets', (MAXIMUM_DESTINATIONS + 1) * 4);
   const pathCosts = resources.createBuffer('path-costs', MAXIMUM_DESTINATIONS * 4);
   const pathFound = resources.createBuffer('path-found', MAXIMUM_DESTINATIONS * 4);
@@ -281,6 +285,7 @@ export async function createRouting(
   const linePathNodeIds = resources.createBuffer('line-path-node-ids', pathCapacity * 4);
   const linePathNodeCount = resources.createBuffer('line-path-node-count', 4);
   const linePathNodeOverflow = resources.createBuffer('line-path-node-overflow', 4);
+  const linePathCandidateOverflow = resources.createBuffer('line-path-candidate-overflow', 4);
   const linePathOffsets = resources.createBuffer(
     'line-path-offsets',
     (MAXIMUM_DESTINATIONS + 1) * 4
@@ -291,7 +296,7 @@ export async function createRouting(
 
   // ---- State -------------------------------------------------------------------------------
   const resolvePlace = (place: string): number => {
-    const coordinate = (ROUTING_PLACES[place] ?? ROUTING_PLACES.willis).coordinate;
+    const coordinate = (ROUTING_PLACES[place] ?? ROUTING_PLACES['willis']).coordinate;
     const [x, y] = network.projection.project(coordinate[0], coordinate[1]);
     return network.findNearestNode(x, y);
   };
@@ -324,6 +329,13 @@ export async function createRouting(
   let cpuFreeFlowCosts: Float32Array | null = null;
   let cpuHops: Uint32Array | null = null;
   const summary = {
+    treeConverged: 0,
+    treeCandidateOverflow: 0,
+    treeOutputOverflow: 0,
+    turnConverged: 0,
+    turnCandidateOverflow: 0,
+    turnOutputOverflow: 0,
+    turnInputOverflow: 0,
     treeFound: new Uint32Array(MAXIMUM_DESTINATIONS),
     treeCost: new Float32Array(MAXIMUM_DESTINATIONS),
     turnFound: new Uint32Array(MAXIMUM_DESTINATIONS),
@@ -497,10 +509,12 @@ export async function createRouting(
           predecessorsComplete: treeConvergedView,
           maximumPathLength: MAXIMUM_PATH_LENGTH,
           output: {
-            ids: view(pathNodeIds, 'uint32', pathCapacity),
+            ids: createTransientView(treeGraph, 'route-node-identities', 'uint32', pathCapacity),
+            nodeRows: view(pathNodeIds, 'uint32', pathCapacity),
             status: {
               count: view(pathNodeCount, 'uint32', 1),
-              overflow: view(pathNodeOverflow, 'uint32', 1)
+              overflow: view(pathNodeOverflow, 'uint32', 1),
+              candidateOverflow: view(pathNodeCandidateOverflow, 'uint32', 1)
             },
             lineOffsets: view(pathOffsets, 'uint32', MAXIMUM_DESTINATIONS + 1),
             pathCosts: view(pathCosts, 'float32', MAXIMUM_DESTINATIONS),
@@ -509,10 +523,12 @@ export async function createRouting(
           edges: {
             topology: {offsets, neighbors, weights},
             output: {
-              ids: edgeIds,
+              ids: createTransientView(treeGraph, 'route-edge-identities', 'uint32', pathCapacity),
+              edgeRows: edgeIds,
               status: {
                 count: edgeCountView,
-                overflow: view(pathEdgeOverflow, 'uint32', 1)
+                overflow: view(pathEdgeOverflow, 'uint32', 1),
+                candidateOverflow: view(pathEdgeCandidateOverflow, 'uint32', 1)
               }
             }
           }
@@ -737,10 +753,12 @@ export async function createRouting(
           predecessorsComplete: lineConvergedView,
           maximumPathLength: MAXIMUM_PATH_LENGTH,
           output: {
-            ids: lineIds,
+            ids: createTransientView(turnGraph, 'line-route-identities', 'uint32', pathCapacity),
+            nodeRows: lineIds,
             status: {
               count: lineCount,
-              overflow: view(linePathNodeOverflow, 'uint32', 1)
+              overflow: view(linePathNodeOverflow, 'uint32', 1),
+              candidateOverflow: view(linePathCandidateOverflow, 'uint32', 1)
             },
             lineOffsets: view(linePathOffsets, 'uint32', MAXIMUM_DESTINATIONS + 1),
             pathCosts: view(linePathCosts, 'float32', MAXIMUM_DESTINATIONS),
@@ -834,7 +852,9 @@ export async function createRouting(
     4, // iterations
     4, // unresolved
     MAXIMUM_PATH_LENGTH * 4, // first route's edges
-    nodeCount * 4 // costs
+    nodeCount * 4, // costs
+    4, // node walk budget loss
+    4 // edge walk budget loss
   ];
   const treeReader = new SummaryReader(
     resources,
@@ -851,7 +871,9 @@ export async function createRouting(
       {buffer: treeIterations, size: 4},
       {buffer: treeUnresolved, size: 4},
       {buffer: pathEdgeIds, size: treeSizes[10]},
-      {buffer: treeCosts, size: treeSizes[11]}
+      {buffer: treeCosts, size: treeSizes[11]},
+      {buffer: pathNodeCandidateOverflow, size: 4},
+      {buffer: pathEdgeCandidateOverflow, size: 4}
     ],
     bytes => {
       if (destroyed) return;
@@ -867,7 +889,9 @@ export async function createRouting(
         iterations,
         unresolved,
         edges,
-        costBytes
+        costBytes,
+        nodeCandidate,
+        edgeCandidate
       ] = sliceSections(bytes, treeSizes);
       summary.treeFound = new Uint32Array(found);
       summary.treeCost = new Float32Array(pathCostBytes);
@@ -877,6 +901,10 @@ export async function createRouting(
       let reached = 0;
       for (const cost of cpuCosts) if (Number.isFinite(cost)) reached++;
       const solver = new Uint32Array(converged)[0];
+      summary.treeConverged = solver;
+      summary.treeCandidateOverflow =
+        new Uint32Array(nodeCandidate)[0] || new Uint32Array(edgeCandidate)[0];
+      summary.treeOutputOverflow = new Uint32Array(nodeOver)[0] || new Uint32Array(edgeOver)[0];
       ctx.setReadout('reached', `${formatInteger(reached)} of ${formatInteger(nodeCount)}`);
       ctx.setReadout(
         'solver',
@@ -888,7 +916,8 @@ export async function createRouting(
       ctx.setReadout(
         'routeSize',
         `${formatInteger(nodes)} nodes / ${formatInteger(edgesTotal)} edges` +
-          (new Uint32Array(nodeOver)[0] || new Uint32Array(edgeOver)[0] ? ' (overflow)' : '')
+          (summary.treeOutputOverflow ? ' (output overflow)' : '') +
+          (summary.treeCandidateOverflow ? ' (walk budget exhausted)' : '')
       );
       updateRouteReadouts();
     }
@@ -913,7 +942,9 @@ export async function createRouting(
     4,
     4,
     4,
-    4
+    4,
+    4, // path walk budget loss
+    4 // path output overflow
   ];
   const turnReader = new SummaryReader(
     resources,
@@ -926,18 +957,32 @@ export async function createRouting(
       {buffer: lineArcCount, size: 4},
       {buffer: lineOverflow, size: 4},
       {buffer: lineConverged, size: 4},
-      {buffer: lineIterations, size: 4}
+      {buffer: lineIterations, size: 4},
+      {buffer: linePathCandidateOverflow, size: 4},
+      {buffer: linePathNodeOverflow, size: 4}
     ],
     bytes => {
       if (destroyed || !ctx.options.showTurnRoute) return;
-      const [found, pathCostBytes, offsets, edges, arcs, overflow, converged] = sliceSections(
-        bytes,
-        turnSizes
-      );
+      const [
+        found,
+        pathCostBytes,
+        offsets,
+        edges,
+        arcs,
+        overflow,
+        converged,
+        ,
+        candidateOverflow,
+        outputOverflow
+      ] = sliceSections(bytes, turnSizes);
       summary.turnFound = new Uint32Array(found);
       summary.turnCost = new Float32Array(pathCostBytes);
       summary.turnOffsets = new Uint32Array(offsets);
       summary.turnEdges = new Uint32Array(edges);
+      summary.turnConverged = new Uint32Array(converged)[0];
+      summary.turnCandidateOverflow = new Uint32Array(candidateOverflow)[0];
+      summary.turnOutputOverflow = new Uint32Array(outputOverflow)[0];
+      summary.turnInputOverflow = new Uint32Array(overflow)[0];
       ctx.setReadout(
         'arcs',
         `${formatInteger(new Uint32Array(arcs)[0])} turns of ${formatInteger(arcCapacity)}` +
@@ -995,7 +1040,17 @@ export async function createRouting(
     const destinations = Math.max(1, ctx.options.destinationCount);
     const lines: string[] = [];
     for (let index = 0; index < destinations; index++) {
-      lines.push(summary.treeFound[index] ? formatMinutes(summary.treeCost[index]) : 'not found');
+      lines.push(
+        formatNetworkPathReadout(
+          {
+            found: summary.treeFound[index] === 1,
+            converged: summary.treeConverged,
+            candidateOverflow: summary.treeCandidateOverflow,
+            overflow: summary.treeOutputOverflow
+          },
+          formatMinutes(summary.treeCost[index])
+        )
+      );
     }
     ctx.setReadout('routeTimes', lines.join(' / '));
     ctx.setChart('routeComparison', {
@@ -1054,15 +1109,24 @@ export async function createRouting(
       ctx.setReadout('scenarioDelta', '-');
       ctx.setChart('scenarioComparison', null);
     }
-    const found = summary.treeFound[0] === 1;
+    const found = summary.treeFound[0] === 1 && summary.treeConverged !== 0;
     ctx.setReadout(
       'routeTime',
-      found ? formatMinutes(summary.treeCost[0]) : 'not found (beyond the cost limit?)'
+      formatNetworkPathReadout(
+        {
+          found,
+          converged: summary.treeConverged,
+          candidateOverflow: summary.treeCandidateOverflow,
+          overflow: summary.treeOutputOverflow
+        },
+        formatMinutes(summary.treeCost[0])
+      )
     );
     const treeFirst = summary.treeOffsets[0];
     const treeLast = Math.min(summary.treeOffsets[1], treeFirst + MAXIMUM_PATH_LENGTH);
     let plain = {left: 0, right: 0, uTurns: 0};
-    if (found) {
+    const treeEdgesUsable = found && summary.treeOutputOverflow === 0;
+    if (treeEdgesUsable) {
       plain = countTurns(summary.treeEdges, treeFirst, treeLast);
       let meters = 0;
       for (let slot = treeFirst; slot < treeLast; slot++) {
@@ -1076,20 +1140,41 @@ export async function createRouting(
       ctx.setReadout('plainTurns', '-');
     }
     if (ctx.options.showTurnRoute) {
-      const turnFound = summary.turnFound[0] === 1;
-      ctx.setReadout('turnTime', turnFound ? formatMinutes(summary.turnCost[0]) : 'not found');
-      if (turnFound) {
+      const turnFound =
+        summary.turnFound[0] === 1 &&
+        summary.turnConverged !== 0 &&
+        summary.turnInputOverflow === 0;
+      ctx.setReadout(
+        'turnTime',
+        summary.turnInputOverflow
+          ? 'turn graph capacity exceeded'
+          : formatNetworkPathReadout(
+              {
+                found: turnFound,
+                converged: summary.turnConverged,
+                candidateOverflow: summary.turnCandidateOverflow,
+                overflow: summary.turnOutputOverflow
+              },
+              formatMinutes(summary.turnCost[0])
+            )
+      );
+      if (turnFound && summary.turnOutputOverflow === 0) {
         const turnFirst = summary.turnOffsets[0];
         const turnLast = Math.min(summary.turnOffsets[1], turnFirst + MAXIMUM_PATH_LENGTH);
         const turns = countTurns(summary.turnEdges, turnFirst, turnLast);
         ctx.setReadout('turnTurns', `${turns.left} left, ${turns.right} right, ${turns.uTurns} U`);
-        ctx.setChart('turnComparison', {
-          kind: 'bars',
-          values: [plain.left, plain.right, turns.left, turns.right],
-          labels: ['Plain left', 'Plain right', 'Turn-aware left', 'Turn-aware right'],
-          colors: [ROUTE_COLOR, ROUTE_COLOR, TURN_ROUTE_COLOR, TURN_ROUTE_COLOR],
-          yLabel: 'turns'
-        });
+        ctx.setChart(
+          'turnComparison',
+          treeEdgesUsable
+            ? {
+                kind: 'bars',
+                values: [plain.left, plain.right, turns.left, turns.right],
+                labels: ['Plain left', 'Plain right', 'Turn-aware left', 'Turn-aware right'],
+                colors: [ROUTE_COLOR, ROUTE_COLOR, TURN_ROUTE_COLOR, TURN_ROUTE_COLOR],
+                yLabel: 'turns'
+              }
+            : null
+        );
         // Travel time and length of the turn-aware route without its turn penalties.
         let seconds = 0;
         let meters = 0;
@@ -1106,10 +1191,13 @@ export async function createRouting(
             'turnCost',
             `${extra >= 0 ? '+' : ''}${(extra / 60).toFixed(1)} min, ${(meters / 1000).toFixed(1)} km`
           );
+        } else {
+          ctx.setReadout('turnCost', '-');
         }
       } else {
         ctx.setReadout('turnTurns', '-');
         ctx.setReadout('turnCost', '-');
+        ctx.setChart('turnComparison', null);
       }
     } else {
       for (const id of ['turnTime', 'turnTurns', 'turnCost']) ctx.setReadout(id, 'off');

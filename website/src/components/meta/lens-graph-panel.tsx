@@ -6,7 +6,13 @@
 
 import {Suspense, useEffect, useMemo, useState} from 'react';
 import {GpuCanvas} from '../../gpu/gpu-canvas';
-import {formatBytes, formatCount} from '../../lens/format';
+import {
+  formatBytes,
+  formatCount,
+  formatResourceBytes,
+  formatResourceCount,
+  getResourceBytesKind
+} from '../../lens/format';
 import {getEdgePath, layoutLensGraph, type GraphLayout} from '../../lens/layout-graph';
 import type {LensViewEdge, LensViewModel, LensViewNode} from '../../lens/types';
 import {useLensViewModel} from '../../lens/use-lens-view-model';
@@ -161,8 +167,10 @@ function LensGraphView({
               <strong>{formatCount(model.recordedEdgeCount)}</strong> dependencies
             </li>
             <li>
-              <strong>{formatBytes(model.resources.totalBytes)}</strong> in{' '}
-              <strong>{formatCount(model.resources.count)}</strong> buffers
+              <strong>
+                {formatResourceBytes(model.resources.totalBytes, model.resources.totalBytesKind)}
+              </strong>{' '}
+              in <strong>{formatResourceCount(model.resources)}</strong>
             </li>
             <li>
               <strong>{formatCount(model.totals.workgroups)}</strong> workgroups
@@ -332,7 +340,7 @@ function LensGraphView({
                         y={(edge.y0 + edge.y1) / 2 - 4}
                         textAnchor="middle"
                       >
-                        {formatBytes(data.bytes)}
+                        {formatResourceBytes(data.bytes, data.bytesKind)}
                       </text>
                     );
                   })}
@@ -456,7 +464,7 @@ function renderDetail(model: LensViewModel, hover: Hover, nodeById: Map<string, 
             {edge.resourceCount > edge.resources.length ? ', ...' : ''}
           </strong>
           <span>
-            <b>{formatBytes(edge.bytes)}</b> in <b>{edge.resourceCount}</b>{' '}
+            <b>{formatResourceBytes(edge.bytes, edge.bytesKind)}</b> in <b>{edge.resourceCount}</b>{' '}
             {edge.resourceCount === 1 ? 'buffer' : 'buffers'}
           </span>
           <span>
@@ -490,20 +498,26 @@ function renderLifetimeDetail(model: LensViewModel, step: number) {
   const lifetimes = model.lifetimes ?? [];
   const live = lifetimes.filter(lifetime => getLiveBytes([lifetime], step) > 0).length;
   const hasTransient = lifetimes.some(lifetime => lifetime.ownership === 'transient');
+  const hasUnknown = lifetimes.some(
+    lifetime => lifetime.ownership === 'unknown' || lifetime.bytesKind === undefined
+  );
+  const bytesKind = getResourceBytesKind(lifetimes);
   return (
     <>
       <span>
-        <b>{formatBytes(getLiveBytes(lifetimes, step))}</b> alive in <b>{live}</b> of{' '}
-        {lifetimes.length} buffers
+        <b>{formatResourceBytes(getLiveBytes(lifetimes, step), bytesKind)}</b> alive in{' '}
+        <b>{live}</b> of {lifetimes.length} buffers
       </span>
       <span>
         {hasTransient ? 'peak' : 'peak logical live'}{' '}
-        <b>{formatBytes(getPeakLiveBytes(lifetimes, model.nodes.length))}</b>
+        <b>{formatResourceBytes(getPeakLiveBytes(lifetimes, model.nodes.length), bytesKind)}</b>
       </span>
       <span>
-        {hasTransient
-          ? 'Buffers that never overlap in time can share one block of memory.'
-          : 'All buffers are imported, so all stay allocated for the whole run; a bar is the logical span between first write and last use.'}
+        {hasUnknown
+          ? 'Ownership is unobserved for some buffers; allocation sharing cannot be inferred from these lifetimes.'
+          : hasTransient
+            ? 'Buffers that never overlap in time can share one block of memory.'
+            : 'All buffers are imported, so all stay allocated for the whole run; a bar is the logical span between first write and last use.'}
         {model.lifetimesOmitted ? ` ${model.lifetimesOmitted} smaller buffers not shown.` : ''}
       </span>
     </>

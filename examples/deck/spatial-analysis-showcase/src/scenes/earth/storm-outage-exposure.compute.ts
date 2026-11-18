@@ -556,7 +556,7 @@ export async function createStormOutageExposure(
         ),
         window: flashWindow.importToGraph(graph),
         output: {
-          ids: importGraphBuffer(graph, 'flash-ids', flashIds, 'uint32', flashCount),
+          rows: importGraphBuffer(graph, 'flash-ids', flashIds, 'uint32', flashCount),
           fadeWeights: flashWeightsView,
           status: {
             count: importGraphBuffer(graph, 'flash-selected', flashSelected, 'uint32', 1),
@@ -703,7 +703,7 @@ export async function createStormOutageExposure(
         ),
         window: snapshotWindow.importToGraph(graph),
         output: {
-          ids: importGraphBuffer(graph, 'snapshot-ids', snapshotIds, 'uint32', snapshotCount),
+          rows: importGraphBuffer(graph, 'snapshot-ids', snapshotIds, 'uint32', snapshotCount),
           outputMask: maskView,
           status: {
             count: importGraphBuffer(graph, 'snapshot-selected', snapshotSelected, 'uint32', 1),

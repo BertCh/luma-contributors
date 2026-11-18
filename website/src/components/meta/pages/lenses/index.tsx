@@ -5,7 +5,7 @@ import {Link} from '@tanstack/react-router';
 import {useState} from 'react';
 import {catalog} from '../../../../catalog';
 import {FEATURED_LENS_SCENARIOS} from '../../../../lens/featured';
-import {formatBytes, formatCount} from '../../../../lens/format';
+import {formatCount, formatResourceBytes} from '../../../../lens/format';
 import summary from '../../../../lens/summary.json';
 import type {LensSummary, LensViewModel} from '../../../../lens/types';
 import {Section} from '../../../ui/section';
@@ -26,7 +26,11 @@ import lensesData from './lenses-data.json';
 import {KernelSpreadChart, RecordParts, SizeBars} from './record-parts';
 import './lenses.css';
 
-const totals: LensSummary = summary;
+// generate-view-models writes LensSummary; JSON imports widen its string literals.
+const totals: LensSummary = {
+  ...summary,
+  bufferBytesKind: summary.bufferBytesKind as LensSummary['bufferBytesKind']
+};
 
 const CARD_CAPTIONS: Record<string, string> = {
   [FEATURED_LENS_SCENARIOS.kernelDensity]: 'Points in, density raster out.',
@@ -43,7 +47,7 @@ export function Page({topic, models, code}: TopicPageProps) {
     .map(id => models[id])
     .filter((model): model is LensViewModel => Boolean(model));
   const withRecord = catalog.filter(entry => entry.lensScenario).length;
-  const example = code.recordRun;
+  const example = code['recordRun'];
   const steps: CodeWalkStep[] | null = example
     ? [
         {
@@ -127,7 +131,8 @@ export function Page({topic, models, code}: TopicPageProps) {
                 </ul>
                 <p className="snapshot-card__text">
                   {formatCount(model.recordedNodeCount)} graph nodes,{' '}
-                  {formatBytes(model.resources.totalBytes)} of buffers
+                  {formatResourceBytes(model.resources.totalBytes, model.resources.totalBytesKind)}{' '}
+                  of buffers
                 </p>
                 {model.formulas[0] ? (
                   <p className="lenses-card-formula">
@@ -166,7 +171,7 @@ export function Page({topic, models, code}: TopicPageProps) {
             },
             {
               value: formatCount(totals.buffers),
-              label: `buffers, ${formatBytes(totals.bufferBytes)}`
+              label: `buffers, ${formatResourceBytes(totals.bufferBytes, totals.bufferBytesKind)}`
             },
             {value: formatCount(totals.snapshots), label: 'captured values'},
             {

@@ -248,52 +248,13 @@ export async function createSpectralEvidence(
         }).addToGraph(indexGraph)
       );
       addIndex('nbr', output =>
-        new GPURasterNBR({
-          id: `${date}-nbr`,
-          width: CROP_SIZE,
-          height: CROP_SIZE,
-          nearInfrared: bands.nir,
-          shortwaveInfrared2: bands.swir22,
-          epsilon: Number(options.indexEpsilon),
-          clamp:
-            options.indexClamp === 'none'
-              ? undefined
-              : options.indexClamp === 'unit-range'
-                ? [-1, 1]
-                : [-0.25, 0.25],
-          output: indexView(`${date}-nbr-values`, output.values, 'float32', CELL_COUNT),
-          outputValidity: indexView(`${date}-nbr-validity`, output.validity, 'uint32', CELL_COUNT)
-        }).addToGraph(indexGraph)
-      );
-      addIndex('evi', output =>
-        new GPURasterEVI({
-          id: `${date}-evi`,
-          width: CROP_SIZE,
-          height: CROP_SIZE,
-          nearInfrared: bands.nir,
-          red: bands.red,
-          blue: bands.blue,
-          epsilon: Number(options.indexEpsilon),
-          clamp:
-            options.indexClamp === 'none'
-              ? undefined
-              : options.indexClamp === 'unit-range'
-                ? [-1, 1]
-                : [-0.25, 0.25],
-          output: indexView(`${date}-evi-values`, output.values, 'float32', CELL_COUNT),
-          outputValidity: indexView(`${date}-evi-validity`, output.validity, 'uint32', CELL_COUNT)
-        }).addToGraph(indexGraph)
-      );
-      for (const soilAdjustment of SAVI_LEVELS) {
-        const name = `savi-${soilAdjustment}` as (typeof INDEX_OUTPUT_NAMES)[number];
-        addIndex(name, output =>
-          new GPURasterSAVI({
-            id: `${date}-${name}`,
+        indexGraph.add(
+          new GPURasterNBR({
+            id: `${date}-nbr`,
             width: CROP_SIZE,
             height: CROP_SIZE,
             nearInfrared: bands.nir,
-            red: bands.red,
-            soilAdjustment: Number(soilAdjustment),
+            shortwaveInfrared2: bands.swir22,
             epsilon: Number(options.indexEpsilon),
             clamp:
               options.indexClamp === 'none'
@@ -301,63 +262,117 @@ export async function createSpectralEvidence(
                 : options.indexClamp === 'unit-range'
                   ? [-1, 1]
                   : [-0.25, 0.25],
-            output: indexView(`${date}-${name}-values`, output.values, 'float32', CELL_COUNT),
+            output: indexView(`${date}-nbr-values`, output.values, 'float32', CELL_COUNT),
+            outputValidity: indexView(`${date}-nbr-validity`, output.validity, 'uint32', CELL_COUNT)
+          })
+        )
+      );
+      addIndex('evi', output =>
+        indexGraph.add(
+          new GPURasterEVI({
+            id: `${date}-evi`,
+            width: CROP_SIZE,
+            height: CROP_SIZE,
+            nearInfrared: bands.nir,
+            red: bands.red,
+            blue: bands.blue,
+            epsilon: Number(options.indexEpsilon),
+            clamp:
+              options.indexClamp === 'none'
+                ? undefined
+                : options.indexClamp === 'unit-range'
+                  ? [-1, 1]
+                  : [-0.25, 0.25],
+            output: indexView(`${date}-evi-values`, output.values, 'float32', CELL_COUNT),
+            outputValidity: indexView(`${date}-evi-validity`, output.validity, 'uint32', CELL_COUNT)
+          })
+        )
+      );
+      for (const soilAdjustment of SAVI_LEVELS) {
+        const name = `savi-${soilAdjustment}` as (typeof INDEX_OUTPUT_NAMES)[number];
+        addIndex(name, output =>
+          indexGraph.add(
+            new GPURasterSAVI({
+              id: `${date}-${name}`,
+              width: CROP_SIZE,
+              height: CROP_SIZE,
+              nearInfrared: bands.nir,
+              red: bands.red,
+              soilAdjustment: Number(soilAdjustment),
+              epsilon: Number(options.indexEpsilon),
+              clamp:
+                options.indexClamp === 'none'
+                  ? undefined
+                  : options.indexClamp === 'unit-range'
+                    ? [-1, 1]
+                    : [-0.25, 0.25],
+              output: indexView(`${date}-${name}-values`, output.values, 'float32', CELL_COUNT),
+              outputValidity: indexView(
+                `${date}-${name}-validity`,
+                output.validity,
+                'uint32',
+                CELL_COUNT
+              )
+            })
+          )
+        );
+      }
+      addIndex('ndwi-gao', output =>
+        indexGraph.add(
+          new GPURasterNDWI({
+            id: `${date}-ndwi-gao-adaptation`,
+            method: 'gao',
+            width: CROP_SIZE,
+            height: CROP_SIZE,
+            nearInfrared: bands.nir,
+            shortwaveInfrared: bands.swir16,
+            epsilon: Number(options.indexEpsilon),
+            clamp:
+              options.indexClamp === 'none'
+                ? undefined
+                : options.indexClamp === 'unit-range'
+                  ? [-1, 1]
+                  : [-0.25, 0.25],
+            output: indexView(`${date}-ndwi-gao-values`, output.values, 'float32', CELL_COUNT),
             outputValidity: indexView(
-              `${date}-${name}-validity`,
+              `${date}-ndwi-gao-validity`,
               output.validity,
               'uint32',
               CELL_COUNT
             )
-          }).addToGraph(indexGraph)
-        );
-      }
-      addIndex('ndwi-gao', output =>
-        new GPURasterNDWI({
-          id: `${date}-ndwi-gao-adaptation`,
-          method: 'gao',
-          width: CROP_SIZE,
-          height: CROP_SIZE,
-          nearInfrared: bands.nir,
-          shortwaveInfrared: bands.swir16,
-          epsilon: Number(options.indexEpsilon),
-          clamp:
-            options.indexClamp === 'none'
-              ? undefined
-              : options.indexClamp === 'unit-range'
-                ? [-1, 1]
-                : [-0.25, 0.25],
-          output: indexView(`${date}-ndwi-gao-values`, output.values, 'float32', CELL_COUNT),
-          outputValidity: indexView(
-            `${date}-ndwi-gao-validity`,
-            output.validity,
-            'uint32',
-            CELL_COUNT
-          )
-        }).addToGraph(indexGraph)
+          })
+        )
       );
       addIndex('ndwi-mcfeeters', output =>
-        new GPURasterNDWI({
-          id: `${date}-ndwi-mcfeeters`,
-          method: 'mcfeeters',
-          width: CROP_SIZE,
-          height: CROP_SIZE,
-          green: bands.green,
-          nearInfrared: bands.nir,
-          epsilon: Number(options.indexEpsilon),
-          clamp:
-            options.indexClamp === 'none'
-              ? undefined
-              : options.indexClamp === 'unit-range'
-                ? [-1, 1]
-                : [-0.25, 0.25],
-          output: indexView(`${date}-ndwi-mcfeeters-values`, output.values, 'float32', CELL_COUNT),
-          outputValidity: indexView(
-            `${date}-ndwi-mcfeeters-validity`,
-            output.validity,
-            'uint32',
-            CELL_COUNT
-          )
-        }).addToGraph(indexGraph)
+        indexGraph.add(
+          new GPURasterNDWI({
+            id: `${date}-ndwi-mcfeeters`,
+            method: 'mcfeeters',
+            width: CROP_SIZE,
+            height: CROP_SIZE,
+            green: bands.green,
+            nearInfrared: bands.nir,
+            epsilon: Number(options.indexEpsilon),
+            clamp:
+              options.indexClamp === 'none'
+                ? undefined
+                : options.indexClamp === 'unit-range'
+                  ? [-1, 1]
+                  : [-0.25, 0.25],
+            output: indexView(
+              `${date}-ndwi-mcfeeters-values`,
+              output.values,
+              'float32',
+              CELL_COUNT
+            ),
+            outputValidity: indexView(
+              `${date}-ndwi-mcfeeters-validity`,
+              output.validity,
+              'uint32',
+              CELL_COUNT
+            )
+          })
+        )
       );
     }
     return indexGraph.compileAsync();

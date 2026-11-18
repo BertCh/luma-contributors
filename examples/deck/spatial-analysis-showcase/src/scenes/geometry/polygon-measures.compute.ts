@@ -102,7 +102,7 @@ const CIRCLE_SEGMENTS = 32;
  */
 const MERCATOR_RADIUS = GPU_WGS84_SEMI_MAJOR_AXIS_METERS;
 /** Validity category colors: valid, orientation only, structural defect. */
-export const VALIDITY_PALETTE_INDEXES = [3, 5, 7] as const;
+export const VALIDITY_PALETTE_INDEXES = [3, 5, 7, 0] as const;
 export const VALIDITY_COLORS = VALIDITY_PALETTE_INDEXES.map(index => B3_PALETTE[index]);
 
 /** Published reference classes; map, legend, histogram and tooltip all share these tables. */
@@ -131,13 +131,14 @@ export const POLYGON_COMPACTNESS_CLASSES = makeClassTable({
   method: 'Fixed compactness reference classes'
 });
 export const POLYGON_VALIDITY_CLASSES = makeClassTable({
-  breaks: [0.5, 1.5],
+  breaks: [0.5, 1.5, 2.5],
   colors: [
     [140, 149, 160, 255],
     [230, 159, 0, 255],
-    [213, 94, 0, 255]
+    [213, 94, 0, 255],
+    [96, 96, 96, 255]
   ],
-  labels: ['Valid', 'Orientation convention only', 'Structural defect'],
+  labels: ['Valid', 'Orientation convention only', 'Structural defect', 'Incomplete check'],
   method: 'Amber convention, vermilion structure'
 });
 
@@ -160,20 +161,20 @@ const DATASET_SPECS: Record<RegionalPolygonDatasetId, DatasetSpec> = {
   'us-counties': {
     space: 'mercator',
     groupColumn: 'stateFips',
-    describe: properties => `${properties.name} County, ${properties.state}`,
+    describe: properties => `${properties['name']} County, ${properties['state']}`,
     groupName: row => `state ${row}`
   },
   'chicago-community-areas': {
     space: 'local',
     groupColumn: null,
-    describe: properties => String(properties.name),
+    describe: properties => String(properties['name']),
     groupName: row => `area ${row}`
   },
   'chicago-tracts': {
     space: 'local',
     groupColumn: 'communityArea',
     describe: properties =>
-      `Tract ${properties.GEOID} (community area ${properties.communityArea})`,
+      `Tract ${properties['GEOID']} (community area ${properties['communityArea']})`,
     groupName: row => `community area ${row}`
   }
 };
@@ -197,6 +198,7 @@ type FeatureTable = {
   radius: Float32Array;
   centroid: Float32Array;
   mask: Uint32Array;
+  validity: Uint32Array;
   groupAreas: Float32Array;
 };
 
@@ -456,6 +458,7 @@ async function createRegionalPolygonMeasures(
     }
     (columns.naiveColorF as Buffer).write(naiveFeatureColors);
     const mask = makeColumn('validity-mask');
+    const usability = makeColumn('validity-usable');
     const validityOverflow = resources.createBuffer('validity-overflow', 4);
 
     const shapeParameters = resources.createParameterBuffer(
@@ -846,6 +849,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
       const graph = new GPUCommandGraph<void>(device, {id: `validity-${id}`});
       const imp = createGraphImporter(graph);
       const maskView = imp('mask', mask, 'uint32', featureCount);
+      const validityView = imp('validity-usable', usability, 'uint32', featureCount);
       graph.add(
         new GPUGeometryValidity({
           id: 'validity',
@@ -855,7 +859,8 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
             ...importPolygonStructure(imp, 'parts')
           },
           output: {
-            mask: maskView,
+            issueCode: maskView,
+            validity: validityView,
             status: {overflow: imp('validity-overflow', validityOverflow, 'uint32', 1)}
           },
           intersectionCapacity: Math.max(4096, featureCount * 4),
@@ -868,6 +873,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
         invocationCount: featureCount,
         bindings: [
           {name: 'mask', view: maskView, type: 'u32', access: 'read'},
+          {name: 'validity', view: validityView, type: 'u32', access: 'read'},
           {
             name: 'category',
             view: imp('validity-f', columns.validityF, 'float32', featureCount),
@@ -879,11 +885,13 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
         // A repeated vertex is valid for GEOS and not structural, so it does not leave 'valid'.
         body: /* wgsl */ `
   let bits = mask[maskOffset + index] & ~REPEATED;
-  var value = ${VALIDITY_PALETTE_INDEXES[0]}.0;
+  var value = 0.0;
   if ((bits & STRUCTURAL) != 0u) {
-    value = ${VALIDITY_PALETTE_INDEXES[2]}.0;
+    value = 2.0;
+  } else if (validity[validityOffset + index] == 0u) {
+    value = 3.0;
   } else if (bits != 0u) {
-    value = ${VALIDITY_PALETTE_INDEXES[1]}.0;
+    value = 1.0;
   }
   category[categoryOffset + index] = value;`
       });
@@ -897,6 +905,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
     const weightNeighbors = resources.createBuffer('weight-neighbors', neighborCapacity * 4);
     const weightValues = resources.createBuffer('weight-values', neighborCapacity * 4);
     const weightOverflow = resources.createBuffer('weight-overflow', 4);
+    const weightCandidateOverflow = resources.createBuffer('weight-candidate-overflow', 4);
     const colors = resources.createBuffer('colors', featureCount * 4);
     const colorSummary = resources.createBuffer('color-summary', 4);
     const colorSummaryParts = {
@@ -911,7 +920,10 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
         offsets: imp('weight-offsets', weightOffsets, 'uint32', featureCount + 1),
         neighbors: imp('weight-neighbors', weightNeighbors, 'uint32', neighborCapacity),
         weights: imp('weight-values', weightValues, 'float32', neighborCapacity),
-        status: {overflow: imp('weight-overflow', weightOverflow, 'uint32', 1)}
+        status: {
+          overflow: imp('weight-overflow', weightOverflow, 'uint32', 1),
+          candidateOverflow: imp('weight-candidate-overflow', weightCandidateOverflow, 'uint32', 1)
+        }
       };
       graph.add(
         new GPUContiguityWeights({
@@ -1032,6 +1044,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
       float(labelRadii, featureCount),
       float(centroidsWgs84, featureCount * 2),
       float(mask, featureCount),
+      float(usability, featureCount),
       float(groupAreas, groupCount),
       {buffer: validityOverflow, size: 4},
       {buffer: planarInvalidCount, size: 4},
@@ -1069,6 +1082,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
         radius: f32(featureCount),
         centroid: f32(featureCount * 2),
         mask: u32(featureCount),
+        validity: u32(featureCount),
         groupAreas: f32(groupCount)
       };
       next.validityOverflow = u32(1)[0];
@@ -1088,7 +1102,8 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
         {buffer: colorSummaryParts.converged, size: 4},
         {buffer: colorSummaryParts.rounds, size: 4},
         {buffer: weightOverflow, size: 4},
-        {buffer: weightOffsets, size: (featureCount + 1) * 4}
+        {buffer: weightOffsets, size: (featureCount + 1) * 4},
+        {buffer: weightCandidateOverflow, size: 4}
       ],
       bytes => {
         if (destroyed || state !== next) return;
@@ -1098,7 +1113,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
           conflictCount: words[1],
           converged: words[2],
           roundCount: words[3],
-          overflow: words[4],
+          overflow: Number(words[4] !== 0 || words[featureCount + 6] !== 0),
           adjacencies: words[5 + featureCount]
         };
         publishColoring(next);
@@ -1368,15 +1383,18 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
       'validity',
       entries.length
         ? entries.map(([name, count]) => `${name} ${formatCount(count)}`).join(', ')
-        : 'all valid'
+        : active.validityOverflow || table.validity.some(value => value === 0)
+          ? 'incomplete check'
+          : 'all valid'
     );
     let conventionOnly = 0;
     let structural = 0;
-    for (const mask of table.mask) {
+    for (let feature = 0; feature < featureCount; feature++) {
+      const mask = table.mask[feature];
       // Matches the category kernel: a repeated vertex alone leaves the polygon valid.
       const bits = mask & ~GPU_GEOMETRY_VALIDITY_BIT.repeatedVertex;
       if ((bits & GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK) !== 0) structural++;
-      else if (bits !== 0) conventionOnly++;
+      else if (table.validity[feature] !== 0 && bits !== 0) conventionOnly++;
     }
     ctx.setReadout('validityConvention', formatCount(conventionOnly));
     ctx.setReadout('validityStructural', formatCount(structural));

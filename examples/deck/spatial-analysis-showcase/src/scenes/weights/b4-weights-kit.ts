@@ -282,7 +282,19 @@ export async function createWeightsKit(props: WeightsKitProps): Promise<WeightsK
         id: 'spatial-lag',
         values: importGraphBuffer(graph, 'values', values, 'float32', rowCount),
         mask: importGraphBuffer(graph, 'mask', props.mask, 'uint32', rowCount),
-        weights: importCsr(graph, 'a', csr, slots),
+        weights: {
+          ...importCsr(graph, 'a', csr, slots),
+          status: {
+            overflow: importGraphBuffer(graph, 'lag-loss', props.producer.overflow, 'uint32', 1),
+            candidateOverflow: importGraphBuffer(
+              graph,
+              'lag-candidate-loss',
+              candidateOverflowBuffer,
+              'uint32',
+              1
+            )
+          }
+        },
         normalize,
         output: lag
       })

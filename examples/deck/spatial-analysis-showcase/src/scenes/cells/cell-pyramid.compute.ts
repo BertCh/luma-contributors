@@ -191,6 +191,9 @@ export async function createCellPyramid(
   const levelOverflowBuffers = [0, 1].map(parity =>
     resources.createBuffer(`level-overflow-${parity}`, LEVEL_COUNT * 4)
   );
+  const levelCandidateOverflowBuffers = [0, 1].map(parity =>
+    resources.createBuffer(`level-candidate-overflow-${parity}`, LEVEL_COUNT * 4)
+  );
   // Fixed-point research-grade sums of the finest level only; coarser pyramid levels do not need them.
   const finestSumsBuffer = resources.createBuffer('finest-sums', capacity * 8);
   const rollupCellsBuffer = resources.createBuffer('rollup-cells', capacity * 8);
@@ -198,6 +201,7 @@ export async function createCellPyramid(
   const rollupSumsBuffer = resources.createBuffer('rollup-sums', capacity * 8);
   const rollupSumValuesBuffer = resources.createBuffer('rollup-sum-values', capacity * 4);
   const rollupOverflowBuffer = resources.createBuffer('rollup-overflow', 4);
+  const rollupCandidateOverflowBuffer = resources.createBuffer('rollup-candidate-overflow', 4);
   const zeroWordBuffer = resources.createBuffer('zero-word', 4);
   const rollupDrawCommands = resources.track(
     new DrawCommandBuffer(device, {
@@ -251,6 +255,13 @@ export async function createCellPyramid(
       status: {
         count: importSlice(tableCountBuffers[parity], 'uint32', 4, levelIndex, 1),
         overflow: importSlice(levelOverflowBuffers[parity], 'uint32', 4, levelIndex, 1),
+        candidateOverflow: importSlice(
+          levelCandidateOverflowBuffers[parity],
+          'uint32',
+          4,
+          levelIndex,
+          1
+        ),
         ...(levelIndex === 0
           ? {requiredCount: importSlice(levelTotalsBuffer, 'uint32', 4, 0, 1)}
           : {})
@@ -355,7 +366,8 @@ export async function createCellPyramid(
           sums: view(finestSumsBuffer, 'uint32x2', 8, capacity),
           status: {
             count: view(tableCountBuffers[0], 'uint32', 4, 1),
-            overflow: view(levelOverflowBuffers[0], 'uint32', 4, 1)
+            overflow: view(levelOverflowBuffers[0], 'uint32', 4, 1),
+            candidateOverflow: view(levelCandidateOverflowBuffers[0], 'uint32', 4, 1)
           }
         },
         sumScale: GPU_CELL_DEFAULT_SUM_SCALE,
@@ -371,7 +383,8 @@ export async function createCellPyramid(
               length: 1,
               byteOffset: Uint32Array.BYTES_PER_ELEMENT
             }),
-            overflow: view(rollupOverflowBuffer, 'uint32', 4, 1)
+            overflow: view(rollupOverflowBuffer, 'uint32', 4, 1),
+            candidateOverflow: view(rollupCandidateOverflowBuffer, 'uint32', 4, 1)
           }
         }
       })
@@ -548,6 +561,7 @@ export async function createCellPyramid(
     beforeCells: number;
     afterCells: number;
     overflow: boolean;
+    candidateOverflow: boolean;
   } | null = null;
   let compareTileLookup: Map<number, number> | null = null;
   let maximumDelta = 20;
@@ -598,6 +612,7 @@ export async function createCellPyramid(
       const afterValue = output('after-value', 4, union, 'float32');
       const count = output('union-count', 4, 1, 'uint32');
       const overflow = output('union-overflow', 4, 1, 'uint32');
+      const candidateOverflow = output('union-candidate-overflow', 4, 1, 'uint32');
       const colors = output('colors', 4, union, 'uint32');
       const beforeCellCount = output('before-table-count', 4, 1, 'uint32');
       const afterCellCount = output('after-table-count', 4, 1, 'uint32');
@@ -664,7 +679,11 @@ export async function createCellPyramid(
             ratio: ratio.view,
             percentChange: percentChange.view,
             zScore: zScore.view,
-            status: {count: count.view, overflow: overflow.view}
+            status: {
+              count: count.view,
+              overflow: overflow.view,
+              candidateOverflow: candidateOverflow.view
+            }
           },
           colors: colors.view
         },
@@ -690,6 +709,7 @@ export async function createCellPyramid(
           {buffer: overflow.buffer, size: 4},
           {buffer: beforeCellCount.buffer, size: 4},
           {buffer: afterCellCount.buffer, size: 4},
+          {buffer: candidateOverflow.buffer, size: 4},
           {buffer: cells.buffer, size: union * 8},
           {buffer: beforeValue.buffer, size: union * 4},
           {buffer: afterValue.buffer, size: union * 4},
@@ -699,7 +719,7 @@ export async function createCellPyramid(
         bytes => {
           const words = new Uint32Array(bytes);
           const unionRows = Math.min(words[0], union);
-          const base = 4;
+          const base = 5;
           compareSnapshot = {
             rows: unionRows,
             cells: words.slice(base, base + unionRows * 2),
@@ -709,7 +729,8 @@ export async function createCellPyramid(
             zScore: new Float32Array(bytes.slice((base + union * 5) * 4, (base + union * 6) * 4)),
             beforeCells: words[2],
             afterCells: words[3],
-            overflow: words[1] !== 0
+            overflow: words[1] !== 0,
+            candidateOverflow: words[4] !== 0
           };
           compareTileLookup = null;
           updateCompareReadouts();
@@ -782,7 +803,7 @@ export async function createCellPyramid(
     maximumDelta = Math.max(Math.abs(largestGain), Math.abs(largestLoss), 5);
     ctx.setReadout(
       'compareCells',
-      `${formatCount(snapshot.beforeCells)} before, ${formatCount(snapshot.afterCells)} after, ${formatCount(snapshot.rows)} in the union${snapshot.overflow ? ' (OVERFLOW)' : ''}`
+      `${formatCount(snapshot.beforeCells)} before, ${formatCount(snapshot.afterCells)} after, ${formatCount(snapshot.rows)} in the union${snapshot.overflow ? ' (UNION CAPACITY)' : ''}${snapshot.candidateOverflow ? ' (INPUT LOSS)' : ''}`
     );
     ctx.setReadout(
       'compareTotals',
@@ -878,6 +899,8 @@ export async function createCellPyramid(
       {buffer: levelCountsBuffer, size: LEVEL_COUNT * 4},
       {buffer: levelOverflowBuffers[0], size: LEVEL_COUNT * 4},
       {buffer: levelOverflowBuffers[1], size: LEVEL_COUNT * 4},
+      {buffer: levelCandidateOverflowBuffers[0], size: LEVEL_COUNT * 4},
+      {buffer: levelCandidateOverflowBuffers[1], size: LEVEL_COUNT * 4},
       {buffer: levelTotalsBuffer, size: 4},
       {buffer: drawCommands.buffer, size: 8} // vertex count, then the GPU-written instance count
     ],
@@ -888,11 +911,18 @@ export async function createCellPyramid(
         words.subarray(LEVEL_COUNT, LEVEL_COUNT * 2),
         words.subarray(LEVEL_COUNT * 2, LEVEL_COUNT * 3)
       ];
-      const finestTotal = words[LEVEL_COUNT * 3];
+      const candidateOverflows = [
+        words.subarray(LEVEL_COUNT * 3, LEVEL_COUNT * 4),
+        words.subarray(LEVEL_COUNT * 4, LEVEL_COUNT * 5)
+      ];
+      const finestTotal = words[LEVEL_COUNT * 5];
       const describeLevels = (first: number, last: number) => {
         const parts: string[] = [];
         for (let level = first; level <= last; level++) {
-          parts.push(`${getLevelResolution(level)}: ${formatCount(counts[level])}`);
+          const incomplete = overflows[level & 1][level] || candidateOverflows[level & 1][level];
+          parts.push(
+            `${getLevelResolution(level)}: ${formatCount(counts[level])}${incomplete ? ' (incomplete)' : ''}`
+          );
         }
         return parts.join(', ');
       };
@@ -901,18 +931,19 @@ export async function createCellPyramid(
       ctx.setReadout('levelsCoarse', `res ${describeLevels(10, LEVEL_COUNT - 1)}`);
       const overflowed: number[] = [];
       for (let level = 0; level < LEVEL_COUNT; level++) {
-        if (overflows[level & 1][level]) overflowed.push(getLevelResolution(level));
+        if (overflows[level & 1][level] || candidateOverflows[level & 1][level])
+          overflowed.push(getLevelResolution(level));
       }
       ctx.setReadout(
         'overflow',
         overflowed.length
-          ? `res ${overflowed.join(', ')} (unclamped ${formatCount(finestTotal)})`
+          ? `incomplete at res ${overflowed.join(', ')} (unclamped ${formatCount(finestTotal)})`
           : 'none'
       );
       if (ctx.options.view === 'pyramid') {
         ctx.setReadout(
           'activeCells',
-          `${formatCount(words[LEVEL_COUNT * 3 + 2])} cells at res ${getLevelResolution(lastLevelIndex)}`
+          `${formatCount(words[LEVEL_COUNT * 5 + 2])} cells at res ${getLevelResolution(lastLevelIndex)}${overflows[lastLevelIndex & 1][lastLevelIndex] || candidateOverflows[lastLevelIndex & 1][lastLevelIndex] ? ' (incomplete)' : ''}`
         );
       }
     }
@@ -930,7 +961,7 @@ export async function createCellPyramid(
     for (let row = 0; row < rows; row++) total += words[row];
     return total;
   };
-  const TOTALS_HEADER_BYTES = 20;
+  const TOTALS_HEADER_BYTES = 28;
   let totalsResolution = DEFAULT_ROLLUP_RESOLUTION;
   const totalsReader = new SummaryReader(
     resources,
@@ -940,13 +971,16 @@ export async function createCellPyramid(
       {buffer: levelOverflowBuffers[0], size: 4},
       {buffer: rollupDrawCommands.buffer, size: 8},
       {buffer: rollupOverflowBuffer, size: 4},
+      {buffer: levelCandidateOverflowBuffers[0], size: 4},
+      {buffer: rollupCandidateOverflowBuffer, size: 4},
       {buffer: countsSlabs[0], size: capacity * 4},
       {buffer: finestSumsBuffer, size: capacity * 8},
       {buffer: rollupCountsBuffer, size: capacity * 4},
       {buffer: rollupSumsBuffer, size: capacity * 8}
     ],
     bytes => {
-      const header = new Uint32Array(bytes, 0, 5);
+      const header = new Uint32Array(bytes, 0, 7);
+      const incomplete = Boolean(header[1] || header[4] || header[5] || header[6]);
       const fineRows = header[0];
       const parentRows = header[3];
       const wordsAt = (byteOffset: number, length: number) =>
@@ -964,15 +998,15 @@ export async function createCellPyramid(
       const toConfirmed = (sum: bigint) => Number(sum) / GPU_CELL_DEFAULT_SUM_SCALE;
       ctx.setReadout(
         'rollupCells',
-        `${formatCount(parentRows)} cells at res ${totalsResolution} (from ${formatCount(fineRows)} at res ${FINEST_RESOLUTION})${header[1] || header[4] ? ' (OVERFLOW)' : ''}`
+        `${formatCount(parentRows)} cells at res ${totalsResolution} (from ${formatCount(fineRows)} at res ${FINEST_RESOLUTION})${incomplete ? ' (incomplete)' : ''}`
       );
       ctx.setReadout(
         'rollupCounts',
-        `${formatCount(fineCount)} to ${formatCount(parentCount)} observations ${fineCount === parentCount ? '(conserved exactly)' : '(DIFFERS)'}`
+        `${formatCount(fineCount)} to ${formatCount(parentCount)} observations ${incomplete ? '(incomplete)' : fineCount === parentCount ? '(conserved exactly)' : '(DIFFERS)'}`
       );
       ctx.setReadout(
         'rollupSums',
-        `${formatCount(toConfirmed(fineSum))} to ${formatCount(toConfirmed(parentSum))} research-grade observations ${fineSum === parentSum ? '(bit-exact)' : '(DIFFERS)'}`
+        `${formatCount(toConfirmed(fineSum))} to ${formatCount(toConfirmed(parentSum))} research-grade observations ${incomplete ? '(incomplete)' : fineSum === parentSum ? '(bit-exact)' : '(DIFFERS)'}`
       );
     }
   );

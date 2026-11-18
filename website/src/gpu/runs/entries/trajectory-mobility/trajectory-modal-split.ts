@@ -37,6 +37,8 @@ type Outputs = {
   segments: RunBuffer;
   positions: RunBuffer;
   triplegCount: RunBuffer;
+  triplegOverflow: RunBuffer;
+  triplegCandidateOverflow: RunBuffer;
   triplegStartRows: RunBuffer;
   triplegEndRows: RunBuffer;
   modalSplit: RunBuffer;
@@ -77,7 +79,11 @@ export default defineOperationRun({
           tracks: segments.triplegTracks.view,
           startRows: segments.triplegStartRows.view,
           endRows: segments.triplegEndRows.view,
-          status: {count: segments.triplegCount.view}
+          status: {
+            count: segments.triplegCount.view,
+            overflow: segments.triplegOverflow.view,
+            candidateOverflow: segments.triplegCandidateOverflow.view
+          }
         },
         // The breaks must be strictly ascending, so the fast break is kept above the slow one.
         modeSpeedBreaks: [
@@ -94,6 +100,8 @@ export default defineOperationRun({
       segments: builder.upload('display-segments', 'float32x4', fleet.displaySegments),
       positions: builder.upload('display-positions', 'float32x2', fleet.displayPositions),
       triplegCount: segments.triplegCount,
+      triplegOverflow: segments.triplegOverflow,
+      triplegCandidateOverflow: segments.triplegCandidateOverflow,
       triplegStartRows: segments.triplegStartRows,
       triplegEndRows: segments.triplegEndRows,
       modalSplit,
@@ -113,16 +121,19 @@ export default defineOperationRun({
   buildCache: 6,
   // Triplegs are joined row to row and labeled by mode; the table is split into one column per mode.
   async afterRun({inputs, outputs, upload}) {
-    const [count, starts, ends, modes, split] = await Promise.all([
+    const [count, starts, ends, modes, split, overflow, candidateOverflow] = await Promise.all([
       readUint32(outputs.triplegCount),
       readUint32(outputs.triplegStartRows),
       readUint32(outputs.triplegEndRows),
       readUint32(outputs.predictedModes),
-      readFloat32(outputs.modalSplit)
+      readFloat32(outputs.modalSplit),
+      readUint32(outputs.triplegOverflow),
+      readUint32(outputs.triplegCandidateOverflow)
     ]);
+    const incomplete = Boolean(overflow[0] || candidateOverflow[0]);
     const labels = new Uint32Array(inputs.rowCount).fill(NONE);
     const edges: number[] = [];
-    for (let tripleg = 0; tripleg < Math.min(count[0], starts.length); tripleg++) {
+    for (let tripleg = 0; !incomplete && tripleg < Math.min(count[0], starts.length); tripleg++) {
       for (let row = starts[tripleg]; row < ends[tripleg]; row++) {
         labels[row] = modes[tripleg];
         if (row + 1 < ends[tripleg]) edges.push(row, row + 1);
@@ -139,10 +150,11 @@ export default defineOperationRun({
       )
     );
     return {
+      incomplete,
       labels: upload('mode-labels', 'uint32', labels),
       edges: upload('tripleg-edges', 'uint32x2', Uint32Array.from(edges.length ? edges : [0, 0])),
       columns,
-      maximum: Math.max(1e-6, ...split)
+      maximum: Math.max(1e-6, ...Array.from(split).filter(Number.isFinite))
     };
   },
   // A pad over the two speed breaks. They are compile-time, so they apply once the pointer rests.
@@ -153,18 +165,21 @@ export default defineOperationRun({
       getFractionOf(findParameter(parameters, 'slowBreak'), 0.012),
       1 - getFractionOf(findParameter(parameters, 'fastBreak'), 0.03)
     ],
-    resolve(pointer, {inputs, values}) {
+    resolve(pointer, {inputs, values, outputs, peek}) {
       const slowBreak = getParameterAt(findParameter(parameters, 'slowBreak'), pointer.unitX);
       const fastBreak = getParameterAt(findParameter(parameters, 'fastBreak'), 1 - pointer.unitY);
       return {
         settle: {slowBreak, fastBreak},
-        readout: `modeSpeedBreaks [${formatSpeed(slowBreak, inputs.metersPerUnit)}, ${formatSpeed(fastBreak, inputs.metersPerUnit)}] · ${METRICS[values.metric]}`
+        readout:
+          peek(outputs.triplegOverflow)?.[0] || peek(outputs.triplegCandidateOverflow)?.[0]
+            ? 'Incomplete tripleg table; modal split unavailable'
+            : `modeSpeedBreaks [${formatSpeed(slowBreak, inputs.metersPerUnit)}, ${formatSpeed(fastBreak, inputs.metersPerUnit)}] · ${METRICS[values.metric]}`
       };
     }
   },
   draw: ({inputs, outputs, extra, theme}) => [
     {layer: 'lines', context: true, segments: outputs.segments, count: inputs.segmentCount},
-    ...(extra
+    ...(extra && !extra.incomplete
       ? [
           {
             layer: 'segments' as const,

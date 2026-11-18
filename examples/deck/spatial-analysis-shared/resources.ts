@@ -6,7 +6,8 @@ import type {Viewport} from '@deck.gl/core';
 import {Buffer, type Device} from '@luma.gl/core';
 import {
   GPUParameterBuffer,
-  type GPUParameterFormat
+  type GPUParameterFormat,
+  type GPUParameterValues
 } from '@luma-contributors/analysis/analysis-core';
 
 type Destroyable = {destroy: () => void};
@@ -59,7 +60,7 @@ export class SpatialAnalysisResources {
     name: string,
     format: Format,
     length: number,
-    values?: Float32Array | Uint32Array | Int32Array
+    values?: GPUParameterValues<NoInfer<Format>>
   ): GPUParameterBuffer<Format> {
     return this.track(
       new GPUParameterBuffer(this.device, {

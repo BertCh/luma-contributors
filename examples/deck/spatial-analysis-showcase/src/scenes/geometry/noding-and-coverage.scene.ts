@@ -660,7 +660,7 @@ graph.add(new GPUSegmentIntersection({
   left: {kind: 'lines', positions: streets, lineOffsets: streetOffsets},${state.crossMode === 'streets-rail' ? "\n  right: {kind: 'lines', positions: rail, lineOffsets: railOffsets}," : `\n  sameFeatureOnly: ${state.sameFeatureOnly},`}
   spatialSort: ${state.crossSpatialSort},
   output: {
-    pairs: {leftIds, rightIds, status: {count, overflow, requiredCount}},
+    pairs: {leftRows, rightRows, status: {count, overflow, requiredCount}},
     kinds, points,                       // 1 proper, 2 touch, 3 collinear touch, 4 overlap
     status: {uncertainCount}
   }

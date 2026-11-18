@@ -77,7 +77,12 @@ export function createTopologyBuffers(
         dangleCount: buffer('uint32', 1).view,
         unusedEdgeCount: buffer('uint32', 1).view
       },
-      status: status()
+      status: {
+        count: buffer('uint32', 1).view,
+        requiredRingCount: buffer('uint32', 1).view,
+        overflow: buffer('uint32', 1).view,
+        candidateOverflow: buffer('uint32', 1).view
+      }
     }
   };
 }

@@ -164,7 +164,7 @@ export async function createOsmDrawsItself(
         timestamps: v('days', daysBuffer, 'float32', count),
         window: parameters.importToGraph(graph),
         output: {
-          ids: v('ids', ids, 'uint32', count),
+          rows: v('ids', ids, 'uint32', count),
           status: {
             count: v('count', countBuffer, 'uint32', 1),
             overflow: v('overflow', overflow, 'uint32', 1)

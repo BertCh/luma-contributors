@@ -5,6 +5,7 @@
 import {KeplerAllocationError} from '@luma-contributors/kepler';
 import * as arrow from 'apache-arrow';
 import {preparePointLabelSource, type PointLabelScalar} from './label-source';
+import {readOriginalColumnValues, resolveOriginalColumnRow} from './original-column-values';
 import {
   STREAMED_LABEL_LIMITS,
   normalizeLabelText,
@@ -51,7 +52,7 @@ export function prepareResidentPointLabels(
     preflightLabelStrings(column, budget);
     const values: PointLabelScalar[] = [];
     for (let rowIndex = 0; rowIndex < column.length; rowIndex++) {
-      let value: unknown = column.get(rowIndex);
+      let value: unknown = readPointLabelValue(column, rowIndex);
       if (value instanceof Date) value = value.getTime();
       if (
         value !== null &&
@@ -123,7 +124,7 @@ export function prepareStreamedPointLabels(
       id: batches[batchIndex].id,
       rowCount: column.length,
       getText(rowIndex: number) {
-        let value: unknown = column.get(rowIndex);
+        let value: unknown = readPointLabelValue(column, rowIndex);
         if (value instanceof Date) value = value.getTime();
         if (value !== null && value !== undefined && typeof value === 'object') return '';
         const scalar = value as PointLabelScalar;
@@ -131,6 +132,16 @@ export function prepareStreamedPointLabels(
       }
     };
   });
+}
+
+/** Calendar formatters need containing milliseconds, before Arrow can round exact source ticks. */
+function readPointLabelValue(column: arrow.Vector, row: number): unknown {
+  const original = resolveOriginalColumnRow(column, row);
+  if (!original) return null;
+  if (arrow.DataType.isTimestamp(original.vector.type))
+    return readOriginalColumnValues(original.vector, [original.row])[0];
+  // Keep non-timestamp Int64 labels as bigint so exact integer text is preserved.
+  return original.vector.get(original.row);
 }
 
 export function isLabelScalarType(type: arrow.DataType): boolean {

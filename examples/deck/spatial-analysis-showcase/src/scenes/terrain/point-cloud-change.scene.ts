@@ -421,7 +421,7 @@ export default defineScene<PointCloudChangeOptions>({
             }
           ],
   furniture: {title: true, credit: true, scaleBar: true},
-  snippet: `graph.add(new GPUPointCloudChange({reference, comparison, cores, normals, alignment: 'already-aligned', radius: 1.5, halfDepth: 3, minimumSupport: 3, registrationError: 0.03, changes, roughness, counts, status}));`,
+  snippet: `graph.add(new GPUPointCloudChange({reference, comparison, cores, normals, alignment: 'already-aligned', radius: 1.5, halfDepth: 3, minimumSupport: 3, registrationError: 0.03, output: {changes, roughness, counts, status}}));`,
   about: {
     what: 'GPU M3C2-style signed mean differences inside cylinders oriented by the provided core normals, with an explicit uncertainty interval.',
     why: 'A displacement estimate is meaningful only alongside per-epoch support and an uncertainty model.',

@@ -4,6 +4,7 @@
 
 import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
+import {LIDAR_GROUND_DISPLAY_CATEGORIES} from './point-cloud-ground-support';
 
 export type LidarGroundOptions = {
   view: 'source' | 'outliers' | 'ground' | 'height' | 'features' | 'voxels';
@@ -119,10 +120,10 @@ export default defineScene<LidarGroundOptions>({
       title: 'Separate the ground from objects',
       headline: 'Class-2 seed returns constrain the progressive ground filter',
       textAlternative:
-        'A progressive morphological ground filter marks returns that remain close to its seeded ground surface.',
-      body: '`GPUPointCloudSurfaces` first builds a cell minimum from returns already marked as LAS ground. `GPUPointCloudGround` applies progressive morphological openings and the slope threshold, then writes the resulting ground mask and updated class codes.',
+        'The ground filter separates complete accepted and rejected results from provisional or unsupported returns.',
+      body: '`GPUPointCloudSurfaces` first builds a cell minimum from returns already marked as LAS ground. `GPUPointCloudGround` applies a radius-one morphological opening and the slope threshold. Its mask and support status jointly determine the displayed category; only complete accepted rows seed the recovered terrain.',
       evidence:
-        'Green points are accepted by the GPU ground filter; coral points were rejected because they exceeded a local threshold or lacked seeded ground support.',
+        'Green points are accepted with complete support; coral points are rejected with complete support. Gold marks provisional incomplete windows and gray marks missing seed support or invalid points.',
       caveat:
         'This is a bounded square-window PMF. It does not replace survey-specific ground classification or preserve every breakline.',
       options: {view: 'ground'},
@@ -229,10 +230,7 @@ export default defineScene<LidarGroundOptions>({
             id: 'ground-class',
             title: 'Progressive ground filter',
             kind: 'categories',
-            entries: [
-              {label: 'Rejected as object / non-ground', color: [204, 109, 97]},
-              {label: 'Accepted ground', color: [150, 211, 166]}
-            ]
+            entries: LIDAR_GROUND_DISPLAY_CATEGORIES.map(({label, color}) => ({label, color}))
           }
         ];
       case 'height':
@@ -285,7 +283,7 @@ export default defineScene<LidarGroundOptions>({
     what: 'The scene uses the USGS King County 2021 tile 2282, clipped to 180 m and sampled to one original return per occupied 0.5 m cell. It keeps LAS classification and NAVD88 Geoid18 elevation, converted from US survey feet to metres.',
     why: 'The stages answer practical point-cloud questions: which points have sparse support, which belong to ground, how high objects stand above ground, whether neighbourhood shape is reliable, and how many representatives remain at a chosen voxel scale.',
     howToRead:
-      'Ground and relative-height colours are GPU outputs. The last step draws only the GPU-selected representative row from every occupied 2 m cube. Hover the data attribution for the source catalogue and public-domain terms.'
+      'Ground colors distinguish complete acceptance/rejection, provisional windows and unsupported points. A radius-one opening retains supported terrain on this sparse class-2 seed grid; only complete accepted ground seeds height. The last step draws only the GPU-selected representative row from every occupied 2 m cube. Hover the data attribution for the source catalogue and public-domain terms.'
   },
   snippet: state => `import {GPUPointCloudVoxelDownsample} from '@luma.gl/graph/gpu-pointcloud';
 import {
@@ -294,9 +292,9 @@ import {
 import {GPUElementwise, GPUCompaction} from '@luma.gl/graph/gpu-core';
 
 // One bounded USGS return sample, analysed in local metres.
-graph.add(new GPUPointCloudGround({grid, radii: [1, 2, 4], initialThreshold: 0.3, slope: 0.1, maximumThreshold: 2, ...groundBuffers}));
-graph.add(new GPUPointCloudHeight({grid, ...terrainBuffers, ...heightBuffers}));
-graph.add(new GPUPointCloudFeatures({capacity: 16, ...neighborhoodBuffers, ...featureBuffers}));
+graph.add(new GPUPointCloudGround({positions, classifications, minimumSurface, coverage: groundSeedCoverage, grid, radii: [1], initialThreshold: 0.3, slope: 0.1, maximumThreshold: 2, output: {groundMask, outputClassifications, status: groundStatus}}));
+graph.add(new GPUPointCloudHeight({positions, grid, terrain, coverage, coverageBit: 2, output: {heights, status: heightStatus}}));
+graph.add(new GPUPointCloudFeatures({positions, indices, counts, capacity: 16, output: {normals, eigenvalues, shapes, status: featureStatus}}));
 graph.add(new GPUPointCloudVoxelDownsample({voxelSize: 2, gridSize: [110, 110, 45], ...voxelBuffers}));
 graph.add(new GPUElementwise({input: voxelCounts, inputB: ones, output: occupiedFlags, operation: 'min'}));
 graph.add(new GPUCompaction({input: representatives, flags: occupiedFlags, output: compactIndices, count: drawCount}));

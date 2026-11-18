@@ -322,7 +322,7 @@ export async function createCalendarPatterns(
           {kind: 'selection', mask: v('category-mask', categoryMaskBuffer, 'uint32', eventCount)}
         ],
         output: {
-          ids: v('ids', idsBuffer, 'uint32', eventCount),
+          rows: v('ids', idsBuffer, 'uint32', eventCount),
           status: {
             count: v('window-count', countBuffer, 'uint32', 1),
             overflow: v('overflow', overflowBuffer, 'uint32', 1)

@@ -29,6 +29,7 @@ import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
 import type {BarChartData} from '../chart-types';
 import type {PointCloudSupportOptions} from './point-cloud-support.scene';
+import {addPointCloudSupportVoxelPart} from './point-cloud-voxel-parts';
 
 const TARGET_ROWS = 2000;
 const VOXEL_SIZE_METERS = 6;
@@ -311,10 +312,12 @@ export async function createPointCloudSupport(
         slope: settings.smrfSlope,
         scalar: 1.25,
         threshold: 0.5,
-        groundSurface: smrfSurface,
-        groundMask: smrfGroundMask,
-        outputClassifications: smrfClassifications,
-        status: smrfStatus
+        output: {
+          groundSurface: smrfSurface,
+          groundMask: smrfGroundMask,
+          outputClassifications: smrfClassifications,
+          status: smrfStatus
+        }
       })
     );
     graph.add(
@@ -361,36 +364,40 @@ export async function createPointCloudSupport(
         'float32x3',
         voxelCount
       );
-      graph.add(
-        new GPUPointCloudVoxelDownsample({
-          id: `support-voxel-part-${partIndex}`,
-          positions: partPositions,
-          origin: voxelOrigin,
-          voxelSize: VOXEL_SIZE_METERS,
-          gridSize: voxelGrid,
-          counts: partCounts,
-          representatives: partRepresentatives,
-          output: partOutput
-        })
-      );
-      return {
+      return addPointCloudSupportVoxelPart(graph, {
+        id: `support-voxel-part-${partIndex}`,
+        positions: partPositions,
+        sourcePositions: positions.subarray(
+          partIndex === 0 ? 0 : partitionCount * 3,
+          partIndex === 0 ? partitionCount * 3 : positions.length
+        ),
+        origin: voxelOrigin,
+        voxelSize: VOXEL_SIZE_METERS,
+        gridSize: voxelGrid,
         counts: partCounts,
-        // Published downsampling emits representative positions, not centroids; the merge's
-        // position channel therefore averages representatives and is not compared with the direct run.
-        centroids: partOutput,
+        selectedPositions: partOutput,
         representatives: partRepresentatives,
+        uploadMeans: means =>
+          importView(
+            `voxel-part-${partIndex}-means`,
+            resources.createBuffer(`voxel-part-${partIndex}-means`, means),
+            'float32x3',
+            voxelCount
+          ),
         sourceRowOffset: partIndex === 0 ? 0 : partitionCount
-      };
+      });
     });
     graph.add(
       new GPUPointCloudVoxelMerge({
         id: 'support-voxel-merge',
         partitionPolicy: 'disjoint-owned-rows',
         parts: mergeParts,
-        counts: mergedCounts,
-        centroids: mergedCentroids,
-        representatives: mergedRepresentatives,
-        status: mergedStatus
+        output: {
+          counts: mergedCounts,
+          centroids: mergedCentroids,
+          representatives: mergedRepresentatives,
+          status: mergedStatus
+        }
       })
     );
     graph.add(

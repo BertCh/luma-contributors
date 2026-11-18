@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+/// <reference path="../showcase-globals.d.ts" />
+
 import type {Buffer} from '@luma.gl/core';
 import {
   SummaryReader as SharedSummaryReader,

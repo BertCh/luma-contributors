@@ -225,7 +225,7 @@ export function createFleetDwellScene(variant: 'stops' | 'zone-events'): RecipeS
           stopFlag,
           joinFlag,
           events,
-          eventFlag,
+          _eventFlag,
           candidates,
           candidateFlag,
           trackFlag,
@@ -287,7 +287,12 @@ export function createFleetDwellScene(variant: 'stops' | 'zone-events'): RecipeS
                 ['Candidate scratch overflow', candidateFlag.u32[0] ? 'YES' : 'no'],
                 ['Per-track event bound overflow', trackFlag.u32[0] ? 'YES' : 'no'],
                 ['Event list capacity overflow', eventCapacityFlag.u32[0] ? 'YES' : 'no'],
-                ['Any overflow (combined flag)', eventFlag.u32[0] ? 'YES' : 'no']
+                [
+                  'Any overflow',
+                  candidateFlag.u32[0] || trackFlag.u32[0] || eventCapacityFlag.u32[0]
+                    ? 'YES'
+                    : 'no'
+                ]
               ]
         );
       }

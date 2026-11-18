@@ -28,6 +28,7 @@ import {
   GPUSpatialWeightsTranspose
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
+import {importWeightsKitLoss} from './spatial-weights-imports';
 import type {SpatialAnalysisResources} from '../spatial-analysis-resources';
 import {addKernelPass} from './mode-kernels';
 
@@ -82,7 +83,7 @@ export type WeightsKitProps = {
   /** The weights the producer writes and every analysis reads. */
   csr: WeightsCsrBuffers;
   /** Producer overflow flag and unclamped neighbor total, copied into the readback. */
-  producer: {overflow: Buffer; total: Buffer};
+  producer: {overflow: Buffer; total: Buffer; candidateOverflow?: Buffer};
   /** Existing summary buffers of `csr` (12 and 20 bytes) when another graph already fills them. */
   summary?: {statistics: Buffer; counts: Buffer};
   /** Also build full-matrix link segments for the transpose and the union. */
@@ -117,7 +118,7 @@ const SUMMARY_COUNTS_LENGTH = GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT.counts.length;
 const SUMMARY_EXTRA = SUMMARY_STATISTICS_LENGTH + SUMMARY_COUNTS_LENGTH;
 // statistics, counts, asymmetric 1, lag extent 2, union overflow and total 2, producer
 // overflow and total 2, focus info 3 x 2.
-const SUMMARY_WORDS = SUMMARY_EXTRA + 1 + 2 + 2 + 2 + 6;
+const SUMMARY_WORDS = SUMMARY_EXTRA + 1 + 2 + 2 + 2 + 6 + 1;
 
 /** Weights analysis kit for one source; see the module comment. */
 export type WeightsKit = {
@@ -208,7 +209,8 @@ export async function createWeightsKit(props: WeightsKitProps): Promise<WeightsK
   ) => ({
     offsets: importGraphBuffer(graph, `${name}-offsets`, matrix.offsets, 'uint32', rowCount + 1),
     neighbors: importGraphBuffer(graph, `${name}-neighbors`, matrix.neighbors, 'uint32', count),
-    weights: importGraphBuffer(graph, `${name}-weights`, matrix.weights, 'float32', count)
+    weights: importGraphBuffer(graph, `${name}-weights`, matrix.weights, 'float32', count),
+    status: matrix === csr ? importWeightsKitLoss(graph, name, props.producer) : undefined
   });
   const importPositions = (graph: GPUCommandGraph<void>) =>
     importGraphBuffer(graph, 'positions', positions, 'float32x2', rowCount);
@@ -508,6 +510,7 @@ export async function createWeightsKit(props: WeightsKitProps): Promise<WeightsK
       copy(infoBuffers.weights, 2);
       copy(infoBuffers.transpose, 2);
       copy(infoBuffers.union, 2);
+      if (props.producer.candidateOverflow) copy(props.producer.candidateOverflow, 1);
       ticket.markEncoded({byteOffset: 0, byteLength: SUMMARY_WORDS * 4});
       const bytes = await scheduleReadback(() => ticket.read());
       const floats = new Float32Array(bytes.buffer, bytes.byteOffset, SUMMARY_WORDS);
@@ -529,7 +532,9 @@ export async function createWeightsKit(props: WeightsKitProps): Promise<WeightsK
         lagMaximum: floats[SUMMARY_EXTRA + 2],
         unionOverflow: words[SUMMARY_EXTRA + 3] !== 0,
         unionSlots: words[SUMMARY_EXTRA + 4],
-        producerOverflow: words[SUMMARY_EXTRA + 5] !== 0,
+        producerOverflow:
+          words[SUMMARY_EXTRA + 5] !== 0 ||
+          (Boolean(props.producer.candidateOverflow) && words[SUMMARY_WORDS - 1] !== 0),
         producerTotal: words[SUMMARY_EXTRA + 6],
         focus: {
           weights: info(SUMMARY_EXTRA + 7),

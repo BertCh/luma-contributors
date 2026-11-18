@@ -389,6 +389,7 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
         'float32',
         PAIR_CAPACITY
       );
+      const pairOverflowView = importGraphBuffer(graph, 'pair-overflow', pairOverflow, 'uint32', 1);
       graph.add(
         new GPUArealInterpolation({
           spatialContext: projection.spatialContext,
@@ -404,7 +405,7 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
             weights: {offsets: offsetsView, neighbors: neighborsView, weights: extensiveView},
             alternateWeights: intensiveView,
             status: {
-              overflow: importGraphBuffer(graph, 'pair-overflow', pairOverflow, 'uint32', 1),
+              overflow: pairOverflowView,
               requiredPairCount: importGraphBuffer(graph, 'pair-total', pairTotal, 'uint32', 1)
             }
           }
@@ -414,7 +415,12 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
       graph.add(
         new GPUSpatialLag({
           id: 'lag-extensive',
-          weights: {offsets: offsetsView, neighbors: neighborsView, weights: extensiveView},
+          weights: {
+            offsets: offsetsView,
+            neighbors: neighborsView,
+            weights: extensiveView,
+            status: {overflow: pairOverflowView}
+          },
           values: importGraphBuffer(graph, 'totals', sourceTotalsBuffer, 'float32', sourceCount),
           output: importGraphBuffer(
             graph,
@@ -428,7 +434,12 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
       graph.add(
         new GPUSpatialLag({
           id: 'lag-intensive',
-          weights: {offsets: offsetsView, neighbors: neighborsView, weights: intensiveView},
+          weights: {
+            offsets: offsetsView,
+            neighbors: neighborsView,
+            weights: intensiveView,
+            status: {overflow: pairOverflowView}
+          },
           values: importGraphBuffer(
             graph,
             'densities',

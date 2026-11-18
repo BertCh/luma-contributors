@@ -144,12 +144,12 @@ export function addPairSegments(
   options: {
     leftPositions: RunBuffer<'float32x2'>;
     rightPositions: RunBuffer<'float32x2'>;
-    leftIds: RunBuffer<'uint32'>;
-    rightIds: RunBuffer<'uint32'>;
+    leftRows: RunBuffer<'uint32'>;
+    rightRows: RunBuffer<'uint32'>;
     count: RunBuffer<'uint32'>;
   }
 ): RunBuffer<'float32x4'> {
-  const capacity = options.leftIds.length;
+  const capacity = options.leftRows.length;
   const segments = builder.allocate(`${id}-pair-segments`, 'float32x4', capacity);
   addKernel(builder, {
     id: `${id}-pair-segments`,
@@ -157,8 +157,8 @@ export function addPairSegments(
     bindings: [
       {name: 'leftPositions', buffer: options.leftPositions, access: 'read'},
       {name: 'rightPositions', buffer: options.rightPositions, access: 'read'},
-      {name: 'leftIds', buffer: options.leftIds, access: 'read'},
-      {name: 'rightIds', buffer: options.rightIds, access: 'read'},
+      {name: 'leftRows', buffer: options.leftRows, access: 'read'},
+      {name: 'rightRows', buffer: options.rightRows, access: 'read'},
       {name: 'count', buffer: options.count, access: 'read'},
       {name: 'segments', buffer: segments, access: 'read_write'}
     ],
@@ -170,8 +170,8 @@ export function addPairSegments(
     segments[outBase + 3u] = ${FAR_AWAY};
     return;
   }
-  let leftBase = leftPositionsOffset + leftIds[leftIdsOffset + index] * 2u;
-  let rightBase = rightPositionsOffset + rightIds[rightIdsOffset + index] * 2u;
+  let leftBase = leftPositionsOffset + leftRows[leftRowsOffset + index] * 2u;
+  let rightBase = rightPositionsOffset + rightRows[rightRowsOffset + index] * 2u;
   segments[outBase] = leftPositions[leftBase];
   segments[outBase + 1u] = leftPositions[leftBase + 1u];
   segments[outBase + 2u] = rightPositions[rightBase];
@@ -460,8 +460,8 @@ export function addPairedRightIds(
   id: string,
   options: {
     rowCount: number;
-    leftIds: RunBuffer<'uint32'>;
-    rightIds: RunBuffer<'uint32'>;
+    leftRows: RunBuffer<'uint32'>;
+    rightRows: RunBuffer<'uint32'>;
     count: RunBuffer<'uint32'>;
   }
 ): RunBuffer<'uint32'> {
@@ -470,16 +470,16 @@ export function addPairedRightIds(
     id: `${id}-paired-ids`,
     invocationCount: options.rowCount,
     bindings: [
-      {name: 'leftIds', buffer: options.leftIds, access: 'read'},
-      {name: 'rightIds', buffer: options.rightIds, access: 'read'},
+      {name: 'leftRows', buffer: options.leftRows, access: 'read'},
+      {name: 'rightRows', buffer: options.rightRows, access: 'read'},
       {name: 'count', buffer: options.count, access: 'read'},
       {name: 'zoneIds', buffer: zoneIds, access: 'read_write'}
     ],
     body: `var zone = 0xffffffffu;
-  let total = min(count[countOffset], ${options.leftIds.length}u);
+  let total = min(count[countOffset], ${options.leftRows.length}u);
   for (var pair = 0u; pair < total; pair++) {
-    if (leftIds[leftIdsOffset + pair] == index) {
-      zone = rightIds[rightIdsOffset + pair];
+    if (leftRows[leftRowsOffset + pair] == index) {
+      zone = rightRows[rightRowsOffset + pair];
       break;
     }
   }

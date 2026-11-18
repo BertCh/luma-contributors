@@ -4,7 +4,7 @@
 
 import {DataType, type Table} from 'apache-arrow';
 import {convertKeplerTimeInstant, type GPUKeplerTimeUnit} from '@luma-contributors/kepler';
-import {readOriginalTimestampTicks} from '../original-column-values';
+import {readOriginalTimestampTicks, resolveOriginalColumnRow} from '../original-column-values';
 import {
   parseTripTime,
   type KeplerGeoJSONTripPreparationOptions,
@@ -70,6 +70,14 @@ export function prepareKeplerTabularTrips(
   batches: readonly TabularTripSourceBatch[],
   options: TabularTripPreparationOptions
 ): PreparedTabularTrips {
+  return prepareTabularTripBatches(batches, options);
+}
+
+function prepareTabularTripBatches(
+  batches: readonly TabularTripSourceBatch[],
+  options: TabularTripPreparationOptions,
+  validatedMilliseconds?: readonly (readonly (number | undefined)[])[]
+): PreparedTabularTrips {
   const maximumTimeErrorMilliseconds = validateTripOptions(options);
   const invalidRows: {sourceRowIndex: number; reason: string}[] = [];
   const tripGroups = new Map<string, Map<string | null, Group>>();
@@ -106,7 +114,9 @@ export function prepareKeplerTabularTrips(
       let time: number;
       try {
         if (sourceTime === null) throw new Error('Trip row has no timestamp');
-        time = parseTripTime(sourceTime, options.timestampEncoding);
+        time =
+          validatedMilliseconds?.[batchIndex]?.[local] ??
+          parseTripTime(sourceTime, options.timestampEncoding);
         for (const value of [x, y, z]) {
           if (typeof value !== 'number' || !Number.isFinite(Math.fround(value)))
             throw new Error('Trip XYZ coordinates must be finite Float32-representable values');
@@ -243,7 +253,12 @@ export function prepareKeplerTabularTrips(
   };
 }
 
-/** Reads named Arrow columns per physical record batch, preserving batch boundaries. */
+/**
+ * Reads named Arrow columns per physical record batch, preserving batch boundaries.
+ * Plain and dictionary timestamps use retained ticks and reject sub-millisecond precision loss
+ * before conversion to the selected trip encoding. Validated integer milliseconds are carried
+ * separately so formatting the source timestamp as numeric seconds cannot alter the trip clock.
+ */
 export function prepareKeplerTabularTripsFromArrow(
   table: Table,
   columns: TabularTripColumns,
@@ -251,21 +266,32 @@ export function prepareKeplerTabularTripsFromArrow(
 ): PreparedTabularTrips {
   if (options.batchIds && options.batchIds.length !== table.batches.length)
     throw new Error('Trip batch IDs must match Arrow batches');
-  const readColumnValues = (batch: Table['batches'][number], name: string): unknown[] => {
+  const validatedMilliseconds: (number | undefined)[][] = table.batches.map(() => []);
+  const readColumnValues = (
+    batch: Table['batches'][number],
+    name: string,
+    timestampMilliseconds?: (number | undefined)[]
+  ): unknown[] => {
     const column = batch.getChild(name);
     if (!column) throw new Error('Trip column is missing from the retained source');
-    if (name === columns.timestamp && DataType.isTimestamp(column.type)) {
-      const unit = (['second', 'millisecond', 'microsecond', 'nanosecond'] as const)[
-        column.type.unit
-      ] as GPUKeplerTimeUnit;
+    if (name === columns.timestamp) {
       return Array.from({length: column.length}, (_, row) => {
-        if (!column.isValid(row)) return null;
+        const original = resolveOriginalColumnRow(column, row);
+        if (!original) return null;
+        const {vector: sourceVector, row: sourceRow} = original;
+        if (!DataType.isTimestamp(sourceVector.type)) return sourceVector.get(sourceRow);
+        const unit = (['second', 'millisecond', 'microsecond', 'nanosecond'] as const)[
+          sourceVector.type.unit
+        ] as GPUKeplerTimeUnit;
         // Arrow's getter narrows nanoseconds to Number before scaling; a modern +1 ns instant
         // can become an apparently integral millisecond. Refuse that loss before narrowing.
-        const ticks = readOriginalTimestampTicks(column, row);
+        const ticks = readOriginalTimestampTicks(sourceVector, sourceRow);
         const milliseconds = Number(convertKeplerTimeInstant(ticks, unit, 'millisecond'));
         if (!Number.isSafeInteger(milliseconds))
           throw new Error('Trip timestamp requires exact integral epoch milliseconds');
+        // Preserve validated milliseconds separately: encoding numeric seconds and parsing them
+        // again can lose a vertex even when the Arrow source is an exact integer millisecond.
+        if (timestampMilliseconds) timestampMilliseconds[row] = milliseconds;
         if (options.timestampEncoding === 'unix-second') return milliseconds / 1000;
         if (options.timestampEncoding === 'iso8601') return new Date(milliseconds).toISOString();
         return milliseconds;
@@ -273,17 +299,18 @@ export function prepareKeplerTabularTripsFromArrow(
     }
     return Array.from({length: column.length}, (_, index) => column.get(index));
   };
-  return prepareKeplerTabularTrips(
+  return prepareTabularTripBatches(
     table.batches.map((batch, index) => ({
       id: options.batchIds?.[index] ?? `trip-batch-${index}`,
       tripIds: readColumnValues(batch, columns.tripId),
-      timestamps: readColumnValues(batch, columns.timestamp),
+      timestamps: readColumnValues(batch, columns.timestamp, validatedMilliseconds[index]),
       longitudes: readColumnValues(batch, columns.longitude),
       latitudes: readColumnValues(batch, columns.latitude),
       ...(columns.altitude ? {altitudes: readColumnValues(batch, columns.altitude)} : {}),
       ...(columns.partId ? {partIds: readColumnValues(batch, columns.partId)} : {})
     })),
-    options
+    options,
+    validatedMilliseconds
   );
 }
 

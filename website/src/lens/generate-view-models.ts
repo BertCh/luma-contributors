@@ -3,14 +3,17 @@
 
 // Regenerates src/lens/generated/*.json from docs/lens-records/*.json:
 //   node --experimental-strip-types src/lens/generate-view-models.ts   (from website/)
-// Only compact view models are written; the record files never ship.
+// Also refreshes summary.json and the lenses page metadata; record files never ship.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {Buffer} from 'node:buffer';
+import {execFileSync} from 'node:child_process';
 import {fromRecordedLensFile} from '@luma-contributors/lenses/computation-lenses/registry';
 import {extractLensViewModel, type LensRecordLike} from './extract-lens-view-model.ts';
 import type {LensSummary} from './types.ts';
+import {getResourceBytesKind} from './format.ts';
 
 const lensDirectory = path.dirname(fileURLToPath(import.meta.url));
 const recordsDirectory = path.resolve(lensDirectory, '../../../docs/lens-records');
@@ -38,6 +41,7 @@ const summary: LensSummary = {
   dependencies: {raw: 0, war: 0, waw: 0},
   buffers: 0,
   bufferBytes: 0,
+  bufferBytesKind: 'logical',
   snapshots: 0,
   formulas: 0,
   recordsWithFormulas: 0,
@@ -57,12 +61,12 @@ for (const file of fs.readdirSync(recordsDirectory).sort()) {
     const envelope = fromRecordedLensFile(JSON.parse(fileText));
     const record = envelope.record as unknown as LensRecordLike;
     const model = extractLensViewModel(scenarioId, record);
-    recordBytes += fileText.length;
+    recordBytes += Buffer.byteLength(fileText, 'utf8');
     summarizeRecord(scenarioId, record);
     const text = JSON.stringify(model);
     fs.writeFileSync(path.join(outputDirectory, `${scenarioId}.json`), text);
     written++;
-    totalBytes += text.length;
+    totalBytes += Buffer.byteLength(text, 'utf8');
   } catch (error) {
     failures.push(`${file}: ${(error as Error).message}`);
   }
@@ -103,6 +107,10 @@ function summarizeRecord(scenarioId: string, record: LensRecordLike): void {
   }
   summary.buffers += graph.resources?.length ?? 0;
   for (const resource of graph.resources ?? []) summary.bufferBytes += resource.bytes;
+  summary.bufferBytesKind = getResourceBytesKind([
+    {bytesKind: summary.bufferBytesKind},
+    ...(graph.resources ?? [])
+  ]);
   summary.snapshots += record.captures?.snapshots.length ?? 0;
   const formulaCount = record.refs?.formulas?.length ?? 0;
   summary.formulas += formulaCount;
@@ -116,4 +124,14 @@ if (failures.length) {
   // biome-ignore lint/suspicious/noConsole: diagnostic output
   console.error(failures.join('\n'));
   process.exitCode = 1;
+} else {
+  // The lens page quotes this generation's histogram, median and featured file sizes.
+  execFileSync(
+    process.execPath,
+    [
+      '--experimental-strip-types',
+      fileURLToPath(new URL('../components/meta/pages/lenses/generate-data.ts', import.meta.url))
+    ],
+    {stdio: 'inherit'}
+  );
 }

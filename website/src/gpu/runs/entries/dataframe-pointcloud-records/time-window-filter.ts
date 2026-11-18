@@ -57,7 +57,7 @@ export default defineOperationRun<Inputs, Outputs>({
         timestamps: timestamps.view,
         window: window.view,
         output: {
-          ids: builder.allocate('ids', 'uint32', EVENT_COUNT).view,
+          rows: builder.allocate('rows', 'uint32', EVENT_COUNT).view,
           status: {
             count: builder.allocate('count', 'uint32', 1).view,
             overflow: builder.allocate('overflow', 'uint32', 1).view

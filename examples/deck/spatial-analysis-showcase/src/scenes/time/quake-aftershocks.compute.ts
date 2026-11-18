@@ -83,7 +83,7 @@ function formatNumber(value: number, digits = 2): string {
 }
 
 function formatProbability(value: number): string {
-  if (!Number.isFinite(value)) return 'n/a';
+  if (!Number.isFinite(value)) return 'unavailable';
   return value < 0.001 ? '< 0.001' : value.toFixed(3);
 }
 
@@ -204,21 +204,20 @@ export async function createQuakeAftershocks(
       distances: v('distances', distances, 'float32', slotCapacity),
       status: {overflow: v('overflow', overflow, 'uint32', 1)}
     };
-    knoxGraph.add(
-      new GPUNeighborSearch({
-        spatialContext: events.spatialContext,
-        id: `${key}-search`,
-        mode: 'radius',
-        positions: positionsView,
-        parameters: searchParameters.importToGraph(knoxGraph),
-        gridSize: [64, 64],
-        output: pairs
-      })
-    );
+    const search = new GPUNeighborSearch({
+      spatialContext: events.spatialContext,
+      id: `${key}-search`,
+      mode: 'radius',
+      positions: positionsView,
+      parameters: searchParameters.importToGraph(knoxGraph),
+      gridSize: [64, 64],
+      output: pairs
+    });
+    knoxGraph.add(search);
     knoxGraph.add(
       new GPUKnoxTest({
         id: `${key}-knox`,
-        pairs,
+        pairs: search.outputWeights,
         times: timesView,
         parameters: testParameters.importToGraph(knoxGraph),
         maximumPermutations: MAXIMUM_PERMUTATIONS,
@@ -451,6 +450,32 @@ export async function createQuakeAftershocks(
     const permutations = ctx.options.permutations;
     const observed = summary[SUMMARY.observed];
     const expected = summary[SUMMARY.expected];
+    if (!Number.isFinite(observed)) {
+      for (const name of [
+        'pairs',
+        'timeClose',
+        'knoxObserved',
+        'knoxExpected',
+        'knoxRatio',
+        'knoxPermuted',
+        'knoxZ',
+        'knoxP',
+        'knoxPoisson'
+      ])
+        ctx.setReadout(name, 'unavailable');
+      ctx.setReadout('pairOverflow', overflowFlag ? 'yes: lower the radius' : 'no');
+      ctx.setChart('knoxHistogram', {
+        kind: 'histogram',
+        values: [],
+        xDomain: [0, 1],
+        xLabel: 'time-close pairs',
+        yLabel: 'permutations',
+        markers: [],
+        description: 'Unavailable: the neighborhood is incomplete or inference was not tested.'
+      });
+      ctx.requestLayers();
+      return;
+    }
     const mean = summary[SUMMARY.permutationMean];
     const sd = Math.sqrt(summary[SUMMARY.permutationVariance]);
     ctx.setReadout('pairs', summary[SUMMARY.pairCount]);

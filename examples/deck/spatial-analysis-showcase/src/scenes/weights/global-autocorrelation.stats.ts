@@ -52,7 +52,15 @@ export function buildMoranScatter(
   const standardDeviation = Math.sqrt(variance);
   const rows: number[] = [];
   for (let row = 0; row < values.length; row++) {
-    if (Number.isFinite(values[row]) && offsets[row + 1] > offsets[row]) rows.push(row);
+    if (
+      Number.isFinite(values[row]) &&
+      Number.isFinite(lag[row]) &&
+      Number.isFinite(mean) &&
+      Number.isFinite(standardDeviation) &&
+      standardDeviation > 0 &&
+      offsets[row + 1] > offsets[row]
+    )
+      rows.push(row);
   }
   const x = new Float32Array(rows.length);
   const y = new Float32Array(rows.length);

@@ -48,7 +48,7 @@ export default defineOperationRun({
   caption: 'The active level and its cell count are chosen on the GPU from one word.',
   createInputs: ({random}) => getHonshuEvents(random, 900),
   build(builder, points, values) {
-    const family = getCellFamily(values.family);
+    const family = getCellFamily(values['family']);
     const resolutions = family === 'h3' ? [6, 5, 4, 3] : [11, 10, 9, 8];
     const positions = builder.upload('positions', 'float32x2', points.positions);
     const pointValues = builder.upload('values', 'float32', points.values);
@@ -92,7 +92,7 @@ export default defineOperationRun({
           addCellFill(builder, family, level.cells, `fill-${index}`)
         )
       },
-      update: current => activeLevel.write(Uint32Array.of(current.activeLevel))
+      update: current => activeLevel.write(Uint32Array.of(current['activeLevel']))
     };
   },
   rebuildOn: ['family'],
@@ -133,15 +133,24 @@ export default defineOperationRun({
         {shape: 'line', from: [left + bandWidth * 0.02, top], to: [left + bandWidth * 0.98, bottom]}
       );
       const count = peek(outputs.selectedCount);
+      const table = outputs.levels[activeLevel];
+      const overflow = peek(table.overflow);
+      const candidateOverflow = peek(table.candidateOverflow);
+      const status =
+        overflow?.[0] || candidateOverflow?.[0]
+          ? 'incomplete'
+          : overflow && candidateOverflow && count
+            ? `${count[0]} cells drawn`
+            : '…';
       return {
         values: {activeLevel},
         glyphs,
-        readout: `activeLevel ${activeLevel} · ${count ? count[0] : '…'} cells drawn (GPU count)`
+        readout: `activeLevel ${activeLevel} · ${status} (GPU count)`
       };
     }
   },
   draw: ({outputs, values}) => {
-    const fill = outputs.levelFills[values.activeLevel];
+    const fill = outputs.levelFills[values['activeLevel']];
     return [
       {
         layer: 'polygons',
@@ -151,7 +160,7 @@ export default defineOperationRun({
         values: fill.owners,
         triangleCount: fill.triangleCount,
         // One flat color per level, so the four pictures cannot be mistaken for each other.
-        color: LEVEL_COLORS[values.activeLevel],
+        color: LEVEL_COLORS[values['activeLevel']],
         alpha: 0.6
       },
       {

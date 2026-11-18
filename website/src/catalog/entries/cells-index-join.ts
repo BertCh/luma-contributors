@@ -316,7 +316,12 @@ const compiled = await graph.compileAsync();`,
     useCases: ['summarize', 'index'],
     domains: ['urban', 'data-engineering'],
     params: [
-      {name: 'family', type: 'GPUCellFamily', required: true, description: "'quadbin' or 'h3'."},
+      {
+        name: 'family',
+        type: 'GPUCellAggregationFamily',
+        required: true,
+        description: "'quadbin' or 'h3'."
+      },
       {
         name: 'resolution',
         type: 'number',
@@ -365,7 +370,7 @@ const compiled = await graph.compileAsync();`,
       {
         name: 'status',
         type: 'GPUCardinalityPort & GPUOverflowStatusPort',
-        description: 'Occupied count and overflow flag.'
+        description: 'Occupied count, final overflow; candidateOverflow is zero for raw inputs.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -403,7 +408,12 @@ device.submit();`,
     useCases: ['summarize'],
     domains: ['urban', 'data-engineering'],
     params: [
-      {name: 'family', type: 'GPUCellFamily', required: true, description: "'quadbin' or 'h3'."},
+      {
+        name: 'family',
+        type: 'GPUCellAggregationFamily',
+        required: true,
+        description: "'quadbin' or 'h3'."
+      },
       {
         name: 'sourceResolution',
         type: 'number',
@@ -423,15 +433,21 @@ device.submit();`,
         description: 'Sorted table from aggregation or another rollup.'
       },
       {name: 'sumScale', type: 'number', description: 'Fixed-point scale; must match the source.'},
-      {name: 'output', type: 'GPUCellTable', required: true, description: 'Parent table views.'}
+      {
+        name: 'output',
+        type: 'GPUCellTable',
+        required: true,
+        description: 'Parent table views, including status.candidateOverflow.'
+      }
     ],
     outputs: [
       {name: 'cells', type: 'GraphDataView<"uint32x2">', description: 'Parent keys, ascending.'},
       {name: 'counts', type: 'GraphDataView<"uint32">', description: 'Summed child counts.'},
       {
         name: 'status',
-        type: 'GPUCardinalityPort & GPUOverflowStatusPort',
-        description: 'Parent count; source overflow carries through.'
+        type: 'GPUCardinalityPort & GPUOverflowStatusPort & GPUCandidateStatusPort',
+        description:
+          'Parent count, final/input loss; requiredCount is a lower bound after input loss.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -467,7 +483,12 @@ const compiled = await graph.compileAsync();`,
     useCases: ['summarize', 'index'],
     domains: ['urban', 'cartography'],
     params: [
-      {name: 'family', type: 'GPUCellFamily', required: true, description: "'quadbin' or 'h3'."},
+      {
+        name: 'family',
+        type: 'GPUCellAggregationFamily',
+        required: true,
+        description: "'quadbin' or 'h3'."
+      },
       {
         name: 'resolutions',
         type: 'readonly number[]',
@@ -494,14 +515,14 @@ const compiled = await graph.compileAsync();`,
         name: 'output',
         type: 'GPUCellPyramidOutput',
         required: true,
-        description: 'One table per level, plus optional level counts.'
+        description: 'Tables with count, overflow and candidateOverflow; optional level counts.'
       }
     ],
     outputs: [
       {
         name: 'levels',
         type: 'readonly GPUCellTable[]',
-        description: 'One cell table per requested resolution.'
+        description: 'Tables per resolution; overflow or candidateOverflow means incomplete.'
       },
       {
         name: 'levelCounts',
@@ -514,7 +535,8 @@ import {GPUCellPyramid} from '${IMPORT_PATH}';
 
 const graph = new GPUCommandGraph(device, {id: 'pyramid'});
 const positions = graph.importGPUData('positions', lonLatData);
-const levels = [18, 14, 10, 6].map(() => importCellTable(graph, 8192)); // your helper
+const levels = [18, 14, 10, 6].map(() => importCellTable(graph, 8192));
+// Each table supplies status: {count, overflow, candidateOverflow}; retain and read both loss flags.
 const levelCounts = graph.importGPUData('level-counts', countData); // GPUData<'uint32'>
 
 graph.add(new GPUCellPyramid({
@@ -666,8 +688,9 @@ activeLevel.write(Uint32Array.of(2)); // switch zoom: no recompile`,
       {name: 'zScore', type: 'GraphDataView<"float32">', description: 'Standardized change.'},
       {
         name: 'status',
-        type: '{count, overflow, requiredCount?}',
-        description: 'Union cell count and overflow flag.'
+        type: '{count, overflow, candidateOverflow, requiredCount?}',
+        description:
+          'Retained union count, final/input loss; requirement is a lower bound after loss.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -678,7 +701,7 @@ const before = importCellTable(graph, 4096); // your helper: sorted tables from 
 const after = importCellTable(graph, 4096);
 const cells = graph.importGPUData('cells', unionKeyData); // GPUData<'uint32x2'>
 const delta = graph.importGPUData('delta', deltaData); // GPUData<'float32'>
-const status = importCardinalityStatus(graph); // your helper: count and overflow words
+const status = importCardinalityStatus(graph); // your helper: count, overflow and candidateOverflow words
 
 graph.add(new GPUCellTableCompare({
   before, after, measure: 'count', output: {cells, delta, status}
@@ -701,14 +724,19 @@ const compiled = await graph.compileAsync();`,
     importPath: IMPORT_PATH,
     title: 'Cell topology',
     summary:
-      'Finds disks, rings, parents and children of Quadbin and H3 cells with a fixed fan-out per cell.',
+      'Finds disks, rings, parents and children of Quadbin, H3 and S2 cells with a fixed fan-out per cell.',
     explanation:
       'Best for neighborhoods on a grid: `gridDisk`, `gridRing`, `cellToParent` and `cellToChildren`. Each input cell owns a fixed block of output slots, so results stay aligned with the input rows. An optional mask skips rows.',
     dataTypes: {input: ['cells'], output: ['cells', 'spatial-weights']},
     useCases: ['relate', 'index'],
     domains: ['urban', 'spatial-statistics'],
     params: [
-      {name: 'family', type: 'GPUCellFamily', required: true, description: "'quadbin' or 'h3'."},
+      {
+        name: 'family',
+        type: 'GPUCellTopologyFamily',
+        required: true,
+        description: "'quadbin', 'h3' or 's2'."
+      },
       {
         name: 'operation',
         type: 'GPUCellTopologyOperation',
@@ -779,12 +807,17 @@ const compiled = await graph.compileAsync();`,
     summary:
       'Compacts a cell set to its minimal mixed-resolution cover, or expands it to one resolution.',
     explanation:
-      'Use `compact` to store a region with the fewest cells, and `uncompact` to bring it back to one resolution for joins. Complete sibling groups merge into their parent. Works on Quadbin and H3.',
+      'Use `compact` to store a region with the fewest cells, and `uncompact` to bring it back to one resolution for joins. Complete sibling groups merge into their parent. Works on Quadbin, H3 and S2.',
     dataTypes: {input: ['cells'], output: ['cells']},
     useCases: ['transform', 'index'],
     domains: ['data-engineering', 'cartography'],
     params: [
-      {name: 'family', type: 'GPUCellFamily', required: true, description: "'quadbin' or 'h3'."},
+      {
+        name: 'family',
+        type: 'GPUCellTopologyFamily',
+        required: true,
+        description: "'quadbin', 'h3' or 's2'."
+      },
       {
         name: 'operation',
         type: 'GPUCellCompactOperation | GPUCellUncompactOperation',
@@ -851,16 +884,21 @@ const compiled = await graph.compileAsync();`,
     symbol: 'GPUCellGridPath',
     kind: 'class',
     importPath: IMPORT_PATH,
-    title: 'H3 grid path',
+    title: 'Cell grid path',
     summary:
-      'Computes H3 grid distance and the cell path between arbitrary origin and destination pairs.',
+      'Computes H3, Quadbin and S2 grid distance and paths between origin and destination pairs.',
     explanation:
       'Measures steps between cells or to trace a route of cells between two places. Neighbor tests are just `distance == 1`. Paths are written at a fixed stride, with a per-pair length.',
     dataTypes: {input: ['cells'], output: ['cells', 'table']},
     useCases: ['measure', 'route'],
     domains: ['transport', 'urban'],
     params: [
-      {name: 'family', type: '"h3"', required: true, description: 'Only H3 is supported.'},
+      {
+        name: 'family',
+        type: 'GPUCellTopologyFamily',
+        required: true,
+        description: "'h3', 'quadbin' or 's2'; S2 pairs must have equal levels (0–30)."
+      },
       {
         name: 'origins',
         type: 'GraphDataView<"uint32x2">',
@@ -917,9 +955,9 @@ const compiled = await graph.compileAsync();`,
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Cell cover',
-    summary: 'Polyfills polygon features with Quadbin or H3 cells.',
+    summary: 'Polyfills polygon features with Quadbin, H3 or S2 cells.',
     explanation:
-      'Turns zones into grid cells for joins and rollups. `center` keeps cells whose center is inside; Quadbin also supports `full` and `intersects`. Results are bounded by `candidateCapacity`, with overflow flagged on the GPU.',
+      'Turns zones into grid cells for joins and rollups. `center` keeps cells whose center is inside (S2 levels 0–15); Quadbin also supports `full` and `intersects`. Results are bounded by `candidateCapacity`, with overflow flagged on the GPU.',
     dataTypes: {input: ['polygons'], output: ['cells']},
     useCases: ['transform', 'relate'],
     domains: ['cartography', 'data-engineering'],
@@ -944,9 +982,9 @@ const compiled = await graph.compileAsync();`,
       },
       {
         name: 'family',
-        type: 'GPUCellFamily',
+        type: 'GPUCellTopologyFamily',
         required: true,
-        description: "'quadbin' or 'h3' (h3 supports center only)."
+        description: "'quadbin', 'h3' or 's2' (H3 and S2 support center only; S2 level at most 15)."
       },
       {name: 'resolution', type: 'number', required: true, description: 'Cell resolution.'},
       {
@@ -1017,7 +1055,7 @@ const compiled = await graph.compileAsync();`,
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Cell set outline',
-    summary: 'Extracts the boundary edges of a set of H3 or Quadbin cells.',
+    summary: 'Extracts the boundary edges of a set of H3, Quadbin or S2 cells.',
     explanation:
       'Draws the outline of a region made of cells, as `cellsToMultiPolygon` does, without ring assembly. Edges shared by two cells in the set drop out. Add `rings` to stitch the edges into closed rings.',
     dataTypes: {input: ['cells'], output: ['lines']},
@@ -1028,7 +1066,7 @@ const compiled = await graph.compileAsync();`,
         name: 'family',
         type: 'GPUCellSetOutlineFamily',
         required: true,
-        description: "'h3' or 'quadbin'."
+        description: "'h3', 'quadbin' or 's2'; S2 cells must all be at one level."
       },
       {
         name: 'cells',
@@ -2018,7 +2056,7 @@ const compiled = await graph.compileAsync();`,
       {
         name: 'pairs',
         type: 'GPUCompactPairPort',
-        description: 'leftIds, rightIds and status, sorted by pair.'
+        description: 'leftRows, rightRows and status, sorted by pair.'
       },
       {
         name: 'weights',
@@ -2042,12 +2080,12 @@ import {GPUSpatialPredicateJoin} from '${IMPORT_PATH}';
 const graph = new GPUCommandGraph(device, {id: 'sjoin'});
 const points = {kind: 'points', positions: pointPositions} as const; // views on this graph
 const polygons = {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets} as const;
-const {leftIds, rightIds, status} = pairViews; // output views
+const {leftRows, rightRows, status} = pairViews; // output views
 
 graph.add(new GPUSpatialPredicateJoin({
   left: points, right: polygons, predicate: 'within',
   candidateCapacity: 1 << 20,
-  output: {pairs: {leftIds, rightIds, status}}
+  output: {pairs: {leftRows, rightRows, status}}
 }));
 const compiled = await graph.compileAsync();`,
     preview: {
@@ -2195,17 +2233,25 @@ const compiled = await graph.compileAsync();`,
         name: 'output',
         type: 'GPUCompactPairPort',
         required: true,
-        description: 'leftIds, rightIds and status.'
+        description: 'leftRows, rightRows and status.'
       }
     ],
     outputs: [
-      {name: 'leftIds', type: 'GraphDataView<"uint32">', description: 'Left feature of each pair.'},
       {
-        name: 'rightIds',
+        name: 'leftRows',
+        type: 'GraphDataView<"uint32">',
+        description: 'Left feature of each pair.'
+      },
+      {
+        name: 'rightRows',
         type: 'GraphDataView<"uint32">',
         description: 'Right feature of each pair.'
       },
-      {name: 'status', type: '{count, overflow}', description: 'count, overflow and requiredCount.'}
+      {
+        name: 'status',
+        type: '{count, overflow, candidateOverflow?, requiredCount?}',
+        description: 'Pair count, final overflow; candidateOverflow reports BVH loss. Flags reset.'
+      }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUSpatialJoinCandidates} from '${IMPORT_PATH}';
@@ -2213,9 +2259,9 @@ import {GPUSpatialJoinCandidates} from '${IMPORT_PATH}';
 const graph = new GPUCommandGraph(device, {id: 'candidates'});
 const left = {kind: 'points', positions: pointPositions} as const; // views on this graph
 const right = {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets} as const;
-const {leftIds, rightIds, status} = pairViews; // output views
+const {leftRows, rightRows, status} = pairViews; // output views
 
-graph.add(new GPUSpatialJoinCandidates({left, right, output: {leftIds, rightIds, status}}));
+graph.add(new GPUSpatialJoinCandidates({left, right, output: {leftRows, rightRows, status}}));
 const compiled = await graph.compileAsync();`,
     preview: {
       kind: 'polygons',
@@ -2233,9 +2279,9 @@ const compiled = await graph.compileAsync();`,
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Prepared join index',
-    summary: 'Builds the bounds and BVH of a static feature set once, then reuses it across joins.',
+    summary: 'Retains a static geometry snapshot across joins with submission-safe refresh.',
     explanation:
-      'Best when the right-hand features rarely change but the left side moves every frame. Pass it as `prepared` to predicate, point-in-polygon, candidate and nearest joins. It rebuilds only when `rebuildWhen` says so.',
+      'Pass as `prepared` to predicate, point-in-polygon, candidate and nearest joins. GPU generations keep a refresh pending after discarded commands; public builders replay against retained geometry each encoding. The first encoding and first after invalidation bypass the typed frame predicate.',
     dataTypes: {input: ['points', 'lines', 'polygons'], output: ['table']},
     useCases: ['index', 'relate'],
     domains: ['data-engineering'],
@@ -2264,8 +2310,8 @@ const compiled = await graph.compileAsync();`,
       },
       {
         name: 'rebuildWhen',
-        type: '((parameters: any) => boolean)',
-        description: 'Predicate that invalidates the index.'
+        type: '((parameters: Parameters) => boolean)',
+        description: 'Typed frame predicate; pending invalidation bypasses it.'
       }
     ],
     outputs: [
@@ -2282,11 +2328,11 @@ const graph = new GPUCommandGraph(device, {id: 'prepared-join'});
 const zones = {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets} as const;
 const prepared = new GPUSpatialJoinPrepared({id: 'zones', geometry: zones});
 const left = {kind: 'points', positions: pointPositions} as const; // moves every frame
-const {leftIds, rightIds, status} = pairViews; // output views
+const {leftRows, rightRows, status} = pairViews; // output views
 
 graph.add(new GPUSpatialPredicateJoin({
   left, right: zones, predicate: 'within', prepared, candidateCapacity: 1 << 18,
-  output: {pairs: {leftIds, rightIds, status}}
+  output: {pairs: {leftRows, rightRows, status}}
 }));
 const compiled = await graph.compileAsync();`,
     preview: {
@@ -2408,16 +2454,21 @@ const compiled = await graph.compileAsync();`,
     domains: ['spatial-statistics'],
     params: [
       {
-        name: 'neighborIds',
+        name: 'neighborRows',
         type: 'GraphDataView<"uint32">',
         required: true,
-        description: 'Neighbor ids from the nearest join.'
+        description: 'Neighbor feature row indices from the nearest join.'
       },
       {
         name: 'neighborCounts',
         type: 'GraphDataView<"uint32">',
         required: true,
         description: 'Valid neighbors per query.'
+      },
+      {
+        name: 'neighborStatus',
+        type: '{overflow, candidateOverflow?}',
+        description: 'Join loss; requires output.status.candidateOverflow to propagate it.'
       },
       {
         name: 'neighborDistances',
@@ -2437,7 +2488,6 @@ const compiled = await graph.compileAsync();`,
         description: 'Weight kind.'
       },
       {name: 'excludeSelf', type: 'boolean', description: 'Drop each row from its own neighbors.'},
-      {name: 'power', type: 'number', default: '1', description: 'Inverse-distance exponent.'},
       {
         name: 'output',
         type: 'GPUSpatialWeightsOutput',
@@ -2447,20 +2497,28 @@ const compiled = await graph.compileAsync();`,
     ],
     outputs: [
       {name: 'offsets', type: 'GraphDataView<"uint32">', description: 'CSR row offsets.'},
-      {name: 'neighbors', type: 'GraphDataView<"uint32">', description: 'CSR neighbor ids.'},
+      {
+        name: 'neighbors',
+        type: 'GraphDataView<"uint32">',
+        description: 'CSR neighbor row indices.'
+      },
       {name: 'weights', type: 'GraphDataView<"float32">', description: 'CSR weight per neighbor.'},
-      {name: 'status', type: '{count, overflow}', description: 'overflow and requiredCount.'}
+      {
+        name: 'status',
+        type: '{overflow, candidateOverflow?}',
+        description: 'Final CSR capacity loss and upstream nearest-join loss, separately.'
+      }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUNearestFeatureWeights} from '${IMPORT_PATH}';
 
 const graph = new GPUCommandGraph(device, {id: 'knn-weights'});
-// neighborIds, neighborCounts, neighborDistances come from GPUNearestFeatureJoin (k = 8).
-const {neighborIds, neighborCounts, neighborDistances} = nearestViews;
-const weights = weightViews; // GPUSpatialWeights output views plus status
+// Request neighborRows alongside neighborIds on GPUNearestFeatureJoin (k = 8).
+const {neighborRows, neighborCounts, neighborDistances, status: neighborStatus} = nearestViews;
+const weights = weightViews; // GPUSpatialWeights output views plus status.overflow and status.candidateOverflow
 
 graph.add(new GPUNearestFeatureWeights({
-  neighborIds, neighborCounts, neighborDistances, slotCapacity: 8,
+  neighborRows, neighborCounts, neighborDistances, neighborStatus, slotCapacity: 8,
   excludeSelf: true, weightType: 'inverse-distance', output: weights
 }));
 const compiled = await graph.compileAsync();`,

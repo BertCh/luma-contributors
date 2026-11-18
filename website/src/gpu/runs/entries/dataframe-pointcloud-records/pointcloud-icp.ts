@@ -15,6 +15,8 @@ import {addFloatCopy} from './_lib/convert';
 import {createTerrainCloud} from './_lib/helpers';
 import {addTransformedFootprint} from './_lib/transform-points';
 import {parameters} from './pointcloud-icp.parameters';
+import {getPointCloudICPSupportText} from './_lib/pointcloud-display';
+import {addPointCloudDisplayCopy} from './_lib/pointcloud-display-run';
 
 const TERRAIN_COUNT = 9000;
 const POINT_COUNT = 1500;
@@ -44,9 +46,9 @@ function createInputs({
   return {width: world.width, target, rmseTop: 0.05};
 }
 type Inputs = ReturnType<typeof createInputs>;
-type Outputs = Record<'target' | 'initial' | 'aligned' | 'rmse', RunBuffer>;
+type Outputs = Record<'target' | 'initial' | 'aligned' | 'rmse' | 'status', RunBuffer>;
 
-type Extra = {links: RunBuffer; iterations: number};
+type Extra = {links: RunBuffer; iterations: number; status: number};
 
 export default defineOperationRun<Inputs, Outputs, Extra>({
   parameters,
@@ -59,24 +61,36 @@ export default defineOperationRun<Inputs, Outputs, Extra>({
     const source = builder.upload('source', 'float32x3', new Float32Array(POINT_COUNT * 3));
     const transform = builder.allocate('transform', 'float32', 16);
     const history = builder.allocate('history', 'float32x3', values.iterations);
+    const status = builder.allocate('status', 'uint32', 1);
     builder.graph.add(
       new GPUPointCloudICP({
         source: source.view,
         target: target.view,
         maximumDistance: values.maximumDistance,
         iterations: values.iterations,
-        transform: transform.view,
-        history: history.view,
-        inlierMask: builder.allocate('inlier-mask', 'uint32', POINT_COUNT).view,
-        status: builder.allocate('status', 'uint32', 1).view
+        output: {
+          transform: transform.view,
+          history: history.view,
+          inlierMask: builder.allocate('inlier-mask', 'uint32', POINT_COUNT).view,
+          status: status.view
+        }
       })
     );
     const identity = identityTransform(builder);
+    const aligned = addTransformedFootprint(builder, 'aligned-footprint', source, transform);
     return {
       outputs: {
         target: addTransformedFootprint(builder, 'target-footprint', target, identity),
         initial: addTransformedFootprint(builder, 'initial-footprint', source, identity),
-        aligned: addTransformedFootprint(builder, 'aligned-footprint', source, transform),
+        aligned: addPointCloudDisplayCopy(
+          builder,
+          'converged-footprint',
+          aligned,
+          status,
+          POINT_COUNT,
+          {components: 2, statusIndex: 0}
+        ),
+        status,
         rmse: addFloatCopy(builder, 'rmse', history, values.iterations, {componentStart: 1})
       },
       update: current => {
@@ -115,6 +129,13 @@ export default defineOperationRun<Inputs, Outputs, Extra>({
   rebuildOn: ['iterations', 'maximumDistance'],
   // The aligned points are read back to draw a line from every source point to where ICP put it.
   async afterRun({outputs, upload, values}) {
+    const statusBytes = await outputs.status.buffer.readAsync();
+    const status = new Uint32Array(
+      statusBytes.buffer.slice(
+        statusBytes.byteOffset,
+        statusBytes.byteOffset + statusBytes.byteLength
+      )
+    )[0];
     const bytes = await outputs.aligned.buffer.readAsync();
     const aligned = new Float32Array(
       bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
@@ -132,7 +153,8 @@ export default defineOperationRun<Inputs, Outputs, Extra>({
     }
     return {
       links: upload('links', 'float32x4', Float32Array.from(links)),
-      iterations: values.iterations
+      iterations: values.iterations,
+      status
     };
   },
   // The pointer sets the misalignment ICP has to undo: x is the rotation of the source about the
@@ -151,12 +173,13 @@ export default defineOperationRun<Inputs, Outputs, Extra>({
         arc.push(centerX + Math.cos(angle) * 0.12, 0.5 + Math.sin(angle) * 0.12);
       }
       const history = peek(outputs.rmse);
+      const status = peek(outputs.status)?.[0];
       return {
         glyphs: [
           {shape: 'crosshair', at: [centerX, 0.5], size: 6},
           {shape: 'polyline', points: arc}
         ],
-        readout: `rotation ${values.rotation}° · shift ${values.shift.toFixed(3)}${
+        readout: `${getPointCloudICPSupportText(status)}${status === 0 ? '' : ' (alignment hidden)'} · rotation ${values.rotation}° · shift ${values.shift.toFixed(3)}${
           history
             ? ` · RMSE ${history[0].toFixed(3)} -> ${history[history.length - 1].toFixed(3)}`
             : ''
@@ -224,7 +247,10 @@ export default defineOperationRun<Inputs, Outputs, Extra>({
             entries: [
               {label: 'target', swatch: COLOR_TARGET},
               {label: 'source before ICP', swatch: COLOR_SOURCE},
-              {label: 'source after ICP', swatch: COLOR_ALIGNED}
+              {
+                label: `source after ICP: ${getPointCloudICPSupportText(extra?.status)}${extra?.status === 0 ? '' : ' (hidden)'}`,
+                swatch: COLOR_ALIGNED
+              }
             ]
           })
         )

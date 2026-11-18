@@ -136,14 +136,14 @@ function getTitle(source: string, relativeFile: string): string {
   return getSlugFromFile(relativeFile).split('/').pop() || 'Docs';
 }
 
-/** Rewrites links to markdown files (relative or `/docs/...`) into site routes. */
+/** Rewrites markdown links into docs routes and applies the configured base to site routes. */
 function rehypeRewriteLinks({relativeFile, basePath}: {relativeFile: string; basePath: string}) {
   const directory = path.posix.dirname(relativeFile);
   const routePrefix = basePath.replace(/\/$/, '');
   return (tree: HastNode) => {
     const visit = (node: HastNode) => {
-      if (node.tagName === 'a' && typeof node.properties?.href === 'string') {
-        node.properties.href = rewriteHref(node.properties.href, directory, routePrefix);
+      if (node.tagName === 'a' && typeof node.properties?.['href'] === 'string') {
+        node.properties['href'] = rewriteHref(node.properties['href'], directory, routePrefix);
       }
       node.children?.forEach(visit);
     };
@@ -152,11 +152,19 @@ function rehypeRewriteLinks({relativeFile, basePath}: {relativeFile: string; bas
 }
 
 function rewriteHref(href: string, directory: string, routePrefix: string): string {
-  if (/^[a-z]+:/i.test(href) || href.startsWith('#')) {
+  if (/^[a-z]+:/i.test(href) || href.startsWith('#') || href.startsWith('//')) {
     return href;
   }
   const [target, hash] = href.split('#');
   if (!target.endsWith('.md') && !target.startsWith('/docs/')) {
+    if (
+      target.startsWith('/') &&
+      routePrefix &&
+      target !== routePrefix &&
+      !target.startsWith(`${routePrefix}/`)
+    ) {
+      return `${routePrefix}${href}`;
+    }
     return href;
   }
   const docsPath = target.startsWith('/docs/')

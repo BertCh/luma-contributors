@@ -2,7 +2,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {useState} from 'react';
-import {formatBytes, formatCount} from '../../../../lens/format';
+import {
+  formatResourceBytes,
+  formatResourceCount,
+  formatCount,
+  getResourceBytesKind
+} from '../../../../lens/format';
 import {FEATURED_LENS_SCENARIOS} from '../../../../lens/featured';
 import type {LensViewModel} from '../../../../lens/types';
 import {Section} from '../../../ui/section';
@@ -231,16 +236,25 @@ export function Page({topic, models, code}: TopicPageProps) {
           span for every buffer of the run.
         </Prose>
         <Figure
-          notice={`At step ${peakStep}, ${formatBytes(peakBytes)} of ${formatBytes(density.resources.totalBytes)} are in use.`}
-          caption={`The bars are logical lifetimes. The record lists all ${density.resources.count} buffers as imported, so here nothing shares memory; luma.gl can let transient buffers whose lifetimes do not overlap share one allocation.`}
+          notice={`At step ${peakStep}, ${formatResourceBytes(peakBytes, getResourceBytesKind(lifetimes))} of ${formatResourceBytes(density.resources.totalBytes, density.resources.totalBytesKind)} are in use.`}
+          caption="The bars show logical lifetimes. Older records do not establish buffer ownership or allocation sharing. With recorded transient handles, buffers whose lifetimes do not overlap can share one allocation."
         >
           <LensGraphPanel scenario={density} defaultView="buffers" defaultStep={peakStep} />
         </Figure>
         <StatStrip
           stats={[
-            {value: formatBytes(peakBytes), label: 'peak logical live bytes'},
-            {value: formatBytes(density.resources.totalBytes), label: 'all buffers together'},
-            {value: formatCount(density.resources.count), label: 'buffers'},
+            {
+              value: formatResourceBytes(peakBytes, getResourceBytesKind(lifetimes)),
+              label: 'peak logical live bytes'
+            },
+            {
+              value: formatResourceBytes(
+                density.resources.totalBytes,
+                density.resources.totalBytesKind
+              ),
+              label: 'all buffers together'
+            },
+            {value: formatResourceCount(density.resources), label: 'resource inventory'},
             {value: formatCount(transientCount), label: 'recorded as transient'}
           ]}
         />

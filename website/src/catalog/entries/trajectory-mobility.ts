@@ -580,11 +580,12 @@ const segmentParameters = new GPUParameterBuffer(device, {
 graph.add(new GPUTrajectorySegments({
   positions, timestamps, trackOffsets,
   staypointIds: rowStaypointIds,
-  staypoints: {tracks: stayTracks, startRows, finishRows, durations, status: {count: stayCount}},
+  staypoints: {tracks: stayTracks, startRows, finishRows, durations,
+    status: {count: stayCount, overflow: stayOverflow, candidateOverflow: stayCandidateOverflow}},
   parameters: segmentParameters.importToGraph(graph),
   output: {
-    triplegs: {ids: triplegTracks, status: {count: triplegCount, overflow}, startRows: legStarts, endRows: legEnds},
-    trips: {ids: tripTracks, status: {count: tripCount, overflow: tripOverflow}}
+    triplegs: {ids: triplegTracks, status: {count: triplegCount, overflow, candidateOverflow: triplegCandidateOverflow}, startRows: legStarts, endRows: legEnds},
+    trips: {ids: tripTracks, status: {count: tripCount, overflow: tripOverflow, candidateOverflow: tripCandidateOverflow}}
   }
 }));
 segmentParameters.write(getGPUTrajectorySegmentsParameterValues({activityMinimumDuration: 1800}));`,
@@ -869,7 +870,8 @@ ${COMPILE_AND_ENCODE}`,
 graph.add(new GPUMobilityIndicators({
   trackCount,
   timestamps,
-  staypoints: {tracks, centroids, startRows, durations, locationIds, status: {count}},
+  staypoints: {tracks, centroids, startRows, durations, locationIds,
+    status: {count, overflow: staypointOverflow, candidateOverflow: staypointCandidateOverflow}},
   output: {radiusOfGyration, realEntropy, randomEntropy, homeLocations, workLocations}
 }));
 ${COMPILE_AND_ENCODE}`,
@@ -942,7 +944,8 @@ ${COMPILE_AND_ENCODE}`,
 // graph: GPUCommandGraph; tripleg columns come from GPUTrajectorySegments
 graph.add(new GPUModalSplit({
   positions, timestamps, trackOffsets,
-  triplegs: {tracks: legTracks, startRows: legStarts, endRows: legEnds, status: {count: legCount}},
+  triplegs: {tracks: legTracks, startRows: legStarts, endRows: legEnds,
+    status: {count: legCount, overflow: legOverflow, candidateOverflow: legCandidateOverflow}},
   modeSpeedBreaks: [15 / 3.6, 100 / 3.6, Infinity],
   modeCount: 3,
   metric: 'distance',

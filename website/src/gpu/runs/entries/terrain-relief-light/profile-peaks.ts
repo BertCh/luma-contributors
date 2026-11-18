@@ -8,6 +8,7 @@
 
 import {
   getGPUProfilePeaksParameterValues,
+  GPU_PROFILE_PEAKS_UNRESOLVED_MASK,
   GPUProfilePeaks
 } from '@luma-contributors/analysis/gpu-terrain';
 import {defineOperationRun} from '../../define-run';
@@ -147,11 +148,12 @@ export default defineOperationRun({
         {shape: 'line', from: [0, pointer.y], to: [world.width, pointer.y], dashed: true}
       ];
       let peakCount = 0;
+      const incomplete = mask?.some(value => value === GPU_PROFILE_PEAKS_UNRESOLVED_MASK) ?? false;
       if (mask && series) {
         // The kept peaks, as dots on the profiles; unused slots sit outside the picture.
         const dots = new Float32Array(mask.length * 2).fill(-10);
         for (let index = 0; index < mask.length; index++) {
-          if (mask[index] === 0) continue;
+          if (mask[index] !== 1) continue;
           peakCount++;
           const profile = Math.floor(index / SAMPLE_COUNT);
           const range = inputs.ranges[profile];
@@ -171,7 +173,7 @@ export default defineOperationRun({
       return {
         values: {minimumProminence},
         glyphs,
-        readout: `minimumProminence ${minimumProminence} m${mask ? ` · ${peakCount} peaks` : ''}${
+        readout: `minimumProminence ${minimumProminence} m${mask && series ? ` · ${peakCount} peaks${incomplete ? ' · incomplete suppression' : ''}` : ' · peaks unavailable'}${
           values.noise > 0 ? ` · noise ${values.noise} m` : ''
         }`
       };

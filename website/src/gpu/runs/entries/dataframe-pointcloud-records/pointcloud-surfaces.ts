@@ -53,10 +53,12 @@ export default defineOperationRun<Inputs, Outputs>({
         classifications: builder.upload('classes', 'uint32', cloud.classes).view,
         groundClass: values.groundClass,
         grid,
-        terrain: terrain.view,
-        surface: surface.view,
-        canopy: canopy.view,
-        coverage: builder.allocate('coverage', 'uint32', cellCount).view
+        output: {
+          terrain: terrain.view,
+          surface: surface.view,
+          canopy: canopy.view,
+          coverage: builder.allocate('coverage', 'uint32', cellCount).view
+        }
       })
     );
     return {

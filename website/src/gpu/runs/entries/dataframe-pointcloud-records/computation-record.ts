@@ -132,7 +132,10 @@ export default defineOperationRun({
         y0: area.y1 - (row + 0.78) * rowHeight
       };
       lifetimeRows.push({box: rectangle, first, last});
-      lifetimes.addRectangle(rectangle, resource.ownership === 'transient' ? 2 : 1);
+      lifetimes.addRectangle(
+        rectangle,
+        resource.ownership === 'transient' ? 2 : resource.ownership === 'imported' ? 1 : 0
+      );
     });
     inputs.latest = {
       boxes: diagram.layout.boxes,

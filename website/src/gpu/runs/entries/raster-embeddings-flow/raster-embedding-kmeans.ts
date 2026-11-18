@@ -37,19 +37,21 @@ export default defineOperationRun({
     const counts = builder.allocate('counts', 'uint32', clusterCount);
     const status = builder.allocate('status', 'uint32', 3);
     const centroids = builder.allocate('centroids', 'float32', clusterCount * DIMENSIONS);
-    new GPURasterEmbeddingKMeans({
-      pixelCount: raster.pixelCount,
-      dimensions: DIMENSIONS,
-      vectors: vectors.view,
-      clusterCount,
-      maximumIterations: ITERATIONS[Math.round(values.maximumIterations)],
-      output: {
-        labels: labels.view,
-        centroids: centroids.view,
-        counts: counts.view,
-        status: status.view
-      }
-    }).addToGraph(builder.graph);
+    builder.graph.add(
+      new GPURasterEmbeddingKMeans({
+        pixelCount: raster.pixelCount,
+        dimensions: DIMENSIONS,
+        vectors: vectors.view,
+        clusterCount,
+        maximumIterations: ITERATIONS[Math.round(values.maximumIterations)],
+        output: {
+          labels: labels.view,
+          centroids: centroids.view,
+          counts: counts.view,
+          status: status.view
+        }
+      })
+    );
     const mask = builder.allocate('focus-mask', 'uint32', raster.pixelCount);
     const ordered = builder.allocate('ordered-labels', 'uint32', raster.pixelCount);
     return {outputs: {labels, counts, status, centroids, mask, ordered}};

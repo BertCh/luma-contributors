@@ -136,6 +136,7 @@ function makePolygonizeOutput(
     };
   };
   const finalStatus = status('final-status');
+  const {requiredCount: requiredRingCount, ...featureStatus} = finalStatus.views;
   const nodedStatus = status('noded-status');
   const directedStatus = status('directed-status');
   const directedCapacity = segmentCapacity * 2;
@@ -263,7 +264,7 @@ function makePolygonizeOutput(
       sourceIds: importView('repair-output-source-ids', sourceIds, 'uint32', ringCapacity)
     },
     diagnostics,
-    status: finalStatus.views
+    status: {...featureStatus, requiredRingCount}
   };
   return {
     output,
@@ -405,7 +406,7 @@ export async function createRepairOverlay(
       ringClosure,
       orientation: 'ignore' as const,
       output: {
-        mask: importView(`${id}-mask`, maskBuffer, 'uint32', featureCount),
+        issueCode: importView(`${id}-mask`, maskBuffer, 'uint32', featureCount),
         status: {overflow: importView(`${id}-overflow`, overflowBuffer, 'uint32', 1)}
       }
     });

@@ -374,9 +374,11 @@ export async function createPointCloudChange(
             positions: targetView,
             radius: TARGET_NORMAL_RADIUS,
             capacity: neighborhoodCapacity,
-            indices: neighborhoodIndicesView,
-            squaredDistances: neighborhoodDistancesView,
-            counts: neighborhoodCountsView
+            output: {
+              indices: neighborhoodIndicesView,
+              squaredDistances: neighborhoodDistancesView,
+              counts: neighborhoodCountsView
+            }
           })
         );
         graph.add(
@@ -386,10 +388,12 @@ export async function createPointCloudChange(
             indices: neighborhoodIndicesView,
             counts: neighborhoodCountsView,
             capacity: neighborhoodCapacity,
-            normals: featureNormalsView,
-            eigenvalues: targetEigenvaluesView,
-            shapes: targetShapesView,
-            status: targetFeatureStatusView
+            output: {
+              normals: featureNormalsView,
+              eigenvalues: targetEigenvaluesView,
+              shapes: targetShapesView,
+              status: targetFeatureStatusView
+            }
           })
         );
         const maskInvalidNormalsNode = createGPUComputeCommandNode<void>({
@@ -478,10 +482,12 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
         maximumDistance: settings.maximumDistance,
         iterations: ICP_ITERATIONS,
         ...(settings.robust === 'none' ? {} : {robust: {method: settings.robust, scale: 0.5}}),
-        transform: transformView,
-        history: historyView,
-        inlierMask: inlierView,
-        status: icpStatusView
+        output: {
+          transform: transformView,
+          history: historyView,
+          inlierMask: inlierView,
+          status: icpStatusView
+        }
       };
       if (settings.metric === 'point-to-plane') {
         if (!targetNormalsView)
@@ -495,7 +501,13 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
           })
         );
       } else {
-        graph.add(new GPUPointCloudICP({id: 'local-icp', ...icpInputs, metric: 'point-to-point'}));
+        graph.add(
+          new GPUPointCloudICP({
+            id: 'local-icp',
+            ...icpInputs,
+            metric: 'point-to-point'
+          })
+        );
       }
       alignment = {transform: transformView};
     }
@@ -513,10 +525,12 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
         registrationError: settings.registrationError,
         uncertaintyCombination: settings.uncertaintyCombination,
         confidenceMultiplier: 1.96,
-        changes: changesView,
-        roughness: roughnessView,
-        counts: countsView,
-        status: statusView
+        output: {
+          changes: changesView,
+          roughness: roughnessView,
+          counts: countsView,
+          status: statusView
+        }
       })
     );
     const compiled = coordinatesBuffer.track(await graph.compileAsync());

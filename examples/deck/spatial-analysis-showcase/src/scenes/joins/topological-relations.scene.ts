@@ -355,7 +355,7 @@ graph.add(
     candidateCapacity,
     prepared,
     output: {
-      pairs: {leftIds, rightIds, status: {count, overflow, requiredCount}},${state.matrix && state.predicate !== 'dwithin' ? '\n      relate: matrices,                       // formatGPUSpatialRelate(word)' : ''}${state.combo === 'tracts-self' ? '\n      weights: {offsets, neighbors, weights}, // cross weights, CSR (rows are features)' : ''}
+      pairs: {leftRows, rightRows, status: {count, overflow, requiredCount}},${state.matrix && state.predicate !== 'dwithin' ? '\n      relate: matrices,                       // formatGPUSpatialRelate(word)' : ''}${state.combo === 'tracts-self' ? '\n      weights: {offsets, neighbors, weights}, // cross weights, CSR (rows are features)' : ''}
       status: {uncertainCount, candidateCount}
     }
   })

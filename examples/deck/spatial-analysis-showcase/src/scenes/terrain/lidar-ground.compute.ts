@@ -26,8 +26,16 @@ import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
 import type {LidarGroundOptions} from './lidar-ground.scene';
+import {
+  createGroundSeedCoverageNode,
+  createSupportedGroundClassesNode,
+  createGroundDisplayClassesNode,
+  LIDAR_GROUND_DISPLAY_CATEGORIES,
+  LIDAR_GROUND_GRID,
+  LIDAR_GROUND_RADII
+} from './point-cloud-ground-support';
 
-const RASTER_GRID = {origin: [-110, -110] as const, cellSize: 1, width: 220, height: 220};
+const RASTER_GRID = LIDAR_GROUND_GRID;
 const NEIGHBOR_CAPACITY = 16;
 const VOXEL_SIZE = 2;
 const VOXEL_GRID_SIZE = [110, 110, 45] as const;
@@ -93,7 +101,13 @@ export async function createLidarGround(
   const firstSurfaceBuffer = resources.createBuffer('first-surface', surfaceCount * 4);
   const firstCanopyBuffer = resources.createBuffer('first-canopy', surfaceCount * 4);
   const firstCoverageBuffer = resources.createBuffer('first-coverage', surfaceCount * 4);
+  const groundSeedCoverageBuffer = resources.createBuffer('ground-seed-coverage', surfaceCount * 4);
+  const supportedClassificationsBuffer = resources.createBuffer(
+    'supported-classifications',
+    count * 4
+  );
   const groundMaskBuffer = resources.createBuffer('ground-mask', count * 4);
+  const groundDisplayBuffer = resources.createBuffer('ground-display', count * 4);
   const classifiedBuffer = resources.createBuffer('classified', count * 4);
   const groundStatusBuffer = resources.createBuffer('ground-status', count * 4);
   const terrainBuffer = resources.createBuffer('terrain', surfaceCount * 4);
@@ -318,11 +332,13 @@ export async function createLidarGround(
       positions: positionsView,
       radius: 2.5,
       capacity: NEIGHBOR_CAPACITY,
-      indices: neighborhoodIndices,
-      squaredDistances: neighborhoodDistances,
-      counts: neighborhoodCounts,
-      status: neighborhoodStatus,
-      grid: {origin: [-110, -110, -5], cellSize: 2.5, dimensions: [88, 88, 36]}
+      grid: {origin: [-110, -110, -5], cellSize: 2.5, dimensions: [88, 88, 36]},
+      output: {
+        indices: neighborhoodIndices,
+        squaredDistances: neighborhoodDistances,
+        counts: neighborhoodCounts,
+        status: neighborhoodStatus
+      }
     })
   );
   graph.add(
@@ -331,8 +347,7 @@ export async function createLidarGround(
       squaredDistances: neighborhoodDistances,
       counts: neighborhoodCounts,
       capacity: NEIGHBOR_CAPACITY,
-      meanDistances,
-      validity: inliers
+      output: {meanDistances, validity: inliers}
     })
   );
   graph.add(
@@ -341,39 +356,62 @@ export async function createLidarGround(
       positions: positionsView,
       classifications: classesView,
       grid: RASTER_GRID,
-      terrain: firstTerrain,
-      surface: firstSurface,
-      canopy: firstCanopy,
-      coverage: firstCoverage
+      output: {
+        terrain: firstTerrain,
+        surface: firstSurface,
+        canopy: firstCanopy,
+        coverage: firstCoverage
+      }
     })
   );
+  const groundSeedCoverage = importGraphBuffer(
+    graph,
+    'ground-seed-coverage',
+    groundSeedCoverageBuffer,
+    'uint32',
+    surfaceCount
+  );
+  const supportedClassifications = importGraphBuffer(
+    graph,
+    'supported-classifications',
+    supportedClassificationsBuffer,
+    'uint32',
+    count
+  );
+  graph.add(createGroundSeedCoverageNode(graph, firstCoverage, groundSeedCoverage));
   graph.add(
     new GPUPointCloudGround({
       id: 'lidar-ground-pmf',
       positions: positionsView,
       classifications: classesView,
       grid: RASTER_GRID,
-      minimumSurface: firstTerrain,
-      coverage: firstCoverage,
-      radii: [1, 2, 4],
+      radii: LIDAR_GROUND_RADII,
       initialThreshold: 0.3,
       slope: 0.1,
       maximumThreshold: 2,
-      groundMask,
-      outputClassifications: classified,
-      status: groundStatus
+      minimumSurface: firstTerrain,
+      coverage: groundSeedCoverage,
+      output: {groundMask, outputClassifications: classified, status: groundStatus}
     })
+  );
+  graph.add(
+    createSupportedGroundClassesNode(graph, classified, groundStatus, supportedClassifications)
+  );
+  graph.add(
+    createGroundDisplayClassesNode(
+      graph,
+      groundMask,
+      groundStatus,
+      importGraphBuffer(graph, 'ground-display', groundDisplayBuffer, 'uint32', count)
+    )
   );
   graph.add(
     new GPUPointCloudSurfaces({
       id: 'lidar-ground-classified-surfaces',
       positions: positionsView,
-      classifications: classified,
+      classifications: supportedClassifications,
       grid: RASTER_GRID,
-      terrain,
-      surface,
-      canopy,
-      coverage
+      output: {terrain, surface, canopy, coverage}
     })
   );
   graph.add(
@@ -384,8 +422,7 @@ export async function createLidarGround(
       terrain,
       coverage,
       coverageBit: 2,
-      heights,
-      status: heightStatus
+      output: {heights, status: heightStatus}
     })
   );
   graph.add(
@@ -395,10 +432,12 @@ export async function createLidarGround(
       indices: neighborhoodIndices,
       counts: neighborhoodCounts,
       capacity: NEIGHBOR_CAPACITY,
-      normals: featureNormals,
-      eigenvalues: featureEigenvalues,
-      shapes: featureShapes,
-      status: featureStatus
+      output: {
+        normals: featureNormals,
+        eigenvalues: featureEigenvalues,
+        shapes: featureShapes,
+        status: featureStatus
+      }
     })
   );
   graph.add(
@@ -512,13 +551,10 @@ export async function createLidarGround(
           new SpatialAnalysisPointLayer({
             id: 'lidar-ground-pmf-classification',
             positions: position2DBuffer,
-            values: groundMaskBuffer,
+            values: groundDisplayBuffer,
             valueFormat: 'uint32',
             colormap: 'category',
-            palette: [
-              [204, 109, 97, 255],
-              [150, 211, 166, 255]
-            ],
+            palette: LIDAR_GROUND_DISPLAY_CATEGORIES.map(({color}) => [...color, 255] as const),
             instanceCount: count,
             ...base
           })

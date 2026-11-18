@@ -187,6 +187,16 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
         name: 'counts',
         type: "GraphDataView<'uint32'> | undefined",
         description: 'Optional distinct offset points per input vertex.'
+      },
+      {
+        name: 'lineOffsets',
+        type: "GraphDataView<'uint32'> | undefined",
+        description: 'Compact: terminal offset is vertices written; status.count counts lines.'
+      },
+      {
+        name: 'status',
+        type: '{count, requiredCount?, overflow} | undefined',
+        description: 'Compact layout: written lines, required lines and capacity loss.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -272,6 +282,16 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
         name: 'positions',
         type: "GraphDataView<'float32x2'>",
         description: 'Outline triangle vertices, render only.'
+      },
+      {
+        name: 'vertexOffsets',
+        type: "GraphDataView<'uint32'> | undefined",
+        description: 'Compact layout: clamped starts per input vertex and terminal total.'
+      },
+      {
+        name: 'status',
+        type: '{count, requiredCount?, overflow} | undefined',
+        description: 'Compact layout: written vertices, required vertices and capacity loss.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -310,7 +330,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Intersects, unions, subtracts or dissolves polygon sets over a snap-rounded planar arrangement.',
     explanation:
-      'Best for clip, merge and erase workflows on parcels, zones and footprints. Edges are noded and snapped, then faces are kept by a winding rule per operand. Capacities are explicit, and status reports when they were too small.',
+      'Best for clip, merge and erase workflows on parcels, zones and footprints. Edges are noded and snapped, then faces are kept by a winding rule per operand. Require both overflow and candidateOverflow to be zero before accepting geometry or provenance; candidateOverflow includes uncertifiable noding predicates.',
     dataTypes: {input: ['polygons'], output: ['polygons']},
     useCases: ['relate', 'transform'],
     domains: ['cartography', 'data-engineering'],
@@ -362,12 +382,12 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       {
         name: 'geometry',
         type: 'GPUPackedGeometryPort<GPUPolygonGeometryPort>',
-        description: 'Result polygons with ring offsets; no source ids.'
+        description: 'Polygons without source IDs; complete only when both status flags are zero.'
       },
       {
         name: 'status',
         type: "GPUPolygonOverlayOutput['status']",
-        description: 'count is polygons; requiredRingCount sizes the ring capacity; overflow flags.'
+        description: 'Polygon count, requiredRingCount; final overflow and candidate noding loss.'
       },
       {
         name: 'boundary',
@@ -905,9 +925,9 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Group concave hull',
-    summary: 'Builds one alpha-shape hull per cluster label, all in a single GPU pass.',
+    summary: 'Builds independent alpha-shape hulls for GPU-resident group labels.',
     explanation:
-      'Outlines clusters from DBSCAN-style labels, or any group id column. Each group gets its own Delaunay complex, so hulls never bridge between groups. Boundaries are oriented edges ready for ring assembly.',
+      'Outlines clusters from DBSCAN-style labels or any group ID column with one group-aware Delaunay build. Fixed layout reserves T=max(0,2*n-5) triangles and 3*T edges per group; packed layout reserves those totals across all groups. Both layouts publish groupCount convergence rows and preserve oriented boundaries for ring assembly.',
     dataTypes: {input: ['points', 'table'], output: ['polygons']},
     useCases: ['find-patterns', 'transform'],
     domains: ['spatial-statistics', 'cartography'],
@@ -926,6 +946,12 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
       },
       {name: 'groupCount', type: 'number', required: true, description: 'Number of groups.'},
       {
+        name: 'layout',
+        type: "'fixed' | 'packed'",
+        default: "'fixed'",
+        description: 'Fixed group slots, or compact group-major triangle and edge lists.'
+      },
+      {
         name: 'maximumCircumradius',
         type: 'number',
         required: true,
@@ -936,7 +962,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
         name: 'output',
         type: 'GPUGroupConcaveHull output',
         required: true,
-        description: 'Boundary edges, triangles, validity masks and status.'
+        description: 'Geometry, validity, convergence and packed ranges/status when selected.'
       }
     ],
     outputs: [
@@ -961,22 +987,42 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
         description: '1 for each triangle kept in the hull.'
       },
       {
-        name: 'status',
-        type: '{converged}',
-        description: 'One row; 0 if tessellation did not finish.'
+        name: 'status.converged',
+        type: "GraphDataView<'uint32'>",
+        description: 'groupCount rows in both layouts; 0 suppresses that group’s geometry.'
+      },
+      {
+        name: 'groups',
+        type: '{triangleOffsets, triangleCounts, edgeOffsets, edgeCounts} | undefined',
+        description: 'Packed only: per-group starts and counts in triangle and boundary lists.'
+      },
+      {
+        name: 'status.count, status.requiredCount, status.overflow',
+        type: "GraphDataView<'uint32'>",
+        description:
+          'Packed only: written/required edge counts; overflow zero with full reservation.'
       }
     ],
-    example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUGroupConcaveHull} from '${IMPORT_PATH}';
-
-const graph = new GPUCommandGraph(device, {id: 'cluster-hulls'});
-// \`positions\`, \`labels\` and the output views are graph views imported on \`graph\`.
+    example: `import {createTransientView} from '@luma.gl/graph/gpu-core';
+import {GPUGroupConcaveHull, getDelaunayMaximumTriangleCount} from '${IMPORT_PATH}';
+// positions and labels are already imported on graph; allocate for two groups.
+const groupCount = 2;
+const triangleCapacity = getDelaunayMaximumTriangleCount(positions.length);
+const scalar = (name: string, length = 1) => createTransientView(graph, name, 'uint32', length);
 graph.add(new GPUGroupConcaveHull({
-  positions,
-  groupIds: labels,
-  groupCount: 12,
+  positions, groupIds: labels, groupCount, layout: 'packed',
   maximumCircumradius: 80,
-  output: {boundaryEdges, edgeValidity, triangles, triangleValidity, status: {converged}}
+  output: {
+    triangles: createTransientView(graph, 'triangles', 'uint32x3', triangleCapacity),
+    triangleValidity: scalar('triangle-validity', triangleCapacity),
+    boundaryEdges: createTransientView(graph, 'edges', 'uint32x2', 3 * triangleCapacity),
+    edgeValidity: scalar('edge-validity', 3 * triangleCapacity),
+    status: {converged: scalar('converged', groupCount), count: scalar('count'),
+      requiredCount: scalar('required'), overflow: scalar('overflow')},
+    groups: {triangleOffsets: scalar('triangle-offsets', groupCount),
+      triangleCounts: scalar('triangle-counts', groupCount),
+      edgeOffsets: scalar('edge-offsets', groupCount), edgeCounts: scalar('edge-counts', groupCount)}
+  }
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,

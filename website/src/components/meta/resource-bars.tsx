@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {formatBytes} from '../../lens/format';
+import {formatResourceBytes, formatResourceCount} from '../../lens/format';
 import type {LensViewModel} from '../../lens/types';
 import './meta.css';
 
@@ -15,8 +15,10 @@ export function ResourceBars({model, limit = 6}: {model: LensViewModel; limit?: 
         <span className="meta-panel__title">{model.title}: largest buffers</span>
         <ul className="meta-stats">
           <li>
-            <strong>{formatBytes(model.resources.totalBytes)}</strong> in {model.resources.count}{' '}
-            buffers
+            <strong>
+              {formatResourceBytes(model.resources.totalBytes, model.resources.totalBytesKind)}
+            </strong>{' '}
+            in {formatResourceCount(model.resources)}
           </li>
         </ul>
       </div>
@@ -33,7 +35,7 @@ export function ResourceBars({model, limit = 6}: {model: LensViewModel; limit?: 
               />
             </span>
             <span className="resource-bars__size">
-              {formatBytes(row.bytes)}
+              {formatResourceBytes(row.bytes, row.bytesKind)}
               {row.count > 1 ? ` x${row.count}` : ''}
             </span>
           </li>

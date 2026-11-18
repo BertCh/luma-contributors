@@ -322,7 +322,7 @@ graph.add(new GPUTimeWindowFilter({
   timestamps: segmentStarts, endTimestamps: segmentEnds,
   window: windowParameters.importToGraph(graph),
   output: {
-    ids: trailIds, status: {count: trailCount, overflow: trailOverflow},
+    rows: trailIds, status: {count: trailCount, overflow: trailOverflow},
     fadeWeights, clipFractions, drawInstanceCount: trailDrawCount
   }
 }));

@@ -21,6 +21,8 @@ import {
   getHeightMaximum
 } from './_lib/helpers';
 import {parameters} from './pointcloud-ground.parameters';
+import {summarizePointCloudGround} from './_lib/pointcloud-display';
+import {addPointCloudDisplayCopy} from './_lib/pointcloud-display-run';
 
 const POINT_COUNT = 9000;
 const CELL_SIZE = 0.03;
@@ -50,7 +52,10 @@ function createInputs({
   };
 }
 type Inputs = ReturnType<typeof createInputs>;
-type Outputs = Record<'map' | 'profile' | 'heights' | 'groundMask', RunBuffer>;
+type Outputs = Record<
+  'map' | 'profile' | 'displayMap' | 'displayProfile' | 'heights' | 'groundMask' | 'status',
+  RunBuffer
+>;
 
 export default defineOperationRun<Inputs, Outputs>({
   parameters,
@@ -72,35 +77,54 @@ export default defineOperationRun<Inputs, Outputs>({
         classifications: classes.view,
         groundClass: 1,
         grid,
-        terrain: minimum.view,
-        surface: builder.allocate('surface', 'float32', cellCount).view,
-        canopy: builder.allocate('canopy', 'float32', cellCount).view,
-        coverage: coverage.view
+        output: {
+          terrain: minimum.view,
+          surface: builder.allocate('surface', 'float32', cellCount).view,
+          canopy: builder.allocate('canopy', 'float32', cellCount).view,
+          coverage: coverage.view
+        }
       })
     );
     const groundMask = builder.allocate('ground-mask', 'uint32', POINT_COUNT);
+    const status = builder.allocate('status', 'uint32', POINT_COUNT);
     builder.graph.add(
       new GPUPointCloudGround({
         positions: positions.view,
         classifications: classes.view,
         grid,
-        minimumSurface: minimum.view,
-        coverage: coverage.view,
         radii: [1, 2, 4, 8].slice(0, values.radiusCount),
         initialThreshold: values.initialThreshold,
         slope: SLOPE,
         maximumThreshold: MAXIMUM_THRESHOLD,
-        groundMask: groundMask.view,
-        outputClassifications: builder.allocate('output-classes', 'uint32', POINT_COUNT).view,
-        status: builder.allocate('status', 'uint32', POINT_COUNT).view
+        minimumSurface: minimum.view,
+        coverage: coverage.view,
+        output: {
+          groundMask: groundMask.view,
+          outputClassifications: builder.allocate('output-classes', 'uint32', POINT_COUNT).view,
+          status: status.view
+        }
       })
     );
+    const map = builder.upload('map', 'float32x2', inputs.mapPositions);
+    const profile = builder.upload('profile', 'float32x2', inputs.profilePositions);
     return {
       outputs: {
-        map: builder.upload('map', 'float32x2', inputs.mapPositions),
-        profile: builder.upload('profile', 'float32x2', inputs.profilePositions),
+        map,
+        profile,
+        displayMap: addPointCloudDisplayCopy(builder, 'supported-map', map, status, POINT_COUNT, {
+          components: 2
+        }),
+        displayProfile: addPointCloudDisplayCopy(
+          builder,
+          'supported-profile',
+          profile,
+          status,
+          POINT_COUNT,
+          {components: 2}
+        ),
         heights: builder.upload('heights', 'float32', inputs.heights),
-        groundMask
+        groundMask,
+        status
       }
     };
   },
@@ -115,8 +139,8 @@ export default defineOperationRun<Inputs, Outputs>({
       const fraction = clamp((0.95 - pointer.unitY) / 0.9, 0, 0.9999);
       const level = Math.floor(fraction * THRESHOLDS.length);
       const mask = peek(outputs.groundMask);
-      let ground = 0;
-      for (let row = 0; mask && row < mask.length; row++) ground += mask[row];
+      const status = peek(outputs.status);
+      const summary = summarizePointCloudGround(mask, status);
       const glyphs: RunGlyph[] = [{shape: 'curtain', x: pointer.x}];
       for (const radius of RADII.slice(0, values.radiusCount)) {
         const half = radius * CELL_SIZE * inputs.layout.scale;
@@ -132,7 +156,7 @@ export default defineOperationRun<Inputs, Outputs>({
         settle: {initialThreshold: THRESHOLDS[level]},
 
         glyphs,
-        readout: `initialThreshold ${THRESHOLDS[level]} · ground ${mask ? ground : '…'} of ${POINT_COUNT}`
+        readout: `initialThreshold ${THRESHOLDS[level]} · ground ${status ? summary.ground : '…'} of ${summary.supported} supported · ${summary.incomplete} incomplete/unsupported (hidden)`
       };
     }
   },
@@ -156,14 +180,14 @@ export default defineOperationRun<Inputs, Outputs>({
       },
       {
         layer: 'dots',
-        positions: outputs.map,
+        positions: outputs.displayMap,
         values: outputs.groundMask,
         radius: 2.4,
         clip: {side: 'right', x: curtain}
       },
       {
         layer: 'dots',
-        positions: outputs.profile,
+        positions: outputs.displayProfile,
         values: outputs.groundMask,
         radius: 2,
         clip: {side: 'right', x: curtain}

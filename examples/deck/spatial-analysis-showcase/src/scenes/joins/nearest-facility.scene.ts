@@ -465,15 +465,15 @@ graph.add(
             ? `graph.add(new GPUNearestFeatureJoin({spatialContext: projection.spatialContext,
   queries: {kind: 'points', positions: facilities}, features: {kind: 'points', positions: facilities},
   k: ${state.weightK + 1},
-  output: {neighborIds, neighborCounts, neighborDistances, status: {overflow}}
+  output: {neighborIds, neighborRows, neighborCounts, neighborDistances, status: {overflow}}
 }));
 graph.add(
   new GPUNearestFeatureWeights({spatialContext: projection.spatialContext,
-    neighborIds, neighborCounts, neighborDistances,
+    neighborRows, neighborCounts, neighborDistances, neighborStatus: {overflow},
     slotCapacity: ${state.weightK + 1}, k: ${state.weightK},
     excludeSelf: true,                       // libpysal KNN never lists a row as its own neighbour
     weightType: '${state.weightType}'${state.weightType === 'inverse-distance' ? `, power: ${state.weightPower}` : ''},
-    output: {offsets, neighbors, weights, distances, status: {overflow}}   // CSR
+    output: {offsets, neighbors, weights, distances, status: {overflow: csrOverflow, candidateOverflow}}   // CSR
   })
 );`
             : `import {GPUSpatialJoinCandidates} from '@luma-contributors/analysis/gpu-spatial-analysis';
@@ -483,7 +483,7 @@ graph.add(
     left: {kind: 'points', positions: facilities},
     right: {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets},
     distance: candidateDistance.importToGraph(graph),        // one-row float32, read per frame
-    output: {leftIds, rightIds, status: {count, overflow, requiredCount}}  // sorted by (left, right)
+    output: {leftRows, rightRows, status: {count, overflow, requiredCount}}  // sorted by (left, right)
   })
 );`;
     return `${join}

@@ -31,7 +31,7 @@ export default defineOperationRun({
     pointer: [...getWindowCenter(HONSHU_WINDOW)] as [number, number]
   }),
   build(builder, points, values) {
-    const family = getCellFamily(values.family);
+    const family = getCellFamily(values['family']);
     const resolutions = family === 'h3' ? [6, 5, 4, 3] : [11, 10, 9, 8];
     const positions = builder.upload('positions', 'float32x2', points.positions);
     const pointValues = builder.upload('values', 'float32', points.values);
@@ -82,8 +82,11 @@ export default defineOperationRun({
         const keys = peek(table.cells);
         const count = peek(table.count);
         const tableSums = peek(table.sumValues);
+        const overflow = peek(table.overflow);
+        const candidateOverflow = peek(table.candidateOverflow);
         let sum = '…';
-        if (cell.keys && keys && count && tableSums) {
+        if (overflow?.[0] || candidateOverflow?.[0]) sum = 'incomplete';
+        else if (cell.keys && keys && count && tableSums && overflow && candidateOverflow) {
           const [row] = findKeyRows(keys, count[0], cell.keys);
           sum = row === undefined ? '0' : tableSums[row].toFixed(0);
         }
@@ -93,16 +96,16 @@ export default defineOperationRun({
     }
   },
   draw: ({outputs, values}) => {
-    const fill = outputs.levelFills[values.level];
+    const fill = outputs.levelFills[values['level']];
     return [
       {
         layer: 'polygons',
         positions: fill.boundaries,
         indices: fill.indices,
         owners: fill.owners,
-        values: outputs.levels[values.level].sumValues,
+        values: outputs.levels[values['level']].sumValues,
         triangleCount: fill.triangleCount,
-        range: [0, 8 * Math.pow(3, values.level)]
+        range: [0, 8 * Math.pow(3, values['level'])]
       }
     ];
   }

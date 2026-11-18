@@ -315,41 +315,47 @@ export const tradeAreasMode: SpatialAnalysisModeDefinition = {
       weights: ReturnType<typeof weightsOf>,
       csr: Csr
     ) => {
-      graph.add(
-        new GPUNeighborSearch({
-          spatialContext: trips.frame.spatialContext,
-          id: name,
-          mode: 'radius',
-          // Demand rows list the facilities within reach; facility rows list the demand.
-          positions: toFacilities ? facilityPositionsView : demandPositionsView,
-          queryPositions: toFacilities ? demandPositionsView : facilityPositionsView,
-          mask: toFacilities ? facilityMaskView : undefined,
-          queryMask: toFacilities ? undefined : facilityMaskView,
-          parameters,
-          gridSize: [64, 64],
-          output: {
-            ...weights,
-            status: {overflow: view(`${name}-overflow`, csr.overflow, 'uint32', 1)}
-          }
-        })
-      );
+      const search = new GPUNeighborSearch({
+        spatialContext: trips.frame.spatialContext,
+        id: name,
+        mode: 'radius',
+        // Demand rows list the facilities within reach; facility rows list the demand.
+        positions: toFacilities ? facilityPositionsView : demandPositionsView,
+        queryPositions: toFacilities ? demandPositionsView : facilityPositionsView,
+        mask: toFacilities ? facilityMaskView : undefined,
+        queryMask: toFacilities ? undefined : facilityMaskView,
+        parameters,
+        gridSize: [64, 64],
+        output: {
+          ...weights,
+          status: {overflow: view(`${name}-overflow`, csr.overflow, 'uint32', 1)}
+        }
+      });
+      graph.add(search);
+      return search.outputWeights;
     };
-    addSearch(
+    const catchmentDemandPort = addSearch(
       'catchment-demand-search',
       true,
       catchmentParametersView,
       catchmentDemandWeights,
       catchmentDemandRows
     );
-    addSearch(
+    const catchmentFacilityPort = addSearch(
       'catchment-facility-search',
       false,
       catchmentParametersView,
       catchmentFacilityWeights,
       catchmentFacilityRows
     );
-    addSearch('huff-demand-search', true, huffParametersView, huffDemandWeights, huffDemandRows);
-    addSearch(
+    const huffDemandPort = addSearch(
+      'huff-demand-search',
+      true,
+      huffParametersView,
+      huffDemandWeights,
+      huffDemandRows
+    );
+    const huffFacilityPort = addSearch(
       'huff-facility-search',
       false,
       huffParametersView,
@@ -367,8 +373,8 @@ export const tradeAreasMode: SpatialAnalysisModeDefinition = {
           method,
           supply: capacityView,
           demand: demandView,
-          facilityWeights: catchmentFacilityWeights,
-          demandWeights: catchmentDemandWeights,
+          facilityWeights: catchmentFacilityPort,
+          demandWeights: catchmentDemandPort,
           output: {
             accessibility: view(
               `accessibility-${method}`,
@@ -394,8 +400,8 @@ export const tradeAreasMode: SpatialAnalysisModeDefinition = {
       new GPUHuffTradeAreas({
         id: 'huff',
         attractiveness: capacityView,
-        demandWeights: huffDemandWeights,
-        facilityWeights: huffFacilityWeights,
+        demandWeights: huffDemandPort,
+        facilityWeights: huffFacilityPort,
         demand: demandView,
         parameters: huffExponentParameter.importToGraph(graph),
         output: {
@@ -510,6 +516,11 @@ export const tradeAreasMode: SpatialAnalysisModeDefinition = {
         capturedReadout.setValue(
           `${formatCount(captured)} of ${formatCount(reachedDemand)} (busiest ${formatCount(busiest)})`
         );
+        if (overflows.some(Boolean)) {
+          for (const readout of [unreachedReadout, conservationReadout, capturedReadout]) {
+            readout.setValue('n/a: incomplete weights');
+          }
+        }
         context.updateLayers();
       }
     );

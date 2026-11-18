@@ -27,13 +27,17 @@ export default defineOperationRun({
   createInputs: ({random, world}) => createZoneInputs(random, world),
   build(builder, inputs, values) {
     const {features, world} = inputs;
-    const result = addFractionalCoverage(builder, inputs, values.gridWidth);
+    const result = addFractionalCoverage(builder, inputs, values['gridWidth']);
     return {
       outputs: {
         zoneIds: result.coverage.zoneIds,
         cellIds: result.coverage.cellIds,
         fractions: result.coverage.fractions,
         tupleCount: result.coverage.count,
+        requiredCount: result.coverage.requiredCount,
+        coverageOverflow: result.coverage.overflow,
+        candidateOverflow: result.coverage.candidateOverflow,
+        zoneValidity: result.coverage.zoneValidity,
         hover: builder.allocate('hover', 'float32', result.cellCount),
         grid: builder.upload(
           'grid-lines',
@@ -50,13 +54,39 @@ export default defineOperationRun({
   async afterRun({inputs, outputs}) {
     if (inputs.focus.tract < 0) return;
     const hover = new Float32Array(outputs.hover.length);
-    const [zoneIds, cellIds, fractions, count] = await Promise.all([
+    const [
+      zoneIds,
+      cellIds,
+      fractions,
+      count,
+      requiredCount,
+      overflow,
+      candidateOverflow,
+      zoneValidity
+    ] = await Promise.all([
       readUint32(outputs.zoneIds),
       readUint32(outputs.cellIds),
       readFloat32(outputs.fractions),
-      readUint32(outputs.tupleCount)
+      readUint32(outputs.tupleCount),
+      readUint32(outputs.requiredCount),
+      readUint32(outputs.coverageOverflow),
+      readUint32(outputs.candidateOverflow),
+      readUint32(outputs.zoneValidity)
     ]);
-    readZoneCoverage(hover, {zoneIds, cellIds, fractions, count}, inputs.focus.tract);
+    readZoneCoverage(
+      hover,
+      {
+        zoneIds,
+        cellIds,
+        fractions,
+        count,
+        requiredCount,
+        overflow,
+        candidateOverflow,
+        zoneValidity
+      },
+      inputs.focus.tract
+    );
     outputs.hover.write(hover);
   },
   interaction: {
@@ -73,7 +103,11 @@ export default defineOperationRun({
           zoneIds: peek(outputs.zoneIds),
           cellIds: peek(outputs.cellIds),
           fractions: peek(outputs.fractions),
-          count: peek(outputs.tupleCount)
+          count: peek(outputs.tupleCount),
+          requiredCount: peek(outputs.requiredCount),
+          overflow: peek(outputs.coverageOverflow),
+          candidateOverflow: peek(outputs.candidateOverflow),
+          zoneValidity: peek(outputs.zoneValidity)
         },
         tract
       );
@@ -81,7 +115,7 @@ export default defineOperationRun({
       if (tract < 0) return {readout: 'outside the tracts'};
       return {
         glyphs: [{shape: 'polyline', closed: true, points: getTractRing(inputs.features, tract)}],
-        readout: `tract ${inputs.features.geoids[tract].slice(-6)} | ${summary.cells} cells | ${summary.partial} partial | ${summary.area.toFixed(1)} area`
+        readout: `tract ${inputs.features.geoids[tract].slice(-6)} | ${summary.status === 'complete' ? `${summary.cells} cells | ${summary.partial} partial | ${summary.area.toFixed(1)} area` : `coverage ${summary.status}`}`
       };
     }
   },

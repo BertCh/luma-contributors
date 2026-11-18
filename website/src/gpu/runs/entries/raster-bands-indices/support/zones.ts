@@ -195,6 +195,7 @@ export function addFractionalCoverage(builder: RunBuilder, inputs: ZoneInputs, g
     count: builder.allocate('coverage-count', 'uint32', 1),
     requiredCount: builder.allocate('coverage-required', 'uint32', 1),
     overflow: builder.allocate('coverage-overflow', 'uint32', 1),
+    candidateOverflow: builder.allocate('coverage-candidate-overflow', 'uint32', 1),
     zoneValidity: builder.allocate('coverage-validity', 'uint32', features.featureCount)
   };
   const output = {
@@ -204,7 +205,8 @@ export function addFractionalCoverage(builder: RunBuilder, inputs: ZoneInputs, g
     status: {
       count: coverage.count.view,
       requiredCount: coverage.requiredCount.view,
-      overflow: coverage.overflow.view
+      overflow: coverage.overflow.view,
+      candidateOverflow: coverage.candidateOverflow.view
     },
     zoneValidity: coverage.zoneValidity.view
   };
@@ -233,6 +235,10 @@ type CoverageReadback = {
   cellIds: Uint32Array | Float32Array | Int32Array | null;
   fractions: Uint32Array | Float32Array | Int32Array | null;
   count: Uint32Array | Float32Array | Int32Array | null;
+  requiredCount: Uint32Array | Float32Array | Int32Array | null;
+  overflow: Uint32Array | Float32Array | Int32Array | null;
+  candidateOverflow?: Uint32Array | Float32Array | Int32Array | null;
+  zoneValidity: Uint32Array | Float32Array | Int32Array | null;
 };
 
 /**
@@ -243,11 +249,42 @@ export function readZoneCoverage(
   target: Float32Array,
   coverage: CoverageReadback,
   zone: number
-): {cells: number; partial: number; area: number} {
+): {status: 'pending' | 'incomplete' | 'complete'; cells: number; partial: number; area: number} {
   target.fill(Number.NaN);
-  const summary = {cells: 0, partial: 0, area: 0};
-  const {zoneIds, cellIds, fractions, count} = coverage;
-  if (!zoneIds || !cellIds || !fractions || !count || zone < 0) return summary;
+  const unavailable = {cells: NaN, partial: NaN, area: NaN};
+  const {
+    zoneIds,
+    cellIds,
+    fractions,
+    count,
+    requiredCount,
+    overflow,
+    candidateOverflow,
+    zoneValidity
+  } = coverage;
+  if (
+    !zoneIds ||
+    !cellIds ||
+    !fractions ||
+    !count?.length ||
+    !requiredCount?.length ||
+    !overflow?.length ||
+    !zoneValidity ||
+    candidateOverflow === null ||
+    (candidateOverflow && !candidateOverflow.length) ||
+    zone < 0
+  )
+    return {status: 'pending', ...unavailable};
+  if (
+    zone >= zoneValidity.length ||
+    zoneValidity[zone] === 0 ||
+    overflow[0] !== 0 ||
+    (candidateOverflow?.[0] ?? 0) !== 0 ||
+    requiredCount[0] !== count[0] ||
+    count[0] > Math.min(zoneIds.length, cellIds.length, fractions.length)
+  )
+    return {status: 'incomplete', ...unavailable};
+  const summary = {status: 'complete' as const, cells: 0, partial: 0, area: 0};
   for (let tuple = 0; tuple < count[0]; tuple++) {
     if (zoneIds[tuple] !== zone) continue;
     target[cellIds[tuple]] = fractions[tuple];

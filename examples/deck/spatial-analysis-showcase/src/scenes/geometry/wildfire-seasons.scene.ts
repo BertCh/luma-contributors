@@ -365,7 +365,7 @@ import {GPUGeometryMeasures} from '@luma-contributors/analysis/gpu-spatial-analy
 graph.add(new GPUTimeWindowFilter({
   timestamps: days, window,
   output: {
-    ids, status: {count, overflow},
+    rows, status: {count, overflow},
     outputMask,                        // 1 for fires in the window
     fadeWeights                        // 0..1, dims toward the old end
   }

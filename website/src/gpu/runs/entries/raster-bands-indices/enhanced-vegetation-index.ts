@@ -27,15 +27,17 @@ export default defineOperationRun({
     const blue = uploadBand(builder, imagery, 'blue', imagery.blue);
     const output = builder.allocate('evi', 'float32', cellCount);
     const outputValidity = builder.allocate('evi-valid', 'uint32', cellCount);
-    new GPURasterEVI({
-      width: imagery.columns,
-      height: imagery.rows,
-      nearInfrared: nearInfrared.band,
-      red: red.band,
-      blue: blue.band,
-      output: output.view,
-      outputValidity: outputValidity.view
-    }).addToGraph(builder.graph);
+    builder.graph.add(
+      new GPURasterEVI({
+        width: imagery.columns,
+        height: imagery.rows,
+        nearInfrared: nearInfrared.band,
+        red: red.band,
+        blue: blue.band,
+        output: output.view,
+        outputValidity: outputValidity.view
+      })
+    );
     const ndvi = addNormalizedDifference(builder, 'ndvi', nearInfrared.buffer, red.buffer);
     return {
       outputs: {ndvi, output},

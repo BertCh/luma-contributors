@@ -22,7 +22,7 @@ declare const timestamps: GraphDataView<'float32'>;
 declare const timestampsLow: GraphDataView<'float32'>;
 declare const outputMask: GraphDataView<'uint32'>;
 declare const total: GraphDataView<'uint32'>;
-declare const output: GPUCompactOutput;
+declare const output: Omit<GPUCompactOutput, 'ids'> & {rows: GraphDataView<'uint32'>};
 declare const classifyDeclarations: string;
 declare const classifyBody: string;
 // example:hide-end
@@ -43,11 +43,11 @@ const nodes = [
     declarations: classifyDeclarations,
     body: classifyBody
   }),
-  // compaction (luma.gl): reads outputMask, scans it, scatters the kept row ids.
+  // compaction (luma.gl): reads outputMask, scans it, scatters the kept row indices.
   ...new GPUVisibilityWorkflow({
     id: 'time-window-filter-visibility',
     predicates: [{kind: 'time-range', mask: outputMask}],
-    output: output.ids,
+    output: output.rows,
     count: total,
     outputMask
   }).getCommandNodes(graph),
@@ -56,7 +56,7 @@ const nodes = [
     id: 'time-window-filter-publish',
     operation: 'GPUTimeWindowFilter',
     requiredCount: total,
-    output
+    output: {ids: output.rows, status: output.status}
   })
 ];
 // No edge and no order anywhere: the graph reads them off the bindings.

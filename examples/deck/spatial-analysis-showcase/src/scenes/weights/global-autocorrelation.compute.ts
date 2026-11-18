@@ -81,6 +81,14 @@ import {
   type WeightsSource,
   type WeightsTransform
 } from './b4-weights-core';
+import {importWeightsCoreWeights} from './b4-weights-imports';
+import {
+  CLASSIFY_BODY,
+  getGlobalMoranQuadrant,
+  formatGlobalJoinReadout,
+  getGlobalJoinTooltip,
+  getGlobalQuadrantCounts
+} from './global-autocorrelation-display';
 import {
   buildMoranScatter,
   formatPseudoPValue,
@@ -155,30 +163,6 @@ const GEOGRAPHY_BOUNDS: Record<GeographyId, [number, number, number, number]> = 
 /** The four rules of the neighbour comparison, in the order of the bars. */
 const RULES: readonly WeightsSource[] = ['queen', 'rook', 'knn', 'band'];
 const QUADRANT_NAMES = ['High-High', 'Low-High', 'Low-Low', 'High-Low'] as const;
-
-const CLASSIFY_BODY = /* wgsl */ `
-  let included = mask[maskOffset + index] != 0u;
-  let value = x[xOffset + index];
-  let lagged = lag[lagOffset + index];
-  if (!included) {
-    quadrant[quadrantOffset + index] = 0u;
-    joinClass[joinClassOffset + index] = 0xffffffffu;
-    var nanBits = 0x7fc00000u;
-    binary[binaryOffset + index] = bitcast<f32>(nanBits);
-    return;
-  }
-  // Moran scatterplot quadrant of (x - mean, lag - mean): 1 HH, 2 LH, 3 LL, 4 HL.
-  let mean = summary[summaryOffset + ${GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY.mean}u];
-  let high = value >= mean;
-  let neighborsHigh = lagged >= mean;
-  var quadrantValue = 3u;
-  if (high && neighborsHigh) { quadrantValue = 1u; }
-  else if (high) { quadrantValue = 4u; }
-  else if (neighborsHigh) { quadrantValue = 2u; }
-  quadrant[quadrantOffset + index] = quadrantValue;
-  let black = value > threshold[thresholdOffset];
-  joinClass[joinClassOffset + index] = select(0u, 1u, black);
-  binary[binaryOffset + index] = select(0.0, 1.0, black);`;
 
 // A county with no active neighbour (an island) or no value has no quadrant and no neighbour average:
 // the lag the contributor writes for it is a 0 that means nothing, so it becomes NaN (no data). The
@@ -264,10 +248,12 @@ type World = {
 };
 
 type Snapshot = {
+  weightsComplete: boolean;
   global: Float32Array;
   bivariate: Float32Array;
   join: Float32Array;
   joinCounts: Uint32Array;
+  joinClasses: Uint32Array;
   permutation: Float32Array;
   histogram: Uint32Array;
   moransI: Float32Array;
@@ -430,9 +416,7 @@ export async function createGlobalAutocorrelation(
       });
       const weights = {
         spatialContext: geography.analysisFrame.spatialContext,
-        offsets: importGraphBuffer(graph, 'offsets', core.csr.offsets, 'uint32', rowCount + 1),
-        neighbors: importGraphBuffer(graph, 'neighbors', core.csr.neighbors, 'uint32', core.slots),
-        weights: importGraphBuffer(graph, 'weights', core.csr.weights, 'float32', core.slots),
+        ...importWeightsCoreWeights(graph, core, rowCount),
         information: getWeightsInfo(rowCount, rowStandardized)
       };
       const xView = importGraphBuffer(graph, 'x', x, 'float32', rowCount);
@@ -613,7 +597,11 @@ export async function createGlobalAutocorrelation(
         {buffer: buffersByName.shuffledResults, size: STATISTICS_LENGTH * 4},
         {buffer: lag, size: rowCount * 4},
         {buffer: core.csr.offsets, size: (rowCount + 1) * 4},
-        {buffer: buffersByName.correlogramOverflow, size: 4}
+        {buffer: buffersByName.correlogramOverflow, size: 4},
+        {buffer: core.overflow, size: 4},
+        {buffer: core.candidateOverflow, size: 4},
+        {buffer: joinClass, size: rowCount * 4},
+        {buffer: quadrant, size: rowCount * 4}
       ],
       bytes => runGuarded('global snapshot', () => handleSnapshot(bytes))
     );
@@ -780,27 +768,7 @@ export async function createGlobalAutocorrelation(
         id: 'global-permutation',
         weights: {
           spatialContext: target.geography.analysisFrame.spatialContext,
-          offsets: importGraphBuffer(
-            graph,
-            'offsets',
-            target.core.csr.offsets,
-            'uint32',
-            rowCount + 1
-          ),
-          neighbors: importGraphBuffer(
-            graph,
-            'neighbors',
-            target.core.csr.neighbors,
-            'uint32',
-            target.core.slots
-          ),
-          weights: importGraphBuffer(
-            graph,
-            'weights',
-            target.core.csr.weights,
-            'float32',
-            target.core.slots
-          ),
+          ...importWeightsCoreWeights(graph, target.core, rowCount),
           information: getWeightsInfo(rowCount, isRowStandardized(getConfig()))
         },
         values: importGraphBuffer(graph, 'x', target.x, 'float32', rowCount),
@@ -822,14 +790,14 @@ export async function createGlobalAutocorrelation(
           summary: importGraphBuffer(
             graph,
             'results',
-            target.buffersByName.permutationResults,
+            target.buffersByName['permutationResults'],
             'float32',
             PERMUTATION_RESULT_LENGTH
           ),
           histogram: importGraphBuffer(
             graph,
             'histogram',
-            target.buffersByName.histogram,
+            target.buffersByName['histogram'],
             'uint32',
             HISTOGRAM_BINS
           )
@@ -872,18 +840,18 @@ export async function createGlobalAutocorrelation(
         bandCount: o.bandCount,
         bandMode: o.bandMode,
         output: {
-          moransI: view('moransI', target.buffersByName.moransI, 'float32', o.bandCount),
-          zScores: view('zScores', target.buffersByName.zScores, 'float32', o.bandCount),
-          pValues: view('pValues', target.buffersByName.pValues, 'float32', o.bandCount),
-          expectedI: view('expectedI', target.buffersByName.expectedI, 'float32', o.bandCount),
-          pairCounts: view('pairCounts', target.buffersByName.pairCounts, 'uint32', o.bandCount),
+          moransI: view('moransI', target.buffersByName['moransI'], 'float32', o.bandCount),
+          zScores: view('zScores', target.buffersByName['zScores'], 'float32', o.bandCount),
+          pValues: view('pValues', target.buffersByName['pValues'], 'float32', o.bandCount),
+          expectedI: view('expectedI', target.buffersByName['expectedI'], 'float32', o.bandCount),
+          pairCounts: view('pairCounts', target.buffersByName['pairCounts'], 'uint32', o.bandCount),
           status: {
-            overflow: view('overflow', target.buffersByName.correlogramOverflow, 'uint32', 1)
+            overflow: view('overflow', target.buffersByName['correlogramOverflow'], 'uint32', 1)
           },
-          peakBands: view('peaks', target.buffersByName.peaks, 'uint32', 2),
+          peakBands: view('peaks', target.buffersByName['peaks'], 'uint32', 2),
           statistics: view(
             'statistics',
-            target.buffersByName.correlogramStatistics,
+            target.buffersByName['correlogramStatistics'],
             'float32',
             GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH
           )
@@ -911,15 +879,7 @@ export async function createGlobalAutocorrelation(
         id: 'sweep-moran',
         weights: {
           spatialContext: target.geography.analysisFrame.spatialContext,
-          offsets: importGraphBuffer(graph, 'offsets', core.csr.offsets, 'uint32', rowCount + 1),
-          neighbors: importGraphBuffer(
-            graph,
-            'neighbors',
-            core.csr.neighbors,
-            'uint32',
-            core.slots
-          ),
-          weights: importGraphBuffer(graph, 'weights', core.csr.weights, 'float32', core.slots),
+          ...importWeightsCoreWeights(graph, core, rowCount),
           // The comparison always row-standardizes (see getRuleConfig).
           information: getWeightsInfo(rowCount, true)
         },
@@ -1384,11 +1344,18 @@ export async function createGlobalAutocorrelation(
     const join = snapshot.join;
     ctx.setReadout(
       'joins',
-      `BB ${formatCount(snapshot.joinCounts[0] / 2)} (E ${formatNumber(join[L.joinCount + J.expectedBlackBlack], 0)}), BW ${formatCount(snapshot.joinCounts[1] / 2)} (E ${formatNumber(join[L.joinCount + J.expectedBlackWhite], 0)}), WW ${formatCount(snapshot.joinCounts[2] / 2)}`
+      formatGlobalJoinReadout(
+        snapshot.weightsComplete,
+        snapshot.joinCounts,
+        join[L.joinCount + J.expectedBlackBlack],
+        join[L.joinCount + J.expectedBlackWhite]
+      )
     );
     ctx.setReadout(
       'joinTest',
-      `BB z ${formatNumber(join[L.joinCount + J.zBlackBlack], 1)} p ${formatPValue(join[L.joinCount + J.pBlackBlack])}; BW z ${formatNumber(join[L.joinCount + J.zBlackWhite], 1)} p ${formatPValue(join[L.joinCount + J.pBlackWhite])}`
+      snapshot.weightsComplete
+        ? `BB z ${formatNumber(join[L.joinCount + J.zBlackBlack], 1)} p ${formatPValue(join[L.joinCount + J.pBlackBlack])}; BW z ${formatNumber(join[L.joinCount + J.zBlackWhite], 1)} p ${formatPValue(join[L.joinCount + J.pBlackWhite])}`
+        : 'Not tested (incomplete weights)'
     );
     // Permutation test of the selected statistic.
     const permutation = snapshot.permutation;
@@ -1462,6 +1429,11 @@ export async function createGlobalAutocorrelation(
     const lag = floats(rowCount);
     const offsets = words(rowCount + 1);
     const correlogramOverflowed = words(1)[0] !== 0;
+    const weightsOverflow = words(1)[0];
+    const weightsCandidateOverflow = words(1)[0];
+    const weightsComplete = weightsOverflow === 0 && weightsCandidateOverflow === 0;
+    const joinClasses = words(rowCount);
+    const quadrants = words(rowCount);
     const S = GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY;
     const L = GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT;
     const o = ctx.options;
@@ -1473,10 +1445,12 @@ export async function createGlobalAutocorrelation(
       global[L.summary + S.variance]
     );
     target.snapshot = {
+      weightsComplete,
       global,
       bivariate,
       join,
       joinCounts,
+      joinClasses,
       permutation,
       histogram,
       moransI,
@@ -1493,7 +1467,7 @@ export async function createGlobalAutocorrelation(
     };
     // Counts per quadrant for the legend (HH, LH, LL, HL in chart order) and the islands.
     const islands = global[L.summary + S.islandCount];
-    ctx.setLegendData('quadrantCounts', [...scatter.counts, islands]);
+    ctx.setLegendData('quadrantCounts', getGlobalQuadrantCounts(quadrants, islands));
     ctx.setLegendData(
       'lagCounts',
       getClassCounts(
@@ -1613,13 +1587,13 @@ export async function createGlobalAutocorrelation(
       return index >= 0 ? table.colors[index] : undefined;
     };
     // Quadrant of the county, in chart order, from the same rule as the GPU kernel.
-    let quadrant = -1;
-    if (snapshot && !island && Number.isFinite(xValue)) {
-      const mean = snapshot.global[GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY.mean];
-      const high = xValue >= mean;
-      const neighborsHigh = (lagValue ?? 0) >= mean;
-      quadrant = high ? (neighborsHigh ? 0 : 3) : neighborsHigh ? 1 : 2;
-    }
+    const quadrant =
+      getGlobalMoranQuadrant(
+        xValue,
+        lagValue ?? Number.NaN,
+        snapshot?.global[GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY.mean] ?? Number.NaN,
+        Boolean(snapshot?.weightsComplete) && !island
+      ) - 1;
     const quadrantColors = getQuadrantColors(ground);
     const quadrantSwatch =
       quadrant < 0
@@ -1649,7 +1623,14 @@ export async function createGlobalAutocorrelation(
         : null;
     const quadrantRow: TooltipRow = {
       label: 'Moran quadrant',
-      value: quadrant >= 0 ? QUADRANT_NAMES[quadrant] : island ? 'No neighbours' : 'No data',
+      value:
+        quadrant >= 0
+          ? QUADRANT_NAMES[quadrant]
+          : snapshot && !snapshot.weightsComplete
+            ? 'Unavailable (incomplete weights)'
+            : island
+              ? 'No neighbours'
+              : 'No data',
       swatch: quadrantSwatch,
       emphasis: o.display === 'quadrant'
     };
@@ -1692,16 +1673,13 @@ export async function createGlobalAutocorrelation(
       ];
     }
     if (o.display === 'binary') {
-      const black =
-        Number.isFinite(xValue) &&
-        xValue > getPercentile(geography.getVariable(o.variable), o.joinPercentile);
       return [
-        {
-          label: 'Join-count colour',
-          value: black ? 'Black' : 'White',
-          swatch: black ? BLACK_JOIN : WHITE_JOIN,
-          emphasis: true
-        },
+        getGlobalJoinTooltip(
+          snapshot?.joinClasses[row],
+          Boolean(snapshot?.weightsComplete),
+          BLACK_JOIN,
+          WHITE_JOIN
+        ),
         rank,
         xRow
       ];

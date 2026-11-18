@@ -56,6 +56,8 @@ export default defineOperationRun({
     const ringShells = builder.allocate('ring-shells', 'uint32', RING_CAPACITY);
     const ringGroups = builder.allocate('ring-groups', 'uint32', RING_CAPACITY);
     const ringCount = builder.allocate('count', 'uint32', 1);
+    const overflow = builder.allocate('overflow', 'uint32', 1);
+    const edgeOverflow = builder.allocate('edge-overflow', 'uint32', 1);
     const values = builder.upload('values', 'float32', inputs.valuesBottomUp);
     const display = builder.upload('display', 'float32', inputs.valuesTopDown);
     const breaks = builder.allocate('breaks', 'float32', LEVEL_CAPACITY);
@@ -76,19 +78,29 @@ export default defineOperationRun({
           ringGroups: ringGroups.view,
           status: {
             count: ringCount.view,
-            overflow: builder.allocate('overflow', 'uint32', 1).view,
-            edgeOverflow: builder.allocate('edge-overflow', 'uint32', 1).view
+            overflow: overflow.view,
+            edgeOverflow: edgeOverflow.view
           }
         }
       })
     );
     return {
-      outputs: {display, positions, ringOffsets, ringIsHole, ringShells, ringGroups, ringCount},
+      outputs: {
+        display,
+        positions,
+        ringOffsets,
+        ringIsHole,
+        ringShells,
+        ringGroups,
+        ringCount,
+        overflow,
+        edgeOverflow
+      },
       update: next => {
-        breaks.write(getLevels(next.interval, next.interval));
+        breaks.write(getLevels(next['interval'], next['interval']));
         parameterBuffer.write(
           getGPUIsobandsParameterValues(
-            {breakCount: Math.round(next.breakCount), extent: inputs.extent},
+            {breakCount: Math.round(next['breakCount']), extent: inputs.extent},
             inputs.grid
           )
         );
@@ -98,12 +110,15 @@ export default defineOperationRun({
     };
   },
   async afterRun({outputs, upload}) {
-    const [offsetBytes, positionBytes, holeBytes, countBytes] = await Promise.all([
-      outputs.ringOffsets.buffer.readAsync(),
-      outputs.positions.buffer.readAsync(),
-      outputs.ringIsHole.buffer.readAsync(),
-      outputs.ringCount.buffer.readAsync()
-    ]);
+    const [offsetBytes, positionBytes, holeBytes, countBytes, overflowBytes, edgeOverflowBytes] =
+      await Promise.all([
+        outputs.ringOffsets.buffer.readAsync(),
+        outputs.positions.buffer.readAsync(),
+        outputs.ringIsHole.buffer.readAsync(),
+        outputs.ringCount.buffer.readAsync(),
+        outputs.overflow.buffer.readAsync(),
+        outputs.edgeOverflow.buffer.readAsync()
+      ]);
     const offsets = readUint32(offsetBytes);
     const holes = readUint32(holeBytes);
     const positions = new Float32Array(
@@ -112,7 +127,8 @@ export default defineOperationRun({
         positionBytes.byteOffset + positionBytes.byteLength
       )
     );
-    const count = Math.min(readUint32(countBytes)[0], RING_CAPACITY);
+    const incomplete = readUint32(overflowBytes)[0] !== 0 || readUint32(edgeOverflowBytes)[0] !== 0;
+    const count = incomplete ? 0 : Math.min(readUint32(countBytes)[0], RING_CAPACITY);
     const shells = getRingSegments(offsets, positions, count, ring => holes[ring] === 0);
     const holeSegments = getRingSegments(offsets, positions, count, ring => holes[ring] === 1);
     return {
@@ -135,6 +151,11 @@ export default defineOperationRun({
       const shells = peek(outputs.ringShells) as Uint32Array | null;
       const groups = peek(outputs.ringGroups) as Uint32Array | null;
       const counts = peek(outputs.ringCount) as Uint32Array | null;
+      const overflow = peek(outputs.overflow) as Uint32Array | null;
+      const edgeOverflow = peek(outputs.edgeOverflow) as Uint32Array | null;
+      if (!overflow || !edgeOverflow) return {};
+      if (edgeOverflow[0]) return {readout: 'Incomplete rings: boundary edge capacity exceeded'};
+      if (overflow[0]) return {readout: 'Incomplete rings: ring or vertex capacity exceeded'};
       if (!offsets || !positions || !holes || !shells || !groups || !counts) return {};
       const ringCount = Math.min(counts[0], RING_CAPACITY);
       let picked = -1;

@@ -4,7 +4,7 @@
 
 import * as arrow from 'apache-arrow';
 import {formatTimestampTicks} from '@luma-contributors/analysis/dataframe-analysis';
-import {readOriginalTimestampTicks} from './original-column-values';
+import {readOriginalTimestampTicks, resolveOriginalColumnRow} from './original-column-values';
 import {
   materializeKeplerSelection,
   type KeplerComputeSession,
@@ -280,6 +280,10 @@ export function quoteCSV(value: string): string {
 
 export function formatCSVValue(vector: arrow.Vector, row: number, type: arrow.DataType): string {
   if (!vector.isValid(row)) return '';
+  if (arrow.DataType.isDictionary(vector.type)) {
+    const original = resolveOriginalColumnRow(vector, row);
+    return original ? formatCSVValue(original.vector, original.row, original.vector.type) : '';
+  }
   if (arrow.DataType.isTimestamp(type)) {
     return formatTimestampTicks(readOriginalTimestampTicks(vector, row), type.unit);
   }

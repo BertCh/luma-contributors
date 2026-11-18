@@ -293,7 +293,7 @@ export class TextLayer extends DemoLayer {
   }
 
   /** Lays the text out for `view` and `theme`. The kit's look options do not apply to text. */
-  update(view: DemoView, theme: DemoTheme, _options: LookOptions = {}): void {
+  override update(view: DemoView, theme: DemoTheme, _options: LookOptions = {}): void {
     const displayWidth =
       this.options.displayWidth ?? view.width / (globalThis.devicePixelRatio || 1);
     const scale = getTextScale(view.width, displayWidth);
@@ -355,12 +355,12 @@ export class TextLayer extends DemoLayer {
     this.model.setInstanceCount(layout.instanceCount);
   }
 
-  draw(renderPass: RenderPass): void {
+  override draw(renderPass: RenderPass): void {
     if (!this.hasAtlas || !this.layout || this.layout.instanceCount === 0) return;
     super.draw(renderPass);
   }
 
-  destroy(): void {
+  override destroy(): void {
     this.isDestroyed = true;
     super.destroy();
     this.instanceBuffer.destroy();

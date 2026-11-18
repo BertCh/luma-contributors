@@ -1,28 +1,29 @@
 {
-  "recordCount": 412,
+  "recordCount": 427,
   "packs": {
-    "gpu-dataframe": 24,
-    "gpu-network": 38,
-    "gpu-raster": 50,
-    "gpu-spatial-analysis": 254,
+    "gpu-dataframe": 26,
+    "gpu-network": 43,
+    "gpu-raster": 54,
+    "gpu-spatial-analysis": 258,
     "gpu-terrain": 46
   },
-  "kernels": 35027,
-  "copies": 412,
-  "gatedKernels": 10098,
+  "kernels": 37919,
+  "copies": 587,
+  "gatedKernels": 11203,
   "dependencies": {
-    "raw": 118500,
-    "war": 32908,
-    "waw": 2730
+    "raw": 128377,
+    "war": 34591,
+    "waw": 3032
   },
-  "buffers": 22569,
-  "bufferBytes": 488535824,
-  "snapshots": 3351,
-  "formulas": 889,
-  "recordsWithFormulas": 243,
+  "buffers": 24980,
+  "bufferBytes": 501552408,
+  "bufferBytesKind": "lower-bound",
+  "snapshots": 3499,
+  "formulas": 986,
+  "recordsWithFormulas": 255,
   "kernelsPerRecord": {
     "minimum": 1,
-    "median": 24,
+    "median": 27,
     "maximum": 885
   },
   "smallest": {
@@ -33,6 +34,6 @@
     "id": "gpu-dataframe.ripley-envelope",
     "kernels": 885
   },
-  "recordBytes": 48936103,
-  "viewModelBytes": 6938793
+  "recordBytes": 50393146,
+  "viewModelBytes": 8029118
 }

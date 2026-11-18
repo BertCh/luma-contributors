@@ -681,7 +681,7 @@ export async function createRouteEditing(
               outputCapacity
             ),
             counts: importGraphBuffer(graph, 'segment-snap-counts', editCounts, 'uint32x4', 1),
-            validity: importGraphBuffer(
+            issueCode: importGraphBuffer(
               graph,
               'segment-snap-validity',
               segmentSnapValidity,

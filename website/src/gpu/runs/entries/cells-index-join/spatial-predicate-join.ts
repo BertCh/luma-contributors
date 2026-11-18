@@ -29,8 +29,8 @@ export default defineOperationRun({
     const points = builder.upload('points', 'float32x2', inputs.points);
     const zones = uploadZones(builder, inputs.zones);
     const distance = builder.allocate('distance', 'float32', 1);
-    const leftIds = builder.allocate('left-ids', 'uint32', PAIR_CAPACITY);
-    const rightIds = builder.allocate('right-ids', 'uint32', PAIR_CAPACITY);
+    const leftRows = builder.allocate('left-ids', 'uint32', PAIR_CAPACITY);
+    const rightRows = builder.allocate('right-ids', 'uint32', PAIR_CAPACITY);
     const count = builder.allocate('count', 'uint32', 1);
     const overflow = builder.allocate('overflow', 'uint32', 1);
     const isDistance = values.predicate === 0;
@@ -43,8 +43,8 @@ export default defineOperationRun({
         candidateCapacity: PAIR_CAPACITY,
         output: {
           pairs: {
-            leftIds: leftIds.view,
-            rightIds: rightIds.view,
+            leftRows: leftRows.view,
+            rightRows: rightRows.view,
             status: {count: count.view, overflow: overflow.view}
           }
         }
@@ -57,15 +57,15 @@ export default defineOperationRun({
         count,
         pointZones: addPairedRightIds(builder, 'pairs', {
           rowCount: POINT_COUNT,
-          leftIds,
-          rightIds,
+          leftRows,
+          rightRows,
           count
         }),
         pairs: addPairSegments(builder, 'pairs', {
           leftPositions: points,
           rightPositions: zones.centers,
-          leftIds,
-          rightIds,
+          leftRows,
+          rightRows,
           count
         })
       },

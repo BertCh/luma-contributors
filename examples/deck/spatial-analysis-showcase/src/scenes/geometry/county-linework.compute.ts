@@ -982,7 +982,13 @@ function makePolygonizeOutput(
         1
       )
     },
-    status: finalStatus.views
+    status: {
+      count: finalStatus.views.count,
+      requiredRingCount: finalStatus.views.requiredCount,
+      overflow: finalStatus.views.overflow,
+      candidateOverflow: finalStatus.views.candidateOverflow,
+      uncertainCount: finalStatus.views.uncertainCount
+    }
   };
   const finalStatusBuffers = finalStatus.buffers;
   return {

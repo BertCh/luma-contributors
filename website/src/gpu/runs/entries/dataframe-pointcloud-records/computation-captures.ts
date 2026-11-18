@@ -112,6 +112,7 @@ export default defineOperationRun({
     );
     const captures = createGPUComputationCaptures({
       runId: record.runId,
+      executionId: record.executionId,
       snapshots: frames.filter((_, index) => chosen.has(Math.floor(index / 2))),
       stamps: values.stamps === 1 ? [stamp] : []
     });

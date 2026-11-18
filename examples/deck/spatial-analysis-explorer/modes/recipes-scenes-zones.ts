@@ -196,6 +196,7 @@ export function createRateClusterScene(analyze: 'standardized' | 'smoothed'): Re
     const colors = kit.output('colors', 'uint32', featureCount, 1);
     const summary = kit.output('summary', 'float32', GPU_EMPIRICAL_BAYES_SUMMARY.length);
     const weightsOverflow = kit.output('weights-overflow', 'uint32', 1);
+    const weightsCandidateOverflow = kit.output('weights-candidate-overflow', 'uint32', 1);
     const zScores = kit.output('z-scores', 'float32', featureCount);
     const rates = kit.output('analysed-rates', 'float32', featureCount);
     const significant = kit.output('significant', 'uint32', featureCount);
@@ -215,7 +216,10 @@ export function createRateClusterScene(analyze: 'standardized' | 'smoothed'): Re
       settings: {significanceLevel, seed: 5, permutationCount: permutations},
       palette: palette.view,
       outputs: {
-        status: {weightsOverflow: weightsOverflow.view},
+        status: {
+          weightsOverflow: weightsOverflow.view,
+          weightsCandidateOverflow: weightsCandidateOverflow.view
+        },
         zScores: zScores.view,
         standardizedRates: analyze === 'standardized' ? rates.view : undefined,
         smoothedRates: analyze === 'smoothed' ? rates.view : undefined,
@@ -229,19 +233,27 @@ export function createRateClusterScene(analyze: 'standardized' | 'smoothed'): Re
 
     const cellRows = kit.resources.createBuffer('cell-rows', district.cellRows);
     const outline = kit.resources.createBuffer('outline', polygons.outlineSegments);
-    const summarySizes = [featureCount * 4, GPU_EMPIRICAL_BAYES_SUMMARY.length * 4, 4];
+    const summarySizes = [featureCount * 4, GPU_EMPIRICAL_BAYES_SUMMARY.length * 4, 4, 4];
     const reader = new SummaryReader(
       kit.resources,
       'rate',
       [
         {buffer: quadrants.buffer, size: summarySizes[0]},
         {buffer: summary.buffer, size: summarySizes[1]},
-        {buffer: weightsOverflow.buffer, size: 4}
+        {buffer: weightsOverflow.buffer, size: 4},
+        {buffer: weightsCandidateOverflow.buffer, size: 4}
       ],
       bytes => {
-        const [quadrantRows, moments, overflow] = sliceSummary(bytes, summarySizes);
+        const [quadrantRows, moments, overflow, candidateOverflow] = sliceSummary(
+          bytes,
+          summarySizes
+        );
+        const incomplete = overflow.u32[0] !== 0 || candidateOverflow.u32[0] !== 0;
         const counts = [0, 0, 0, 0, 0];
-        for (let row = 0; row < featureCount; row++) counts[quadrantRows.u32[row] % 5]++;
+        for (let row = 0; row < featureCount; row++) {
+          const quadrant = quadrantRows.u32[row];
+          if (quadrant <= 4) counts[quadrant]++;
+        }
         host.setOutputs([
           ['Districts analysed', `${formatCount(moments.f32[GPU_EMPIRICAL_BAYES_SUMMARY.count])}`],
           [
@@ -252,9 +264,16 @@ export function createRateClusterScene(analyze: 'standardized' | 'smoothed'): Re
             'Prior variance',
             moments.f32[GPU_EMPIRICAL_BAYES_SUMMARY.priorVariance].toExponential(2)
           ],
-          ['High-high / low-low', `${counts[1]} / ${counts[3]}`],
-          ['Low-high / high-low', `${counts[2]} / ${counts[4]}`],
-          ['Weights overflow', overflow.u32[0] ? 'YES' : 'no']
+          [
+            'High-high / low-low',
+            incomplete ? 'unavailable: incomplete weights' : `${counts[1]} / ${counts[3]}`
+          ],
+          [
+            'Low-high / high-low',
+            incomplete ? 'unavailable: incomplete weights' : `${counts[2]} / ${counts[4]}`
+          ],
+          ['Weights overflow', overflow.u32[0] ? 'YES: neighbor capacity' : 'no'],
+          ['Weights candidate loss', candidateOverflow.u32[0] ? 'YES: pair capacity' : 'no']
         ]);
       }
     );

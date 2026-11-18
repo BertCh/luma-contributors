@@ -223,7 +223,7 @@ playheadGraph.add(new GPUTrajectoryPlayhead({
 trailGraph.add(new GPUTimeWindowFilter({
   timestamps: segmentStartTimes, endTimestamps: segmentEndTimes, window: windowParameters.importToGraph(trailGraph),
   output: {
-    ids: trailIds, status: {count: trailCount, overflow}, fadeWeights, clipFractions,
+    rows: trailIds, status: {count: trailCount, overflow}, fadeWeights, clipFractions,
     drawInstanceCount: trailGraph.importGPUData('trail-count', trailDraw.getInstanceCountData(0))
   }
 }));

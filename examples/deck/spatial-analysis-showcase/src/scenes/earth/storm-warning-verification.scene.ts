@@ -343,7 +343,7 @@ graph.add(new GPUSpatialPredicateJoin({
   right: warningPolygons,
   predicate: '${state.spatialTest}',${state.spatialTest === 'dwithin' ? `\n  distance: tolerance.importToGraph(graph),     // ${state.toleranceKm} km, a parameter buffer` : ''}
   candidateCapacity: 600000, prepared,
-  output: {pairs: {leftIds, rightIds, status: {count, overflow}}}    // every (report, polygon) that touches in space
+  output: {pairs: {leftRows, rightRows, status: {count, overflow}}}    // every (report, polygon) that touches in space
 }));
 
 // The time and hazard tests run on the pairs: one thread per report.
@@ -356,7 +356,7 @@ addKernelPass(graph, {id: 'verify-reports', invocationCount: reportCount, bindin
 display.add(new GPUTimeWindowFilter({
   timestamps: validFrom, endTimestamps: validUntil,
   window: window.importToGraph(display),
-  output: {ids, status: {count, overflow}, outputMask}
+  output: {rows, status: {count, overflow}, outputMask}
 }));
 window.write(getGPUTimeWindowFilterParameterValues({start: playhead, end: playhead}));`,
 

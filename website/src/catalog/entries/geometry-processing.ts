@@ -387,16 +387,21 @@ export const entries: CatalogEntry[] = [
     useCases: ['relate', 'measure'],
     domains: ['data-engineering', 'cartography'],
     params: [
-      makeParam('geometry', 'GPUSpatialJoinGeometry', 'Point, line or polygon features.', {
-        required: true
-      }),
+      makeParam(
+        'geometry',
+        'GPUGeometryPredicatesGeometry',
+        'Single point or line features, or polygons; multipart input is rejected.',
+        {
+          required: true
+        }
+      ),
       makeParam('output', 'GPUGeometryPredicatesOutput', 'Caller-owned columns and status.', {
         required: true
       }),
       makeParam(
         'other',
-        'GPUSpatialJoinGeometry | undefined',
-        'Second geometry for element-wise tests.'
+        'GPUGeometryPredicatesGeometry | undefined',
+        'Second geometry for element-wise tests; multipart input is rejected.'
       ),
       makeParam(
         'parameters',
@@ -406,7 +411,7 @@ export const entries: CatalogEntry[] = [
       makeParam(
         'intersectionCapacity',
         'number | undefined',
-        'Capacity of the self-intersection list.'
+        'Capacity of the self-intersection list; required for polygons.'
       ),
       makeParam('leafCapacity', 'number | undefined', 'Power-of-two BVH leaf slots.')
     ],
@@ -441,9 +446,10 @@ export const entries: CatalogEntry[] = [
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Geometry validity',
-    summary: 'A validity bitmask per feature: self-intersections, bad rings, holes outside shells.',
+    summary:
+      'Issue codes and optional usability per feature: self-intersections, bad rings, holes outside shells.',
     explanation:
-      'The gate before overlay, buffering or joins, the GPU analog of `ST_IsValidReason`. Each bit names one failure so you can count, filter or route to repair.',
+      'The GPU analog of `ST_IsValidReason`. Issue codes name observed defects and advisories; use the separate nonzero-usable validity output to filter rows. Incomplete intersection checks suppress usability.',
     dataTypes: {input: ['points', 'lines', 'polygons'], output: ['table']},
     useCases: ['relate', 'transform'],
     domains: ['data-engineering', 'cartography'],
@@ -463,9 +469,14 @@ export const entries: CatalogEntry[] = [
         'GPUPackedGeometryPort<GPUPointGeometryPort> | undefined',
         'Point features.'
       ),
-      makeParam('output', 'GPUGeometryValidityOutput', 'Validity `mask` and optional status.', {
-        required: true
-      }),
+      makeParam(
+        'output',
+        'GPUGeometryValidityOutput',
+        'issueCode, optional validity, and status.overflow required for polygons.',
+        {
+          required: true
+        }
+      ),
       makeParam(
         'ringClosure',
         'GPUGeometryValidityRingClosure | undefined',
@@ -483,12 +494,26 @@ export const entries: CatalogEntry[] = [
       )
     ],
     outputs: [
-      makeOutput('mask', 'GraphDataView<"uint32">', 'Bitmask per feature; 0 is valid.'),
-      makeOutput('status', '{count, overflow}', 'Overflow and uncertainty counters.')
+      makeOutput(
+        'issueCode',
+        'GraphDataView<"uint32">',
+        'Observed issue bits per feature; decode with decodeGPUGeometryValidityIssueCode.'
+      ),
+      makeOutput(
+        'validity',
+        'GraphDataView<"uint32"> | undefined',
+        'Nonzero when implemented structural checks pass with complete evidence.'
+      ),
+      makeOutput(
+        'status',
+        '{overflow, intersectionCount?}',
+        'Intersection capacity status; scalar outputs are zero for points and lines.'
+      )
     ],
     example: makeExample('GPUGeometryValidity', [
       "polygons: {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets},",
-      'output: {mask}'
+      'intersectionCapacity: 1024,',
+      'output: {issueCode, validity, status: {overflow}}'
     ]),
     preview: {
       kind: 'polygon-overlay',
@@ -722,7 +747,11 @@ export const entries: CatalogEntry[] = [
       makeParam('spatialSort', 'boolean | undefined', 'Sort segments spatially (compile-time).')
     ],
     outputs: [
-      makeOutput('pairs', 'GPUSegmentIntersectionPairs', 'Left and right segment ids per hit.'),
+      makeOutput(
+        'pairs',
+        'GPUCompactPairPort',
+        'Segment rows; final overflow and candidateOverflow for BVH loss. Flags reset.'
+      ),
       makeOutput('status', '{count, overflow}', 'Count, overflow and uncertain counters.'),
       makeOutput('kinds', "GraphDataView<'uint32'> | undefined", 'Intersection kind per pair.'),
       makeOutput(
@@ -1005,12 +1034,7 @@ export const entries: CatalogEntry[] = [
       makeParam('output', 'GPUGeometryCleanupPointOutput', 'Output views for the geometry kind.', {
         required: true
       }),
-      makeParam('lineOffsets', 'GraphDataView<"uint32">', 'Feature-to-vertex offsets for lines.'),
-      makeParam(
-        'forceSequentialRepeatRemoval',
-        'boolean | undefined',
-        'Always compile the repeat pass.'
-      )
+      makeParam('lineOffsets', 'GraphDataView<"uint32">', 'Feature-to-vertex offsets for lines.')
     ],
     outputs: [
       makeOutput('positions', "GraphDataView<'float32x2'>", 'Snapped, deduplicated vertices.'),
@@ -1104,7 +1128,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'Snaps line endpoints to reference vertices and insert nearby reference vertices along segments.',
     explanation:
-      'Makes lines pass exactly through shared nodes, as in coverage cleanup. Endpoints snap first, then every reference vertex within `tolerance` is inserted in projection order.',
+      'Makes lines pass exactly through shared nodes, as in coverage cleanup. Endpoints snap first, then every reference vertex within `tolerance` is inserted in projection order. If grid candidate loss can suppress a line, supply validity, issueCode or status.candidateOverflow to distinguish it from empty input.',
     dataTypes: {input: ['lines'], output: ['lines']},
     useCases: ['transform'],
     domains: ['cartography', 'transport'],
@@ -1122,9 +1146,14 @@ export const entries: CatalogEntry[] = [
       makeParam('maximumVerticesPerLine', 'number', 'Fixed output slots per input line.', {
         required: true
       }),
-      makeParam('output', '{positions, sourceEdges}', 'Snapped lines.', {
-        required: true
-      })
+      makeParam(
+        'output',
+        '{positions, sourceEdges, counts, validity?, issueCode?, status?}',
+        'Snapped lines; completeness status required if grid suppression is possible.',
+        {
+          required: true
+        }
+      )
     ],
     outputs: [
       makeOutput(
@@ -1136,14 +1165,29 @@ export const entries: CatalogEntry[] = [
       makeOutput(
         'counts',
         "GraphDataView<'uint32x4'>",
-        'Per line: written, required, overflow and invalid flags.'
+        'Per line: written/required vertices, final overflow and nonfinite input.'
+      ),
+      makeOutput(
+        'validity',
+        'GraphDataView<"uint32">',
+        'Optional per-line usability: zero for collapsed, nonfinite or incomplete lines.'
+      ),
+      makeOutput(
+        'issueCode',
+        'GraphDataView<"uint32">',
+        'Optional per-line diagnostic: collapse 1, nonfinite 2, incomplete 4.'
+      ),
+      makeOutput(
+        'status.candidateOverflow',
+        'GraphDataView<"uint32">',
+        'Optional per-line candidate loss, separate from final vertex capacity.'
       )
     ],
     example: makeExample('GPUSegmentSnap', [
       'positions, lineOffsets, referencePositions,',
       'tolerance: 2,',
       'maximumVerticesPerLine: 64,',
-      'output // positions, lineOffsets, sourceEdges, status'
+      'output // positions, sourceEdges, counts; plus a diagnostic when suppression is possible'
     ]),
     preview: {kind: 'lines', seed: 4219, caption: 'Lines pick up the nodes they pass near.'},
     related: ['vertex-snap', 'line-noding'],
@@ -1929,6 +1973,12 @@ export const entries: CatalogEntry[] = [
       POLYGON_OFFSETS,
       RING_OFFSETS,
       makeParam(
+        'spatialContext',
+        'GPUSpatialContext',
+        'Required longitude/latitude context with metric none or great-circle.',
+        {required: true}
+      ),
+      makeParam(
         'parameters',
         'GraphDataView<"float32">',
         'Four floats from the parameter packer.',
@@ -1946,9 +1996,6 @@ export const entries: CatalogEntry[] = [
       ),
       makeParam('poleRings', '"reject" | "cap" | undefined', 'Cap at the nearer pole or reject.', {
         default: "'cap'"
-      }),
-      makeParam('output', 'GPULonLatPolygonPreparationOutput', 'Bounded output and diagnostics.', {
-        required: true
       })
     ],
     outputs: [
@@ -1977,6 +2024,7 @@ export const entries: CatalogEntry[] = [
     ],
     example: makeExample('GPULonLatPolygonPreparation', [
       'positions, featureOffsets, polygonOffsets, ringOffsets,',
+      "spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},",
       'parameters, // getGPULonLatPolygonPreparationParameterValues(...)',
       `antimeridian: 'split', poleRings: 'cap',`,
       'output'

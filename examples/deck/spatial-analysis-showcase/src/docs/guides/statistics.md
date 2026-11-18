@@ -37,6 +37,10 @@ Most maps of statistics fail in the same few ways: a rate computed from three pe
 
 A county rate is `deaths / person-years`. A county with 60 residents that has one fatal crash has a rate five hundred times the national rate, and it will be the brightest county on the map. The cure is not to drop small places but to **shrink** their rates toward a reference in proportion to how uncertain they are: `r = w y + (1 − w) m` with `w = a / (a + m / b)`. Large populations keep their own rate; tiny ones fall back. The *global* version shrinks toward the national rate and the *spatial* version toward the rate of the county and its neighbours. Both match PySAL esda. The **standardized rate** (Assuncao and Reis) divides the excess by its own sampling error and is the right input for local Moran.
 
+In the rate-smoothing selection, either pair-candidate loss or final neighbor-capacity loss makes
+the neighborhood pool unavailable and clears its outline until a complete graph is read back.
+The selected county's own births and exposure remain visible throughout loss and recovery.
+
 ## Classes: a modelling choice, not a default
 
 Equal intervals, quantiles and natural breaks answer different questions. Equal intervals preserve magnitudes and fail on skewed data. Quantiles show rank and split similar values. Natural breaks (Jenks) and head/tail breaks follow the shape of the distribution. The fit scores make the comparison measurable: **GADF** (absolute deviations explained) is the fairer score on heavy tails, **GVF** flatters schemes that isolate a single outlier. A percentile filter before classing removes the extremes that stretch the scale. Bivariate classing shows two variables at once, and value-by-alpha fades places whose data are unreliable.

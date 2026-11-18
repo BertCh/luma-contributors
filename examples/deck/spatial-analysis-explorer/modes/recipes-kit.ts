@@ -19,7 +19,10 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {getGPUVectorFormatInfo, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
-import type {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import type {
+  GPUParameterBuffer,
+  GPUParameterValues
+} from '@luma-contributors/analysis/analysis-core';
 import {importGraphBuffer} from '../graph-buffers';
 import type {
   SpatialAnalysisFrame,
@@ -142,10 +145,10 @@ export class RecipeKit {
   parameter<Format extends 'float32' | 'uint32' | 'sint32'>(
     name: string,
     format: Format,
-    values: Float32Array | Uint32Array | Int32Array
+    values: GPUParameterValues<NoInfer<Format>>
   ): {parameters: GPUParameterBuffer<Format>; view: GraphDataView<Format>} {
     const parameters = this.resources.createParameterBuffer(name, format, values.length, values);
-    return {parameters, view: parameters.importToGraph(this.graph) as GraphDataView<Format>};
+    return {parameters, view: parameters.importToGraph(this.graph)};
   }
 
   /**

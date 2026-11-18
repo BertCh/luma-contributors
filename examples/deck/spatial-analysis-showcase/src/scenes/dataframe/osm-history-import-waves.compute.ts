@@ -191,7 +191,7 @@ export async function createOsmImportWaves(
       timestamps: v('days', daysBuffer, 'float32', count),
       window: windowParameters.importToGraph(mapGraph),
       output: {
-        ids: v('ids', windowIds, 'uint32', count),
+        rows: v('ids', windowIds, 'uint32', count),
         status: {
           count: v('count', windowCount, 'uint32', 1),
           overflow: v('overflow', windowOverflow, 'uint32', 1)

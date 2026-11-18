@@ -13,6 +13,7 @@ import {defineOperationRun, type RunBuffer} from '../../define-run';
 import {findParameter, snapToParameter} from '../../interaction';
 import {createLegend, mergeText, type RunLabel} from '../../text';
 import {addFloatCopy} from './_lib/convert';
+import {computePointCloudVoxelMeans} from './_lib/pointcloud-voxel-means';
 import {createTerrainCloud} from './_lib/helpers';
 import {parameters} from './pointcloud-voxel-merge.parameters';
 
@@ -54,7 +55,7 @@ export default defineOperationRun<Inputs, Outputs>({
     'Merged voxel centroids from two tiles split at the seam (left tile blue, right tile orange); outlined boxes mark voxels both tiles contributed to, and the larger dots are the merged voxel centroids.',
   createInputs,
   build(builder, cloud, values) {
-    const voxelSize = values.voxelSize;
+    const voxelSize = values['voxelSize'];
     let highestPoint = 0;
     for (let index = 2; index < cloud.positions.length; index += 3)
       highestPoint = Math.max(highestPoint, cloud.positions[index]);
@@ -70,10 +71,12 @@ export default defineOperationRun<Inputs, Outputs>({
       builder.allocate(`tile-${tileIndex}-positions`, 'float32x3', POINT_COUNT)
     );
     const tileCounts: RunBuffer[] = [];
+    const tileMeans: RunBuffer[] = [];
     const parts = [0, 1].map(tileIndex => {
       const counts = builder.allocate(`tile-${tileIndex}-counts`, 'uint32', voxelCount);
       tileCounts.push(counts);
       const centroids = builder.allocate(`tile-${tileIndex}-centroids`, 'float32x3', voxelCount);
+      tileMeans.push(centroids);
       const representatives = builder.allocate(
         `tile-${tileIndex}-representatives`,
         'uint32',
@@ -88,7 +91,8 @@ export default defineOperationRun<Inputs, Outputs>({
           gridSize,
           representatives: representatives.view,
           counts: counts.view,
-          output: centroids.view
+          output: builder.allocate(`tile-${tileIndex}-selected-positions`, 'float32x3', voxelCount)
+            .view
         })
       );
       return {
@@ -104,10 +108,12 @@ export default defineOperationRun<Inputs, Outputs>({
       new GPUPointCloudVoxelMerge({
         partitionPolicy: 'disjoint-owned-rows',
         parts,
-        counts: mergedCounts.view,
-        centroids: mergedCentroids.view,
-        representatives: builder.allocate('merged-representatives', 'uint32', voxelCount).view,
-        status: builder.allocate('status', 'uint32', voxelCount).view
+        output: {
+          counts: mergedCounts.view,
+          centroids: mergedCentroids.view,
+          representatives: builder.allocate('merged-representatives', 'uint32', voxelCount).view,
+          status: builder.allocate('status', 'uint32', voxelCount).view
+        }
       })
     );
     const tileOf = builder.allocate('tile-of', 'uint32', POINT_COUNT);
@@ -137,16 +143,18 @@ export default defineOperationRun<Inputs, Outputs>({
       },
       update: current => {
         const owners = Uint32Array.from({length: POINT_COUNT}, (_, row) =>
-          Number(cloud.positions[row * 3] >= current.tileBoundary)
+          Number(cloud.positions[row * 3] >= current['tileBoundary'])
         );
         tileOf.write(owners);
-        seam.write(Float32Array.of(current.tileBoundary, 0, current.tileBoundary, 1));
+        seam.write(Float32Array.of(current['tileBoundary'], 0, current['tileBoundary'], 1));
         for (const tileIndex of [0, 1]) {
-          tilePositions[tileIndex].write(
-            Float32Array.from({length: POINT_COUNT * 3}, (_, index) => {
-              const row = Math.floor(index / 3);
-              return owners[row] === tileIndex ? cloud.positions[index] : OUTSIDE;
-            })
+          const ownedPositions = Float32Array.from({length: POINT_COUNT * 3}, (_, index) => {
+            const row = Math.floor(index / 3);
+            return owners[row] === tileIndex ? cloud.positions[index] : OUTSIDE;
+          });
+          tilePositions[tileIndex].write(ownedPositions);
+          tileMeans[tileIndex].write(
+            computePointCloudVoxelMeans(ownedPositions, voxelSize, gridSize)
           );
         }
       }
@@ -170,7 +178,7 @@ export default defineOperationRun<Inputs, Outputs>({
       const centers = peek(outputs.centers);
       const rings = new Float32Array(SHARED_LIMIT * 2).fill(OUTSIDE);
       const boxes = new Float32Array(SHARED_LIMIT * 16).fill(OUTSIDE);
-      const size = values.voxelSize;
+      const size = values['voxelSize'];
       let shared = 0;
       for (
         let voxel = 0;
@@ -212,7 +220,7 @@ export default defineOperationRun<Inputs, Outputs>({
         values: {tileBoundary: boundary},
         focus: shared,
         glyphs: [{shape: 'curtain', x: boundary}],
-        readout: `voxelSize ${values.voxelSize} · tiles ${first} | ${POINT_COUNT - first} pts · ${
+        readout: `voxelSize ${values['voxelSize']} · tiles ${first} | ${POINT_COUNT - first} pts · ${
           firstCounts ? shared : '…'
         } voxels shared`
       };
@@ -223,7 +231,7 @@ export default defineOperationRun<Inputs, Outputs>({
     const labels: RunLabel[] = [
       {
         text: 'seam',
-        at: [values.tileBoundary, 0.97],
+        at: [values['tileBoundary'], 0.97],
         anchor: 'top-left',
         offset: [4, 0],
         role: 'title'

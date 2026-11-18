@@ -25,6 +25,7 @@ import {SpatialAnalysisResources} from '../../engine/resources';
 import type {SceneContext, SceneInstance} from '../scene';
 import {REGION_PALETTE} from './b6-colors';
 import {createNamedReader} from './b6-reader';
+import {getRegionalizationWeightsReadout} from './regionalization-readout';
 import {PolygonFillLayer} from './b6-fill-layer';
 import {
   buildOutlineSegments,
@@ -340,7 +341,17 @@ export async function createRegionalization(
   const importWeights = (graph: GPUCommandGraph<void>) => ({
     offsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', rowCount + 1),
     neighbors: importGraphBuffer(graph, 'neighbors', neighborsBuffer, 'uint32', capacity),
-    weights: importGraphBuffer(graph, 'weight-values', weightValuesBuffer, 'float32', capacity)
+    weights: importGraphBuffer(graph, 'weight-values', weightValuesBuffer, 'float32', capacity),
+    status: {
+      overflow: importGraphBuffer(graph, 'weight-overflow', overflowBuffer, 'uint32', 1),
+      candidateOverflow: importGraphBuffer(
+        graph,
+        'weight-candidate-overflow',
+        candidateOverflowBuffer,
+        'uint32',
+        1
+      )
+    }
   });
 
   // ---- Variant graphs. ----
@@ -411,19 +422,7 @@ export async function createRegionalization(
             geometry.ringOffsets.length
           )
         },
-        output: {
-          ...weights,
-          status: {
-            overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
-            candidateOverflow: importGraphBuffer(
-              graph,
-              'candidate-overflow',
-              candidateOverflowBuffer,
-              'uint32',
-              1
-            )
-          }
-        }
+        output: weights
       })
     );
     graph.add(
@@ -609,6 +608,7 @@ export async function createRegionalization(
   let latestKLabels: Uint32Array = new Uint32Array(rowCount);
   let costRange: [number, number] = [0, 1];
   let treeEdges = 0;
+  let weightsComplete = false;
 
   const writeInputs = () => {
     const enabled = REGION_ATTRIBUTES.map(({id}) => ctx.options[id]);
@@ -648,9 +648,34 @@ export async function createRegionalization(
     'regions-csr',
     [
       {name: 'offsets', buffer: offsetsBuffer, bytes: (rowCount + 1) * 4},
-      {name: 'neighbors', buffer: neighborsBuffer, bytes: capacity * 4}
+      {name: 'neighbors', buffer: neighborsBuffer, bytes: capacity * 4},
+      {name: 'overflow', buffer: overflowBuffer, bytes: 4},
+      {name: 'candidateOverflow', buffer: candidateOverflowBuffer, bytes: 4}
     ],
     get => {
+      const availability = getRegionalizationWeightsReadout(
+        get('overflow').u32[0],
+        get('candidateOverflow').u32[0]
+      );
+      weightsComplete = availability.complete;
+      if (!weightsComplete) {
+        treeEdges = 0;
+        for (const name of [
+          'regions',
+          'explained',
+          'pseudoF',
+          'within',
+          'sizes',
+          'boundary',
+          'pieces',
+          'tree',
+          'gains'
+        ])
+          ctx.setReadout(name, availability.unavailable);
+        ctx.setReadout('capacity', availability.capacity);
+        ctx.requestLayers();
+        return;
+      }
       const offsets = get('offsets').u32;
       const neighbors = get('neighbors').u32;
       const segments = new Float32Array(capacity * 4);
@@ -704,6 +729,29 @@ export async function createRegionalization(
     ],
     get => {
       const layout = GPU_REGION_PARTITION_EVALUATION_LAYOUT;
+      const availability = getRegionalizationWeightsReadout(
+        get('overflow').u32[0],
+        get('candidateOverflow').u32[0]
+      );
+      weightsComplete = availability.complete;
+      if (!weightsComplete) {
+        treeEdges = 0;
+        for (const name of [
+          'regions',
+          'explained',
+          'pseudoF',
+          'within',
+          'sizes',
+          'boundary',
+          'pieces',
+          'tree',
+          'gains'
+        ])
+          ctx.setReadout(name, availability.unavailable);
+        ctx.setReadout('capacity', availability.capacity);
+        ctx.requestLayers();
+        return;
+      }
       const summary = get('summary').f32;
       const kSummary = get('kSummary').f32;
       const labels = get('labels').u32;
@@ -795,12 +843,7 @@ export async function createRegionalization(
         regionColorsBuffer.write(assignRegionColors(labels, adjacency));
         clusterColorsBuffer.write(assignRegionColors(latestKLabels, adjacency));
       }
-      ctx.setReadout(
-        'capacity',
-        get('overflow').u32[0]
-          ? `overflow: raise slots per tract${get('candidateOverflow').u32[0] ? ' (pair list full)' : ''}`
-          : 'ok'
-      );
+      ctx.setReadout('capacity', availability.capacity);
       ctx.requestLayers();
     }
   );
@@ -882,7 +925,7 @@ export async function createRegionalization(
           id: `regions-fill-${map}`,
           triangles: trianglesBuffer,
           owners: ownersBuffer,
-          triangleCount: triangles.triangleCount,
+          triangleCount: weightsComplete ? triangles.triangleCount : 0,
           values: map === 'skater' ? regionColorsBuffer : clusterColorsBuffer,
           valueFormat: 'uint32',
           colormap: 'category',
@@ -898,7 +941,7 @@ export async function createRegionalization(
           color: isDark ? [235, 238, 248, 60] : [30, 34, 46, 70]
         })
       ];
-      if (csrReady && showTree) {
+      if (weightsComplete && csrReady && showTree) {
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'regions-tree',
@@ -916,7 +959,7 @@ export async function createRegionalization(
           })
         );
       }
-      if (csrReady && showCuts) {
+      if (weightsComplete && csrReady && showCuts) {
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'regions-cuts',
@@ -943,6 +986,7 @@ export async function createRegionalization(
       if (!event.coordinate) return null;
       const row = locate(event.coordinate[0], event.coordinate[1]);
       if (row < 0) return null;
+      if (!weightsComplete) return 'Regionalization unavailable: incomplete weights';
       const feature = features[row];
       const parts = REGION_ATTRIBUTES.map(
         ({id, label}) => `${label}: ${raw[id][feature].toFixed(id === 'income' ? 2 : 1)}`

@@ -28,14 +28,28 @@ export type CatalogInterpretation = {
   cautions: readonly (GPUAnalysisInterpretationSpec['cautions'][number] | {text: string})[];
 };
 
-const operatorsBySymbol = new Map(
-  getGPUAnalysisOperatorCatalog().map(operator => [operator.exportName, operator])
-);
+function findCatalogOperator(symbol: string, importPath?: string) {
+  const matches = getGPUAnalysisOperatorCatalog().filter(
+    operator => operator.exportName === symbol && (!importPath || operator.package === importPath)
+  );
+  if (matches.length > 1)
+    throw new Error(`website-catalog ambiguous symbol "${symbol}"; specify importPath`);
+  return matches[0];
+}
 
-// These seven public constructors are inventory entries, but not ontology operators. Their kinds
+// These public factories are inventory entries, but not ontology operators. Their kinds
 // describe the real helper contract; keeping exceptions explicit makes new omissions fail closed.
 export const CATALOG_HELPER_KINDS: Readonly<Record<string, CatalogAnalysisMetadata['dataKinds']>> =
   {
+    createNetworkCentralityContinuation: {
+      input: ['network', 'attributes', 'parameters'],
+      output: ['attributes', 'summary']
+    },
+    // Borrows the test's prepared values/weights; publishes draws and replay-count diagnostics.
+    createLocalPermutationReplay: {
+      input: ['attributes', 'spatial-weights', 'parameters'],
+      output: ['attributes', 'summary']
+    },
     createGPUComputationCaptures: {input: ['parameters'], output: ['summary']},
     createGPUComputationMetrics: {input: ['parameters'], output: ['summary']},
     createGPUComputationRecord: {input: ['parameters'], output: ['summary']},
@@ -46,8 +60,11 @@ export const CATALOG_HELPER_KINDS: Readonly<Record<string, CatalogAnalysisMetada
   };
 
 /** No geometry or domain heuristic: every catalog symbol must resolve or be a named helper. */
-export function getCatalogAnalysisMetadata(symbol: string): CatalogAnalysisMetadata {
-  const operator = operatorsBySymbol.get(symbol);
+export function getCatalogAnalysisMetadata(
+  symbol: string,
+  importPath?: string
+): CatalogAnalysisMetadata {
+  const operator = findCatalogOperator(symbol, importPath);
   if (operator) {
     const kinds = resolveGPUAnalysisOperatorKinds(operator);
     return {
@@ -66,11 +83,12 @@ export function getCatalogAnalysisMetadata(symbol: string): CatalogAnalysisMetad
 
 /** Project shared ports to website facets; dimensionality refines points into lidar clouds. */
 export function getCatalogDataTypes(
-  entry: Pick<CatalogEntry, 'symbol' | 'dataKinds'>
+  entry: Pick<CatalogEntry, 'symbol' | 'dataKinds'> & Partial<Pick<CatalogEntry, 'importPath'>>
 ): CatalogEntry['dataTypes'] {
-  const kinds = entry.dataKinds ?? getCatalogAnalysisMetadata(entry.symbol).dataKinds;
+  const kinds =
+    entry.dataKinds ?? getCatalogAnalysisMetadata(entry.symbol, entry.importPath).dataKinds;
   const isPointCloud =
-    operatorsBySymbol.get(entry.symbol)?.package ===
+    findCatalogOperator(entry.symbol, entry.importPath)?.package ===
       '@luma-contributors/analysis/pointcloud-analysis' ||
     entry.symbol === 'makePointCloudLocalPositions';
   const projectKinds = (ports: readonly GPUSpatialAnalysisDataKind[]) => [
@@ -145,16 +163,17 @@ const NAMED_METHOD_CAUTIONS: Readonly<Record<string, readonly string[]>> = {
 
 /** Keep authored explanations as the interpretation source; do not invent a result from a poster. */
 export function attachCatalogAnalysisMetadata<
-  Entry extends Pick<CatalogEntry, 'symbol'> & {
-    explanation?: string;
-    interpretation?: CatalogInterpretation;
-  }
+  Entry extends Pick<CatalogEntry, 'symbol'> &
+    Partial<Pick<CatalogEntry, 'importPath'>> & {
+      explanation?: string;
+      interpretation?: CatalogInterpretation;
+    }
 >(
   entry: Entry
 ): Omit<Entry, 'dataTypes' | keyof CatalogAnalysisMetadata> &
   CatalogAnalysisMetadata &
   Pick<CatalogEntry, 'dataTypes'> & {interpretation?: CatalogInterpretation} {
-  const metadata = getCatalogAnalysisMetadata(entry.symbol);
+  const metadata = getCatalogAnalysisMetadata(entry.symbol, entry.importPath);
   return {
     ...entry,
     ...metadata,

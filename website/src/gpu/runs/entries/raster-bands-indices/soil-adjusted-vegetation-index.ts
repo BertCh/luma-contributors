@@ -33,19 +33,23 @@ export default defineOperationRun({
       red: red.band,
       epsilon: values.epsilon
     };
-    new GPURasterSAVI({
-      ...common,
-      soilAdjustment: values.soilAdjustment,
-      output: output.view,
-      outputValidity: outputValidity.view
-    }).addToGraph(builder.graph);
-    new GPURasterSAVI({
-      ...common,
-      id: 'ndvi-baseline',
-      soilAdjustment: 0,
-      output: baseline.view,
-      outputValidity: baselineValidity.view
-    }).addToGraph(builder.graph);
+    builder.graph.add(
+      new GPURasterSAVI({
+        ...common,
+        soilAdjustment: values.soilAdjustment,
+        output: output.view,
+        outputValidity: outputValidity.view
+      })
+    );
+    builder.graph.add(
+      new GPURasterSAVI({
+        ...common,
+        id: 'ndvi-baseline',
+        soilAdjustment: 0,
+        output: baseline.view,
+        outputValidity: baselineValidity.view
+      })
+    );
     return {outputs: {baseline, output}};
   },
   interaction: {

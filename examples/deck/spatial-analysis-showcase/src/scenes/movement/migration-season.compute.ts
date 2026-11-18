@@ -187,7 +187,7 @@ export async function createMigrationSeason(
       ),
       window: windowParameters.importToGraph(trailGraph),
       output: {
-        ids: view(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
+        rows: view(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
         fadeWeights: view(trailGraph, 'fade-weights', fadeWeights, 'float32', segmentCount),
         clipFractions: view(trailGraph, 'clip-fractions', clipFractions, 'float32x2', segmentCount),
         drawInstanceCount: trailGraph.importGPUData(

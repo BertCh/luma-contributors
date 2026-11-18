@@ -280,7 +280,7 @@ export async function createChicagoPopulationSupport(
     id: 'alignment-status-export',
     invocationCount: 1,
     bindings: [
-      {name: 'status', view: alignment.status, type: 'u32', access: 'read'},
+      {name: 'status', view: alignment.packedStatus, type: 'u32', access: 'read'},
       {name: 'output', view: alignmentStatus, type: 'u32', access: 'read_write'}
     ],
     body: 'for(var word=0u;word<4u;word++){output[outputOffset+word]=status[statusOffset+word];}'

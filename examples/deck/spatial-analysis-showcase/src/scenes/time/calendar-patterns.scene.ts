@@ -403,7 +403,7 @@ graph.add(new GPUTimeWindowFilter({
   timestamps: timeWords,                    // uint32x2 epoch milliseconds
   window: windowParameters,                 // 8 uint32 words
   additionalPredicates: [{kind: 'selection', mask: groupMask}],
-  output: {ids, status: {count, overflow}, outputMask: windowMask,
+  output: {rows, status: {count, overflow}, outputMask: windowMask,
     drawInstanceCount: drawCommands.getInstanceCountData(0)}   // indirect draw: no readback
 }));
 // 2. hour, weekday, day of year and the 7 x 24 count matrix

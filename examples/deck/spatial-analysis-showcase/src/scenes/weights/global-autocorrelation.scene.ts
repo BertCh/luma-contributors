@@ -11,6 +11,7 @@ import type {ClassTable} from '../../cartography/types';
 import {defineScene, type LegendSpec} from '../scene';
 import {getVariableInfo, VARIABLES} from './b4-geography';
 import type {GlobalAutocorrelationOptions} from './global-autocorrelation.compute';
+import {getGlobalQuadrantLegend} from './global-autocorrelation-display';
 import {
   BLACK_JOIN,
   getBivariateColors,
@@ -138,27 +139,13 @@ function getLegends(
       const quadrantColors =
         (data['quadrantColors'] as ReturnType<typeof getQuadrantColors> | undefined) ?? colors;
       return [
-        {
-          kind: 'categories',
-          id: 'quadrant-classes',
-          title: 'Moran scatterplot quadrant (signs only, not tested)',
-          layout: 'list',
-          interactive: true,
-          entries: [
-            {color: quadrantColors.highHigh, label: 'High-High', count: counts?.[0]},
-            {color: quadrantColors.lowLow, label: 'Low-Low', count: counts?.[2]},
-            {color: quadrantColors.highLow, label: 'High-Low', count: counts?.[3]},
-            {color: quadrantColors.lowHigh, label: 'Low-High', count: counts?.[1]},
-            {
-              color: (data['noDataColor'] as [number, number, number, number] | undefined) ?? [
-                217, 217, 217, 178
-              ],
-              label: 'No active neighbours (island)',
-              count: counts?.[4]
-            }
-          ],
-          note: 'High or low against the mean, for the county and for the average of its neighbours. Islands are left out of every statistic here (n excludes them). No significance test: see Hot spots beyond chance.'
-        }
+        getGlobalQuadrantLegend(
+          counts,
+          quadrantColors,
+          (data['noDataColor'] as [number, number, number, number] | undefined) ?? [
+            217, 217, 217, 178
+          ]
+        )
       ];
     }
     default:

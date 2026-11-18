@@ -7,7 +7,7 @@
 // the q statistic, 1 - SSW / SST. Strata at or above `labelCapacity` are left out and drawn muted.
 
 import {
-  getGeographicalDetectorPValue,
+  readGeographicalDetectorPValue,
   GPU_GEOGRAPHICAL_DETECTOR_LAYOUT,
   GPUGeographicalDetector
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
@@ -115,7 +115,7 @@ export default defineOperationRun({
       const x = Math.min(pointer.x, world.width * MAP_SHARE);
       inputs.cut = [x, pointer.y];
       const summary = peek(outputs.summary);
-      const p = summary ? getGeographicalDetectorPValue(summary) : Number.NaN;
+      const probability = summary ? readGeographicalDetectorPValue(summary) : undefined;
       return {
         rerun: values.stratifier === 0,
         glyphs:
@@ -133,7 +133,8 @@ export default defineOperationRun({
               ],
         readout: summary
           ? `${values.stratifier + values.variable === 3 && values.stratifier * values.variable === 2 ? 'circular (same variable) · ' : ''}${['cross', 'age 65+ quintiles', 'unemployment quintiles'][values.stratifier]} · q ${summary[LAYOUT.q].toFixed(2)} · F ${summary[LAYOUT.fStatistic].toFixed(1)} · p ${
-              Number.isFinite(p) ? p.toPrecision(2) : '–'
+              probability?.pValue?.toPrecision(2) ??
+              `unavailable (${probability?.unavailableReason})`
             }`
           : 'q …'
       };

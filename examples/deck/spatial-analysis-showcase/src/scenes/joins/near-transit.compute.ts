@@ -144,7 +144,7 @@ export async function createNearTransit(
   const stopMode = transit.column<Uint8Array>('stopMode');
   const stopRoutes = transit.column<Uint16Array>('stopRoutes');
   const stopRouteOffsets = transit.column<Uint32Array>('stopRouteOffsets');
-  const routes = (transit.properties.routes as {type: string; id: string}[]) ?? [];
+  const routes = (transit.properties['routes'] as {type: string; id: string}[]) ?? [];
   const lineRouteIndex = new Map<number, number>();
   routes.forEach((route, row) => {
     if (route.type === 'rail') {
@@ -405,7 +405,7 @@ export async function createNearTransit(
             drawCommands.getInstanceCountData(0)
           ),
           distances: importGraphBuffer(graph, 'distances', distances, 'float32', count),
-          nearestFeatureIds: nearestView,
+          nearestFeatureRows: nearestView,
           status: {overflow: importGraphBuffer(graph, 'join-overflow', joinOverflow, 'uint32', 1)}
         }
       })

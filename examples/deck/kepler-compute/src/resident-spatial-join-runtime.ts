@@ -448,8 +448,8 @@ export async function executeResidentSpatialJoin(props: {
             chunkRowCount,
             plan.provenance.crs
           );
-        const leftIds = create('left-ids', pairCapacity * 4);
-        const rightIds = create('right-ids', pairCapacity * 4);
+        const leftRows = create('left-ids', pairCapacity * 4);
+        const rightRows = create('right-ids', pairCapacity * 4);
         const statusBuffers = {
           pairCount: scalar('count'),
           requiredCount: scalar('required'),
@@ -492,8 +492,8 @@ export async function executeResidentSpatialJoin(props: {
         });
         graph.add(prepared);
         const pairCountView = view('pair-count', statusBuffers.pairCount, 'uint32', 1);
-        const leftIdsView = view('pair-left', leftIds, 'uint32', pairCapacity);
-        const rightIdsView = view('pair-right', rightIds, 'uint32', pairCapacity);
+        const leftRowsView = view('pair-left', leftRows, 'uint32', pairCapacity);
+        const rightRowsView = view('pair-right', rightRows, 'uint32', pairCapacity);
         graph.add(
           new GPUSpatialPredicateJoin({
             id: 'spatial-join',
@@ -513,8 +513,8 @@ export async function executeResidentSpatialJoin(props: {
             candidateCapacity,
             output: {
               pairs: {
-                leftIds: leftIdsView,
-                rightIds: rightIdsView,
+                leftRows: leftRowsView,
+                rightRows: rightRowsView,
                 status: {
                   count: pairCountView,
                   requiredCount: view('pair-required', statusBuffers.requiredCount, 'uint32', 1),
@@ -555,8 +555,8 @@ export async function executeResidentSpatialJoin(props: {
               ...(column.kind === 'aggregate' && column.sourceFormat
                 ? {sourceFormat: column.sourceFormat}
                 : {}),
-              leftIds: leftIdsView,
-              rightIds: rightIdsView,
+              leftRows: leftRowsView,
+              rightRows: rightRowsView,
               pairCount: pairCountView,
               sourceValues: source
                 ? view(`source-${index}`, source.values, 'uint32', right.rowCount)
@@ -709,7 +709,7 @@ export async function executeResidentSpatialJoin(props: {
                 `Spatial Join merge supports at most ${MAXIMUM_RESIDENT_SPATIAL_JOIN_MERGE_PAIR_COUNT} matched pairs. Uncheck merge or use SQL.`
               );
             const [leftBytes, rightBytes] = await readBuffers(
-              [leftIds, rightIds],
+              [leftRows, rightRows],
               status.pairCount * 4
             );
             readbackBytes += leftBytes.byteLength + rightBytes.byteLength;

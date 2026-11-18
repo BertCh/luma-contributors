@@ -292,8 +292,8 @@ async function createCrossingsView(env: Environment): Promise<View> {
         spatialSort: options.crossSpatialSort,
         output: {
           pairs: {
-            leftIds: imp('pair-left', pairLeft, 'uint32', PAIR_CAPACITY),
-            rightIds: imp('pair-right', pairRight, 'uint32', PAIR_CAPACITY),
+            leftRows: imp('pair-left', pairLeft, 'uint32', PAIR_CAPACITY),
+            rightRows: imp('pair-right', pairRight, 'uint32', PAIR_CAPACITY),
             status: {
               count: imp('count', count, 'uint32', 1),
               overflow: imp('overflow', overflow, 'uint32', 1),

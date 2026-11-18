@@ -35,12 +35,18 @@ export default defineOperationRun({
     const offsets = builder.allocate('offsets', 'uint32', network.nodeCount + 1);
     const targets = builder.allocate('targets', 'uint32', CAPACITY);
     const costs = builder.allocate('costs', 'float32', CAPACITY);
+    const complete = builder.allocate('complete', 'uint32', 1);
     builder.graph.add(
       new GPUNetworkCostTable({
         topology,
         costLimit: costLimit.view,
         maximumIterations: 48,
-        output: {offsets: offsets.view, targets: targets.view, costs: costs.view}
+        output: {
+          offsets: offsets.view,
+          targets: targets.view,
+          costs: costs.view,
+          status: {complete: complete.view}
+        }
       })
     );
     return {
@@ -49,6 +55,7 @@ export default defineOperationRun({
         offsets,
         targets,
         costs,
+        complete,
         rowCosts: builder.upload(
           'row-costs',
           'float32',
@@ -78,9 +85,10 @@ export default defineOperationRun({
       const offsets = peek(outputs.offsets);
       const targets = peek(outputs.targets);
       const costs = peek(outputs.costs);
+      const complete = (peek(outputs.complete)?.[0] ?? 0) !== 0;
       const row = new Float32Array(inputs.network.nodeCount).fill(Number.NaN);
       let targetCount = 0;
-      if (offsets && targets && costs) {
+      if (complete && offsets && targets && costs) {
         for (let entry = offsets[origin]; entry < offsets[origin + 1]; entry++) {
           row[targets[entry]] = costs[entry];
           targetCount++;
@@ -101,7 +109,10 @@ export default defineOperationRun({
             dashed: true
           }
         ],
-        readout: `node ${origin} · ${targetCount} targets within ${values.costLimit.toFixed(2)}`
+        readout:
+          complete && offsets && targets && costs
+            ? `node ${origin} · ${targetCount} targets within ${values.costLimit.toFixed(2)}`
+            : `node ${origin} · incomplete table`
       };
     }
   },

@@ -428,8 +428,8 @@ export const relateMode: SpatialAnalysisModeDefinition = {
       const rightCounts = build.createBuffer('right-counts', zipCount * 4);
       const pairCapacity = Math.max(256, leftCount * zipCount);
       const candidateCapacity = Math.max(1024, leftCount * zipCount);
-      const leftIds = build.createBuffer('left-ids', pairCapacity * 4);
-      const rightIds = build.createBuffer('right-ids', pairCapacity * 4);
+      const leftRows = build.createBuffer('left-ids', pairCapacity * 4);
+      const rightRows = build.createBuffer('right-ids', pairCapacity * 4);
       const pairCount = build.createBuffer('pair-count', 4);
       const pairOverflow = build.createBuffer('pair-overflow', 4);
       const pairTotal = build.createBuffer('pair-total', 4);
@@ -511,8 +511,8 @@ export const relateMode: SpatialAnalysisModeDefinition = {
         id: 'relate-inner',
         output: {
           pairs: {
-            leftIds: view('left-ids', leftIds, 'uint32', pairCapacity),
-            rightIds: view('right-ids', rightIds, 'uint32', pairCapacity),
+            leftRows: view('left-ids', leftRows, 'uint32', pairCapacity),
+            rightRows: view('right-ids', rightRows, 'uint32', pairCapacity),
             status: {
               count: view('pair-count', pairCount, 'uint32', 1),
               overflow: view('pair-overflow', pairOverflow, 'uint32', 1),
@@ -556,8 +556,8 @@ export const relateMode: SpatialAnalysisModeDefinition = {
           right,
           prepared,
           output: {
-            leftIds: view('candidate-left', candidateLeft, 'uint32', candidateCapacity),
-            rightIds: view('candidate-right', candidateRight, 'uint32', candidateCapacity),
+            leftRows: view('candidate-left', candidateLeft, 'uint32', candidateCapacity),
+            rightRows: view('candidate-right', candidateRight, 'uint32', candidateCapacity),
             status: {
               count: view('candidate-pair-count', candidatePairCount, 'uint32', 1),
               overflow: view('candidate-overflow', candidateOverflow, 'uint32', 1)
@@ -603,8 +603,8 @@ export const relateMode: SpatialAnalysisModeDefinition = {
           {buffer: antiOverflow, size: 4},
           {buffer: candidatePairCount, size: 4},
           {buffer: candidateOverflow, size: 4},
-          {buffer: leftIds, size: pairCapacity * 4},
-          {buffer: rightIds, size: pairCapacity * 4},
+          {buffer: leftRows, size: pairCapacity * 4},
+          {buffer: rightRows, size: pairCapacity * 4},
           {buffer: relateBuffer, size: pairCapacity * 4},
           {buffer: antiIds, size: leftCount * 4}
         ],
@@ -644,8 +644,8 @@ export const relateMode: SpatialAnalysisModeDefinition = {
       const capacity = build.pairCapacity;
       const leftCount = build.scene.shapes.length;
       const count = Math.min(words[0], capacity);
-      const leftIds = words.subarray(9, 9 + capacity);
-      const rightIds = words.subarray(9 + capacity, 9 + capacity * 2);
+      const leftRows = words.subarray(9, 9 + capacity);
+      const rightRows = words.subarray(9 + capacity, 9 + capacity * 2);
       const matrices = words.subarray(9 + capacity * 2, 9 + capacity * 3);
       const antiIds = words.subarray(9 + capacity * 3, 9 + capacity * 3 + leftCount);
       const matchedFlags = new Float32Array(leftCount);
@@ -653,8 +653,8 @@ export const relateMode: SpatialAnalysisModeDefinition = {
       const histogram = new Map<string, number>();
       build.pairs = [];
       for (let slot = 0; slot < count; slot++) {
-        const leftRow = leftIds[slot];
-        const rightRow = rightIds[slot];
+        const leftRow = leftRows[slot];
+        const rightRow = rightRows[slot];
         if (leftRow >= leftCount || rightRow >= zipCount) continue;
         matchedFlags[leftRow] = 1;
         rightCounts[rightRow] += 1;

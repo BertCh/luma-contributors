@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {useState} from 'react';
-import {formatBytes, formatCount} from '../../../../lens/format';
+import {formatResourceBytes, formatResourceCount, formatCount} from '../../../../lens/format';
 import {Section} from '../../../ui/section';
 import {findExampleLines} from '../../examples';
 import {
@@ -38,7 +38,7 @@ const TRY_IT: readonly TryItLink[] = [
 ];
 
 function describeRecord(record: WorkflowRecord): string {
-  return `${formatCount(record.kernels)} kernels, ${formatCount(record.dependencies)} dependencies, ${formatCount(record.buffers)} buffers of ${formatBytes(record.bytes)}`;
+  return `${formatCount(record.nodeCount)} graph nodes, ${formatCount(record.dependencies)} dependencies, ${formatResourceCount({count: record.buffers, inventoryKnown: record.inventoryKnown})} of ${formatResourceBytes(record.bytes, record.bytesKind)}`;
 }
 
 function WorkflowBlock({workflow, example}: {workflow: Workflow; example?: TopicExample}) {
@@ -182,10 +182,13 @@ export function Page({topic, code}: TopicPageProps) {
         <StatStrip
           stats={[
             {value: formatCount(contributorCount), label: 'contributors you add'},
-            {value: formatCount(LOCAL_MORAN_RECORD.kernels), label: 'kernels they compiled to'},
+            {
+              value: formatCount(LOCAL_MORAN_RECORD.nodeCount),
+              label: 'graph nodes they compiled to'
+            },
             {value: formatCount(LOCAL_MORAN_RECORD.dependencies), label: 'dependencies'},
             {
-              value: formatBytes(LOCAL_MORAN_RECORD.bytes),
+              value: formatResourceBytes(LOCAL_MORAN_RECORD.bytes, LOCAL_MORAN_RECORD.bytesKind),
               label: 'in buffers, none read between steps'
             }
           ]}

@@ -13,6 +13,7 @@ import {parameters} from './fill-holes.parameters';
 import {drawRaster, makeGridOfRaster} from './support/bands';
 import {getCellAt, getCellCenter} from './support/gestures';
 import {createShapeRaster, stampDisc} from './support/shapes';
+import {readUints} from '../categories-cells-tests/_lib/readback';
 
 const RING_RADIUS = 6;
 const LAND = [0.72, 0.76, 0.84, 1] as const;
@@ -43,15 +44,15 @@ export default defineOperationRun({
         grid: makeGridOfRaster(inputs),
         input: mask.view,
         connectivity: 8,
-        maximumIterations: values.maximumIterations,
+        maximumIterations: values['maximumIterations'],
         output: {values: result.view, status: {converged: converged.view}}
       })
     );
     return {
-      outputs: {mask, result},
+      outputs: {mask, result, converged},
       update: current => {
         const data = Uint32Array.from(inputs.values, (value, index) =>
-          value > current.threshold && inputs.draws[index] >= current.pits ? 1 : 0
+          value > current['threshold'] && inputs.draws[index] >= current['pits'] ? 1 : 0
         );
         stampDisc(
           data,
@@ -66,6 +67,9 @@ export default defineOperationRun({
       }
     };
   },
+  async afterRun({outputs}) {
+    return {converged: (await readUints(outputs.converged))[0] !== 0};
+  },
   interaction: {
     kind: 'drag',
     hint: 'stamp a ring of land',
@@ -75,8 +79,9 @@ export default defineOperationRun({
       inputs.stamp = [column, row];
       const mask = peek(outputs.mask);
       const result = peek(outputs.result);
+      const converged = peek(outputs.converged)?.[0];
       let filled = 0;
-      if (mask && result) {
+      if (converged && mask && result) {
         for (let index = 0; index < mask.length; index++)
           if (result[index] === 1 && mask[index] === 0) filled++;
       }
@@ -90,12 +95,14 @@ export default defineOperationRun({
             dashed: true
           }
         ],
-        readout: `ring at [${column}, ${row}] | filled ${formatNumber(filled, 0)} cells`
+        readout: `ring at [${column}, ${row}] | ${converged === undefined ? 'status pending' : converged === 0 ? 'unfinished propagation; filled count withheld' : `filled ${formatNumber(filled, 0)} cells`}`
       };
     }
   },
-  draw: ({inputs, outputs}) => [
-    drawRaster(inputs, outputs.result, {ramp: 'categorical', categories: [NOTHING, FILLED]}),
+  draw: ({inputs, outputs, extra}) => [
+    ...(extra?.converged
+      ? [drawRaster(inputs, outputs.result, {ramp: 'categorical', categories: [NOTHING, FILLED]})]
+      : []),
     drawRaster(inputs, outputs.mask, {ramp: 'categorical', categories: [NOTHING, LAND]})
   ]
 });

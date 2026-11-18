@@ -205,8 +205,8 @@ export const crossingsMode: SpatialAnalysisModeDefinition = {
           },
           output: {
             pairs: {
-              leftIds: importGraphBuffer(graph, 'pair-left', pairLeft, 'uint32', PAIR_CAPACITY),
-              rightIds: importGraphBuffer(graph, 'pair-right', pairRight, 'uint32', PAIR_CAPACITY),
+              leftRows: importGraphBuffer(graph, 'pair-left', pairLeft, 'uint32', PAIR_CAPACITY),
+              rightRows: importGraphBuffer(graph, 'pair-right', pairRight, 'uint32', PAIR_CAPACITY),
               status: {
                 count: importGraphBuffer(graph, 'pair-count', pairCount, 'uint32', 1),
                 overflow: importGraphBuffer(graph, 'pair-overflow', pairOverflow, 'uint32', 1),

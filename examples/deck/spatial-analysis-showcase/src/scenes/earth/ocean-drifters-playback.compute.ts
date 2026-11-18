@@ -270,7 +270,7 @@ export async function createOceanDriftersPlayback(
         endTimestamps: view('segment-end-times', segmentEndTimesBuffer, 'float32', segmentCount),
         window: windowParameters.importToGraph(trailGraph),
         output: {
-          ids: view('trail-ids', trailIds, 'uint32', segmentCount),
+          rows: view('trail-ids', trailIds, 'uint32', segmentCount),
           fadeWeights: view('fade-weights', fadeWeights, 'float32', segmentCount),
           clipFractions: view('clip-fractions', clipFractions, 'float32x2', segmentCount),
           drawInstanceCount: trailGraph.importGPUData(

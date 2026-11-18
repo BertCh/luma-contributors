@@ -59,11 +59,11 @@ export default defineOperationRun({
     };
   },
   build(builder, {queries, targets}, values) {
-    const capacity = values.capacity;
+    const capacity = values['capacity'];
     const queryPositions = builder.upload('queries', 'float32x2', queries.positions);
     const targetPositions = builder.upload('targets', 'float32x2', targets.positions);
     const targetValues = builder.upload('target-values', 'float32', targets.values);
-    const ids = builder.allocate('neighbor-ids', 'uint32', QUERY_COUNT * capacity);
+    const neighborRows = builder.allocate('neighbor-rows', 'uint32', QUERY_COUNT * capacity);
     const counts = builder.allocate('neighbor-counts', 'uint32', QUERY_COUNT);
     const rowCapacity = QUERY_COUNT * capacity;
     const leftRows = builder.allocate('left-rows', 'uint32', rowCapacity);
@@ -73,8 +73,8 @@ export default defineOperationRun({
     const gathered = builder.allocate('gathered-value', 'float32', rowCapacity);
     builder.graph.add(
       new GPUPairGather({
-        how: values.how === 0 ? 'inner' : 'left',
-        neighbors: {ids: ids.view, counts: counts.view, capacity},
+        how: values['how'] === 0 ? 'inner' : 'left',
+        neighbors: {rows: neighborRows.view, counts: counts.view, capacity},
         rightColumns: [{source: targetValues.view, output: gathered.view}],
         output: {
           leftRows: leftRows.view,
@@ -104,7 +104,7 @@ export default defineOperationRun({
       outputs: {queryPositions, targetPositions, targetValues, segments, queryDots, gathered},
       // The nearest targets of every query inside the radius, as dense per-query lists.
       update: current => {
-        const denseIds = new Uint32Array(rowCapacity).fill(NO_ROW);
+        const denseRows = new Uint32Array(rowCapacity).fill(NO_ROW);
         const denseCounts = new Uint32Array(QUERY_COUNT);
         for (let query = 0; query < QUERY_COUNT; query++) {
           const candidates: [number, number][] = [];
@@ -113,15 +113,15 @@ export default defineOperationRun({
               queries.positions[query * 2] - targets.positions[target * 2],
               queries.positions[query * 2 + 1] - targets.positions[target * 2 + 1]
             );
-            if (distance <= current.radius) candidates.push([distance, target]);
+            if (distance <= current['radius']) candidates.push([distance, target]);
           }
           candidates.sort((first, second) => first[0] - second[0]);
           candidates.slice(0, capacity).forEach(([, target], slot) => {
-            denseIds[query * capacity + slot] = target;
+            denseRows[query * capacity + slot] = target;
           });
           denseCounts[query] = Math.min(candidates.length, capacity);
         }
-        ids.write(denseIds);
+        neighborRows.write(denseRows);
         counts.write(denseCounts);
       }
     };
@@ -147,20 +147,22 @@ export default defineOperationRun({
           inputs.targets.positions[target * 2 + 1] - from[1]
         )
       }))
-        .filter(candidate => candidate.distance <= values.radius)
+        .filter(candidate => candidate.distance <= values['radius'])
         .sort((first, second) => first.distance - second.distance);
-      const glyphs: RunGlyph[] = [{shape: 'ring', at: from, radius: values.radius, dashed: true}];
+      const glyphs: RunGlyph[] = [
+        {shape: 'ring', at: from, radius: values['radius'], dashed: true}
+      ];
       candidates.forEach(({target}, rank) => {
         const to = [
           inputs.targets.positions[target * 2],
           inputs.targets.positions[target * 2 + 1]
         ] as const;
         glyphs.push(
-          {shape: 'line', from, to, dashed: rank >= values.capacity},
+          {shape: 'line', from, to, dashed: rank >= values['capacity']},
           {shape: 'dot', at: to}
         );
       });
-      const kept = Math.min(candidates.length, values.capacity);
+      const kept = Math.min(candidates.length, values['capacity']);
       const value = kept > 0 ? inputs.targets.values[candidates[0].target].toFixed(2) : 'none';
       return {
         focus: row,

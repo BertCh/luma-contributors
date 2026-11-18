@@ -274,7 +274,7 @@ trailGraph.add(new GPUTimeWindowFilter({
   window: windowParameters.importToGraph(trailGraph),
   additionalPredicates: [{kind: 'selection', mask: segmentMask}],   // the chosen seasons
   output: {
-    ids: trailIds, status: {count: trailCount, overflow},
+    rows: trailIds, status: {count: trailCount, overflow},
     fadeWeights, clipFractions, drawInstanceCount: trailDrawCount
   }
 }));

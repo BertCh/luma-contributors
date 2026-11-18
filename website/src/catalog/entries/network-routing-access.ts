@@ -1099,19 +1099,29 @@ graph.add(new GPUBoundedFacilityAllocation({
         description: 'Facility per demand point.'
       },
       {name: 'objective', type: "GraphDataView<'float32'>", description: 'Objective value.'},
-      {name: 'status', type: "GraphDataView<'uint32'>", description: 'Result status code.'}
+      {
+        name: 'summary',
+        type: "GraphDataView<'uint32'>",
+        description: '[valid, feasibleIncumbent, enumerationComplete, examinedCandidates].'
+      },
+      {
+        name: 'status',
+        type: '{invalidCount?, iterationCount?, converged?, iterationLimitReached?}',
+        description: 'Optional invalid-input and enumeration stopping diagnostics.'
+      }
     ],
     example: `import {GPUNetworkFacilityOptimization} from '@luma-contributors/analysis/gpu-network';
 
+// summary: a uint32 view with 4 rows; status: optional named diagnostic views.
 graph.add(new GPUNetworkFacilityOptimization({
   operation: 'backup-coverage',
-  facilityCount: 20,
+  facilityCount: 8,
   selectCount: 5,
   costs: costs.importToGraph(graph),
   demand: demand.importToGraph(graph),
   capacities: capacities.importToGraph(graph),
   threshold: threshold.importToGraph(graph),
-  output: {selectedFacilities, assignments, objective, status}
+  output: {selectedFacilities, assignments, objective, summary, status}
 }));`,
     preview: {kind: 'point-clusters', caption: 'Pick sites that cover demand twice.', seed: 4312},
     related: ['bounded-facility-allocation', 'location-allocation'],
@@ -3435,17 +3445,28 @@ graph.add(new GPUNetworkFlow({
         type: "GraphDataView<'float32'>",
         description: 'Demand left unserved.'
       },
-      {name: 'status', type: "GraphDataView<'uint32'>", description: 'Cycle count and convergence.'}
+      {
+        name: 'summary',
+        type: "GraphDataView<'uint32'>",
+        description: '[valid, equilibriumGapWithinTolerance, completedCycles, maximumGapBits].'
+      },
+      {
+        name: 'status',
+        type: '{invalidCount?, iterationCount?, converged?, iterationLimitReached?}',
+        description:
+          'Optional invalid-input, completed shifts and final-gap convergence diagnostics.'
+      }
     ],
     example: `import {GPUNetworkRationalAccess} from '@luma-contributors/analysis/gpu-network';
 
+// summary: a uint32 view with 4 rows; status: optional named diagnostic views.
 graph.add(new GPUNetworkRationalAccess({
   costs: matrix.costs,
   demand: demand.importToGraph(graph),
   supply: supply.importToGraph(graph),
   parameters: parameters.importToGraph(graph),
   demandMode: 'fractional',
-  output: {assignments, scores, unservedDemand, status}
+  output: {assignments, scores, unservedDemand, summary, status}
 }));`,
     preview: {
       kind: 'flows',

@@ -102,6 +102,7 @@ function polygonizeOutput(
     };
   };
   const finalStatus = status(`${prefix}-status`);
+  const {requiredCount: requiredRingCount, ...featureStatus} = finalStatus.views;
   const nodedStatus = status(`${prefix}-noded-status`);
   const directedStatus = status(`${prefix}-directed-status`);
   const positions = resources.createBuffer(`${prefix}-polygon-positions`, vertexCapacity * 8);
@@ -247,7 +248,7 @@ function polygonizeOutput(
         1
       )
     },
-    status: finalStatus.views
+    status: {...featureStatus, requiredRingCount}
   };
   return {
     output: polygonOutput,

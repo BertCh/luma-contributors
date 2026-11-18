@@ -32,7 +32,7 @@ export default defineOperationRun({
   caption: 'Union of two cell tables; color is after minus before.',
   createInputs: ({random}) => getHonshuEvents(random, 700),
   build(builder, points, values) {
-    const resolution = values.resolution;
+    const resolution = values['resolution'];
     const beforePositions = builder.upload('before-positions', 'float32x2', points.positions);
     const afterPositions = builder.allocate('after-positions', 'float32x2', points.count);
     const pointValues = builder.upload('values', 'float32', points.values);
@@ -59,18 +59,23 @@ export default defineOperationRun({
       cells: builder.allocate('union-cells', 'uint32x2', UNION_CAPACITY),
       delta: builder.allocate('delta', 'float32', UNION_CAPACITY),
       count: builder.allocate('union-count', 'uint32', 1),
-      overflow: builder.allocate('union-overflow', 'uint32', 1)
+      overflow: builder.allocate('union-overflow', 'uint32', 1),
+      candidateOverflow: builder.allocate('union-candidate-overflow', 'uint32', 1)
     };
     builder.graph.add(
       new GPUCellTableCompare({
         before: getCellTableViews(tables[0]),
         after: getCellTableViews(tables[1]),
-        measure: values.measure === 0 ? 'count' : 'sum',
+        measure: values['measure'] === 0 ? 'count' : 'sum',
         sumScale: 65536,
         output: {
           cells: union.cells.view,
           delta: union.delta.view,
-          status: {count: union.count.view, overflow: union.overflow.view}
+          status: {
+            count: union.count.view,
+            overflow: union.overflow.view,
+            candidateOverflow: union.candidateOverflow.view
+          }
         }
       })
     );
@@ -79,7 +84,7 @@ export default defineOperationRun({
       update: current => {
         const moved = Float32Array.from(
           points.positions,
-          (value, index) => value + (index % 2 === 0 ? current.shift : current.shiftNorth)
+          (value, index) => value + (index % 2 === 0 ? current['shift'] : current['shiftNorth'])
         );
         afterPositions.write(moved);
       }
@@ -96,6 +101,8 @@ export default defineOperationRun({
       const center = getWindowCenter(HONSHU_WINDOW);
       const delta = state.peek(state.outputs.union.delta);
       const count = state.peek(state.outputs.union.count);
+      const overflow = state.peek(state.outputs.union.overflow)?.[0];
+      const candidateOverflow = state.peek(state.outputs.union.candidateOverflow)?.[0];
       let gained = 0;
       let lost = 0;
       if (delta && count) {
@@ -111,10 +118,10 @@ export default defineOperationRun({
           {
             shape: 'arrow',
             from: center,
-            to: [center[0] + values.shift, center[1] + values.shiftNorth]
+            to: [center[0] + values['shift'], center[1] + values['shiftNorth']]
           }
         ],
-        readout: `shift ${values.shift.toFixed(2)}°E ${values.shiftNorth.toFixed(2)}°N · +${gained} / −${lost} cells`
+        readout: `shift ${values['shift'].toFixed(2)}°E ${values['shiftNorth'].toFixed(2)}°N · +${gained} / −${lost} cells${overflow ? ' · union capacity reached' : ''}${candidateOverflow ? ' · input loss' : ''}`
       };
     }
   },
@@ -128,7 +135,7 @@ export default defineOperationRun({
       triangleCount: outputs.fill.triangleCount,
       ramp: 'diverging',
       // Fixed, so a bigger shift looks stronger instead of being stretched to the same colors.
-      range: values.measure === 0 ? [-8, 8] : [-3, 3]
+      range: values['measure'] === 0 ? [-8, 8] : [-3, 3]
     }
   ]
 });

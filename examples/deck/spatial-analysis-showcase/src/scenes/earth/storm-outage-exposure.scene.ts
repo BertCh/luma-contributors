@@ -301,7 +301,7 @@ staticGraph.add(new GPUGroupStatistics({
 
 // When the playhead moves five minutes:
 graph.add(new GPUTimeWindowFilter({timestamps: flashTimes, window: flashWindow.importToGraph(graph),
-  output: {ids, status: {count, overflow}, fadeWeights: flashWeights}}));      // 1 inside the window, 0 outside
+  output: {rows, status: {count, overflow}, fadeWeights: flashWeights}}));      // 1 inside the window, 0 outside
 graph.add(new GPUZonalStatistics({
   spatialContext: STORM_FRAME.spatialContext,
   features: {kind: 'feature-rows', pointFeatureRows, featureCount: countyCount},

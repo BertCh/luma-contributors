@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 // addPopulationSupportAlignmentRecipe: source populations (listed in a shuffled order) joined to
-// the target units by exact id. The map shows the validity the recipe certifies per target unit:
+// the target units by exact id. The map shows the alignment code per target unit:
 // one color for exactly matched units, others for absent and repeated ids.
 
 import {addPopulationSupportAlignmentRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
@@ -15,9 +15,9 @@ import {findZoneAt, getZoneRing} from './lib/zone-lookup';
 import {addReadout} from './lib/readout';
 import {parameters} from './population-support-alignment-recipe.parameters';
 
-const VALIDITY = ['matched', 'absent from source', 'repeated id'];
+const ALIGNMENT_LABELS = ['matched', 'absent from source', 'repeated id'];
 /** Matched units stay quiet; the two failures are warm. */
-const VALIDITY_COLORS = [
+const ALIGNMENT_COLORS = [
   [0.45, 0.55, 0.68],
   [0.86, 0.2, 0.2],
   [0.98, 0.65, 0.15]
@@ -56,14 +56,14 @@ export default defineOperationRun({
     });
     return {
       outputs: {
-        validity: addReadout(builder, 'validity', recipe.outputs.validity),
+        alignmentCode: addReadout(builder, 'alignment-code', recipe.outputs.alignmentCode),
         mesh: uploadQuadZones(builder, zones)
       },
       update: current => {
         const ids = Uint32Array.from({length: zones.count}, (_, unit) => getCensusTractCode(unit));
-        for (let slot = 0; slot < current.absent; slot++) ids[targetOrder[slot]] = 1000 + slot;
+        for (let slot = 0; slot < current['absent']; slot++) ids[targetOrder[slot]] = 1000 + slot;
         // A repeated id copies its neighbor in the order.
-        for (let slot = 0; slot < current.duplicated; slot++) {
+        for (let slot = 0; slot < current['duplicated']; slot++) {
           const unit = targetOrder[zones.count - 1 - slot];
           ids[unit] = ids[(unit + 1) % zones.count];
         }
@@ -78,15 +78,15 @@ export default defineOperationRun({
     rest: ({toUnit, inputs}) => toUnit([inputs.zones.centers[0], inputs.zones.centers[1]]),
     resolve(pointer, {inputs, outputs, peek}) {
       const unit = findZoneAt(inputs.zones, pointer.x, pointer.y);
-      const validity = peek(outputs.validity);
+      const alignmentCode = peek(outputs.alignmentCode);
       return {
         glyphs: [{shape: 'polyline', points: getZoneRing(inputs.zones, unit), closed: true}],
-        readout: `tract ${getCensusTractCode(unit)} · ${validity ? VALIDITY[validity[unit]] : '...'}`
+        readout: `tract ${getCensusTractCode(unit)} · ${alignmentCode ? ALIGNMENT_LABELS[alignmentCode[unit]] : '...'}`
       };
     }
   },
   draw: ({inputs, outputs}) => [
-    getQuadFill(outputs.mesh, inputs.zones, outputs.validity, {categories: VALIDITY_COLORS}),
+    getQuadFill(outputs.mesh, inputs.zones, outputs.alignmentCode, {categories: ALIGNMENT_COLORS}),
     {
       layer: 'lines',
       context: true,
@@ -97,7 +97,7 @@ export default defineOperationRun({
       layer: 'text',
       ...createLegend({
         corner: 'top-right',
-        entries: VALIDITY.map((label, index) => ({label, swatch: VALIDITY_COLORS[index]}))
+        entries: ALIGNMENT_LABELS.map((label, index) => ({label, swatch: ALIGNMENT_COLORS[index]}))
       })
     }
   ]

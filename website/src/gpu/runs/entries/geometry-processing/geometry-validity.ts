@@ -21,21 +21,26 @@ import {
 import {findRingCrossings} from './shared/pointer-support';
 import {addFeatureValues, addKernel} from './shared/shape-segments';
 import {parameters} from './geometry-validity.parameters';
+import {GEOMETRY_VALIDITY_CLASSES_WGSL} from './geometry-validity-classes';
 
-/** Colors of the five validity classes, in the order the class kernel numbers them. */
+/** Colors of the seven validity classes, in the order the class kernel numbers them. */
 const CLASS_COLORS = [
   [0.435, 0.545, 0.722],
   [1, 0.42, 0.42],
   [0.96, 0.835, 0.28],
   [0.31, 0.82, 0.77],
-  [0.78, 0.57, 0.92]
+  [0.78, 0.57, 0.92],
+  [0.55, 0.55, 0.55],
+  [0.68, 0.45, 0.8]
 ] as const;
 const CLASS_NAMES = [
   'valid',
   'self-intersecting',
   'hole outside, rings cross',
   'wrong orientation',
-  'other (repeated vertex)'
+  'other diagnostic',
+  'incomplete check',
+  'uncertain predicate'
 ];
 /** Share of the picture height the polygons fill; the band above holds the legend. */
 const POLYGON_HEIGHT = 0.8;
@@ -50,7 +55,8 @@ const BIT_NAMES: ReadonlyArray<[number, string]> = [
   [16, 'selfIntersection'],
   [32, 'crossingRings'],
   [64, 'holeOutsideShell'],
-  [128, 'badOrientation']
+  [128, 'badOrientation'],
+  [256, 'uncertain']
 ];
 
 export default defineOperationRun({
@@ -73,6 +79,8 @@ export default defineOperationRun({
   build(builder, {set}, values) {
     const polygons = uploadPolygonSet(builder, set);
     const mask = builder.allocate('mask', 'uint32', set.count);
+    const validity = builder.allocate('validity', 'uint32', set.count);
+    const overflow = builder.allocate('overflow', 'uint32', 1);
     builder.graph.add(
       new GPUGeometryValidity({
         polygons: {
@@ -82,31 +90,27 @@ export default defineOperationRun({
           polygonOffsets: polygons.polygonOffsets.view,
           ringOffsets: polygons.ringOffsets.view
         },
-        orientation: ORIENTATIONS[values.orientation],
+        orientation: ORIENTATIONS[values['orientation']],
         intersectionCapacity: 4096,
         output: {
-          mask: mask.view,
-          status: {overflow: builder.allocate('overflow', 'uint32', 1).view}
+          issueCode: mask.view,
+          validity: validity.view,
+          status: {overflow: overflow.view}
         }
       })
     );
     // Collapse the bitmask into a few classes: 0 valid, 1 self-intersection, 2 hole or ring
-    // crossing, 3 orientation, 4 anything else.
+    // crossing, 3 orientation, 4 other diagnostics, 5 incomplete, 6 uncertain predicate.
     const classes = builder.allocate('classes', 'uint32', set.count);
     addKernel(builder, {
       id: 'validity-classes',
       invocationCount: set.count,
       bindings: [
         {name: 'mask', buffer: mask, access: 'read'},
+        {name: 'validity', buffer: validity, access: 'read'},
         {name: 'classes', buffer: classes, access: 'read_write'}
       ],
-      body: `let bits = mask[maskOffset + index];
-  var result = 4u;
-  if (bits == 0u) { result = 0u; }
-  else if ((bits & 16u) != 0u) { result = 1u; }
-  else if ((bits & 96u) != 0u) { result = 2u; }
-  else if (bits == 128u) { result = 3u; }
-  classes[classesOffset + index] = result;`
+      body: GEOMETRY_VALIDITY_CLASSES_WGSL
     });
     const featureOfVertex = builder.upload(
       'feature-of-vertex',
@@ -117,9 +121,12 @@ export default defineOperationRun({
       outputs: {
         ...polygons,
         mask,
+        validity,
+        overflow,
         vertexMasks: addFeatureValues(builder, 'class', classes, featureOfVertex)
       },
-      update: current => polygons.positions.write(injectDefects(set, current.defects, DEFECT_KINDS))
+      update: current =>
+        polygons.positions.write(injectDefects(set, current['defects'], DEFECT_KINDS))
     };
   },
   rebuildOn: ['orientation'],
@@ -133,9 +140,10 @@ export default defineOperationRun({
       inputs.focus.feature = feature;
       if (feature < 0) return {};
       const {set} = inputs;
-      const positions = injectDefects(set, values.defects, DEFECT_KINDS);
+      const positions = injectDefects(set, values['defects'], DEFECT_KINDS);
       const {first, count} = getShellRows(set, feature);
       const bits = peek(outputs.mask)?.[feature];
+      const usable = peek(outputs.validity)?.[feature];
       const names =
         bits === undefined
           ? ['...']
@@ -150,7 +158,14 @@ export default defineOperationRun({
           },
           ...findRingCrossings(positions, first, count).map(at => ({shape: 'dot' as const, at}))
         ],
-        readout: bits === 0 ? 'valid' : names.join(' · ')
+        readout:
+          bits === undefined || usable === undefined
+            ? '...'
+            : usable === 0 && (bits & ~136) === 0
+              ? ['incomplete check', ...names].join(' · ')
+              : bits === 0
+                ? 'valid'
+                : names.join(' · ')
       };
     }
   },

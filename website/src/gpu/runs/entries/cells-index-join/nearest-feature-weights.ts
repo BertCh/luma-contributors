@@ -27,11 +27,12 @@ export default defineOperationRun({
     return {points, index: createPointIndex(points), held: -1};
   },
   build(builder, inputs, values) {
-    const k = values.k;
+    const k = values['k'];
     const slotCapacity = k + 1;
     const points = builder.upload('points', 'float32x2', inputs.points);
     const radius = builder.upload('radius', 'float32', Float32Array.of(1e6));
     const neighborIds = builder.allocate('neighbor-ids', 'uint32', POINT_COUNT * slotCapacity);
+    const neighborRows = builder.allocate('neighbor-rows', 'uint32', POINT_COUNT * slotCapacity);
     const neighborCounts = builder.allocate('neighbor-counts', 'uint32', POINT_COUNT);
     const neighborDistances = builder.allocate(
       'neighbor-distances',
@@ -47,6 +48,7 @@ export default defineOperationRun({
         k: slotCapacity,
         output: {
           neighborIds: neighborIds.view,
+          neighborRows: neighborRows.view,
           neighborCounts: neighborCounts.view,
           neighborDistances: neighborDistances.view,
           status: {overflow: joinOverflow.view}
@@ -58,22 +60,24 @@ export default defineOperationRun({
     const weights = builder.allocate('weights', 'float32', POINT_COUNT * k);
     const distances = builder.allocate('distances', 'float32', POINT_COUNT * k);
     const overflow = builder.allocate('overflow', 'uint32', 1);
+    const candidateOverflow = builder.allocate('candidate-overflow', 'uint32', 1);
     builder.graph.add(
       new GPUNearestFeatureWeights({
-        neighborIds: neighborIds.view,
+        neighborRows: neighborRows.view,
+        neighborStatus: {overflow: joinOverflow.view},
         neighborCounts: neighborCounts.view,
         neighborDistances: neighborDistances.view,
         slotCapacity,
         k,
         excludeSelf: true,
-        weightType: values.weightType === 0 ? 'binary' : 'inverse-distance',
-        power: values.power,
+        weightType: values['weightType'] === 0 ? 'binary' : 'inverse-distance',
+        power: values['power'],
         output: {
           offsets: offsets.view,
           neighbors: neighbors.view,
           weights: weights.view,
           distances: distances.view,
-          status: {overflow: overflow.view}
+          status: {overflow: overflow.view, candidateOverflow: candidateOverflow.view}
         }
       })
     );
@@ -83,6 +87,8 @@ export default defineOperationRun({
         offsets,
         neighbors,
         weights,
+        overflow,
+        candidateOverflow,
         edges: addCsrEdgeSegments(builder, 'edges', {
           positions: points,
           offsets,
@@ -122,7 +128,7 @@ export default defineOperationRun({
       return {
         focus: row,
         glyphs,
-        readout: `row ${row} · k ${values.k} · Σ weights ${total.toFixed(2)}`
+        readout: `row ${row} · k ${values['k']} · Σ weights ${total.toFixed(2)}`
       };
     }
   },
@@ -140,7 +146,10 @@ export default defineOperationRun({
       values: outputs.rowSums,
       ramp: 'sequential',
       // Binary rows sum to k; inverse-distance rows sum to about k / typical distance ^ power.
-      range: [0, values.weightType === 0 ? values.k + 0.5 : values.k * 12 ** values.power],
+      range: [
+        0,
+        values['weightType'] === 0 ? values['k'] + 0.5 : values['k'] * 12 ** values['power']
+      ],
       radius: 6
     }
   ]

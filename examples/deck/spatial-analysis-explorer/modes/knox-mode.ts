@@ -51,12 +51,13 @@ function formatNumber(value: number, digits = 2): string {
 }
 
 function formatProbability(value: number): string {
-  if (!Number.isFinite(value)) return '–';
+  if (!Number.isFinite(value)) return 'unavailable';
   return value < 0.001 ? '< 0.001' : value.toFixed(3);
 }
 
 /** Text sparkline of a histogram, with the bin holding `marker` flagged below it. */
 function formatHistogram(values: ArrayLike<number>, count: number, marker: number): string {
+  if (!Number.isFinite(marker) || count <= 0) return 'unavailable';
   let minimum = Infinity;
   let maximum = -Infinity;
   for (let index = 0; index < count; index++) {
@@ -230,24 +231,24 @@ export const knoxMode: SpatialAnalysisModeDefinition = {
       offsets: view('offsets', offsetsBuffer, 'uint32', eventCount + 1),
       neighbors: view('neighbors', neighborsBuffer, 'uint32', slotCapacity),
       weights: view('weights', weightsBuffer, 'float32', slotCapacity),
-      distances: view('distances', distancesBuffer, 'float32', slotCapacity)
+      distances: view('distances', distancesBuffer, 'float32', slotCapacity),
+      status: {overflow: view('overflow', overflowBuffer, 'uint32', 1)}
     };
     const testParametersView = testParameters.importToGraph(graph);
-    graph.add(
-      new GPUNeighborSearch({
-        spatialContext: trips.frame.spatialContext,
-        id: 'knox-search',
-        mode: 'radius',
-        positions: positionsView,
-        parameters: searchParameters.importToGraph(graph),
-        gridSize: [48, 48],
-        output: {...pairs, status: {overflow: view('overflow', overflowBuffer, 'uint32', 1)}}
-      })
-    );
+    const search = new GPUNeighborSearch({
+      spatialContext: trips.frame.spatialContext,
+      id: 'knox-search',
+      mode: 'radius',
+      positions: positionsView,
+      parameters: searchParameters.importToGraph(graph),
+      gridSize: [48, 48],
+      output: pairs
+    });
+    graph.add(search);
     graph.add(
       new GPUKnoxTest({
         id: 'knox-test',
-        pairs,
+        pairs: search.outputWeights,
         times: timesView,
         parameters: testParametersView,
         maximumPermutations: MAXIMUM_PERMUTATIONS,
@@ -265,7 +266,7 @@ export const knoxMode: SpatialAnalysisModeDefinition = {
     graph.add(
       new GPUMantelTest({
         id: 'mantel-test',
-        pairs,
+        pairs: search.outputWeights,
         times: timesView,
         parameters: testParametersView,
         maximumPermutations: MAXIMUM_PERMUTATIONS,
@@ -476,13 +477,14 @@ export const knoxMode: SpatialAnalysisModeDefinition = {
       mantelPReadout.setValue(formatProbability(mantel[SUMMARY.pseudoPGreater]));
       overflowReadout.setValue(overflow ? 'yes (pairs truncated; lower the radius)' : 'no');
       if (knoxStatistics) {
-        histogramBlock.textContent =
-          `Knox count under permuted times (${permutations} permutations):\n` +
-          formatHistogram(
-            Array.from(knoxStatistics.subarray(1, permutations + 1)),
-            permutations,
-            knox[SUMMARY.observed]
-          );
+        histogramBlock.textContent = !Number.isFinite(knox[SUMMARY.observed])
+          ? 'Knox inference unavailable'
+          : `Knox count under permuted times (${permutations} permutations):\n` +
+            formatHistogram(
+              Array.from(knoxStatistics.subarray(1, permutations + 1)),
+              permutations,
+              knox[SUMMARY.observed]
+            );
       }
     }
 

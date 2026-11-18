@@ -74,14 +74,19 @@ export default defineOperationRun({
     const parameterBuffer = builder.allocate('parameters', 'float32', 6);
     const divergence = builder.allocate('divergence', 'float32', 1);
     const components = builder.allocate('components', 'float32', 3);
+    const iterationLimitReached = builder.allocate('iterationLimitReached', 'uint32', 1);
     builder.graph.add(
       new GPUSinkhornDivergence({
         grid: makeGPURasterMetadata({width: COLUMNS, height: ROWS}),
         source: source.view,
         target: target.view,
         parameters: parameterBuffer.view,
-        maximumIterations: values.maximumIterations,
-        output: {divergence: divergence.view, components: components.view}
+        maximumIterations: values['maximumIterations'],
+        output: {
+          divergence: divergence.view,
+          components: components.view,
+          status: {iterationLimitReached: iterationLimitReached.view}
+        }
       })
     );
     return {
@@ -90,6 +95,7 @@ export default defineOperationRun({
         target,
         divergence,
         components,
+        iterationLimitReached,
         panel: uploadPanel(builder, PANEL, inputs.world, 0.015)
       },
       update: current => {
@@ -98,7 +104,7 @@ export default defineOperationRun({
           getGPUSinkhornDivergenceParameterValues({
             cellWidth: 1,
             cellHeight: 1,
-            epsilon: current.epsilon
+            epsilon: current['epsilon']
           })
         );
       }
@@ -143,6 +149,7 @@ export default defineOperationRun({
       const changed = shift[0] !== inputs.shift[0] || shift[1] !== inputs.shift[1];
       inputs.shift = shift;
       const divergence = peek(outputs.divergence)?.[0];
+      const iterationLimitReached = peek(outputs.iterationLimitReached)?.[0];
       const cellWidth = world.width / COLUMNS;
       const cellHeight = world.height / ROWS;
       return {
@@ -154,9 +161,9 @@ export default defineOperationRun({
             to: [world.width / 2 + shift[0] * cellWidth, world.height / 2 - shift[1] * cellHeight]
           }
         ],
-        readout: `shift ${shift[0]},${shift[1]} cells · epsilon ${values.epsilon} · typical distance ${inputs.distance.toFixed(1)} cells · S ${
+        readout: `shift ${shift[0]},${shift[1]} cells · epsilon ${values['epsilon']} · typical distance ${inputs.distance.toFixed(1)} cells · S ${
           divergence === undefined ? '…' : Number.isFinite(divergence) ? divergence.toFixed(2) : '–'
-        }`
+        }${iterationLimitReached === undefined ? ' · status pending' : iterationLimitReached ? ' · iteration limit reached (estimate)' : ''}`
       };
     }
   },

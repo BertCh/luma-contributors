@@ -8,40 +8,41 @@
 
 import {KEPLER_CURATED_ANALYSES} from '../../../../../../modules/kepler/src/curated/curated-analyses';
 import type {KeplerCuratedAnalysis} from '../../../../../../modules/kepler/src/curated/curated-analysis-types';
+import type {LensResourceBytesKind} from '../../../../lens/types';
 
 import {
   recordedEdgeCount as driveTimeEdges,
-  recordedNodeCount as driveTimeKernels,
+  recordedNodeCount as driveTimeNodeCount,
   resources as driveTimeResources,
   title as driveTimeTitle
 } from '../../../../lens/generated/gpu-network.drive-time-catchment-recipe.json';
 import {
   recordedEdgeCount as drainageEdges,
-  recordedNodeCount as drainageKernels,
+  recordedNodeCount as drainageNodeCount,
   resources as drainageResources,
   title as drainageTitle
 } from '../../../../lens/generated/gpu-spatial-analysis.drainage-network-recipe.json';
 import {
   recordedEdgeCount as hotSpotEdges,
-  recordedNodeCount as hotSpotKernels,
+  recordedNodeCount as hotSpotNodeCount,
   resources as hotSpotResources,
   title as hotSpotTitle
 } from '../../../../lens/generated/gpu-spatial-analysis.hot-spot-analysis-recipe.json';
 import {
   recordedEdgeCount as localMoranEdges,
-  recordedNodeCount as localMoranKernels,
+  recordedNodeCount as localMoranNodeCount,
   resources as localMoranResources,
   title as localMoranTitle
 } from '../../../../lens/generated/gpu-spatial-analysis.local-moran.json';
 import {
   recordedEdgeCount as rateClusterEdges,
-  recordedNodeCount as rateClusterKernels,
+  recordedNodeCount as rateClusterNodeCount,
   resources as rateClusterResources,
   title as rateClusterTitle
 } from '../../../../lens/generated/gpu-spatial-analysis.rate-cluster-map-recipe.json';
 import {
   recordedEdgeCount as spaceTimeEdges,
-  recordedNodeCount as spaceTimeKernels,
+  recordedNodeCount as spaceTimeNodeCount,
   resources as spaceTimeResources,
   title as spaceTimeTitle
 } from '../../../../lens/generated/gpu-spatial-analysis.space-time-hot-spots-recipe.json';
@@ -50,33 +51,58 @@ import {
 export type WorkflowRecord = {
   scenario: string;
   title: string;
-  kernels: number;
+  /** All recorded graph nodes, including compute and copy nodes. */
+  nodeCount: number;
   dependencies: number;
   buffers: number;
+  inventoryKnown?: boolean;
   bytes: number;
+  bytesKind?: LensResourceBytesKind;
 };
+
+/** JSON imports widen string literals; unknown precision must stay explicitly unknown. */
+function readRecordBytesKind(bytesKind: string | undefined): LensResourceBytesKind | undefined {
+  switch (bytesKind) {
+    case undefined:
+    case 'logical':
+    case 'lower-bound':
+    case 'estimated':
+    case 'unspecified':
+    case 'unavailable':
+      return bytesKind;
+    default:
+      return 'unspecified';
+  }
+}
 
 function makeRecord(
   scenario: string,
   title: string,
-  kernels: number,
+  nodeCount: number,
   dependencies: number,
-  resources: {count: number; totalBytes: number}
+  resources: {
+    count: number;
+    inventoryKnown?: boolean;
+    totalBytes: number;
+    totalBytesKind?: string;
+  }
 ): WorkflowRecord {
   return {
     scenario,
     title,
-    kernels,
+    nodeCount,
     dependencies,
     buffers: resources.count,
-    bytes: resources.totalBytes
+    inventoryKnown: resources.inventoryKnown,
+    bytes: resources.totalBytes,
+    bytesKind: readRecordBytesKind(resources.totalBytesKind)
   };
 }
 
 export const LOCAL_MORAN_RECORD = makeRecord(
   'gpu-spatial-analysis.local-moran',
   localMoranTitle,
-  localMoranKernels,
+  localMoranNodeCount,
   localMoranEdges,
   localMoranResources
 );
@@ -211,7 +237,7 @@ const WORKFLOW_RECORDINGS: readonly WorkflowRecording[] = [
     record: makeRecord(
       'gpu-spatial-analysis.hot-spot-analysis-recipe',
       hotSpotTitle,
-      hotSpotKernels,
+      hotSpotNodeCount,
       hotSpotEdges,
       hotSpotResources
     ),
@@ -273,7 +299,7 @@ const WORKFLOW_RECORDINGS: readonly WorkflowRecording[] = [
     record: makeRecord(
       'gpu-spatial-analysis.rate-cluster-map-recipe',
       rateClusterTitle,
-      rateClusterKernels,
+      rateClusterNodeCount,
       rateClusterEdges,
       rateClusterResources
     ),
@@ -327,7 +353,7 @@ const WORKFLOW_RECORDINGS: readonly WorkflowRecording[] = [
     record: makeRecord(
       'gpu-spatial-analysis.space-time-hot-spots-recipe',
       spaceTimeTitle,
-      spaceTimeKernels,
+      spaceTimeNodeCount,
       spaceTimeEdges,
       spaceTimeResources
     ),
@@ -393,7 +419,7 @@ const WORKFLOW_RECORDINGS: readonly WorkflowRecording[] = [
     record: makeRecord(
       'gpu-network.drive-time-catchment-recipe',
       driveTimeTitle,
-      driveTimeKernels,
+      driveTimeNodeCount,
       driveTimeEdges,
       driveTimeResources
     ),
@@ -453,7 +479,7 @@ const WORKFLOW_RECORDINGS: readonly WorkflowRecording[] = [
     record: makeRecord(
       'gpu-spatial-analysis.drainage-network-recipe',
       drainageTitle,
-      drainageKernels,
+      drainageNodeCount,
       drainageEdges,
       drainageResources
     ),

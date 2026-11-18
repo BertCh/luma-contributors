@@ -31,6 +31,7 @@ import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import {
   GPUCommandGraph,
+  createTransientView,
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/graph/gpu-core';
@@ -460,6 +461,13 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
         graph.add(prepared);
       }
       const joinNeighborIds = view('neighbor-ids', neighborIds, 'uint32', queryCount * stride);
+      const neighborStatus = {overflow: view('neighbor-overflow', neighborOverflow, 'uint32', 1)};
+      const joinNeighborRows = createTransientView(
+        graph,
+        'neighbor-rows',
+        'uint32',
+        queryCount * stride
+      );
       const joinNeighborCounts = view('neighbor-counts', neighborCounts, 'uint32', queryCount);
       const joinNeighborDistances = view(
         'neighbor-distances',
@@ -483,6 +491,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
           ...(prepared ? {prepared} : {}),
           output: {
             neighborIds: joinNeighborIds,
+            neighborRows: joinNeighborRows,
             neighborCounts: joinNeighborCounts,
             neighborDistances: joinNeighborDistances,
             neighborFootPoints: view(
@@ -497,9 +506,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
               'uint32',
               queryCount * stride
             ),
-            status: {
-              overflow: view('neighbor-overflow', neighborOverflow, 'uint32', 1)
-            }
+            status: neighborStatus
           }
         })
       );
@@ -509,7 +516,8 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
         new GPUNearestFeatureWeights({
           spatialContext: roads.frame.spatialContext,
           id: 'neighbor-weights',
-          neighborIds: joinNeighborIds,
+          neighborStatus,
+          neighborRows: joinNeighborRows,
           neighborCounts: joinNeighborCounts,
           neighborDistances: joinNeighborDistances,
           slotCapacity: stride,
@@ -526,7 +534,13 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
               queryCount * NEIGHBOR_K
             ),
             status: {
-              overflow: view('weight-overflow', weightOverflow, 'uint32', 1)
+              overflow: view('weight-overflow', weightOverflow, 'uint32', 1),
+              candidateOverflow: createTransientView(
+                graph,
+                'weight-candidate-overflow',
+                'uint32',
+                1
+              )
             }
           }
         })

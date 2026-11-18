@@ -27,6 +27,7 @@ import type {
 import {formatCount, SpatialAnalysisResources} from '../spatial-analysis-resources';
 import {SummaryReader} from './summary-reader';
 import {findContainingFeature} from './raster-join-layers';
+import {getUsablePolygonCount} from './validity-summary';
 
 const INTERSECTION_CAPACITY = 4096;
 const NO_VALUE = 0xffffffff;
@@ -370,6 +371,7 @@ export const validityMode: SpatialAnalysisModeDefinition = {
     );
     const outlineRows = resources.createBuffer('outline-rows', polygonScene.outlineRows);
     const validityMask = resources.createBuffer('validity-mask', polygonScene.featureCount * 4);
+    const usableRows = resources.createBuffer('usable-rows', polygonScene.featureCount * 4);
     const validityOverflow = resources.createBuffer('validity-overflow', 4);
     const validityIntersections = resources.createBuffer('validity-intersections', 4);
     const failingClass = resources.createBuffer('failing-class', polygonScene.featureCount * 4);
@@ -411,7 +413,14 @@ export const validityMode: SpatialAnalysisModeDefinition = {
             )
           },
           output: {
-            mask: importGraphBuffer(
+            validity: importGraphBuffer(
+              graph,
+              'usable-rows',
+              usableRows,
+              'uint32',
+              polygonScene.featureCount
+            ),
+            issueCode: importGraphBuffer(
               graph,
               'validity-mask',
               validityMask,
@@ -507,7 +516,8 @@ export const validityMode: SpatialAnalysisModeDefinition = {
       [
         {buffer: validityOverflow, size: 4},
         {buffer: validityIntersections, size: 4},
-        {buffer: validityMask, size: polygonScene.featureCount * 4}
+        {buffer: validityMask, size: polygonScene.featureCount * 4},
+        {buffer: usableRows, size: polygonScene.featureCount * 4}
       ],
       bytes => {
         if (destroyed) return;
@@ -515,18 +525,22 @@ export const validityMode: SpatialAnalysisModeDefinition = {
         latestMask = words.slice(2, 2 + polygonScene.featureCount);
         const classes = new Uint32Array(polygonScene.featureCount);
         const bitCounts = new Map<string, number>();
-        let validCount = 0;
+        const validCount = getUsablePolygonCount(
+          words.subarray(2 + polygonScene.featureCount, 2 + 2 * polygonScene.featureCount),
+          words[0]
+        );
         latestMask.forEach((mask, row) => {
           const failing = VALIDITY_CLASSES.findIndex(item => mask & item.bit);
           classes[row] = failing < 0 ? NO_VALUE : failing;
-          if (mask === 0) validCount++;
           for (const [name, bit] of ALL_BIT_NAMES) {
             if (mask & bit) bitCounts.set(name, (bitCounts.get(name) ?? 0) + 1);
           }
         });
         failingClass.write(classes);
         validReadout.setValue(
-          `${validCount} of ${polygonScene.featureCount} (${polygonScene.zipCount} ZIPs + ${SYNTHETIC_FEATURES.length} synthetic)`
+          validCount === undefined
+            ? 'incomplete — intersection list overflowed'
+            : `${validCount} of ${polygonScene.featureCount} (${polygonScene.zipCount} ZIPs + ${SYNTHETIC_FEATURES.length} synthetic)`
         );
         bitReadout.setValue(
           bitCounts.size

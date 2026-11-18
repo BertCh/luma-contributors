@@ -58,7 +58,7 @@ Shadow needs the horizon in the direction of the sun. **`GPUTerrainHorizon`** co
 
 ## Pitfalls
 
-- **Tile edges.** Windows and rays that leave the tile see nothing. Contributors report a required halo; pass tiles with it when mosaicking, and treat the outer ring of every product with suspicion.
+- **Tile edges.** Windows and rays stop at the available edge. Horizon and cast-shadow sweeps require `parameterLayout: 'sweep'` with a common source grid/reference and per-window origin for seamless mosaics; obtain their qualified stage with `getHaloStage()`. Standard window-local sweep settings refuse halo assembly. Keep only the outputs covered by the contributor's complete halo bound.
 - **Units.** Slope is degrees or percent, curvature is 1/m, TPI is meters, insolation is Wh/m2. The legends and tooltips of the stories carry the unit.
 - **Percentile stretches** make images pretty but not comparable. Use a fixed range when you compare two maps.
 - **Compile-time options** (search radii, window sizes, number of sectors, algorithms) rebuild one graph; the options panel marks them. Everything else is a parameter write.

@@ -405,6 +405,7 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
     >;
     const compareCount = resources.createBuffer('compare-count', 4);
     const compareOverflow = resources.createBuffer('compare-overflow', 4);
+    const compareCandidateOverflow = resources.createBuffer('compare-candidate-overflow', 4);
     const compareTotal = resources.createBuffer('compare-total', 4);
 
     /**
@@ -723,6 +724,13 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
             zScore: outputViews.zScore,
             status: {
               count: importGraphBuffer(compareGraph, 'io-compare-count', compareCount, 'uint32', 1),
+              candidateOverflow: importGraphBuffer(
+                compareGraph,
+                'compare-candidate-overflow',
+                compareCandidateOverflow,
+                'uint32',
+                1
+              ),
               overflow: importGraphBuffer(
                 compareGraph,
                 'io-compare-overflow',
@@ -802,6 +810,7 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
       {buffer: compareCount, byteLength: 4},
       {buffer: compareOverflow, byteLength: 4},
       {buffer: compareTotal, byteLength: 4},
+      {buffer: compareCandidateOverflow, byteLength: 4},
       ...zoneDisplay.readbackParts,
       ...compareDisplay.readbackParts
     ];
@@ -839,6 +848,7 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
       compareCount: number;
       compareOverflow: number;
       compareTotal: number;
+      compareCandidateOverflow: number;
       zoneBreaks: Float32Array;
       zoneClassCount: number;
       zoneClassCounts: Uint32Array;
@@ -1113,6 +1123,7 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
       const compareCountValue = nextWord();
       const compareOverflowValue = nextWord();
       const compareTotalValue = nextWord();
+      const compareCandidateOverflowValue = nextWord();
       const readDisplay = () => {
         const breaks = floats.slice(cursor, cursor + MAXIMUM_CLASS_COUNT + 1);
         cursor += MAXIMUM_CLASS_COUNT + 1;
@@ -1135,6 +1146,7 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
         compareCount: compareCountValue,
         compareOverflow: compareOverflowValue,
         compareTotal: compareTotalValue,
+        compareCandidateOverflow: compareCandidateOverflowValue,
         zoneBreaks: zonesDisplay.breaks,
         zoneClassCount: zonesDisplay.count,
         zoneClassCounts: zonesDisplay.counts,
@@ -1147,7 +1159,7 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
         `${formatCount(zoneCountValue)} of ${formatCount(zoneTotalValue)}${zoneOverflowValue ? ' (overflow)' : ''}`
       );
       compareReadout.setValue(
-        `${formatCount(compareCountValue)} of ${formatCount(compareTotalValue)}${compareOverflowValue ? ' (overflow)' : ''}`
+        `${formatCount(compareCountValue)} of ${formatCount(compareTotalValue)}${compareOverflowValue ? ' (union capacity)' : ''}${compareCandidateOverflowValue ? ' (input loss; requirement is a lower bound)' : ''}`
       );
       joinReadout.setValue(`${formatCount(matchedCount)} of ${formatCount(compareCountValue)}`);
       renderLegend();

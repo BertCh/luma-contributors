@@ -50,21 +50,25 @@ export default defineOperationRun({
     };
     const output = builder.allocate('nbr', 'float32', cellCount);
     const postOutput = builder.allocate('nbr-post', 'float32', cellCount);
-    new GPURasterNBR({
-      ...common,
-      nearInfrared: before.nearInfrared.band,
-      shortwaveInfrared2: before.shortwave.band,
-      output: output.view,
-      outputValidity: builder.allocate('nbr-valid', 'uint32', cellCount).view
-    }).addToGraph(builder.graph);
-    new GPURasterNBR({
-      ...common,
-      id: 'nbr-post',
-      nearInfrared: after.nearInfrared.band,
-      shortwaveInfrared2: after.shortwave.band,
-      output: postOutput.view,
-      outputValidity: builder.allocate('nbr-post-valid', 'uint32', cellCount).view
-    }).addToGraph(builder.graph);
+    builder.graph.add(
+      new GPURasterNBR({
+        ...common,
+        nearInfrared: before.nearInfrared.band,
+        shortwaveInfrared2: before.shortwave.band,
+        output: output.view,
+        outputValidity: builder.allocate('nbr-valid', 'uint32', cellCount).view
+      })
+    );
+    builder.graph.add(
+      new GPURasterNBR({
+        ...common,
+        id: 'nbr-post',
+        nearInfrared: after.nearInfrared.band,
+        shortwaveInfrared2: after.shortwave.band,
+        output: postOutput.view,
+        outputValidity: builder.allocate('nbr-post-valid', 'uint32', cellCount).view
+      })
+    );
     return {outputs: {output, postOutput}};
   },
   interaction: {

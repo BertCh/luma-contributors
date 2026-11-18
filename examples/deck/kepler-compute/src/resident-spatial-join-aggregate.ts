@@ -148,8 +148,8 @@ export type ResidentSpatialJoinAggregateProps = {
   /** Storage format of `sourceValues`; unused by `count`. */
   sourceFormat?: ResidentJoinColumnFormat;
   /** Matched pairs of one chunk, sorted by left row (the predicate join's `pairs`). */
-  leftIds: GraphDataView<'uint32'>;
-  rightIds: GraphDataView<'uint32'>;
+  leftRows: GraphDataView<'uint32'>;
+  rightRows: GraphDataView<'uint32'>;
   /** One-row total pair count word of the chunk (clamped to the pair capacity here). */
   pairCount: GraphDataView<'uint32'>;
   /** Packed right-row values and optional validity words; a one-word dummy for `count`. */
@@ -196,12 +196,12 @@ export class ResidentSpatialJoinAggregate {
           commandCount: 1,
           maximumWorkgroupCount: layout.x * layout.y * layout.z,
           maximumInvocationCount: layout.x * layout.y * layout.z * WORKGROUP_SIZE,
-          readByteLength: props.leftIds.length * 8,
+          readByteLength: props.leftRows.length * 8,
           writeByteLength: props.outputValues.length * 8
         },
         resources: [
-          {buffer: props.leftIds, usage: 'storage-read'},
-          {buffer: props.rightIds, usage: 'storage-read'},
+          {buffer: props.leftRows, usage: 'storage-read'},
+          {buffer: props.rightRows, usage: 'storage-read'},
           {buffer: props.pairCount, usage: 'storage-read'},
           {buffer: props.sourceValues, usage: 'storage-read'},
           {buffer: sourceValidity, usage: 'storage-read'},
@@ -229,8 +229,8 @@ export class ResidentSpatialJoinAggregate {
               const bindings: Record<string, Binding> = {
                 outputValues: getViewBinding(props.outputValues, getBuffer),
                 outputValidity: getViewBinding(props.outputValidity, getBuffer),
-                leftWords: getViewBinding(props.leftIds, getBuffer),
-                rightWords: getViewBinding(props.rightIds, getBuffer),
+                leftWords: getViewBinding(props.leftRows, getBuffer),
+                rightWords: getViewBinding(props.rightRows, getBuffer),
                 pairCountWords: getViewBinding(props.pairCount, getBuffer),
                 sourceValueWords: getViewBinding(props.sourceValues, getBuffer),
                 sourceValidityWords: getViewBinding(sourceValidity, getBuffer)
@@ -254,14 +254,14 @@ export function getResidentSpatialJoinAggregateSource(
   const format = SOURCE_FORMATS[props.sourceFormat ?? 'float32'];
   const hasValidity = Boolean(props.sourceValidity);
   return `const ROW_COUNT: u32 = ${props.outputValues.length}u;
-const PAIR_CAPACITY: u32 = ${props.leftIds.length}u;
+const PAIR_CAPACITY: u32 = ${props.leftRows.length}u;
 const MODE: u32 = ${mode}u;
 const SOURCE_FORMAT: u32 = ${format}u;
 const HAS_VALIDITY: bool = ${hasValidity};
 const OUTPUT_BASE: u32 = ${getViewElementOffset(props.outputValues)}u;
 const VALIDITY_OUTPUT_BASE: u32 = ${getViewElementOffset(props.outputValidity)}u;
-const LEFT_BASE: u32 = ${getViewElementOffset(props.leftIds)}u;
-const RIGHT_BASE: u32 = ${getViewElementOffset(props.rightIds)}u;
+const LEFT_BASE: u32 = ${getViewElementOffset(props.leftRows)}u;
+const RIGHT_BASE: u32 = ${getViewElementOffset(props.rightRows)}u;
 const COUNT_BASE: u32 = ${getViewElementOffset(props.pairCount)}u;
 const SOURCE_BASE: u32 = ${getViewElementOffset(props.sourceValues)}u;
 const SOURCE_VALIDITY_BASE: u32 = ${getViewElementOffset(props.sourceValidity ?? props.dummy)}u;

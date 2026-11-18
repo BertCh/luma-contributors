@@ -14,7 +14,7 @@ import {
   GPU_PERMUTATION_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH,
-  type GPUCellFamily,
+  type GPUCellAggregationFamily,
   type GPUHotSpotAnalysisRecipeResult,
   type GPUHotSpotAnalysisRecipeSettings
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
@@ -112,7 +112,7 @@ export type HotSpotsOptions = {
   source: HotSpotSource;
   category: string;
   hours: readonly [number, number];
-  family: GPUCellFamily;
+  family: GPUCellAggregationFamily;
   /** Quadbin zoom level. */
   resolution: number;
   /** H3 resolution. */

@@ -157,6 +157,21 @@ export type HotSpotsCompute = AnalysisModeCompute<HotSpotsParameters> & {
 
 type Variant = {compiled: CompiledGPUCommandGraph<void>};
 
+/** Reimports a prepared point neighborhood together with its search completeness signal. */
+export function importHotSpotsWeights<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  buffers: {offsets: Buffer; neighbors: Buffer; weights: Buffer; overflow: Buffer},
+  pointCount: number,
+  capacity: number
+) {
+  return {
+    offsets: importGraphBuffer(graph, 'offsets', buffers.offsets, 'uint32', pointCount + 1),
+    neighbors: importGraphBuffer(graph, 'neighbors', buffers.neighbors, 'uint32', capacity),
+    weights: importGraphBuffer(graph, 'weights', buffers.weights, 'float32', capacity),
+    status: {overflow: importGraphBuffer(graph, 'weights-overflow', buffers.overflow, 'uint32', 1)}
+  };
+}
+
 /** Builds the hot-spots compute: allocates buffers, compiles every variant, uploads parameters. */
 export async function createHotSpotsCompute(
   device: Device,
@@ -248,11 +263,18 @@ export async function createHotSpotsCompute(
     new GPUReadbackRing(device, {id: 'hot-spots-summary', byteLength: SUMMARY_WORDS * 4})
   );
 
-  const importWeights = (graph: GPUCommandGraph<void>) => ({
-    offsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', pointCount + 1),
-    neighbors: importGraphBuffer(graph, 'neighbors', neighborsBuffer, 'uint32', capacity),
-    weights: importGraphBuffer(graph, 'weights', weightsBuffer, 'float32', capacity)
-  });
+  const importWeights = (graph: GPUCommandGraph<void>) =>
+    importHotSpotsWeights(
+      graph,
+      {
+        offsets: offsetsBuffer,
+        neighbors: neighborsBuffer,
+        weights: weightsBuffer,
+        overflow: overflowBuffer
+      },
+      pointCount,
+      capacity
+    );
 
   // The distance-band search: radius and bounds are per-frame parameters, so changing the radius
   // is a buffer write.
@@ -272,10 +294,7 @@ export async function createHotSpotsCompute(
       ),
       parameters: searchParameters.importToGraph(searchGraph),
       output: {
-        ...importWeights(searchGraph),
-        status: {
-          overflow: importGraphBuffer(searchGraph, 'overflow', overflowBuffer, 'uint32', 1)
-        }
+        ...importWeights(searchGraph)
       }
     })
   );

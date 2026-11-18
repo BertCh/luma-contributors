@@ -128,12 +128,13 @@ function formatNumber(value: number, digits = 2): string {
 }
 
 function formatProbability(value: number): string {
-  if (!Number.isFinite(value)) return 'n/a';
+  if (!Number.isFinite(value)) return 'unavailable';
   return value < 0.001 ? '< 0.001' : value.toFixed(3);
 }
 
 /** One-line histogram of a permutation distribution with the percentile of the observed value. */
 function formatDistribution(values: ArrayLike<number>, count: number, observed: number): string {
+  if (!Number.isFinite(observed) || count <= 0) return 'unavailable';
   const bins = 32;
   let minimum = observed;
   let maximum = observed;
@@ -353,21 +354,20 @@ export async function createSpaceTimeClusters(
       status: {overflow: v('overflow', overflow, 'uint32', 1)}
     };
     const testParametersView = testParameters.importToGraph(graph);
-    graph.add(
-      new GPUNeighborSearch({
-        spatialContext: projection.spatialContext,
-        id: `${key}-search`,
-        mode: 'radius',
-        positions: positionsView,
-        parameters: searchParameters.importToGraph(graph),
-        gridSize: [64, 64],
-        output: pairs
-      })
-    );
+    const search = new GPUNeighborSearch({
+      spatialContext: projection.spatialContext,
+      id: `${key}-search`,
+      mode: 'radius',
+      positions: positionsView,
+      parameters: searchParameters.importToGraph(graph),
+      gridSize: [64, 64],
+      output: pairs
+    });
+    graph.add(search);
     graph.add(
       new GPUKnoxTest({
         id: `${key}-knox`,
-        pairs,
+        pairs: search.outputWeights,
         times: timesView,
         parameters: testParametersView,
         maximumPermutations: MAXIMUM_PERMUTATIONS,
@@ -380,7 +380,7 @@ export async function createSpaceTimeClusters(
     graph.add(
       new GPUMantelTest({
         id: `${key}-mantel`,
-        pairs,
+        pairs: search.outputWeights,
         times: timesView,
         parameters: testParametersView,
         maximumPermutations: MAXIMUM_PERMUTATIONS,
@@ -474,9 +474,20 @@ export async function createSpaceTimeClusters(
           MAXIMUM_PERMUTATIONS + 1
         );
         const permutations = ctx.options.permutations;
-        ctx.setReadout('pairs', knox[SUMMARY.pairCount]);
-        ctx.setReadout('timeClose', knox[SUMMARY.timeClosePairs]);
-        ctx.setReadout('knoxObserved', knox[SUMMARY.observed]);
+        ctx.setReadout(
+          'pairs',
+          Number.isFinite(knox[SUMMARY.pairCount]) ? knox[SUMMARY.pairCount] : 'unavailable'
+        );
+        ctx.setReadout(
+          'timeClose',
+          Number.isFinite(knox[SUMMARY.timeClosePairs])
+            ? knox[SUMMARY.timeClosePairs]
+            : 'unavailable'
+        );
+        ctx.setReadout(
+          'knoxObserved',
+          Number.isFinite(knox[SUMMARY.observed]) ? knox[SUMMARY.observed] : 'unavailable'
+        );
         ctx.setReadout('knoxExpected', formatNumber(knox[SUMMARY.expected], 1));
         ctx.setReadout(
           'knoxRatio',

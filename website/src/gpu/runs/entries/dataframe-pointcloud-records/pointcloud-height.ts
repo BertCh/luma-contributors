@@ -25,6 +25,8 @@ import {
   toMapPoint
 } from './_lib/helpers';
 import {parameters} from './pointcloud-height.parameters';
+import {getPointCloudHeightSupportText} from './_lib/pointcloud-display';
+import {addPointCloudDisplayCopy} from './_lib/pointcloud-display-run';
 
 const POINT_COUNT = 9000;
 
@@ -47,7 +49,10 @@ function createInputs({
   };
 }
 type Inputs = ReturnType<typeof createInputs>;
-type Outputs = Record<'map' | 'profile' | 'heights', RunBuffer>;
+type Outputs = Record<
+  'map' | 'profile' | 'displayMap' | 'displayProfile' | 'heights' | 'status',
+  RunBuffer
+>;
 
 type Extra = {maximumHeight: number};
 
@@ -67,13 +72,16 @@ export default defineOperationRun<Inputs, Outputs, Extra>({
         classifications: builder.upload('classes', 'uint32', inputs.cloud.classes).view,
         groundClass: 2,
         grid,
-        terrain: terrain.view,
-        surface: builder.allocate('surface', 'float32', cellCount).view,
-        canopy: builder.allocate('canopy', 'float32', cellCount).view,
-        coverage: coverage.view
+        output: {
+          terrain: terrain.view,
+          surface: builder.allocate('surface', 'float32', cellCount).view,
+          canopy: builder.allocate('canopy', 'float32', cellCount).view,
+          coverage: coverage.view
+        }
       })
     );
     const heights = builder.allocate('heights', 'float32', POINT_COUNT);
+    const status = builder.allocate('status', 'uint32', POINT_COUNT);
     builder.graph.add(
       new GPUPointCloudHeight({
         positions: positions.view,
@@ -87,15 +95,37 @@ export default defineOperationRun<Inputs, Outputs, Extra>({
             : values.interpolation === 1
               ? {method: 'bilinear'}
               : {method: 'idw', radius: values.cellSize * 3},
-        heights: heights.view,
-        status: builder.allocate('status', 'uint32', POINT_COUNT).view
+        output: {
+          heights: heights.view,
+          status: status.view
+        }
       })
     );
+    const map = builder.upload('map', 'float32x2', inputs.mapPositions);
+    const profile = builder.upload('profile', 'float32x2', inputs.profilePositions);
     return {
       outputs: {
-        map: builder.upload('map', 'float32x2', inputs.mapPositions),
-        profile: builder.upload('profile', 'float32x2', inputs.profilePositions),
-        heights
+        map,
+        profile,
+        displayMap: addPointCloudDisplayCopy(builder, 'supported-map', map, status, POINT_COUNT, {
+          components: 2
+        }),
+        displayProfile: addPointCloudDisplayCopy(
+          builder,
+          'supported-profile',
+          profile,
+          status,
+          POINT_COUNT,
+          {components: 2}
+        ),
+        heights: addPointCloudDisplayCopy(
+          builder,
+          'supported-heights',
+          heights,
+          status,
+          POINT_COUNT
+        ),
+        status
       },
       update: current => positions.write(getJitteredPositions(inputs.cloud, current.noise))
     };
@@ -139,7 +169,8 @@ export default defineOperationRun<Inputs, Outputs, Extra>({
       }
       inputs.focus.row = row;
       if (row < 0) return {};
-      const height = peek(outputs.heights)?.[row];
+      const status = peek(outputs.status)?.[row];
+      const height = status === 0 ? peek(outputs.heights)?.[row] : undefined;
       const pointX = cloud.positions[row * 3];
       const pointY = cloud.positions[row * 3 + 1];
       const pointZ = cloud.positions[row * 3 + 2];
@@ -166,7 +197,7 @@ export default defineOperationRun<Inputs, Outputs, Extra>({
           {shape: 'line', from: ground, to: top},
           {shape: 'dot', at: top}
         ],
-        readout: `height ${height === undefined ? '…' : height.toFixed(2)}${
+        readout: `${getPointCloudHeightSupportText(status)} · height ${height === undefined ? 'unavailable' : height.toFixed(2)}${
           metres === undefined ? '' : ` (${metres.toFixed(0)} m)`
         } · ${['cell', 'bilinear', 'idw'][values.interpolation]}`
       };
@@ -196,8 +227,8 @@ export default defineOperationRun<Inputs, Outputs, Extra>({
     return [
       {layer: 'dots', context: true, positions: outputs.map, radius: 2.4},
       {layer: 'dots', context: true, positions: outputs.profile, radius: 2},
-      {layer: 'dots', positions: outputs.map, ...look, radius: 2.8},
-      {layer: 'dots', positions: outputs.profile, ...look, radius: 2.2},
+      {layer: 'dots', positions: outputs.displayMap, ...look, radius: 2.8},
+      {layer: 'dots', positions: outputs.displayProfile, ...look, radius: 2.2},
       {
         layer: 'text',
         ...mergeText(

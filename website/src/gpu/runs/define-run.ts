@@ -695,7 +695,7 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
         );
         if (isDestroyed || epoch !== peekEpoch) return;
         wanted.forEach(([, entry], index) => {
-          if (read[index]) entry.data = read[index];
+          entry.data = read[index];
         });
         // The interaction can now answer from the operation's output: resolve again. A slider's
         // values stay as the reader set them.

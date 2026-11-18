@@ -298,7 +298,7 @@ trailGraph.add(new GPUTimeWindowFilter({
   additionalPredicates: [{kind: 'selection', mask: modeMask}],   // ${state.modeFilter === 'all' ? 'all modes' : `only ${state.modeFilter}`}
   trackIds: segmentTrips,
   output: {
-    ids: trailIds, status: {count: trailCount, overflow: trailOverflow},
+    rows: trailIds, status: {count: trailCount, overflow: trailOverflow},
     fadeWeights, clipFractions, trackVisibleCounts, drawInstanceCount
   }
 }));

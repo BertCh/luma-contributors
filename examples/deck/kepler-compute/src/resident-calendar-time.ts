@@ -21,8 +21,8 @@ import type {GPUKeplerTimeUnit} from '@luma-contributors/kepler';
  * Keep the ORIGINAL source validity beside this view. A null row is not identified by its time
  * words. Converted out-of-Date-range instants map to Int64 maximum, never to null or the epoch.
  * Borrowed milliseconds retain their words; the calendar consumer still checks Date range.
- * Micro/nanoseconds truncate toward zero, including negative fractions, without Arrow's intermediate
- * Number rounding. The caller must separately qualify native chart/filter compatibility for those
+ * Micro/nanoseconds floor to the containing millisecond, including negative fractions, without
+ * Arrow's intermediate Number rounding. The caller must separately qualify native chart/filter compatibility for those
  * units. This helper does not admit chart modes or change source timestamps.
  */
 export function makeResidentCalendarTimeView<Parameters>(
@@ -68,7 +68,7 @@ fn exceedsMagnitude(value: vec2<u32>, maximum: vec2<u32>) -> bool {
 }
 
 // Same nibble-wise division as GPUCalendarBuckets: remainder * 16 fits u32 for both divisors.
-fn divideMagnitude(value: vec2<u32>, divisor: u32) -> vec2<u32> {
+fn divideMagnitude(value: vec2<u32>, divisor: u32) -> vec3<u32> {
   var remainder = value.y % divisor;
   var quotientLow = 0u;
   for (var nibble = 7i; nibble >= 0i; nibble = nibble - 1i) {
@@ -77,7 +77,7 @@ fn divideMagnitude(value: vec2<u32>, divisor: u32) -> vec2<u32> {
     quotientLow = quotientLow | ((current / divisor) << shift);
     remainder = current % divisor;
   }
-  return vec2<u32>(quotientLow, value.y / divisor);
+  return vec3<u32>(quotientLow, value.y / divisor, remainder);
 }
 
 fn normalizeTime(value: vec2<u32>) -> vec2<u32> {
@@ -101,7 +101,13 @@ fn normalizeTime(value: vec2<u32>) -> vec2<u32> {
   }
   `
             : ''
-        }normalized = divideMagnitude(magnitude, ${divisor}u);`
+        }let division = divideMagnitude(magnitude, ${divisor}u);
+  normalized = division.xy;
+  if (negative && division.z != 0u) {
+    // Floor a negative fraction by increasing its magnitude before restoring the sign.
+    let low = normalized.x + 1u;
+    normalized = vec2<u32>(low, normalized.y + select(0u, 1u, low == 0u));
+  }`
   }
   // TimeClip range is inclusive +/- 8,640,000,000,000,000 integer milliseconds.
   if (exceedsMagnitude(normalized, vec2<u32>(${Number(8640000000000000n & 0xffffffffn)}u, ${Number(8640000000000000n >> 32n)}u))) {
