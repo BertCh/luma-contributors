@@ -223,7 +223,13 @@ export async function buildGeometryRefinementScenario(
             dangleCount: output('dangle-count', 'uint32', 1),
             unusedEdgeCount: output('unused-edge-count', 'uint32', 1)
           },
-          status: status('result')
+          status: {
+            count: output('result-count', 'uint32', 1),
+            requiredRingCount: output('result-required-rings', 'uint32', 1),
+            overflow: output('result-overflow', 'uint32', 1),
+            candidateOverflow: output('result-candidate-overflow', 'uint32', 1),
+            uncertainCount: output('result-uncertain-count', 'uint32', 1)
+          }
         }
       });
       break;
@@ -252,7 +258,7 @@ export async function buildGeometryRefinementScenario(
           positions: output('snapped-positions', 'float32x2', 6),
           sourceEdges: output('source-edges', 'uint32', 6),
           counts: output('counts', 'uint32x4', 1),
-          validity: output('validity', 'uint32', 1)
+          issueCode: output('issue-code', 'uint32', 1)
         }
       });
       break;

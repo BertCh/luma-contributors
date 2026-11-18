@@ -34,6 +34,37 @@ function resolved(coordinator: LadderCoordinator, selectionId = 'filter', viewId
 }
 
 describe('LadderCoordinator', () => {
+  test('relation release restores surviving owners and the unowned mapping', () => {
+    const coordinator = new LadderCoordinator();
+    const relation = (offset: number) =>
+      createFunctionRelation({
+        id: 'external-row',
+        from: 'external',
+        to: 'rows',
+        cardinality: '1:1',
+        fromCount: 8,
+        map: key => key + offset
+      });
+    coordinator.addRelations([relation(0)]);
+    const releaseFirst = coordinator.retainRelations([relation(1)]);
+    const releaseSecond = coordinator.retainRelations([relation(2)]);
+    coordinator.pick('selection', {viewId: 'external', keySpace: 'external'}, [3]);
+    expect(resolved(coordinator, 'selection')).toEqual({status: 'ok', keys: new Set([5])});
+    releaseSecond();
+    releaseSecond();
+    expect(resolved(coordinator, 'selection')).toEqual({status: 'ok', keys: new Set([4])});
+    coordinator.removeRelations(['external-row']);
+    coordinator.addRelations([relation(3)]);
+    expect(resolved(coordinator, 'selection')).toEqual({status: 'ok', keys: new Set([4])});
+    releaseFirst();
+    expect(resolved(coordinator, 'selection')).toEqual({status: 'ok', keys: new Set([6])});
+    coordinator.removeRelations(['external-row']);
+    expect(resolved(coordinator, 'selection')).toEqual({status: 'unlinked'});
+    const releaseAfterDestroy = coordinator.retainRelations([relation(1)]);
+    coordinator.destroy();
+    expect(releaseAfterDestroy).not.toThrow();
+  });
+
   test('replaces by source and resolves single, intersect and union', () => {
     const coordinator = new LadderCoordinator();
     coordinator.addClause('filter', clause('a', [1, 2]));

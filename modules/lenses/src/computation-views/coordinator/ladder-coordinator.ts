@@ -36,6 +36,7 @@ export type CoordinatorEvent =
     }
   | {type: 'writer'; writer: CoordinatorWriter}
   | {type: 'coupling'; viewId: string; coupling: ViewCoupling}
+  | {type: 'mapping'}
   | {type: 'record'; runId: string};
 
 /** A labelled semantic action, excluding transient previews. */
@@ -64,10 +65,23 @@ export type HighlightResult =
   | {status: 'ok'; marks: Map<number, {covered: number; total: number}>; offView: {count: number}}
   | Exclude<SelectionResolutionResult, {status: 'ok'}>;
 
+type KeySpaceMetadata = {
+  keyCount?: number;
+  fieldValues?: (field: string) => ArrayLike<number> | undefined;
+};
+
 /** Synchronous CPU coordinator. GPU masks are a separate, deferred backend contract. */
 export class LadderCoordinator {
   readonly id: string;
   private relations: KeyRelationGraph;
+  private retainedRelations = new Map<
+    string,
+    {base?: KeyRelation; owners: Map<symbol, KeyRelation>}
+  >();
+  private retainedKeySpaces = new Map<
+    KeySpaceId,
+    {base?: KeySpaceMetadata; owners: Map<symbol, KeySpaceMetadata>}
+  >();
   private backends: SelectionBackend[];
   private now: () => number;
   private decoupleThresholdMs: number;
@@ -76,10 +90,7 @@ export class LadderCoordinator {
     string,
     {resolution: SelectionResolution; clauses: SelectionClause[]}
   >();
-  private keySpaces = new Map<
-    KeySpaceId,
-    {keyCount: number; fieldValues?: (field: string) => ArrayLike<number> | undefined}
-  >();
+  private keySpaces = new Map<KeySpaceId, KeySpaceMetadata>();
   private writer: CoordinatorWriter = 'narrative';
   private listeners = new Set<{listener: (event: CoordinatorEvent) => void; viewId?: string}>();
   private couplings = new Map<string, ViewCoupling>();
@@ -110,27 +121,116 @@ export class LadderCoordinator {
 
   /**
    * Adds declared key-space relations (from a record) to the page's relation graph, so clauses in
-   * one key space link into views of another. Relations with an existing id are replaced.
+   * one key space link into views of another. Replaces the unowned relation with this id;
+   * retained relations take precedence until their last owner releases them.
    */
   addRelations(relations: Iterable<KeyRelation>): void {
     this.assertAvailable();
-    for (const relation of relations) this.relations.add(relation);
+    let changed = false;
+    for (const relation of relations) {
+      const retained = this.retainedRelations.get(relation.id);
+      if (retained) retained.base = relation;
+      else {
+        this.relations.add(relation);
+        changed = true;
+      }
+    }
+    if (changed) this.emit({type: 'mapping'});
   }
 
-  /** Removes relations by id, for example when a lens's record is replaced by a re-run. */
+  /** Removes unowned relations by id, preserving relations still retained by a mounted lens. */
   removeRelations(relationIds: Iterable<string>): void {
     this.assertAvailable();
-    for (const relationId of relationIds) this.relations.remove(relationId);
+    let changed = false;
+    for (const relationId of relationIds) {
+      const retained = this.retainedRelations.get(relationId);
+      if (retained) retained.base = undefined;
+      else {
+        this.relations.remove(relationId);
+        changed = true;
+      }
+    }
+    if (changed) this.emit({type: 'mapping'});
   }
 
-  /** Supplies source-domain metadata for all/range clauses, including cross-space resolution. */
+  /**
+   * Retains a mounted lens's relations and returns an idempotent release handle. For a shared id,
+   * the most recently retained mapping is active; releasing it restores a surviving owner's
+   * mapping. Source-domain metadata shares the same ownership and precedence. The last release
+   * restores unowned mappings/metadata. Effective changes notify subscribers once, after both
+   * relations and domain metadata have been restored.
+   */
+  retainRelations(
+    relations: Iterable<KeyRelation>,
+    keySpaces: Iterable<KeySpaceMetadata & {id: KeySpaceId}> = []
+  ): () => void {
+    this.assertAvailable();
+    const owner = Symbol('relation owner');
+    const relationIds = new Set<string>();
+    const keySpaceIds = new Set<KeySpaceId>();
+    const existing = new Map(this.relations.list().map(relation => [relation.id, relation]));
+    for (const relation of relations) {
+      const retained = this.retainedRelations.get(relation.id) ?? {
+        base: existing.get(relation.id),
+        owners: new Map<symbol, KeyRelation>()
+      };
+      retained.owners.set(owner, relation);
+      this.retainedRelations.set(relation.id, retained);
+      this.relations.add(relation);
+      relationIds.add(relation.id);
+    }
+    for (const {id, ...metadata} of keySpaces) {
+      const retained = this.retainedKeySpaces.get(id) ?? {
+        base: this.keySpaces.get(id),
+        owners: new Map<symbol, KeySpaceMetadata>()
+      };
+      retained.owners.set(owner, metadata);
+      this.retainedKeySpaces.set(id, retained);
+      this.keySpaces.set(id, metadata);
+      keySpaceIds.add(id);
+    }
+    if (relationIds.size || keySpaceIds.size) this.emit({type: 'mapping'});
+    let released = false;
+    return () => {
+      if (released || this.destroyed) return;
+      released = true;
+      let changed = false;
+      for (const relationId of relationIds) {
+        const retained = this.retainedRelations.get(relationId)!;
+        changed ||= [...retained.owners.keys()].at(-1) === owner;
+        retained.owners.delete(owner);
+        const remaining = [...retained.owners.values()].at(-1) ?? retained.base;
+        if (remaining) this.relations.add(remaining);
+        else this.relations.remove(relationId);
+        if (!retained.owners.size) this.retainedRelations.delete(relationId);
+      }
+      for (const keySpaceId of keySpaceIds) {
+        const retained = this.retainedKeySpaces.get(keySpaceId)!;
+        changed ||= [...retained.owners.keys()].at(-1) === owner;
+        retained.owners.delete(owner);
+        const remaining = [...retained.owners.values()].at(-1) ?? retained.base;
+        if (remaining) this.keySpaces.set(keySpaceId, remaining);
+        else this.keySpaces.delete(keySpaceId);
+        if (!retained.owners.size) this.retainedKeySpaces.delete(keySpaceId);
+      }
+      if (changed) this.emit({type: 'mapping'});
+    };
+  }
+
+  /** Supplies unowned source-domain metadata; a retained owner's metadata takes precedence. */
   registerKeySpace(
     keySpace: KeySpaceId,
     keyCount: number,
     fieldValues?: (field: string) => ArrayLike<number> | undefined
   ): void {
     this.assertAvailable();
-    this.keySpaces.set(keySpace, {keyCount, fieldValues});
+    const metadata = {keyCount, fieldValues};
+    const retained = this.retainedKeySpaces.get(keySpace);
+    if (retained) retained.base = metadata;
+    else {
+      this.keySpaces.set(keySpace, metadata);
+      this.emit({type: 'mapping'});
+    }
   }
 
   /** Reads a navigation variable. */
@@ -289,6 +389,8 @@ export class LadderCoordinator {
       };
     const visibleKeys = view.visibleKeys === undefined ? undefined : new Set(view.visibleKeys);
     const marks = new Map<number, {covered: number; total: number}>();
+    const issue = relation?.getCoverageIssue?.(resolved.keys, 'forward');
+    if (issue) return {status: 'unknown', reason: issue};
     let offViewCount = 0;
     for (const key of resolved.keys) {
       if (visibleKeys && !visibleKeys.has(key)) {
@@ -298,6 +400,8 @@ export class LadderCoordinator {
       const image = relation
         ? relation.forward([key])
         : new Set(key >= 0 && key < view.keyCount ? [key] : []);
+      const inverseIssue = relation?.getCoverageIssue?.(image, 'inverse');
+      if (inverseIssue) return {status: 'unknown', reason: inverseIssue};
       if (!image.size) offViewCount++;
       for (const mark of image) {
         const coverage = marks.get(mark) ?? {
@@ -321,6 +425,8 @@ export class LadderCoordinator {
     const relation = view.markRelation;
     // A pick cannot claim keys from an uncaptured relation or a different domain.
     assert(!relation || (relation.available && relation.from === view.keySpace));
+    const issue = relation?.getCoverageIssue?.(new Set(markKeys), 'inverse');
+    if (issue) throw new Error(`Cannot pick through incomplete relation: ${issue}`);
     const keys = relation ? relation.inverse(markKeys) : new Set(markKeys);
     if (options.additive) {
       const previous = this.getClauses(selectionId).find(
@@ -432,6 +538,12 @@ export class LadderCoordinator {
 
   /** Releases subscriptions and CPU state. */
   destroy(): void {
+    for (const [relationId, retained] of this.retainedRelations) {
+      if (retained.base) this.relations.add(retained.base);
+      else this.relations.remove(relationId);
+    }
+    this.retainedRelations.clear();
+    this.retainedKeySpaces.clear();
     this.listeners.clear();
     this.params.clear();
     this.selections.clear();

@@ -40,12 +40,17 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
           keySpace: 'row',
           meaning: '1 when start <= timestamp <= end, both ends inclusive.'
         },
-        count: {view: example.count, role: 'output', keySpace: 'summary'},
-        ids: {
-          view: example.ids,
+        count: {
+          view: example.count,
+          role: 'output',
+          keySpace: 'summary',
+          meaning: 'count Accepted row total.'
+        },
+        rows: {
+          view: example.rows,
           role: 'output',
           keySpace: 'compactSlot',
-          meaning: 'Only the first count slots are accepted row ids; remaining slots are unused.'
+          meaning: 'compact Accepted source-row indices; unused trailing slots are omitted.'
         }
       },
       keySpaces: [
@@ -67,6 +72,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
       ],
       datumKeySpace: 'row',
       choices: [
+        createDataFrameChoice('filter', 'validateOrder', false),
         createDataFrameChoice('filter', 'start', example.window.start, {
           unit: 's',
           sweepable: true

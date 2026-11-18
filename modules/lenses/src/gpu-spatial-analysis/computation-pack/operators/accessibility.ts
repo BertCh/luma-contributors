@@ -75,7 +75,7 @@ export const ACCESSIBILITY_OPERATORS: SpatialFamilyOperators = {
       {stage: 'neighbourhood', name: 'radius', label: 'cut-off radius', unit: 'm', sweepable: true},
       {stage: 'operator', name: 'exponent', label: 'attractiveness exponent', sweepable: true}
     ],
-    // gpu-huff-trade-areas.ts `trade-area` kernel (getAttraction, denominators) and `probabilities` kernel.
+    // gpu-huff-trade-areas.ts `trade-area` and `probabilities` kernels, using the scaled row total.
     formula: {
       id: 'gpu-spatial-analysis.huff-trade-areas',
       tex: String.raw`\term{probability}{p_{ij}}=\frac{\term{attractiveness}{A_j}^{\term{exponent}{\alpha}}\,\term{weight}{w_{ij}}}{\term{denominator}{\sum_k A_k^{\alpha}\,w_{ik}}}`,
@@ -87,7 +87,7 @@ export const ACCESSIBILITY_OPERATORS: SpatialFamilyOperators = {
         {id: 'attractiveness', role: 'input', label: 'A_j', binding: 'wgsl:attractiveness'},
         {id: 'exponent', role: 'parameter', label: 'alpha', binding: 'wgsl:exponent'},
         {id: 'weight', role: 'parameter', label: 'w_ij', binding: 'wgsl:weights'},
-        {id: 'denominator', role: 'intermediate', label: 'row total', binding: 'wgsl:denominators'}
+        {id: 'denominator', role: 'intermediate', label: 'scaled row total', binding: 'wgsl:total'}
       ],
       derivation: 'curated'
     },

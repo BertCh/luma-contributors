@@ -91,7 +91,7 @@ describe('spatial guards', () => {
 describe('spatial pack guardsFor', () => {
   test('returns each element guards with its fixed metadata as fallback', async () => {
     const {createSpatialComputationPack, getSpatialOperatorEntries} = await import(
-      '../../../src/gpu-spatial-analysis/computation-pack/index'
+      '../../../src/gpu-spatial-analysis/computation-pack/pack'
     );
     const pack = createSpatialComputationPack();
     const record = makeScanRecord();

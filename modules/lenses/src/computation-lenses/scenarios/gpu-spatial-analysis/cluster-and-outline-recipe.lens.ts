@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import {defineLensScenario} from '../../define-lens-scenarios';
 import {S2_DATASETS} from './s2-datasets';
 
@@ -16,7 +17,7 @@ defineLensScenario({
       await Promise.all([
         import('./s2-lens-run'),
         import('./cluster-and-outline-recipe.example'),
-        import('../../data/s2-chicago-north-nature.json').then(module => module.default)
+        EMBEDDED_DATASET_LOADERS['s2-chicago-north-nature.json']().then(module => module.default)
       ]);
     return {
       run: device => {

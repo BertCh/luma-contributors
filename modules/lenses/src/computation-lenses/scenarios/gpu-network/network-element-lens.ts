@@ -301,6 +301,7 @@ export async function recordNetworkElement(
     });
     const timedMetrics = await readLensRunMetrics(submission, {
       runId: record.runId,
+      executionId: record.executionId,
       graphId: record.graphs[0].id,
       taps: 1,
       retained: scenario.retain
@@ -335,7 +336,11 @@ export async function recordNetworkElement(
       ...roadContext,
       ...scenario.capture(final, context, captured)
     ];
-    const captures = createGPUComputationCaptures({runId: record.runId, snapshots});
+    const captures = createGPUComputationCaptures({
+      runId: record.runId,
+      executionId: record.executionId,
+      snapshots
+    });
     const metrics = [timedMetrics];
     const result = {...record, captures, metrics};
     assertValidLensSidecars(record, result);

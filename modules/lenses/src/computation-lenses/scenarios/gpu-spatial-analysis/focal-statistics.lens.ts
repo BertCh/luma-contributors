@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import {defineLensScenario, FORMULA_LENS_RUNGS} from '../../define-lens-scenarios';
 
 const SCENARIO_ID = 'gpu-spatial-analysis.focal-statistics';
@@ -23,7 +24,7 @@ defineLensScenario({
       import('./spatial-scenario-utils'),
       import('@luma-contributors/analysis/gpu-spatial-analysis'),
       import('../../../gpu-spatial-analysis/computation-pack/operators/statistics'),
-      import('../../data/s1-dixie-lattice.json').then(module => module.default)
+      EMBEDDED_DATASET_LOADERS['s1-dixie-lattice.json']().then(module => module.default)
     ]);
     const {width, height} = data;
     const settings = {radius: 3, shape: 'circle', minimumCount: 1} as const;

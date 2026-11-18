@@ -2,6 +2,22 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {publicEntryMaps} from './public-entry-maps';
+
+function hasPublicEntry(name: string, packageName: string, entries: string[]): boolean {
+  if (name !== packageName && !name.startsWith(`${packageName}/`)) return false;
+  const subpath = name === packageName ? '.' : `.${name.slice(packageName.length)}`;
+  if (
+    subpath !== '.' &&
+    subpath
+      .slice(2)
+      .split('/')
+      .some(segment => !segment || segment === '.' || segment === '..')
+  )
+    return false;
+  return entries.includes(subpath);
+}
+
 /** Maximum number of source lines shown beneath a result figure. */
 export const LENS_EXAMPLE_MAX_LINES = 25;
 
@@ -56,12 +72,10 @@ export function findNonPublicImports(sourceText: string): string[] {
       specifier = tokens[index + 2];
     if (!specifier || !/^["'`]/.test(specifier)) continue;
     const name = specifier.slice(1, -1);
-    const publicEntry =
-      /^@luma\.gl\/(?:core|engine|graph)$/.test(name) ||
-      /^@luma\.gl\/(?:core|engine|graph)\/[a-z0-9-]+(?:\/[a-z0-9-]+)*$/.test(name) ||
-      /^@luma-contributors\/(?:analysis|lenses)$/.test(name) ||
-      /^@luma-contributors\/(?:analysis|lenses)\/[a-z0-9-]+(?:\/[a-z0-9-]+)*$/.test(name);
-    if (!publicEntry || /\/(?:src|dist|test)(?:\/|$)/.test(name)) imports.push(name);
+    const publicEntry = publicEntryMaps.some(entry =>
+      hasPublicEntry(name, entry.name, entry[token === 'require' ? 'require' : 'import'])
+    );
+    if (!publicEntry || /\/(?:src|dist|test|_internal)(?:\/|$)/.test(name)) imports.push(name);
   }
   return [...new Set(imports)];
 }

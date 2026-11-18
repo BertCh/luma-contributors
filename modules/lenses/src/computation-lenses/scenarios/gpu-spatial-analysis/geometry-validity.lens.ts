@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import {defineLensScenario, DEFAULT_LENS_RUNGS} from '../../define-lens-scenarios';
 import {S2_DATASETS} from './s2-datasets';
 import type {S2CaptureSpec} from './s2-lens-run';
@@ -13,12 +14,15 @@ defineLensScenario({
   title: 'Geometry validity of Chicago North Side parks',
   rungs: DEFAULT_LENS_RUNGS,
   dataset: S2_DATASETS.parks,
+  presentation: {
+    primaryOutputCaptureId: 'gpu-spatial-analysis-geometry-validity-snapshots-resultParks-0'
+  },
   load: async () => {
     const [{runS2Lens, createS2ChicagoFrame, uploadS2JoinPolygons}, {runExample}, parks] =
       await Promise.all([
         import('./s2-lens-run'),
         import('./geometry-validity.example'),
-        import('../../data/s2-chicago-north-parks.json').then(module => module.default)
+        EMBEDDED_DATASET_LOADERS['s2-chicago-north-parks.json']().then(module => module.default)
       ]);
     return {
       run: device => {
@@ -46,20 +50,22 @@ defineLensScenario({
             captures['resultParks'] = {
               view: parkGeometry.display,
               role: 'output',
-              keySpace: 'parks',
+              keySpace: 'parks-display-vertex',
               geometry: {
                 kind: 'polygons',
                 offsetsCapture: 'parksDisplayOffsets',
-                valuesCapture: 'mask',
+                featureKeySpace: 'parks',
+                valuesCapture: 'issueCode',
                 coordinateModel: 'projected',
                 unit: 'm'
               }
             };
-            captures['mask'] = {
-              view: result.mask,
+            captures['issueCode'] = {
+              view: result.issueCode,
               role: 'output',
               keySpace: 'parks',
-              meaning: 'validity bitmask per park; 0 means none of the checked problems'
+              meaning:
+                'diagnostic issue code per park; zero means no observed issue, not a filter mask'
             };
             captures['overflow'] = {view: result.overflow, role: 'output', keySpace: 'status'};
             captures['intersectionCount'] = {

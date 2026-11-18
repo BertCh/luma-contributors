@@ -81,6 +81,12 @@ export async function buildVariogramModelFitLens(
       ],
       datumKeySpace: 'model',
       choices: [
+        {
+          stage: 'aggregate',
+          name: 'models',
+          value: 'spherical, exponential, gaussian',
+          sweepable: false
+        },
         {stage: 'aggregate', name: 'weighting', value: 'pairs', sweepable: true},
         {stage: 'aggregate', name: 'rangeSteps', value: 200, sweepable: true},
         {stage: 'aggregate', name: 'maximumIterations', value: 32, sweepable: true}

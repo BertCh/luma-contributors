@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 /** Compact on-disk Chicago geometry; deltas restart from the origin for each ring. */
 export type ChicagoTractsJSON = {
   schema: string;
@@ -60,5 +61,5 @@ export function decodeChicagoTracts(json: ChicagoTractsJSON): ChicagoTracts {
 
 /** Loads the docs-sized dataset only when a live scenario is activated. */
 export async function loadChicagoTracts(): Promise<ChicagoTracts> {
-  return decodeChicagoTracts((await import('../../data/s1-chicago-tracts.json')).default);
+  return decodeChicagoTracts((await EMBEDDED_DATASET_LOADERS['s1-chicago-tracts.json']()).default);
 }

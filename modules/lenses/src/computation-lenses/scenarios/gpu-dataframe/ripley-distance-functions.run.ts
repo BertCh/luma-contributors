@@ -6,10 +6,10 @@ import type {Device} from '@luma.gl/core';
 import type {GPURipleyDistanceEdgeCorrection} from '@luma-contributors/analysis/dataframe-analysis';
 import {runExample} from './ripley-distance-functions.example';
 import {
-  capturePairStatisticsViews,
+  preparePairStatisticsViews,
   createDataFrameChoice,
   createDataFrameLensGraph,
-  createDataFrameLensRecord,
+  runDataFrameLensRecord,
   getDataFrameElementFormulas,
   loadDataFrameLensData
 } from './dataframe-lens-support';
@@ -42,7 +42,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
   try {
     options?.signal?.throwIfAborted();
     const graphId = `${SCENARIO_ID}-compiled`;
-    const {captures, description} = await capturePairStatisticsViews(device, graph, graphId, {
+    const prepared = preparePairStatisticsViews(device, graph, graphId, {
       positions: {
         view: example.positions,
         role: 'input',
@@ -69,16 +69,17 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
         meaning: 'J = (1 - G) / (1 - F): below 1 clustered, above 1 regular.'
       }
     });
-    return createDataFrameLensRecord({
+    return await runDataFrameLensRecord({
       scenarioId: SCENARIO_ID,
       device,
-      graphs: [description],
+      prepared,
       formulas: getDataFrameElementFormulas('GPURipleyDistanceFunctions'),
       keySpaces: [
         {id: 'point', label: 'Observation', size: x.length, indexSpace: '1d'},
         {id: 'radius', label: 'Radius (200 m)', size: RADIUS_COUNT, indexSpace: '1d'}
       ],
       choices: [
+        createDataFrameChoice('select', 'gridSize', '32 x 32'),
         createDataFrameChoice('filter', 'coordinateModel', 'projected', {
           alternatives: ['projected', 'geographic']
         }),
@@ -94,8 +95,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
           alternatives: EDGE_CORRECTIONS,
           sweepable: true
         })
-      ],
-      captures
+      ]
     });
   } finally {
     example.parameters.destroy();

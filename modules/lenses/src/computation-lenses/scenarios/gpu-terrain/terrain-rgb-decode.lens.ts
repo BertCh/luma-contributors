@@ -20,7 +20,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
     import('./terrain-rgb-decode.example'),
     import('../gpu-raster/raster-lens-harness'),
     import('../gpu-raster/raster-lens-data'),
-    import('../../../gpu-terrain/computation-pack/index')
+    import('../../../gpu-terrain/computation-pack/pack')
   ]);
   const data = await loadDixieTerrarium();
   const entry = getTerrainOperatorEntries()['GPUTerrainRGBDecode'];

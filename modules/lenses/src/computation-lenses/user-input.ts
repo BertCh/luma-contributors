@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from './embedded-dataset-loaders.js';
 import type {Device} from '@luma.gl/core';
 import type {LensScenarioDescriptor, LensScenarioResult} from './types';
 
@@ -111,9 +112,9 @@ export async function runLensScenarioWithUserInput(
 }
 
 const EMBEDDED_DATASETS = {
-  'f-chicago-tracts': () => import('./data/f-chicago-tracts.json'),
-  'f-chicago-nature': () => import('./data/f-chicago-nature.json'),
-  'f-ghcn-stations': () => import('./data/f-ghcn-stations.json')
+  'f-chicago-tracts': () => EMBEDDED_DATASET_LOADERS['f-chicago-tracts.json'](),
+  'f-chicago-nature': () => EMBEDDED_DATASET_LOADERS['f-chicago-nature.json'](),
+  'f-ghcn-stations': () => EMBEDDED_DATASET_LOADERS['f-ghcn-stations.json']()
 } as const;
 
 export type LensUserInputRole = {

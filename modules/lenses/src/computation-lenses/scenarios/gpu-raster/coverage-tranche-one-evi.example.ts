@@ -8,6 +8,6 @@ import {GPURasterEVI, type GPURasterEVIProps} from '@luma-contributors/analysis/
 /** Adds the public contributor with caller-owned input and output views. */
 export async function runExample(graph: GPUCommandGraph, input: GPURasterEVIProps): Promise<void> {
   // #region example
-  new GPURasterEVI(input).addToGraph(graph);
+  graph.add(new GPURasterEVI(input));
   // #endregion example
 }

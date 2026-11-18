@@ -24,6 +24,12 @@ test('directed SCC lens captures minimum-ID labels and convergence with padding 
   expect(values('offsets')).toEqual([0, 1, 3, 4, 4]);
   expect(values('neighbors')).toEqual([1, 0, 2, 2, 0xffffffff]);
   expect(values('strongComponents')).toEqual([0, 0, 2, 3]);
+  for (const name of ['strongComponents', 'converged', 'iterationCount', 'iterationLimitReached']) {
+    expect(captures.find(capture => capture.name === name)!.role).toBe('output');
+  }
+  for (const name of ['offsets', 'neighbors']) {
+    expect(captures.find(capture => capture.name === name)!.role).toBe('input');
+  }
   expect(values('converged')).toEqual([1]);
   expect(values('iterationLimitReached')).toEqual([0]);
   const [iterationCount] = values('iterationCount');

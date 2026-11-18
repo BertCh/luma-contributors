@@ -4,8 +4,8 @@
 
 import type {Device} from '@luma.gl/core';
 import type {GPURasterBufferBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
-import {getRasterOperatorEntries} from '../../../gpu-raster/computation-pack/index';
-import {getSpatialOperatorEntry} from '../../../gpu-spatial-analysis/computation-pack/index';
+import {getRasterOperatorEntries} from '../../../gpu-raster/computation-pack/pack';
+import {getSpatialOperatorEntry} from '../../../gpu-spatial-analysis/computation-pack/pack';
 import {runRasterLens, type RasterLensSession} from './raster-lens-harness';
 import {runExample as runDistribution} from './coverage-tranche-one-fractional-zonal-distribution.example';
 import {runExample as runCategorical} from './coverage-tranche-one-fractional-categorical-statistics.example';
@@ -15,6 +15,7 @@ import {runExample as runNBR} from './coverage-tranche-one-nbr.example';
 import {runExample as runEVI} from './coverage-tranche-one-evi.example';
 import {runExample as runSAVI} from './coverage-tranche-one-savi.example';
 import {runExample as runDasymetric} from './coverage-tranche-one-dasymetric.example';
+import type {GPUComputationAttributes} from '@luma-contributors/analysis/computation-record';
 
 export const COVERAGE_TRANCHE_ONE_GRID: GPURasterMetadata = {
   width: 3,
@@ -32,6 +33,16 @@ export async function runCoverageTrancheOne(device: Device, element: string, sce
       ? getRasterOperatorEntries()[element]
       : getSpatialOperatorEntry(element);
   const formula = entry?.formula;
+  const choiceValues: GPUComputationAttributes =
+    element === 'addDasymetricRedistributionRecipe'
+      ? {denominator: 'overlap'}
+      : element === 'GPURasterFocalPairs'
+        ? {radius: 1, covarianceNormalization: 'sample'}
+        : element === 'GPURasterFractionalZonalDistribution'
+          ? {quantileMethod: 'exactextract'}
+          : ['GPURasterNDWI', 'GPURasterNBR', 'GPURasterEVI', 'GPURasterSAVI'].includes(element)
+            ? {epsilon: 1e-6}
+            : {};
   return runRasterLens({
     device,
     scenarioId,
@@ -42,6 +53,10 @@ export async function runCoverageTrancheOne(device: Device, element: string, sce
     unit: 'm',
     dataset: {id: 'coverage-tranche-one-synthetic', version: '1'},
     formulas: formula && 'tex' in formula ? [formula] : [],
+    choices: (entry?.choices ?? []).map(template => ({
+      ...template,
+      value: choiceValues[template.name]
+    })),
     keySpaces: [
       {id: 'zones', label: 'source zones', size: 2},
       {id: 'targets', label: 'target zones', size: 2},

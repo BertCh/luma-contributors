@@ -77,8 +77,8 @@ defineLensScenario({
                 role: 'intermediate',
                 meaning: 'polygons kept (51 parks in)'
               },
-              polygonRequiredCount: {
-                view: status.requiredCount,
+              polygonRequiredRingCount: {
+                view: status.requiredRingCount,
                 role: 'intermediate',
                 meaning: 'face rings needed (ring capacity to allocate)'
               },

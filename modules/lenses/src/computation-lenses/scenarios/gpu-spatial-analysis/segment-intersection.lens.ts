@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import {defineLensScenario, DEFAULT_LENS_RUNGS} from '../../define-lens-scenarios';
 import {S2_DATASETS} from './s2-datasets';
 import type {S2CaptureSpec} from './s2-lens-run';
@@ -14,12 +15,15 @@ defineLensScenario({
   title: 'Street segment intersections, Lincoln Park and Lake View',
   rungs: DEFAULT_LENS_RUNGS,
   dataset: S2_DATASETS.roads,
+  presentation: {
+    primaryOutputCaptureId: 'gpu-spatial-analysis-segment-intersection-snapshots-intersections-0'
+  },
   load: async () => {
     const [{runS2Lens, createS2ChicagoFrame, projectS2Positions}, {runExample}, roads] =
       await Promise.all([
         import('./s2-lens-run'),
         import('./segment-intersection.example'),
-        import('../../data/s2-chicago-north-roads.json').then(module => module.default)
+        EMBEDDED_DATASET_LOADERS['s2-chicago-north-roads.json']().then(module => module.default)
       ]);
     return {
       run: device => {
@@ -78,6 +82,7 @@ defineLensScenario({
                 keySpace: 'pair',
                 geometry: {
                   kind: 'points',
+                  countCapture: 'count',
                   valuesCapture: 'kinds',
                   coordinateModel: 'projected',
                   unit: 'm'
@@ -92,8 +97,8 @@ defineLensScenario({
                 meaning:
                   '1 proper, 2 touch, 3 collinear touch, 4 overlap, 5 uncertain; rows past the pair count are unspecified'
               },
-              leftIds: {view: result.leftIds, role: 'output', keySpace: 'pair'},
-              rightIds: {view: result.rightIds, role: 'output', keySpace: 'pair'}
+              leftRows: {view: result.leftRows, role: 'output', keySpace: 'pair'},
+              rightRows: {view: result.rightRows, role: 'output', keySpace: 'pair'}
             };
             for (const name of ['count', 'overflow', 'requiredCount', 'uncertainCount'] as const) {
               captures[name] = {view: result[name], role: 'output', keySpace: 'status'};

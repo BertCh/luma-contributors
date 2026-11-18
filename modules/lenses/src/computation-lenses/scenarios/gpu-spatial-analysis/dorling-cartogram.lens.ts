@@ -28,6 +28,7 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.dorling-cartogram',
           element: 'GPUDorlingCartogram',
           datasets: ['dorling-illustrative/1'],
+          choices: {maximumIterations: 8, overlapTolerance: 0.001, areaScale: 1, attraction: 0.01},
           build: buildDorlingCartogramScenario
         })
     };

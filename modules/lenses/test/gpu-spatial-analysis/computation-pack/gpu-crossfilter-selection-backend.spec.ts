@@ -7,12 +7,13 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {GPUCrossfilter} from '@luma.gl/graph/gpu-crossfilter';
 import {GPUTransferMask} from '@luma-contributors/analysis/computation-record';
+import {requireTestDevice} from '@luma-contributors/analysis/testing';
 import {expect, test, vi} from 'vitest';
 import {GPUCrossfilterSelectionBackend} from '../../../src/computation-views/coordinator/gpu-crossfilter-selection-backend';
 
 test('GPU range selection filters rows, transfers CSR counts and reads packed nonzero counts', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const graph = new GPUCommandGraph(device, {id: 'selection-backend'});
   const buffers: Buffer[] = [];
   function importValues<Format extends 'float32' | 'uint32'>(

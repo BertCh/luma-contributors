@@ -14,7 +14,7 @@
 | `s3-ny-harbor-ais.json` | 12 moving vessels in Upper New York Bay, 2024-06-12 14:00–16:00 UTC (771 fixes) | Showcase `ais-vessels`: NOAA Office for Coastal Management / USCG Nationwide AIS 2024 | CC0 1.0 | Fixes per track, lon/lat plus UTM 18N metres minus false origin (570000, 4490000), seconds since 14:00 UTC, speed over ground (knots), MMSI. Same script |
 | `s3-ny-harbor-zones.json` | 13 NOAA anchorage areas and channels inside Upper New York Bay | Showcase `ais-zones`: NOAA Coast Survey ENCDirect (hand-drawn approximations excluded) | Public domain (NOAA) | Four-level polygons, lon/lat plus UTM 18N metres (same false origin), names. Same script |
 | `s3-openflights-ord.json` | The 40 busiest airport pairs touching Chicago O'Hare | Showcase `openflights`: OpenFlights.org airports.dat and routes.dat | ODbL 1.0, OpenFlights.org | Hub and destination lon/lat, IATA codes. Same script |
-| `g-nl-rail-graph.json` | Dutch scheduled rail graph, 485 stations / 1,411 directed edges, 2026-10-09 | OVapi / NDOV, https://gtfs.ovapi.nl/nl/gtfs-nl.zip | CC0 | `scripts/lens-data/g-nl-rail-graph.mjs`; lon/lat rounded to 5 decimals, travel times to seconds; source edge order preserved. |
+| `s3-chicago-area-roads.json` | 448 street centrelines across Logan Square, Lincoln Park and West Town | Showcase `chicago-roads`: OpenStreetMap | ODbL 1.0, © OpenStreetMap contributors | One line per undirected edge, window [-87.685,41.908,-87.658,41.925]; source edge ids, road classes, lon/lat and UTM 16N metres minus false origin (440000,4630000). |
 | s2-chicago-north-tracts.json | Chicago North Side census tracts | chicago-tracts: {"boundaries":"US Census Bureau cartographic boundary file cb_2022_17_tract_500k, public domain","svi":"CDC/ATSDR SVI 2022, public domain","places":"CDC PLACES, public domain","acs":"US Census Bureau ACS, public domain","nature":"iNaturalist observations, CC0 / CC BY 4.0 / CC BY-NC 4.0 per observation (iNaturalist contributors)"} | Public domain: US Census Bureau cartographic boundaries and ACS, CDC/ATSDR SVI 2022, CDC PLACES; natureObs/birdObs counts derive from iNaturalist observations (CC0 / CC BY 4.0 / CC BY-NC 4.0, iNaturalist contributors) | 199 rows/features. Chicago North Side: 1 Rogers Park, 2 West Ridge, 3 Uptown, 4 Lincoln Square, 5 North Center, 6 Lake View, 7 Lincoln Park, 13 North Park, 14 Albany Park, 16 Irving Park, 21 Avondale, 22 Logan Square, 77 Edgewater. Selected by source communityArea. Largest part only, ranked by absolute exterior shoelace area minus holes, scaled by cos(mean latitude); holes of that part retained. Duplicate closing vertices removed; "ringsClosed": false. No simplification beyond coordinate rounding. Coordinates rounded to 5 decimals. Queen uses all source parts, shared vertices rounded to 5 decimals; islands: 0. Regenerate with `node scripts/lens-data/s2-extract.mjs`. |
 | s2-chicago-north-areas.json | Chicago North Side community areas | chicago-community-areas: 77 official Chicago community areas; feature i has areaId i+1. Binary polygons are GeoArrow-style: polygon p (a polygon part) owns rings polygonRingOffsets[p]..[p+1], ring r owns vertices ringOffsets[r]..[r+1]; partFeature maps part -> feature index. Topology-preserving simplification (~4 m), shared edges identical. | City of Chicago Data Portal Terms of Use | 13 rows/features. Chicago North Side: 1 Rogers Park, 2 West Ridge, 3 Uptown, 4 Lincoln Square, 5 North Center, 6 Lake View, 7 Lincoln Park, 13 North Park, 14 Albany Park, 16 Irving Park, 21 Avondale, 22 Logan Square, 77 Edgewater. Largest part only, ranked by absolute exterior shoelace area minus holes, scaled by cos(mean latitude); holes of that part retained. Duplicate closing vertices removed; "ringsClosed": false. No simplification beyond coordinate rounding. Coordinates rounded to 5 decimals. ID/name list adjustments: none. Regenerate with `node scripts/lens-data/s2-extract.mjs`. |
 | s2-chicago-north-nature.json | Chicago North Side iNaturalist observations | chicago-nature: https://api.inaturalist.org/v1/observations?place_id=49906&d1=2023-01-01&d2=2023-12-31&licensed=true (queried 2026-10-06) | Each observation keeps its own licence (CC0, CC BY 4.0 or CC BY-NC 4.0); attribute "iNaturalist contributors". Non-commercial use. | 2344 rows/features. Chicago North Side: 1 Rogers Park, 2 West Ridge, 3 Uptown, 4 Lincoln Square, 5 North Center, 6 Lake View, 7 Lincoln Park, 13 North Park, 14 Albany Park, 16 Irving Park, 21 Avondale, 22 Logan Square, 77 Edgewater. Kept 2344 of 23436 observations, every 10-th row starting at zero after sorting by time (source index breaks ties). day is zero-based day of 2023; hour is local wall-clock hour, without timezone conversion. tract indexes s2-chicago-north-tracts, or -1 outside that subset. Coordinates rounded to 5 decimals. Regenerate with `node scripts/lens-data/s2-extract.mjs`. |
@@ -32,19 +32,31 @@
 | `n-chicago-loop-traces.json` | 3 SIMULATED GPS tracks (139 fixes) inside the Chicago Loop | Showcase `chicago-gps-traces` (synthetic): random shortest paths on OpenStreetMap roads, 5-15 s sampling, 10-25 m Gaussian noise | Synthetic, derived from OpenStreetMap data (ODbL 1.0), © OpenStreetMap contributors | Extraction: `node scripts/lens-data/n-chicago-loop-traces.mjs`. The three longest runs of consecutive fixes that stay inside [-87.655, 41.865, -87.615, 41.902]; fix order preserved; seconds since the run start. NOT real vehicle data. |
 | `n-chicago-loop-crashes.json` | 64 traffic crashes of 2023 inside the Chicago Loop | Showcase `chicago-crashes`: City of Chicago Data Portal, Traffic Crashes (CPD-reported) | City of Chicago Data Portal Terms of Use | Extraction: `node scripts/lens-data/n-chicago-loop-crashes.mjs`. Crashes within 25 m of the road network (showcase precomputed snap distance), every 153rd row in source order; lon/lat, 5 decimals. A deterministic sample, not the full crash count. |
 | `n-chicago-od-flows.json` | Taxi flows between 34 Chicago community-area centroids: 150 annual OD rows and 450 weekday 07:00-09:59 hourly rows | Showcase `chicago-taxi-od`: City of Chicago Data Portal, Taxi Trips 2023 | City of Chicago Data Portal Terms of Use | Extraction: `node scripts/lens-data/n-chicago-od-flows.mjs`. The 150 busiest origin != destination pairs (annual rows, the edge-bundling input) and their weekday morning hourly rows (the flow-aggregation input); zones renumbered by community-area number; positions are area centroids. |
-| k-core.json | Helene rainfall stations and Alps DEM | NOAA NCEI GHCN-Daily via AWS Open Data; Mapterhorn swissALTI3D / Copernicus GLO-30 | NOAA public domain; © swisstopo OGD / Copernicus attribution | 1,024 finite station rows sampled systematically, sorted by state and source row; 64×64 DEM block means rounded to 0.25 m. Regenerate with `node scripts/lens-data/k-core.mjs`. |
 | `s1-dixie-lattice.json` | 32 x 32 DEM lattice, 120 m cells, Greenville window (EPSG:32610) | Central block of `t-dixie-dem.json` (showcase `dixie-fire`; AWS Terrain Tiles Terrarium, USGS 3DEP) | Public domain (USGS 3DEP); terrain tiles by Mapzen/Tilezen on AWS Open Data | Cells 16..47 of rows and columns 16..47, rows north to south. Regenerate with `node scripts/lens-data/s1-dixie-lattice.mjs`. |
 
 ## Loading convention
 
-Scenario code reads these files only from modules reached through `LensScenarioDescriptor.load()`,
-with a dynamic import: `(await import('../../data/<file>.json')).default`. A static JSON import is
-allowed only inside a module that `load()` alone reaches (for example a scenario's `.run.ts` or
-its shared fixture), never from a `.lens.ts` registration or a pack. Registration and docs builds
-therefore never load data.
+Scenario code reads data only from modules reached through `LensScenarioDescriptor.load()`.
+Use the shared loader from a scenario runner or fixture, keeping its literal dataset key:
 
-`modules/experimental/tsconfig.json` includes `src/**/*.json`, so the package build (`tsc` emit)
-copies every file to `dist/computation-lenses/data/` next to the compiled scenarios, and the CJS
-build (esbuild) inlines them. Consumers load the scenarios through a bundler (Vite, webpack),
-which resolves the JSON imports; Node's native ESM loader would need import attributes, so
-scenarios are not run directly in Node outside vitest.
+```ts
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
+
+const data = (await EMBEDDED_DATASET_LOADERS['s1-chicago-tracts.json']()).default;
+```
+
+The loader has separate literal native and browser imports. Native Node uses `with: {type: 'json'}`;
+Vite browser/worker imports omit that attribute because Vite serves a JavaScript module. Literal
+expressions let esbuild and Vite include the assets in optimized browser bundles. Do not add bare
+runtime JSON imports in other source files; the package source check rejects them. Type-only imports
+remain valid. Synchronous network fixtures use the small `network-road-data.js` and
+`construction-data.js` boundaries with static JSON attributes: native ESM preserves them, CommonJS
+uses `require`, and Vite removes the static attributes for its JavaScript module response. Those
+fixtures remain behind the scenario's lazy loading boundary.
+
+`modules/lenses/tsconfig.json` includes `src/**/*.json`, so TypeScript copies the JSON assets to
+`dist/computation-lenses/data/`. ESM and the one-file-per-module CommonJS distribution load those
+emitted files at runtime; the CommonJS transform preserves native dynamic import attributes.
+Keep the emitted data directory with the compiled package. Native Node can load scenarios directly;
+the opt-in built-package test checks the public ESM registry's `.load()` as well as the role loader.
+The package remains private because these extracts retain their individual licences.

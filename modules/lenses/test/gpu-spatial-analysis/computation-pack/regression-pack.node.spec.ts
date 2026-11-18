@@ -4,6 +4,7 @@
 
 import {expect, test} from 'vitest';
 import {REGRESSION_OPERATORS} from '../../../src/gpu-spatial-analysis/computation-pack/operators/regression';
+import {createSpatialChoice} from '../../../src/gpu-spatial-analysis/computation-pack/choices';
 import {expectFormulaBindingsExist, expectSpatialEntryWellFormed} from './formula-bindings';
 
 const REGRESSION_DIRECTORY = 'modules/analysis/src/gpu-spatial-analysis/spatial-regression';
@@ -92,10 +93,12 @@ test('the shared regression model keeps the complete-case tracts with finite cen
 
 test('2SLS metadata exposes the published covariance methods and labels the displayed classical formula', () => {
   const entry = REGRESSION_OPERATORS['GPUSpatialTwoStageLeastSquares'];
-  expect(entry.choices.find(choice => choice.name === 'robust.method')).toMatchObject({
+  const template = entry.choices.find(choice => choice.name === 'robust.method')!;
+  expect(createSpatialChoice(template, 'none')).toMatchObject({
     stage: 'inference',
-    alternatives: ['HC0', 'HC1', 'HC2', 'HC3', 'CLUSTER', 'HAC'],
-    sweepable: false
+    alternatives: ['none', 'HC0', 'HC1', 'HC2', 'HC3', 'CLUSTER', 'HAC'],
+    sweepable: false,
+    value: 'none'
   });
   if ('formula' in entry.formula) throw new Error('2SLS must have a curated formula');
   expect(entry.formula.ascii).toContain(

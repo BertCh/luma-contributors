@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {defineLensScenario, DEFAULT_LENS_RUNGS} from '../../define-lens-scenarios';
+import {getZoneEventLossCaptures} from './zone-event-loss-captures';
 
 const SCENARIO_ID = 'gpu-spatial-analysis.fleet-dwell-zone-events-recipe';
 const TRACK_EVENT_CAPACITY = 32;
@@ -71,6 +72,13 @@ defineLensScenario({
               zones: zoneViews,
               trackEventCapacity: TRACK_EVENT_CAPACITY
             });
+            const lossCaptures = getZoneEventLossCaptures(
+              {
+                overflow: result.dwell.events.status.overflow,
+                candidateOverflow: result.dwell.events.status.candidateOverflow!
+              },
+              result.dwell.status.candidateOverflow
+            );
             return {
               tracks: {
                 view: tracks.positions,
@@ -92,17 +100,15 @@ defineLensScenario({
                 keySpace: 'zone',
                 meaning: 'tracks that visited the anchorage'
               },
-              eventOverflow: {
-                view: result.dwell.events.status.overflow,
-                role: 'intermediate',
-                meaning:
-                  'zone-events stage overflow word; 0 means every event fit and dwell totals are complete'
-              },
+              eventOverflow: lossCaptures.eventOverflow,
+              eventCandidateOverflow: lossCaptures.eventCandidateOverflow,
+              candidateScratchOverflow: lossCaptures.scratchCandidateOverflow,
               zoneDwell: {
                 view: result.zoneDwell,
                 role: 'intermediate',
                 keySpace: 'zone',
-                meaning: 'total dwell in s, summed over tracks'
+                meaning:
+                  'total dwell in s, summed over tracks; incomplete when candidateScratchOverflow is nonzero'
               },
               dwellAnchorages: {
                 view: anchorages,

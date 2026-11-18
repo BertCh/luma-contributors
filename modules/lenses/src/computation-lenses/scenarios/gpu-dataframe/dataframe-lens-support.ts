@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
@@ -30,12 +31,13 @@ import {
   readLensViewSnapshot,
   submitLensGraph
 } from '../../lens-view-snapshot';
-import {getDataFrameOperatorEntry} from '../../../gpu-dataframe/computation-pack/index';
+import {getDataFrameOperatorEntry} from '../../../gpu-dataframe/computation-pack/pack';
 import {mergeGPUCoreFormulaRefsForGraphs} from '../../../computation-views/packs/gpu-core/formulas';
 import {type GPUComputationAxis} from '@luma-contributors/analysis/computation-record';
 
 import {applyLensUserInput} from '../../user-input';
 import {assertValidLensRecord, assertValidLensSidecars} from '../../validate-lens-record';
+import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
 
 /** Loads all Chicago tract columns, including nullable income. */
 export function loadDataFrameLensData(
@@ -64,11 +66,15 @@ export async function loadDataFrameLensData(
   // While a host runs the scenario on user data (user-input.ts), mapped columns replace these.
   switch (name) {
     case 'f-chicago-tracts':
-      return applyLensUserInput((await import('../../data/f-chicago-tracts.json')).default);
+      return applyLensUserInput(
+        (await EMBEDDED_DATASET_LOADERS['f-chicago-tracts.json']()).default
+      );
     case 'f-chicago-nature':
-      return applyLensUserInput((await import('../../data/f-chicago-nature.json')).default);
+      return applyLensUserInput(
+        (await EMBEDDED_DATASET_LOADERS['f-chicago-nature.json']()).default
+      );
     case 'f-ghcn-stations':
-      return applyLensUserInput((await import('../../data/f-ghcn-stations.json')).default);
+      return applyLensUserInput((await EMBEDDED_DATASET_LOADERS['f-ghcn-stations.json']()).default);
   }
 }
 
@@ -103,7 +109,11 @@ export function createDataFrameLensRecord(props: {
   });
   return {
     ...record,
-    captures: createGPUComputationCaptures({runId: record.runId, snapshots: props.captures})
+    captures: createGPUComputationCaptures({
+      runId: record.runId,
+      executionId: record.executionId,
+      snapshots: props.captures
+    })
   };
 }
 
@@ -144,6 +154,21 @@ export async function capturePairStatisticsViews(
   graphId: string,
   specs: Readonly<Record<string, PairStatisticsCaptureSpec>>
 ): Promise<{captures: GPUComputationCapture[]; description: GPUCommandGraphDescription}> {
+  const prepared = preparePairStatisticsViews(device, graph, graphId, specs);
+  try {
+    return {description: prepared.description, captures: await prepared.read()};
+  } finally {
+    prepared.destroy();
+  }
+}
+
+/** Declares the complete observation graph; read() is the only submission/readback boundary. */
+export function preparePairStatisticsViews(
+  device: Device,
+  graph: GPUCommandGraph<undefined>,
+  graphId: string,
+  specs: Readonly<Record<string, PairStatisticsCaptureSpec>>
+) {
   const names = Object.keys(specs);
   const snapshot = addLensViewSnapshot(graph, device, {
     id: graph.id,
@@ -155,7 +180,13 @@ export async function capturePairStatisticsViews(
       })
     )
   });
-  const compiled = graph.compile();
+  let compiled: ReturnType<typeof graph.compile>;
+  try {
+    compiled = graph.compile();
+  } catch (error) {
+    snapshot.arena.destroy();
+    throw error;
+  }
   try {
     const description = describeGPUCommandGraph(compiled, {
       graphId,
@@ -163,21 +194,56 @@ export async function capturePairStatisticsViews(
       graph,
       sourceText: LENS_RECORD_SOURCE_TEXT
     });
-    submitLensGraph(device, compiled, {parameters: undefined});
-    const readback = await readLensViewSnapshot(snapshot, {graphId});
-    const captures = readback.map(capture => {
-      const spec = specs[capture.name];
-      return {
-        ...capture,
-        role: spec.role,
-        keySpace: spec.keySpace,
-        ...(spec.geometry && {geometry: spec.geometry}),
-        ...(spec.meaning && {meaning: spec.meaning})
-      };
-    });
-    return {captures, description};
-  } finally {
+    return {
+      description,
+      async read(): Promise<GPUComputationCapture[]> {
+        submitLensGraph(device, compiled, {parameters: undefined});
+        const readback = await readLensViewSnapshot(snapshot, {graphId});
+        return readback.map(capture => {
+          const spec = specs[capture.name];
+          return {
+            ...capture,
+            role: spec.role,
+            keySpace: spec.keySpace,
+            ...(spec.geometry && {geometry: spec.geometry}),
+            ...(spec.meaning && {meaning: spec.meaning})
+          };
+        });
+      },
+      destroy() {
+        compiled.destroy();
+        snapshot.arena.destroy();
+      }
+    };
+  } catch (error) {
     compiled.destroy();
+    snapshot.arena.destroy();
+    throw error;
+  }
+}
+
+/** Assembles choices and structure before reading a prepared pair-statistics graph. */
+export async function runDataFrameLensRecord(
+  props: Omit<Parameters<typeof createDataFrameLensRecord>[0], 'graphs' | 'captures'> & {
+    prepared: ReturnType<typeof preparePairStatisticsViews>;
+  }
+): Promise<GPUComputationRecordWithSidecars> {
+  try {
+    const result = createDataFrameLensRecord({
+      ...props,
+      graphs: [props.prepared.description],
+      captures: []
+    });
+    return {
+      ...result,
+      captures: createGPUComputationCaptures({
+        runId: result.runId,
+        executionId: result.executionId,
+        snapshots: await props.prepared.read()
+      })
+    };
+  } finally {
+    props.prepared.destroy();
   }
 }
 
@@ -220,6 +286,8 @@ export type DataFrameContributorLensProps = {
   datasetVersion: string;
   /** Adds captures that are exact reshapes of the readback, for example one column of a table. */
   deriveCaptures?: (captures: readonly GPUComputationCapture[]) => readonly GPUComputationCapture[];
+  /** Names after deriveCaptures reshapes readbacks; checked against the real derived sidecar. */
+  derivedCaptureNames?: readonly string[];
 };
 
 /**
@@ -232,14 +300,14 @@ export async function runDataFrameContributorLens(
   props: DataFrameContributorLensProps
 ): Promise<GPUComputationRecordWithSidecars> {
   const graphId = `${props.scenarioId}-compiled`;
-  {
-    const {captures: readback, description} = await capturePairStatisticsViews(
-      device,
-      props.graph,
-      graphId,
-      props.specs
+  const prepared = preparePairStatisticsViews(device, props.graph, graphId, props.specs);
+  try {
+    const {description} = prepared;
+    validateRequirement(
+      props.scenarioId,
+      !props.deriveCaptures || props.derivedCaptureNames !== undefined,
+      'derivedCaptureNames must declare the names returned by deriveCaptures'
     );
-    const snapshots = props.deriveCaptures ? props.deriveCaptures(readback) : readback;
     const datumSpace = props.keySpaces.find(keySpace => keySpace.id === props.datumKeySpace);
     const axes: GPUComputationAxis[] = [
       {
@@ -265,8 +333,23 @@ export async function runDataFrameContributorLens(
     });
     // A malformed record must fail here instead of rendering a plausible but wrong card.
     assertValidLensRecord(record);
-    const captures = createGPUComputationCaptures({runId: record.runId, snapshots: [...snapshots]});
+    const readback = await prepared.read();
+    const snapshots = props.deriveCaptures ? props.deriveCaptures(readback) : readback;
+    if (props.derivedCaptureNames)
+      validateRequirement(
+        props.scenarioId,
+        JSON.stringify(snapshots.map(capture => capture.name).sort()) ===
+          JSON.stringify([...props.derivedCaptureNames].sort()),
+        'derivedCaptureNames must equal the names returned by deriveCaptures'
+      );
+    const captures = createGPUComputationCaptures({
+      runId: record.runId,
+      executionId: record.executionId,
+      snapshots: [...snapshots]
+    });
     assertValidLensSidecars(record, {captures});
     return {...record, captures};
+  } finally {
+    prepared.destroy();
   }
 }

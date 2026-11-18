@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import {defineLensScenario, FORMULA_LENS_RUNGS} from '../../define-lens-scenarios';
 import {S2_DATASETS} from './s2-datasets';
 
@@ -11,6 +12,7 @@ defineLensScenario({
   title: 'Helene rainfall ordinary kriging',
   rungs: FORMULA_LENS_RUNGS,
   dataset: S2_DATASETS.heleneRain,
+  presentation: {primaryOutputCaptureId: 'gpu-spatial-analysis-kriging-snapshots-rainfall-0'},
   load: async () => {
     const [
       {runS2Lens, projectS2Positions, snapS2Extent},
@@ -21,7 +23,7 @@ defineLensScenario({
       import('./s2-lens-run'),
       import('./kriging.example'),
       import('@luma-contributors/analysis/analysis-core'),
-      import('../../data/s2-helene-rain.json').then(module => module.default)
+      EMBEDDED_DATASET_LOADERS['s2-helene-rain.json']().then(module => module.default)
     ]);
     return {
       run: device => {

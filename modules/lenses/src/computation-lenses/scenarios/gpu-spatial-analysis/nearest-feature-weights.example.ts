@@ -89,6 +89,15 @@ export async function runExample(
     1,
     Buffer.STORAGE | Buffer.COPY_SRC
   );
+  const joinStatus = {overflow: joinOverflow};
+  const candidateOverflow = createTransientView(
+    graph,
+    'weightsCandidateOverflow',
+    'uint32',
+    1,
+    Buffer.STORAGE | Buffer.COPY_SRC
+  );
+  const neighborRows = createTransientView(graph, 'neighborRows', 'uint32', neighborIds.length);
   // #region example
   graph.add(
     new GPUNearestFeatureJoin({
@@ -96,12 +105,13 @@ export async function runExample(
       features: {kind: 'points', positions: input.libraries},
       spatialContext: input.spatialContext,
       k: 3,
-      output: {neighborIds, neighborDistances, neighborCounts, status: {overflow: joinOverflow}}
+      output: {neighborIds, neighborRows, neighborDistances, neighborCounts, status: joinStatus}
     })
   );
   graph.add(
     new GPUNearestFeatureWeights({
-      neighborIds,
+      neighborRows,
+      neighborStatus: joinStatus,
       neighborCounts,
       neighborDistances,
       slotCapacity: 3,
@@ -110,7 +120,7 @@ export async function runExample(
       power: 1,
       distanceFloor: 1,
       spatialContext: input.spatialContext,
-      output: {offsets, neighbors, weights, distances, status: {overflow}}
+      output: {offsets, neighbors, weights, distances, status: {overflow, candidateOverflow}}
     })
   );
   // offsets, neighbors, weights and distances describe three-library cross weights.
@@ -120,6 +130,7 @@ export async function runExample(
     neighborDistances,
     neighborCounts,
     joinOverflow,
+    candidateOverflow,
     offsets,
     neighbors,
     weights,

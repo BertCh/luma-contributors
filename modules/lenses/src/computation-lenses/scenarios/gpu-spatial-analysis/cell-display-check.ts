@@ -4,6 +4,21 @@
 
 import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
 
+/** Refuse a complete-result claim when any pyramid level lost output or source cells. */
+export function checkCellPyramidCompleteness(
+  snapshots: readonly GPUComputationCapture[],
+  levelCount: number
+): void {
+  for (let level = 0; level < levelCount; level++) {
+    for (const flag of ['Overflow', 'CandidateOverflow']) {
+      const name = `level${level}${flag}`;
+      const snapshot = snapshots.find(capture => capture.name === name);
+      if (!snapshot || Number(snapshot.values[0]) !== 0)
+        throw new Error(`${name}: cell pyramid is incomplete or its status is unavailable`);
+    }
+  }
+}
+
 /** A count the GPU wrote and the number of table rows the card figure draws for it. */
 export type DrawnPrefixCheck = {
   /** Capture name holding the GPU-written row count. */

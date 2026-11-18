@@ -10,6 +10,30 @@ import {
 import {makeV6Graph} from '../fixtures/v6-command-graph';
 
 describe('command graph presets', () => {
+  test('unknown ownership is never counted as transient or imported and bounds stay labelled', () => {
+    const graph = makeV6Graph();
+    graph.resources = [
+      {
+        id: 'unobserved',
+        kind: 'buffer',
+        bytes: 8,
+        bytesKind: 'lower-bound',
+        ownership: 'unknown',
+        allocation: 'unverified',
+        allocationBytes: 8,
+        firstNode: 'node-0',
+        lastNode: 'node-1'
+      }
+    ];
+    expect(buildMemoryAliasing(graph)).toMatchObject({
+      allocations: [],
+      imported: [],
+      unknown: [{id: 'unobserved', bytes: 8, bytesKind: 'lower-bound'}],
+      peakTransientBytes: 0,
+      totalsKnown: false,
+      savingsKnown: false
+    });
+  });
   test('ladder preserves compiler order and merges read/write accesses', () => {
     const graph = makeV6Graph();
     graph.nodes = [

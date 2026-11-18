@@ -55,7 +55,7 @@ const scenario: NetworkElementScenario = {
     'matchSnapDistances',
     'matchBreaks',
     'matchedCount',
-    'matchOverflow'
+    'matchCandidateOverflow'
   ],
   formulas: [],
   keySpaces: [
@@ -124,12 +124,12 @@ const scenario: NetworkElementScenario = {
         matchSnapDistances: example.snapDistances,
         matchBreaks: example.breaks,
         matchedCount: example.matchedCount,
-        matchOverflow: example.overflow
+        matchCandidateOverflow: example.candidateOverflow
       }
     };
   },
   capture(final) {
-    if (final('matchOverflow').values[0] !== 0)
+    if (final('matchCandidateOverflow').values[0] !== 0)
       throw new Error('Map matching dropped table entries (edge grid or route budget overflow)');
     if (final('matchedCount').values[0] === 0) throw new Error('Map matching matched no fix');
     const edges = final('matchedEdges');

@@ -46,7 +46,9 @@ defineLensScenario({
           choices: {
             spatialContext: 'native planar (UTM 18N metres)',
             spacing: 'arc-length',
-            sampleCount: SAMPLE_COUNT
+            sampleCount: SAMPLE_COUNT,
+            start: 'not applicable',
+            step: 'not applicable'
           },
           metadata: projectedMetadata(data.projected),
           async build(graph, uploads) {

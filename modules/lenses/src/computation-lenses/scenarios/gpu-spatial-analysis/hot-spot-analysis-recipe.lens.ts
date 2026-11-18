@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import {lngLatToWorld, worldToLngLat} from '@math.gl/geospatial';
 import {defineLensScenario} from '../../define-lens-scenarios';
 import {S2_DATASETS} from './s2-datasets';
@@ -64,8 +65,8 @@ defineLensScenario({
     const [{runS2Lens, closeS2Rings}, {runExample}, nature, areas] = await Promise.all([
       import('./s2-lens-run'),
       import('./hot-spot-analysis-recipe.example'),
-      import('../../data/s2-chicago-north-nature.json').then(module => module.default),
-      import('../../data/s2-chicago-north-areas.json').then(module => module.default)
+      EMBEDDED_DATASET_LOADERS['s2-chicago-north-nature.json']().then(module => module.default),
+      EMBEDDED_DATASET_LOADERS['s2-chicago-north-areas.json']().then(module => module.default)
     ]);
     return {
       run: device => {

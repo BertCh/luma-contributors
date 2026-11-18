@@ -11,7 +11,12 @@ registerRegressionLens({
     'Diabetes prevalence with a spatially lagged response, instrumented by neighbouring predictors',
   rungs: ['result', 'formula', 'kernel', 'graph'],
   withMap: false,
-  choices: {weightsCriterion: 'queen', weightsTransform: 'row', instrumentOrder: 1},
+  choices: {
+    weightsCriterion: 'queen',
+    weightsTransform: 'row',
+    'robust.method': 'none',
+    instrumentOrder: 1
+  },
   metadata: {weightsStandardisation: 'row'},
   loadExample: () => import('./spatial-two-stage-least-squares.example'),
   prepare(execution, input, model) {
@@ -35,7 +40,8 @@ registerRegressionLens({
         summary: execution.output.summary,
         status: execution.output.status.code,
         residuals: execution.output.residuals,
-        weightsOverflow: execution.weightsOverflow
+        weightsOverflow: execution.weightsOverflow,
+        weightsCandidateOverflow: execution.weightsCandidateOverflow
       },
       tags: table.tags,
       keySpaces: table.keySpaces

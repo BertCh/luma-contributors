@@ -131,9 +131,11 @@ export function createNetworkOptimizationScenario(
           }
         });
       } else if (kind === 'louvain' || kind === 'louvain-sparse') {
+        // Two disconnected pairs need one contraction and one convergence level, not four.
+        const maximumLevels = kind === 'louvain-sparse' ? 2 : 4;
         await runNetworkLouvain(graph, {
           nodeCount: 4,
-          maximumLevels: 4,
+          maximumLevels,
           maximumIterations: 4,
           ...(kind === 'louvain-sparse'
             ? {
@@ -149,7 +151,7 @@ export function createNetworkOptimizationScenario(
           parameters: floats('parameters', Array.from(getGPUNetworkLouvainParameterValues())),
           output: {
             communities: output('communities', 'uint32', 4),
-            objectiveTrace: output('objectiveTrace', 'float32', 17),
+            objectiveTrace: output('objectiveTrace', 'float32', 1 + maximumLevels * 4),
             summary: output('summary', 'uint32', 4)
           }
         });

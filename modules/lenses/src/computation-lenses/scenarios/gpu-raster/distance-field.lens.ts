@@ -20,7 +20,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
     import('./distance-field.example'),
     import('./raster-lens-harness'),
     import('./raster-lens-data'),
-    import('../../../gpu-raster/computation-pack/index')
+    import('../../../gpu-raster/computation-pack/pack')
   ]);
   const [data, terrain] = await Promise.all([loadDixieLandCover(), loadDixieDem()]);
   const entry = getRasterOperatorEntries()['GPUDistanceField'];

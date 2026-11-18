@@ -40,7 +40,7 @@ export async function runExample(_device: Device, input: MapMatchingExampleInput
       snapDistances: createTransientView(graph, 'matchSnapDistances', 'float32', fixCount),
       breaks: createTransientView(graph, 'matchBreaks', 'uint32', fixCount),
       matchedCount: createTransientView(graph, 'matchedCount', 'uint32', 1),
-      status: {overflow: createTransientView(graph, 'matchOverflow', 'uint32', 1)}
+      status: {candidateOverflow: createTransientView(graph, 'matchCandidateOverflow', 'uint32', 1)}
     }
   });
   graph.add(matching);
@@ -54,6 +54,6 @@ export async function runExample(_device: Device, input: MapMatchingExampleInput
     snapDistances: snapDistances!,
     breaks: breaks!,
     matchedCount: matchedCount!,
-    overflow: status!.overflow!
+    candidateOverflow: status!.candidateOverflow!
   };
 }

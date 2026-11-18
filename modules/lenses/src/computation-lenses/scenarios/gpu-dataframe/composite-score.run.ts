@@ -115,6 +115,9 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
       ],
       datumKeySpace: 'row',
       choices: [
+        createDataFrameChoice('derive', 'epsilon', 1e-6),
+        createDataFrameChoice('derive', 'enableRank', false),
+        createDataFrameChoice('derive', 'enablePrincipalComponent', false),
         createDataFrameChoice('derive', 'scaler', 'min-max', {
           alternatives: Object.keys(GPU_COMPOSITE_SCORE_SCALER)
         }),
@@ -126,7 +129,8 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
         createDataFrameChoice('aggregate', 'indicatorCount', INDICATOR_NAMES.length)
       ],
       datasetVersion: `${dataset.id}:${dataset.rowCount}`,
-      deriveCaptures: splitPackedViews
+      deriveCaptures: splitPackedViews,
+      derivedCaptureNames: ['score', ...INDICATOR_NAMES, ...STATISTIC_NAMES]
     });
   } finally {
     example.parameters.destroy();

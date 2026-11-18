@@ -13,6 +13,8 @@ import {
   getAdapterLabel,
   getAllCaptures,
   getCaptureProvenance,
+  getCaptureFirstKey,
+  getCaptureRowCount,
   getCaptureValue,
   getPinnedEntity
 } from './record-queries';
@@ -30,6 +32,8 @@ export type CompareViewModel = {
   labelB: string;
   mode: 'delta' | 'juxtapose';
   count: number;
+  /** First absolute key in the intersection of the recorded windows. */
+  firstKey: number;
   delta: number[];
   changedCount: number;
   maxAbsDelta: number;
@@ -44,6 +48,40 @@ type References = {
   labelA: string;
   labelB: string;
 };
+function getEffectiveShape(capture: GPUComputationCapture, record: LensRecord) {
+  return capture.geometry?.kind === 'raster'
+    ? capture.geometry.shape
+    : record.axes.keySpaces.find(space => space.id === capture.keySpace)?.shape;
+}
+function getRasterFrame(capture: GPUComputationCapture) {
+  const geometry = capture.geometry;
+  if (geometry?.kind !== 'raster') return undefined;
+  const cellSize = geometry.cellSize ?? 1;
+  const rowDirection = geometry.rowDirection ?? 'south';
+  return [
+    geometry.coordinateModel ?? 'unknown',
+    geometry.unit ?? '',
+    cellSize,
+    rowDirection,
+    geometry.origin ?? [0, rowDirection === 'north' ? 0 : geometry.shape[1] * cellSize]
+  ];
+}
+function haveCompatibleLayouts(
+  first: GPUComputationCapture,
+  second: GPUComputationCapture,
+  record: LensRecord,
+  other = record
+) {
+  return (
+    first.keySpace === second.keySpace &&
+    (first.components ?? 1) === (second.components ?? 1) &&
+    first.elementType === second.elementType &&
+    JSON.stringify(getEffectiveShape(first, record)) ===
+      JSON.stringify(getEffectiveShape(second, other)) &&
+    JSON.stringify(getRasterFrame(first)) === JSON.stringify(getRasterFrame(second))
+  );
+}
+
 function chooseReferences(context: ViewContext): References | undefined {
   const requested = context.bindings.buffer ?? context.options?.['capture'];
   const allCaptures = getAllCaptures(context.record);
@@ -58,7 +96,19 @@ function chooseReferences(context: ViewContext): References | undefined {
     for (const capture of captures) {
       const first = getFinalStateCapture(context.record, capture.name)!;
       const second = getFinalStateCapture(context.compare.record, capture.name);
-      if (second)
+      const firstSpace = context.record.axes.keySpaces.find(space => space.id === first.keySpace);
+      const secondSpace = context.compare.record.axes.keySpaces.find(
+        space => space.id === second?.keySpace
+      );
+      if (
+        second &&
+        haveCompatibleLayouts(first, second, context.record, context.compare.record) &&
+        firstSpace &&
+        secondSpace &&
+        firstSpace.size === secondSpace.size &&
+        firstSpace.indexSpace === secondSpace.indexSpace &&
+        JSON.stringify(firstSpace.shape) === JSON.stringify(secondSpace.shape)
+      )
         return {
           first,
           second,
@@ -66,10 +116,14 @@ function chooseReferences(context: ViewContext): References | undefined {
           labelB: context.compare.referenceLabel
         };
     }
+    return undefined;
   }
   for (const first of captures.filter(capture => capture.provenance === 'gpu-replay')) {
     const second = captures.find(
-      capture => capture.name === first.name && capture.provenance === 'gpu-readback'
+      capture =>
+        capture.name === first.name &&
+        capture.provenance === 'gpu-readback' &&
+        haveCompatibleLayouts(first, capture, context.record)
     );
     if (second) return {first, second, labelA: 'GPU replay', labelB: 'run'};
   }
@@ -89,7 +143,12 @@ function chooseReferences(context: ViewContext): References | undefined {
       context.options?.['iterationB'] === undefined
         ? distinct[distinct.length - 1]
         : distinct.find(capture => capture.iteration === context.options?.['iterationB']);
-    if (first && second && first.iteration !== second.iteration)
+    if (
+      first &&
+      second &&
+      first.iteration !== second.iteration &&
+      haveCompatibleLayouts(first, second, context.record)
+    )
       return {
         first,
         second,
@@ -106,23 +165,38 @@ export function buildCompareViewModel(context: ViewContext): CompareViewModel {
   // Two references are required by satisfies.
   assert(references);
   const {first, second, labelA, labelB} = references;
-  const count = Math.min(
-    Math.floor(first.values.length / (first.components ?? 1)),
-    Math.floor(second.values.length / (second.components ?? 1))
+  const firstKey = Math.max(getCaptureFirstKey(first), getCaptureFirstKey(second));
+  const count = Math.max(
+    0,
+    Math.min(
+      getCaptureFirstKey(first) + getCaptureRowCount(first),
+      getCaptureFirstKey(second) + getCaptureRowCount(second)
+    ) - firstKey
   );
   const delta = Array.from(
     {length: count},
-    (_, key) => getCaptureValue(second, key)! - getCaptureValue(first, key)!
+    (_, index) =>
+      getCaptureValue(second, firstKey + index)! - getCaptureValue(first, firstKey + index)!
   );
   let equalCount = 0;
   let maxAbsDelta = 0;
-  for (let key = 0; key < count; key++) {
-    if (
-      Object.is(getCaptureValue(first, key), getCaptureValue(second, key)) ||
-      getCaptureValue(first, key) === getCaptureValue(second, key)
-    )
-      equalCount++;
-    if (!Number.isNaN(delta[key])) maxAbsDelta = Math.max(maxAbsDelta, Math.abs(delta[key]));
+  for (let index = 0; index < count; index++) {
+    const key = firstKey + index;
+    const components = first.components ?? 1;
+    let equal = true;
+    for (let component = 0; component < components; component++) {
+      const firstValue = Number(
+        first.values[(key - getCaptureFirstKey(first)) * components + component]
+      );
+      const secondValue = Number(
+        second.values[(key - getCaptureFirstKey(second)) * components + component]
+      );
+      if (!Object.is(firstValue, secondValue) && firstValue !== secondValue) equal = false;
+      const componentDelta = secondValue - firstValue;
+      if (!Number.isNaN(componentDelta))
+        maxAbsDelta = Math.max(maxAbsDelta, Math.abs(componentDelta));
+    }
+    if (equal) equalCount++;
   }
   return {
     name: first.name,
@@ -130,6 +204,7 @@ export function buildCompareViewModel(context: ViewContext): CompareViewModel {
     labelB,
     mode: context.options?.['mode'] === 'juxtapose' ? 'juxtapose' : 'delta',
     count,
+    firstKey,
     delta,
     changedCount: count - equalCount,
     maxAbsDelta,
@@ -172,20 +247,24 @@ export function renderCompareView(model: CompareViewModel, context: ViewContext)
   }
   const sharedScale =
     model.mode === 'juxtapose' ? resolveValueScale(context, model.name)?.scale : undefined;
+  const componentLabel = (references.first.components ?? 1) > 1 ? ' · component 0' : '';
   const strips =
     model.mode === 'delta'
       ? [
           {
             values: model.delta,
             provenance: model.provenance,
-            label: `B − A: ${model.name}`,
+            label: `B − A: ${model.name}${componentLabel}`,
             scale: deltaReference ? registry.get(deltaReference) : undefined
           }
         ]
       : [references.first, references.second].map((capture, index) => ({
-          values: Array.from({length: model.count}, (_, key) => getCaptureValue(capture, key)!),
+          values: Array.from(
+            {length: model.count},
+            (_, index) => getCaptureValue(capture, model.firstKey + index)!
+          ),
           provenance: getCaptureProvenance(capture),
-          label: index === 0 ? model.labelA : model.labelB,
+          label: `${index === 0 ? model.labelA : model.labelB}${componentLabel}`,
           scale: sharedScale
         }));
   return h(
@@ -199,7 +278,9 @@ export function renderCompareView(model: CompareViewModel, context: ViewContext)
         idPrefix,
         ground: context.ground,
         width: context.width,
-        pinnedKey: getPinnedEntity(context)
+        pinnedKey: getPinnedEntity(context),
+        keyOffset: model.firstKey,
+        keySpace: references.first.keySpace
       });
       tree.children.unshift(
         provenancePatternDefs(idPrefix, context.ground),
@@ -231,7 +312,12 @@ export const COMPARE_VIEW: ViewRegistration<CompareViewModel> = {
   satisfies: context =>
     chooseReferences(context)
       ? {ok: true}
-      : {ok: false, reason: 'needs two references (k vs k′, run A vs B, or GPU vs replay)'},
+      : {
+          ok: false,
+          reason: context.compare
+            ? 'needs references with compatible key spaces and component layouts'
+            : 'needs two references (k vs k′, run A vs B, or GPU vs replay)'
+        },
   build: buildCompareViewModel,
   render: renderCompareView,
   describe: (model, context) => ({

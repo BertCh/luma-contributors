@@ -83,12 +83,14 @@ defineLensScenario({
             family: 'h3',
             'operation.type': 'compact',
             'operation.resolution': 9,
-            'operation.minimumResolution': 7
+            'operation.minimumResolution': 7,
+            'operation.maximumDepth': 'not applicable'
           },
-          metadata: snapshots => {
+          metadata: geographicMetadata(),
+          observations: snapshots => {
             // Draw exactly the rows the GPU wrote.
             checkDrawnPrefix(snapshots, [{capture: 'compactedCount', drawn: mergedCount}]);
-            return geographicMetadata();
+            return {};
           },
           async build(graph, uploads) {
             const place = uploads.view('place', positions, 'float32x2');

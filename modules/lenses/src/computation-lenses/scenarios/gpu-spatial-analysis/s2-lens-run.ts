@@ -25,12 +25,16 @@ import {
   submitLensGraph
 } from '../../lens-view-snapshot';
 import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
-import {createGPULocalFrame, type GPULocalFrame} from '@luma-contributors/analysis/analysis-core';
 import {
-  createSpatialChoice,
+  createGPULocalFrame,
+  validateRequirement,
+  type GPULocalFrame
+} from '@luma-contributors/analysis/analysis-core';
+import {
   getSpatialOperatorEntry,
   SPATIAL_COMPUTATION_PACK_ID
-} from '../../../gpu-spatial-analysis/computation-pack/index';
+} from '../../../gpu-spatial-analysis/computation-pack/pack';
+import {createSpatialChoice} from '../../../gpu-spatial-analysis/computation-pack/choices';
 import type {GPUSpatialWeights} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {mergeGPUCoreFormulaRefsForGraphs} from '../../../computation-views/packs/gpu-core/formulas';
 import type {LensScenarioResult} from '../../types';
@@ -42,6 +46,8 @@ export type S2CaptureSpec = {
   geometry?: GPUComputationCaptureGeometry;
   /** Key space the captured rows index, declared in {@link S2LensRunProps.keySpaces}. */
   keySpace?: string;
+  /** Scalar components per captured entity when the computation uses a flat scalar view. */
+  components?: number;
   /**
    * Free-form meaning of the capture. Faint basemaps use `role: 'context'` and the one answer uses
    * the capture's `highlight` (CARD-DESIGN §2.5).
@@ -64,8 +70,10 @@ export type S2LensRunProps = {
   keySpaces?: readonly GPUComputationKeySpace[];
   /** Relations between key spaces (CSR neighbours, point → polygon). */
   relations?: readonly GPUComputationRelation[];
-  /** Values the run used for the element's pack choice templates, by template name. */
+  /** All scalar run settings enter identity; pack templates select only the displayed choices. */
   choices?: Readonly<Record<string, GPUComputationAttributeValue>>;
+  /** Additional declared choices, included before comparison identity is computed. */
+  recordChoices?: readonly GPUAnalysisChoice[];
   /**
    * Adds the uploaded inputs and the element (through the scenario's `runExample`) to the graph
    * and returns the views to capture after the run, by capture name.
@@ -98,6 +106,19 @@ export async function runS2Lens(
   device: Device,
   props: S2LensRunProps
 ): Promise<LensScenarioResult> {
+  const entry = getSpatialOperatorEntry(props.element);
+  const choices: GPUAnalysisChoice[] = [
+    ...(entry?.choices ?? []).map(template => {
+      const value = props.choices?.[template.name];
+      validateRequirement(
+        props.scenarioId,
+        value !== undefined,
+        `choices.${template.name} must have a value for the declared choice template`
+      );
+      return createSpatialChoice(template, value!);
+    }),
+    ...(props.recordChoices ?? [])
+  ];
   const graph = new LensCommandGraph<undefined>(device, {id: props.scenarioId.replace(/\./g, '-')});
   const owned: {destroy(): void}[] = [];
   const uploads: S2Uploads = {
@@ -140,13 +161,7 @@ export async function runS2Lens(
     });
     const compiled = await graph.compileAsync();
     try {
-      const entry = getSpatialOperatorEntry(props.element);
       const formula = entry && 'tex' in entry.formula ? entry.formula : undefined;
-      const choices: GPUAnalysisChoice[] = (entry?.choices ?? []).flatMap(template =>
-        props.choices && template.name in props.choices
-          ? [createSpatialChoice(template, props.choices[template.name])]
-          : []
-      );
       const keySpaces = props.keySpaces ?? [];
       const axes: GPUComputationAxis[] = keySpaces.map((keySpace, index) => ({
         id: keySpace.id,
@@ -168,6 +183,7 @@ export async function runS2Lens(
         axes: {axes, keySpaces, relations: props.relations ?? []},
         formulas: mergeGPUCoreFormulaRefsForGraphs([description], formula ? [formula] : []),
         choices,
+        parameters: props.choices,
         datasetVersion: props.datasets.join('+'),
         ...(props.seed !== undefined && {seed: props.seed})
       });
@@ -185,12 +201,17 @@ export async function runS2Lens(
           ...(spec.role && {role: spec.role}),
           ...(spec.geometry && {geometry: spec.geometry}),
           ...(spec.keySpace && {keySpace: spec.keySpace}),
+          ...(spec.components !== undefined && {components: spec.components}),
           ...(spec.meaning && {meaning: spec.meaning})
         };
       });
       return {
         ...record,
-        captures: createGPUComputationCaptures({runId: record.runId, snapshots})
+        captures: createGPUComputationCaptures({
+          runId: record.runId,
+          executionId: record.executionId,
+          snapshots
+        })
       };
     } finally {
       compiled.destroy();
@@ -335,6 +356,12 @@ export function uploadS2JoinPolygons(
       size: positions.length,
       indexSpace: '1d' as const
     },
+    {
+      id: `${name}-display-vertex`,
+      label: 'display vertex',
+      size: display.length,
+      indexSpace: '1d' as const
+    },
     ...[
       ['feature', featureOffsets.length],
       ['polygon', polygonOffsets.length],
@@ -368,10 +395,11 @@ export function uploadS2JoinPolygons(
     [name]: {
       view: display,
       role: 'input',
-      keySpace: name,
+      keySpace: `${name}-display-vertex`,
       geometry: {
         kind: 'polygons',
         offsetsCapture: `${name}DisplayOffsets`,
+        featureKeySpace: name,
         coordinateModel: 'projected',
         unit: 'm'
       }

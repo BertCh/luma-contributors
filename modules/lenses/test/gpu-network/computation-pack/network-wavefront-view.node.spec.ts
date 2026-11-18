@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import '../../../src/gpu-network/computation-pack/index';
+
 import {expect, test} from 'vitest';
 import {inflateSync} from 'node:zlib';
 import {
@@ -13,7 +15,7 @@ import {
 import {toRecordedLensFile} from '../../../src/computation-lenses/registry';
 import {createViewContext} from '../../../src/computation-views/registry/view-registry';
 import {buildLensTwin, validateLensTwin} from '../../../src/computation-views/twin/static-twin';
-import {NETWORK_WAVEFRONT_VIEW} from '../../../src/gpu-network/computation-pack/index';
+import {NETWORK_WAVEFRONT_VIEW} from '../../../src/gpu-network/computation-pack/views/network-wavefront-view';
 import {
   buildNetworkWavefrontModel,
   renderNetworkWavefront
@@ -109,6 +111,7 @@ function makeRecord() {
     ...record,
     captures: createGPUComputationCaptures({
       runId: record.runId,
+      executionId: record.executionId,
       snapshots,
       replays: [
         {
@@ -126,6 +129,7 @@ function makeRecord() {
     metrics: [
       createGPUComputationMetrics({
         runId: record.runId,
+        executionId: record.executionId,
         graph: 'network',
         timing: {nodes: []},
         encoding: {coalesced: false, timestamped: false, taps: 0, lensTwin: true},

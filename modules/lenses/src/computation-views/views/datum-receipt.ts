@@ -23,6 +23,8 @@ import {
   getAdapterLabel,
   getAllCaptures,
   getCaptureProvenance,
+  getCaptureFirstKey,
+  getCaptureRowCount,
   getCaptureValue,
   getCapturesForKeySpace,
   getDatumKeySpace,
@@ -65,9 +67,11 @@ export type DatumReceiptModel = {
 
 function getComponents(capture: GPUComputationCapture, entity: number): number[] {
   const components = capture.components ?? 1;
+  const row = entity - getCaptureFirstKey(capture);
+  if (row < 0) return [];
   return Array.from(
-    {length: Math.min(components, capture.values.length - entity * components)},
-    (_, index) => Number(capture.values[entity * components + index])
+    {length: Math.max(0, Math.min(components, capture.values.length - row * components))},
+    (_, index) => Number(capture.values[row * components + index])
   );
 }
 
@@ -165,12 +169,15 @@ function buildNeighbourhood(
       end === undefined ||
       !Number.isInteger(start) ||
       !Number.isInteger(end) ||
-      start < 0 ||
+      start < getCaptureFirstKey(targets) ||
       end < start ||
-      end > targets.values.length
+      end > getCaptureFirstKey(targets) + getCaptureRowCount(targets)
     )
       return unknown('relation values not captured');
-    keys = Array.from({length: end - start}, (_, index) => Number(targets.values[start + index]));
+    keys = Array.from(
+      {length: end - start},
+      (_, index) => getCaptureValue(targets, start + index)!
+    );
   } else {
     if (reference.layout !== 'index' || getCaptureValue(targets, entity) === undefined)
       return unknown('relation values not captured');

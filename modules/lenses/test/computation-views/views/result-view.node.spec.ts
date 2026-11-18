@@ -33,6 +33,16 @@ import {
   makeY2Record
 } from '../fixtures/y2-card-records';
 import {makeV8Capture, makeV8ResultRecord} from '../fixtures/v8-result-record';
+import {
+  makeRecord as makeWindowRecord,
+  makeCapture as makeWindowCapture
+} from '../fixtures/v4-record';
+import {
+  assertValidLensRecord,
+  assertValidLensSidecars
+} from '../../../src/computation-lenses/validate-lens-record';
+import {LensController} from '../../../src/computation-views/hosts/lens-controller';
+import {ViewRegistry} from '../../../src/computation-views/registry/view-registry';
 
 function render(kind: Parameters<typeof makeV8ResultRecord>[0] = 'polygons', options = {}) {
   const context = createViewContext(makeV8ResultRecord(kind), {idPrefix: 'v8', ...options});
@@ -42,6 +52,173 @@ function render(kind: Parameters<typeof makeV8ResultRecord>[0] = 'polygons', opt
 }
 
 describe('result view', () => {
+  test('K1 a partial point window retains the full published count and absolute picks', () => {
+    const record = makeWindowRecord();
+    record.axes.keySpaces = [{id: 'cells', label: 'points', size: 12}];
+    record.graphs[0].resources = [
+      ...record.graphs[0].resources!.map(resource =>
+        resource.id === 'output'
+          ? {...resource, bytes: 12 * 2 * 4, bytesKind: 'logical' as const}
+          : resource
+      ),
+      {id: 'count', kind: 'buffer', bytes: 4, bytesKind: 'logical', ownership: 'imported'}
+    ];
+    record.graphs[0].nodes[1].writes = ['output', 'count'];
+    record.captures!.snapshots = [
+      makeWindowCapture({
+        role: 'output',
+        meaning: 'first:8',
+        components: 2,
+        values: [0, 0, 1, 1],
+        geometry: {kind: 'points', coordinateModel: 'projected', countCapture: 'count'}
+      }),
+      makeWindowCapture({id: 'count', name: 'count', resource: 'count', values: [12]})
+    ];
+    expect(() => assertValidLensRecord(record)).not.toThrow();
+    expect(() => assertValidLensSidecars(record, record)).not.toThrow();
+    const context = createViewContext(record);
+    for (const [count, keys] of [
+      [12, [8, 9]],
+      [11, [8, 9]],
+      [10, [8, 9]],
+      [9, [8]],
+      [8, []],
+      [0, []]
+    ] as const) {
+      record.captures!.snapshots[1].values = [count];
+      const model = buildResultViewModel(context);
+      expect(RESULT_VIEW.describe(model, context).keyNumber).toEqual({
+        label: 'points',
+        value: count
+      });
+      expect(model.output.unknown).toBeUndefined();
+      expect(
+        findViewNodes(
+          renderResultView(model, context),
+          node => node.tag === 'circle' && node.attributes['data-action'] === 'pick'
+        ).map(point => point.attributes['data-key'])
+      ).toEqual(keys);
+    }
+    record.captures!.snapshots[1].values = [13];
+    expect(buildResultViewModel(context).output.count).toBe('unknown');
+    // A logical buffer inventory also establishes full capacity without a declared domain size.
+    record.axes.keySpaces = [{id: 'cells', label: 'points'}];
+    expect(buildResultViewModel(context).output.count).toBe('unknown');
+    record.captures!.snapshots[1].values = [12];
+    expect(buildResultViewModel(context).output.count).toBe(12);
+    // An observed lower bound cannot establish an upper limit on the active count.
+    const resource = record.graphs[0].resources.find(resource => resource.id === 'output')!;
+    resource.bytesKind = 'lower-bound';
+    resource.bytes = 10 * 2 * 4;
+    const model = buildResultViewModel(context);
+    expect(model.output.count).toBe(12);
+    expect(
+      findViewNodes(
+        renderResultView(model, context),
+        node => node.tag === 'circle' && node.attributes['data-action'] === 'pick'
+      ).map(point => point.attributes['data-key'])
+    ).toEqual([8, 9]);
+    record.captures!.snapshots[1].values = [0xffffffff];
+    expect(buildResultViewModel(context).output.count).toBe('unknown');
+  });
+  test('H1 a published point count bounds finite tail rows in both counting and sampling', () => {
+    const record = makeWindowRecord();
+    record.axes.keySpaces = [{id: 'cells', label: 'points', size: 4}];
+    record.graphs[0].resources!.find(resource => resource.id === 'output')!.bytes = 4 * 2 * 4;
+    record.captures!.snapshots = [
+      makeWindowCapture({
+        role: 'output',
+        components: 2,
+        values: [0, 0, 1, 1, 100, 100, 200, 200],
+        geometry: {kind: 'points', coordinateModel: 'projected', countCapture: 'count'}
+      }),
+      makeWindowCapture({id: 'count', name: 'count', values: [2]})
+    ];
+    const context = createViewContext(record);
+    const model = buildResultViewModel(context);
+    expect(model.output.count).toBe(2);
+    expect(model.output.points).toEqual([
+      [0, 0],
+      [1, 1]
+    ]);
+    expect(
+      findViewNodes(
+        renderResultView(model, context),
+        node => node.tag === 'circle' && node.attributes['data-action'] === 'pick'
+      )
+    ).toHaveLength(2);
+    for (const invalid of [NaN, -1, 1.5, 5, 0xffffffff]) {
+      record.captures!.snapshots[1].values = [invalid];
+      expect(buildResultViewModel(context).output.count).toBe('unknown');
+    }
+    record.captures!.snapshots[1].values = [0];
+    expect(buildResultViewModel(context).output).toMatchObject({count: 0, points: []});
+  });
+  test('H5 Result raster samples absolute grid keys and points dispatch their window keys', () => {
+    const record = makeWindowRecord();
+    record.axes.keySpaces = [
+      {id: 'cells', label: 'cells', size: 12, indexSpace: '2d', shape: [4, 3]}
+    ];
+    record.captures!.snapshots = [
+      makeWindowCapture({
+        role: 'output',
+        meaning: 'first:8',
+        values: [10, 20],
+        geometry: {kind: 'raster', shape: [4, 3]}
+      })
+    ];
+    expect(() => assertValidLensRecord(record)).not.toThrow();
+    expect(() => assertValidLensSidecars(record, record)).not.toThrow();
+    const context = createViewContext(record);
+    const raster = renderResultView(buildResultViewModel(context), context);
+    const decoded = decodeRasterImage(findViewNodes(raster, node => node.tag === 'image')[0]);
+    expect(
+      decoded.pixels
+        .map((pixel, key) => (pixel !== decoded.pixels[10] ? key : -1))
+        .filter(key => key >= 0)
+    ).toEqual([8, 9]);
+    record.axes.keySpaces = [{id: 'cells', label: 'cells', size: 12}];
+    record.captures!.snapshots = [
+      makeWindowCapture({
+        role: 'output',
+        meaning: 'first:8',
+        components: 2,
+        values: [0, 0, 1, 1],
+        geometry: {kind: 'points', coordinateModel: 'projected', valuesCapture: 'color'}
+      }),
+      makeWindowCapture({id: 'color', name: 'color', meaning: 'first:8', values: [10, 20]})
+    ];
+    expect(() => assertValidLensSidecars(record, record)).not.toThrow();
+    const registry = new ViewRegistry();
+    registry.register(RESULT_VIEW);
+    const controller = new LensController({record, registry, rung: 'result', lensId: 'H5'});
+    try {
+      const points = findViewNodes(
+        controller.getFrame().tree,
+        node => node.tag === 'circle' && node.attributes['data-action'] === 'pick'
+      );
+      expect(points.map(point => point.attributes['data-key'])).toEqual([8, 9]);
+      expect(new Set(points.map(point => point.attributes['fill'])).size).toBe(2);
+      const point = points[0];
+      controller.dispatch({
+        type: 'pick',
+        axis: 'entity',
+        keys: [Number(point.attributes['data-key'])],
+        keySpace: String(point.attributes['data-key-space'])
+      });
+      expect(controller.getState().clauses).toMatchObject([
+        {keySpace: 'cells', predicate: {keys: [8]}}
+      ]);
+      expect(
+        findViewNodes(
+          controller.getFrame().tree,
+          node => node.tag === 'circle' && node.attributes['data-state'] === 'highlight'
+        ).map(point => point.attributes['data-key'])
+      ).toEqual([8]);
+    } finally {
+      controller.destroy();
+    }
+  });
   test('requires an explicitly tagged output', () => {
     const record = makeV8ResultRecord();
     expect(RESULT_VIEW.satisfies(createViewContext(record))).toEqual({ok: true});
@@ -113,7 +290,20 @@ describe('result view', () => {
     ).toBe(true);
   });
   test('unvalued geometry uses role colours and pins use both selection inks', () => {
-    const {tree, html} = render('polygons', {bindings: {entity: 1}});
+    const record = makeV8ResultRecord();
+    record.axes.keySpaces = [{id: 'features', label: 'features', size: 6}];
+    record.axes.axes[0].keySpace = 'features';
+    // Both marks intentionally refer to row one of the same declared domain.
+    record.captures!.snapshots[0].keySpace = 'features';
+    const geometry = record.captures!.snapshots[1].geometry!;
+    if (geometry.kind !== 'polygons') throw new Error('Expected polygon fixture');
+    record.captures!.snapshots[1].geometry = {
+      ...geometry,
+      featureKeySpace: 'features'
+    };
+    const context = createViewContext(record, {idPrefix: 'v8', bindings: {entity: 1}});
+    const tree = renderResultView(buildResultViewModel(context), context);
+    const html = viewNodeToHtml(tree);
     const ink = getSelectionInk('light');
     expect(html).toContain(`fill="${CARD_COLORS.light['input']}"`);
     for (const [state, color] of [
@@ -225,7 +415,7 @@ describe('result view', () => {
     ).toHaveLength(183);
     expect(getViewNodeText(tree)).toContain('stride');
   });
-  test('large point and path captures stay within total figure budgets and disclose stride sampling', () => {
+  test('large point and path captures stay within total figure budgets and disclose sampling', () => {
     for (const kind of ['points', 'lines', 'polygons'] as const) {
       const coordinates = Array.from({length: 12000}, (_, index) => index % 97);
       const record = makeY2Record([
@@ -250,9 +440,9 @@ describe('result view', () => {
             0
           );
         expect(vertices).toBeGreaterThan(0);
-        expect(vertices).toBeLessThanOrEqual(thumbnail ? 400 : 4000);
+        expect(vertices).toBeLessThanOrEqual(thumbnail ? 64 : 400);
         expect(RESULT_VIEW.describe(model, context).facts?.join(' ')).toContain(
-          'stride decimation'
+          kind === 'points' ? 'stride decimation' : 'evenly sampled features and vertices'
         );
       }
     }
@@ -468,7 +658,7 @@ describe('card result grammar', () => {
   test('shared keys or column meanings produce a six-row table with output columns and missing cells', () => {
     const record = makeY2Arrays(true);
     const full = renderCard(record);
-    expect(full.html).toContain('<table class="cv-table">');
+    expect(full.html).toContain('<table class="cv-table" data-key-space="rows">');
     expect(full.html).toContain('<th class="cv-col--output"');
     expect(full.html).toContain('<td class="cv-col--output"');
     expect(full.html).toContain('>—</td>');
@@ -481,7 +671,7 @@ describe('card result grammar', () => {
     const thumbnail = renderCard(record, {options: {size: 'thumbnail'}});
     expect(thumbnail.html).not.toContain('<table');
     expect(thumbnail.html).not.toContain('<text');
-    expect(cardMarks(thumbnail.tree, 'output')).toHaveLength(6);
+    expect(cardMarks(thumbnail.tree, 'output')).toHaveLength(4);
     expect(
       cardMarks(thumbnail.tree, 'output').every(
         mark => mark.attributes['fill'] === CARD_COLORS.light['output']

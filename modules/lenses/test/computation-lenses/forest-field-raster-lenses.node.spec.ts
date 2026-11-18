@@ -80,7 +80,8 @@ it.each(SCENARIOS)('builds $element with typed captures and valid kernels', asyn
     }
     const kernels = getParsedKernelSources((harness.graph as unknown as {nodes: unknown[]}).nodes);
     expect(kernels.size).toBeGreaterThan(0);
-    for (const source of kernels.values()) expect(auditWGSLModule(source)).toEqual([]);
+    for (const {source, constants} of kernels.configurations)
+      expect(auditWGSLModule(source, constants)).toEqual([]);
     const compiled = harness.graph.compile();
     compiled.destroy();
   } finally {

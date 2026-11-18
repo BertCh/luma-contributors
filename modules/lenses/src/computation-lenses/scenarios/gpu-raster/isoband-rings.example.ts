@@ -24,11 +24,23 @@ export type IsobandRingsExampleInput = {
   ringGroups: GraphDataView<'uint32'>;
   count: GraphDataView<'uint32'>;
   overflow: GraphDataView<'uint32'>;
+  edgeOverflow: GraphDataView<'uint32'>;
 };
 
 /** Adds the recorded isoband-rings computation; returns its owned parameter buffer. */
 export async function runExample(device: Device, input: IsobandRingsExampleInput) {
-  const {graph, grid, dem, breaks, ringOffsets, positions, ringGroups, count, overflow} = input;
+  const {
+    graph,
+    grid,
+    dem,
+    breaks,
+    ringOffsets,
+    positions,
+    ringGroups,
+    count,
+    overflow,
+    edgeOverflow
+  } = input;
   // #region example
   const [west, north, cell] = [grid.affine[2], grid.affine[5], grid.affine[0]];
   const south = north - grid.height * cell;
@@ -49,7 +61,7 @@ export async function runExample(device: Device, input: IsobandRingsExampleInput
       breaks, // 1100, 1200, ... 1700 m: eight bands
       parameters: parameters.importToGraph(graph),
       edgeCapacity: 3600, // band boundary edges before chaining
-      output: {ringOffsets, positions, ringGroups, status: {count, overflow}} // ring band = group
+      output: {ringOffsets, positions, ringGroups, status: {count, overflow, edgeOverflow}} // ring band = group
     })
   );
   // #endregion example

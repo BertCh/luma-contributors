@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import {defineLensScenario, FORMULA_LENS_RUNGS} from '../../define-lens-scenarios';
 import {S2_DATASETS} from './s2-datasets';
 
@@ -20,8 +21,8 @@ defineLensScenario({
     ] = await Promise.all([
       import('./s2-lens-run'),
       import('./point-density.example'),
-      import('../../data/s2-chicago-north-nature.json').then(module => module.default),
-      import('../../data/s2-chicago-north-areas.json').then(module => module.default)
+      EMBEDDED_DATASET_LOADERS['s2-chicago-north-nature.json']().then(module => module.default),
+      EMBEDDED_DATASET_LOADERS['s2-chicago-north-areas.json']().then(module => module.default)
     ]);
     return {
       run: device => {
@@ -66,7 +67,12 @@ defineLensScenario({
               indexSpace: '1d'
             }
           ],
-          choices: {gridSize: `${width} × ${height}`, binning: 'grid', statistic: 'count'},
+          choices: {
+            gridSize: `${width} × ${height}`,
+            binning: 'grid',
+            statistic: 'count',
+            sumAccumulation: 'auto'
+          },
           async build(graph, uploads) {
             const observations = uploads.view('observations', projected.positions, 'float32x2');
             const communityAreas = uploads.view('community-areas', context.positions, 'float32x2');

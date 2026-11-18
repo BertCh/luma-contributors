@@ -4,7 +4,7 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, test} from 'vitest';
-import {listLensScenarios} from '../../src/computation-lenses/registry';
+import {listLensScenarios} from '../../src/computation-lenses/registry-implementation';
 import '../../src/computation-lenses/scenarios/gpu-spatial-analysis/statistics-coverage.lens';
 import {requireTestDevice} from '@luma-contributors/analysis/testing';
 

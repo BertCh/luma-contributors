@@ -8,6 +8,6 @@ import {GPURasterNBR, type GPURasterNBRProps} from '@luma-contributors/analysis/
 /** Adds the public contributor with caller-owned input and output views. */
 export async function runExample(graph: GPUCommandGraph, input: GPURasterNBRProps): Promise<void> {
   // #region example
-  new GPURasterNBR(input).addToGraph(graph);
+  graph.add(new GPURasterNBR(input));
   // #endregion example
 }

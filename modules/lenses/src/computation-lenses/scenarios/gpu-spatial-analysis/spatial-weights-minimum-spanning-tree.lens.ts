@@ -44,7 +44,6 @@ defineLensScenario({
               Uint32Array.from({length: tracts.count}, (_, index) => index * 2),
               'uint32'
             );
-            const edgeCount = tracts.count - 1;
             return {
               ...execution,
               views: {...execution.views, treeSegmentOffsets},
@@ -74,20 +73,21 @@ defineLensScenario({
                   keySpace: 'edge',
                   meaning: 'Squared difference of standardized poverty across the edge'
                 },
-                edgeOverflow: {role: 'intermediate', keySpace: 'status'}
+                edgeCount: {role: 'intermediate', keySpace: 'status'},
+                edgeOverflow: {role: 'intermediate', keySpace: 'status'},
+                edgeCandidateOverflow: {role: 'intermediate', keySpace: 'status'},
+                weightsCandidateOverflow: {role: 'intermediate', keySpace: 'status'}
               },
               keySpaces: [
-                {id: 'edge', label: 'Tree edge', size: edgeCount, indexSpace: '1d'},
+                {id: 'edge', label: 'Tree edge', indexSpace: '1d'},
                 {
                   id: 'edgeVertex',
                   label: 'Tree edge endpoint',
-                  size: 2 * edgeCount,
                   indexSpace: '1d'
                 },
                 {
                   id: 'edgeOffset',
                   label: 'Tree segment offset',
-                  size: tracts.count,
                   indexSpace: '1d'
                 },
                 {id: 'status', label: 'Scalar and status words', indexSpace: '1d'}
@@ -97,17 +97,7 @@ defineLensScenario({
         });
         // The tree draws as segments coloured by edge dissimilarity; the geometry is attached to the
         // captured GPU readback, not recomputed.
-        return utilities.finishSpatialWeightsRecord(record, {
-          treeSegments: {
-            role: 'output',
-            geometry: {
-              kind: 'lines',
-              coordinateModel: 'geographic',
-              offsetsCapture: 'treeSegmentOffsets',
-              valuesCapture: 'edgeDissimilarities'
-            }
-          }
-        });
+        return utilities.finishSpatialForestRecord(record);
       }
     };
   }

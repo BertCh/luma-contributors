@@ -3,12 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {extractLensExample, type LensExample} from '../../computation-lenses/lens-example';
-import {
-  fromRecordedLensFile,
-  getLensScenario,
-  isLensScenarioId
-} from '../../computation-lenses/registry';
-import type {RecordedLensFile} from '../../computation-lenses/types';
+import {fromRecordedLensFile} from '../../computation-lenses/registry';
+import {getLensScenario, isLensScenarioId} from '../../computation-lenses/registry-implementation';
+import type {DecodedLensFile, RecordedLensFile} from '../../computation-lenses/types';
 import {createDefaultViewRegistry} from '../registry/default-registry';
 import {createViewContext} from '../registry/view-registry';
 import type {ViewRegistry} from '../registry/view-registry';
@@ -98,7 +95,7 @@ function parseIntegerAttribute(name: string, value: string): number {
 
 /** Builds a twin from a recording without a DOM, device or scenario-code import. */
 export function buildLensTwin(
-  recorded: RecordedLensFile,
+  recorded: RecordedLensFile | DecodedLensFile,
   directive: LensDirective,
   options: {
     registry?: ViewRegistry;
@@ -110,12 +107,23 @@ export function buildLensTwin(
     guards?: readonly GuardSpec[];
   } = {}
 ): LensTwin {
+  return buildDecodedLensTwin(fromRecordedLensFile(recorded), directive, options);
+}
+
+/**
+ * Builds another view of an envelope already validated by `fromRecordedLensFile`.
+ * Reuses decoded capture arrays; callers rendering several rungs can release them after one scenario.
+ */
+export function buildDecodedLensTwin(
+  recording: DecodedLensFile,
+  directive: LensDirective,
+  options: NonNullable<Parameters<typeof buildLensTwin>[2]> = {}
+): LensTwin {
   const parsed = parseLensDirective(directive);
   const size = options.size ?? 'full';
   const width = size === 'thumbnail' ? 160 : 640;
-  if (parsed.scenarioId !== recorded.scenarioId)
+  if (parsed.scenarioId !== recording.scenarioId)
     throw new Error('scenario attribute does not match recorded scenarioId');
-  const recording = fromRecordedLensFile(recorded);
   const record = recording.record;
   const variant = recording.variant ?? record.adapter.variant;
   const registry = options.registry ?? createDefaultViewRegistry();
@@ -126,7 +134,10 @@ export function buildLensTwin(
     packs: registry.getPacksFor(record),
     renderTeX: options.renderTeX,
     width,
-    options: size === 'thumbnail' ? {size: 'thumbnail'} : undefined
+    options: {
+      ...getLensScenario(parsed.scenarioId)?.presentation,
+      ...(size === 'thumbnail' ? {size: 'thumbnail'} : {})
+    }
   });
   const resolution = registry.resolveRung(context, parsed.rung, parsed.viewId);
   const view = resolution.status === 'enabled' ? resolution.view : resolution.fallback;

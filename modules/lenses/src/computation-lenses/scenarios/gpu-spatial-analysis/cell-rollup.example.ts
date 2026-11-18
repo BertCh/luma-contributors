@@ -21,7 +21,8 @@ export async function runExample(
     counts: createTransientView(graph, 'counts', 'uint32', capacity, usage),
     status: {
       count: createTransientView(graph, 'cellCount', 'uint32', 1, usage),
-      overflow: createTransientView(graph, 'overflow', 'uint32', 1, usage)
+      overflow: createTransientView(graph, 'overflow', 'uint32', 1, usage),
+      candidateOverflow: createTransientView(graph, 'candidate-overflow', 'uint32', 1, usage)
     }
   };
   graph.add(

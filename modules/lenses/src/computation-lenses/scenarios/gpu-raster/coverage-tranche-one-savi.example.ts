@@ -8,6 +8,6 @@ import {GPURasterSAVI, type GPURasterSAVIProps} from '@luma-contributors/analysi
 /** Adds the public contributor with caller-owned input and output views. */
 export async function runExample(graph: GPUCommandGraph, input: GPURasterSAVIProps): Promise<void> {
   // #region example
-  new GPURasterSAVI(input).addToGraph(graph);
+  graph.add(new GPURasterSAVI(input));
   // #endregion example
 }

@@ -58,15 +58,15 @@ defineLensScenario({
             {id: 'road', label: 'road offset', size: data.lineOffsets.length, indexSpace: '1d'}
           ],
           choices: {minX, minY, cellWidth, cellHeight, columns, rows},
-          metadata: snapshots => ({
+          metadata: {
             ...projectedMetadata(data.projected),
             mappedVariableExtent: 'extensive',
             denominator: 'cell area (constant 100 m x 100 m)',
             // Road length is conserved by clipping to a grid that covers every vertex (f32 pieces).
             sumBefore: totalLength,
-            sumAfter: sumCapture(snapshots, 'lengths') ?? Number.NaN,
             conservationTolerance: 1e-5
-          }),
+          },
+          observations: snapshots => ({sumAfter: sumCapture(snapshots, 'lengths') ?? Number.NaN}),
           async build(graph, uploads) {
             const roads = {
               positions: uploads.view('positions', data.positionsProjected, 'float32x2'),

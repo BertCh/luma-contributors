@@ -69,12 +69,11 @@ defineLensScenario({
             resolution: PARENT_ZOOM,
             sumScale: 65536
           },
-          metadata: snapshots => {
+          metadata: {...geographicMetadata(), mappedVariableExtent: 'extensive'},
+          observations: snapshots => {
             // Draw exactly the rows the GPU wrote.
             checkDrawnPrefix(snapshots, [{capture: 'cellCount', drawn: parentCells}]);
             return {
-              ...geographicMetadata(),
-              mappedVariableExtent: 'extensive',
               sumBefore: sumCapture(snapshots, 'sourceCounts') ?? Number.NaN,
               sumAfter: sumCapture(snapshots, 'counts') ?? Number.NaN
             };

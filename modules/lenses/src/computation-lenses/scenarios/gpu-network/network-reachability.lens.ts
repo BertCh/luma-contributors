@@ -218,6 +218,7 @@ export async function runReachabilityScenario(
     });
     const timedMetrics = await readLensRunMetrics(submission, {
       runId: record.runId,
+      executionId: record.executionId,
       graphId: record.graphs[0].id,
       taps: 1,
       retained
@@ -265,6 +266,7 @@ export async function runReachabilityScenario(
     });
     const captures = createGPUComputationCaptures({
       runId: record.runId,
+      executionId: record.executionId,
       snapshots,
       stamps: [stamp]
     });

@@ -19,6 +19,11 @@ export type KeyRelation = {
   available: boolean;
   /** Capture failure, when unavailable. */
   reason?: string;
+  /** Missing capture evidence for a traversal. Check before using images or preimages. */
+  getCoverageIssue?(
+    keys: ReadonlySet<number>,
+    direction: 'forward' | 'inverse'
+  ): string | undefined;
   forward(keys: Iterable<number>): Set<number>;
   inverse(keys: Iterable<number>): Set<number>;
   preimageSize?(key: number): number;
@@ -43,6 +48,7 @@ export function createFunctionRelation(props: {
   inverseMap?(key: number): number | readonly number[];
   fromCount: number;
   timeDependent?: boolean;
+  getCoverageIssue?: KeyRelation['getCoverageIssue'];
 }): KeyRelation {
   const inDomain = (key: number) => Number.isInteger(key) && key >= 0 && key < props.fromCount;
   return {
@@ -53,9 +59,12 @@ export function createFunctionRelation(props: {
     kind: 'function',
     timeDependent: props.timeDependent ?? false,
     available: true,
+    getCoverageIssue: props.getCoverageIssue,
     forward(keys) {
+      const requested = new Set(keys);
+      requireMappingCoverage(props.getCoverageIssue?.(requested, 'forward'));
       const result = new Set<number>();
-      for (const key of keys) {
+      for (const key of requested) {
         if (inDomain(key)) for (const target of asKeys(props.map(key))) result.add(target);
       }
       return result;
@@ -63,6 +72,7 @@ export function createFunctionRelation(props: {
     inverse(keys) {
       const result = new Set<number>();
       const targets = new Set(keys);
+      requireMappingCoverage(props.getCoverageIssue?.(targets, 'inverse'));
       if (props.inverseMap) {
         for (const target of targets) {
           for (const key of asKeys(props.inverseMap(target))) if (inDomain(key)) result.add(key);
@@ -85,18 +95,64 @@ export function createCSRRelation(props: {
   offsets: ArrayLike<number>;
   targets: ArrayLike<number>;
   toCount: number;
+  /** Absolute source row of the first captured offset; defaults to zero. */
+  firstKey?: number;
+  /** Absolute target-list slot of the first captured target; defaults to zero. */
+  targetFirstKey?: number;
+  /** Full source domain size; omitted only when the supplied offsets are the complete domain. */
+  fromCount?: number;
   timeDependent?: boolean;
 }): KeyRelation {
+  const firstKey = props.firstKey ?? 0;
+  const targetFirstKey = props.targetFirstKey ?? 0;
+  const fromCount = props.fromCount ?? firstKey + Math.max(0, props.offsets.length - 1);
+  const getRowIssue = (row: number) => {
+    if (row < 0 || row + 1 >= props.offsets.length)
+      return 'relation source rows not fully captured';
+    const first = props.offsets[row];
+    const end = props.offsets[row + 1];
+    if (!Number.isSafeInteger(first) || !Number.isSafeInteger(end) || first < 0 || end < first)
+      return 'relation offsets invalid';
+    // A captured empty row requires no target-list evidence.
+    if (first !== end && (first < targetFirstKey || end > targetFirstKey + props.targets.length))
+      return 'relation target span not fully captured';
+    return undefined;
+  };
+  const getCoverageIssue: NonNullable<KeyRelation['getCoverageIssue']> = (keys, direction) => {
+    if (!keys.size) return undefined;
+    if (direction === 'inverse') {
+      if (
+        !Number.isSafeInteger(fromCount) ||
+        firstKey !== 0 ||
+        props.offsets.length < fromCount + 1
+      )
+        return 'relation inverse source coverage incomplete';
+      for (let row = 0; row < fromCount; row++) {
+        const issue = getRowIssue(row);
+        if (issue) return issue;
+      }
+    } else {
+      for (const key of keys) {
+        if (!Number.isInteger(key) || key < 0 || key >= fromCount) continue;
+        const issue = getRowIssue(key - firstKey);
+        if (issue) return issue;
+      }
+    }
+    return undefined;
+  };
+  const startOffset = (row: number) => Math.max(targetFirstKey, props.offsets[row]);
+  const endOffset = (row: number) =>
+    Math.min(targetFirstKey + props.targets.length, props.offsets[row + 1]);
   let reverse: Map<number, Set<number>> | undefined;
   const getReverse = () => {
     if (!reverse) {
       reverse = new Map();
       for (let row = 0; row + 1 < props.offsets.length; row++) {
-        for (let offset = props.offsets[row]; offset < props.offsets[row + 1]; offset++) {
-          const target = props.targets[offset];
+        for (let offset = startOffset(row); offset < endOffset(row); offset++) {
+          const target = props.targets[offset - targetFirstKey];
           if (target >= 0 && target < props.toCount) {
             const rows = reverse.get(target) ?? new Set<number>();
-            rows.add(row);
+            rows.add(firstKey + row);
             reverse.set(target, rows);
           }
         }
@@ -111,25 +167,34 @@ export function createCSRRelation(props: {
     cardinality: 'N:M',
     kind: 'buffer',
     available: true,
+    getCoverageIssue,
     timeDependent: props.timeDependent ?? false,
     forward(keys) {
+      const requested = new Set(keys);
+      requireMappingCoverage(getCoverageIssue(requested, 'forward'));
       const result = new Set<number>();
-      for (const row of keys) {
+      for (const key of requested) {
+        const row = key - firstKey;
         if (!Number.isInteger(row) || row < 0 || row + 1 >= props.offsets.length) continue;
-        for (let offset = props.offsets[row]; offset < props.offsets[row + 1]; offset++) {
-          const target = props.targets[offset];
+        for (let offset = startOffset(row); offset < endOffset(row); offset++) {
+          const target = props.targets[offset - targetFirstKey];
           if (target >= 0 && target < props.toCount) result.add(target);
         }
       }
       return result;
     },
     inverse(keys) {
+      const requested = new Set(keys);
+      requireMappingCoverage(getCoverageIssue(requested, 'inverse'));
       const result = new Set<number>();
       const index = getReverse();
-      for (const key of keys) for (const row of index.get(key) ?? []) result.add(row);
+      for (const key of requested) for (const row of index.get(key) ?? []) result.add(row);
       return result;
     },
-    preimageSize: key => getReverse().get(key)?.size ?? 0
+    preimageSize: key => {
+      requireMappingCoverage(getCoverageIssue(new Set([key]), 'inverse'));
+      return getReverse().get(key)?.size ?? 0;
+    }
   };
 }
 
@@ -205,6 +270,8 @@ export class KeyRelationGraph {
           status: 'unknown',
           reason: relation.reason ?? `Relation ${relation.id} was not captured`
         };
+      const issue = relation.getCoverageIssue?.(mapped, direction);
+      if (issue) return {status: 'unknown', reason: issue};
       mapped = relation[direction](mapped);
     }
     return {status: 'ok', keys: mapped};
@@ -213,4 +280,8 @@ export class KeyRelationGraph {
 
 function asKeys(keys: number | readonly number[]): readonly number[] {
   return typeof keys === 'number' ? [keys] : keys;
+}
+
+function requireMappingCoverage(issue: string | undefined): void {
+  if (issue) throw new Error(`Cannot map incomplete relation: ${issue}`);
 }

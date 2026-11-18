@@ -24,8 +24,8 @@ import {
   makeGPURasterBand
 } from '@luma-contributors/analysis/raster-analysis';
 import {runRasterLens, type RasterLensSession} from './raster-lens-harness';
-import {getRasterOperatorEntries} from '../../../gpu-raster/computation-pack/index';
-import {getTerrainOperatorEntries} from '../../../gpu-terrain/computation-pack/index';
+import {getRasterOperatorEntries} from '../../../gpu-raster/computation-pack/pack';
+import {getTerrainOperatorEntries} from '../../../gpu-terrain/computation-pack/pack';
 
 /** Executes the actual contributor on a bounded, explicit synthetic grid. */
 export async function runExpansion(

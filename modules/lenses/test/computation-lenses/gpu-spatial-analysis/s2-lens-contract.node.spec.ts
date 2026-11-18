@@ -11,11 +11,9 @@ import {dirname, join, relative} from 'node:path';
 import {describe, expect, it} from 'vitest';
 import '../../../src/computation-lenses/scenarios/index';
 import {listLensScenarios} from '../../../src/computation-lenses/index';
-import {LENS_RUNG_IDS} from '../../../src/computation-views/index';
-import {
-  getSpatialOperatorEntry,
-  SPATIAL_VARIABLE_KINDS
-} from '../../../src/gpu-spatial-analysis/computation-pack/index';
+import {LENS_RUNG_IDS} from '../../../src/computation-views/types';
+import {getSpatialOperatorEntry} from '../../../src/gpu-spatial-analysis/computation-pack/pack';
+import {SPATIAL_VARIABLE_KINDS} from '../../../src/gpu-spatial-analysis/computation-pack/variable-kinds';
 import {
   DOCS_ROOT,
   getLensElementId,

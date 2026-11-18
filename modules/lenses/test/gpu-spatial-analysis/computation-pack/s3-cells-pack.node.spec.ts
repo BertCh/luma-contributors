@@ -40,19 +40,19 @@ const ELEMENT_KERNEL_SOURCES: Record<CellsElement, string[]> = {
     `${SOURCE_ROOT}/cell-aggregation/gpu-cell-aggregation.ts`,
     `${SOURCE_ROOT}/cell-aggregation/cell-keys.ts`,
     `${SOURCE_ROOT}/cell-aggregation/cell-table.ts`,
-    'modules/analysis/src/analysis-core/cell-key-wgsl.ts'
+    'modules/analysis/src/analysis-core/kernels/cell-key-wgsl.ts'
   ],
   GPUCellRollup: [
     `${SOURCE_ROOT}/cell-aggregation/gpu-cell-rollup.ts`,
     `${SOURCE_ROOT}/cell-aggregation/cell-keys.ts`,
     `${SOURCE_ROOT}/cell-aggregation/cell-table.ts`,
-    'modules/analysis/src/analysis-core/cell-key-wgsl.ts'
+    'modules/analysis/src/analysis-core/kernels/cell-key-wgsl.ts'
   ],
   GPUCellPyramid: [
     `${SOURCE_ROOT}/cell-aggregation/gpu-cell-pyramid.ts`,
     `${SOURCE_ROOT}/cell-aggregation/cell-keys.ts`,
     `${SOURCE_ROOT}/cell-aggregation/cell-table.ts`,
-    'modules/analysis/src/analysis-core/cell-key-wgsl.ts'
+    'modules/analysis/src/analysis-core/kernels/cell-key-wgsl.ts'
   ],
   GPUCellLevelSelection: [`${SOURCE_ROOT}/cell-aggregation/gpu-cell-level-selection.ts`],
   GPUPointToCell: [

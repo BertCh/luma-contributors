@@ -20,7 +20,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
     import('./solar-position.example'),
     import('../gpu-raster/raster-lens-harness'),
     import('../gpu-raster/raster-lens-data'),
-    import('../../../gpu-terrain/computation-pack/index')
+    import('../../../gpu-terrain/computation-pack/pack')
   ]);
   // The DEM only supplies the lens frame: the sites are points, not raster cells.
   const data = await loadDixieDem();

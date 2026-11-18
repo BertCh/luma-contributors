@@ -3,7 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import {fromRecordedLensFile, getLensScenario} from '../../computation-lenses/registry';
+import {fromRecordedLensFile} from '../../computation-lenses/registry';
+import {getLensScenario} from '../../computation-lenses/registry-implementation';
 import type {LensRecord} from '../registry/view-registration';
 import type {ViewRegistry} from '../registry/view-registry';
 import {LENS_RUNG_IDS, type AxisBindings, type LensRungId, type RenderTeX} from '../types';

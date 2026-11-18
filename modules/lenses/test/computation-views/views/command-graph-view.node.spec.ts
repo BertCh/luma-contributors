@@ -12,6 +12,24 @@ import {findViewNodes, viewNodeToHtml} from '../../../src/computation-views/view
 import {makeV6Context, makeV6Record} from '../fixtures/v6-command-graph';
 
 describe('CommandGraphView', () => {
+  test('unknown resource ownership and lower bounds survive memory receipts', () => {
+    const context = makeV6Context({options: {preset: 'memory-aliasing'}});
+    context.record.graphs[1].resources = [
+      {id: 'unobserved', kind: 'buffer', ownership: 'unknown', bytes: 8, bytesKind: 'lower-bound'}
+    ];
+    const model = buildCommandGraphViewModel(context);
+    const html = viewNodeToHtml(renderCommandGraphView(model, context));
+    expect(html).toContain('Unknown ownership: unobserved (≥8 bytes)');
+    expect(html).toContain('Peak transient bytes: unknown');
+    expect(COMMAND_GRAPH_VIEW.receipt?.(model, context)?.rows).toContainEqual([
+      'unknown ownership',
+      'unobserved',
+      '—',
+      '—',
+      '≥8',
+      '—'
+    ]);
+  });
   test('registers the graph rung and explains missing graphs', () => {
     const context = makeV6Context();
     expect(COMMAND_GRAPH_VIEW).toMatchObject({

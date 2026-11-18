@@ -16,21 +16,14 @@ defineLensScenario({
       'US Census Bureau cartographic boundary file cb_2022_17_tract_500k, public domain; CDC/ATSDR SVI 2022, public domain'
   },
   async load() {
-    const [
-      {runExample},
-      {loadChicagoTracts},
-      utilities,
-      {STATISTICS_OPERATORS},
-      {createSpatialChoice},
-      gpgpu
-    ] = await Promise.all([
-      import('./zonal-statistics.example'),
-      import('./spatial-lens-data'),
-      import('./spatial-scenario-utils'),
-      import('../../../gpu-spatial-analysis/computation-pack/operators/statistics'),
-      import('../../../gpu-spatial-analysis/computation-pack/choices'),
-      import('@luma-contributors/analysis/computation-record')
-    ]);
+    const [{runExample}, {loadChicagoTracts}, utilities, {STATISTICS_OPERATORS}, gpgpu] =
+      await Promise.all([
+        import('./zonal-statistics.example'),
+        import('./spatial-lens-data'),
+        import('./spatial-scenario-utils'),
+        import('../../../gpu-spatial-analysis/computation-pack/operators/statistics'),
+        import('@luma-contributors/analysis/computation-record')
+      ]);
     const tracts = await loadChicagoTracts();
     // Dense zone rows in ascending community-area order: the membership is the tract's own label.
     const areas = [...new Set(tracts.columns['communityArea'])].sort((a, b) => a - b);
@@ -112,20 +105,17 @@ defineLensScenario({
           );
         const result = {
           ...record,
-          choices: [
-            ...(record.choices ?? []),
-            createSpatialChoice(
-              {name: 'sumBefore', stage: 'operator', sweepable: false},
-              total('values')
-            ),
-            createSpatialChoice(
-              {name: 'sumAfter', stage: 'operator', sweepable: false},
-              total('sums')
-            )
-          ]
+          graphs: record.graphs.map((graph, index) =>
+            index === 0
+              ? {
+                  ...graph,
+                  attrs: {...graph.attrs, sumBefore: total('values'), sumAfter: total('sums')}
+                }
+              : graph
+          )
         };
         if (!gpgpu.validateGPUComputationRecord(result).valid) {
-          throw new Error('Zonal conservation choices made the record invalid');
+          throw new Error('Zonal conservation observations made the record invalid');
         }
         return result;
       }

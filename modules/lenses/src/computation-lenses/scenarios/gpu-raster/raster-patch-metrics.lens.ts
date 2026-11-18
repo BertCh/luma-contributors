@@ -29,7 +29,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
     import('./raster-patch-metrics.example'),
     import('./raster-lens-harness'),
     import('./raster-lens-data'),
-    import('../../../gpu-raster/computation-pack/index')
+    import('../../../gpu-raster/computation-pack/pack')
   ]);
   const bands = await loadDixieBands();
   const entry = getRasterOperatorEntries()['GPURasterPatchMetrics'];

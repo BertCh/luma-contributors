@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 /**
  * Loaders for the stream-S3 (spatial geometry) docs datasets in `computation-lenses/data/s3-*.json`,
  * written by `scripts/lens-data/s3-geometry-data.py`. Each loader imports its JSON lazily, so nothing
@@ -112,24 +113,25 @@ function decodePolygons(json: JsonRecord): S3Polygons {
 
 /** 51 parks and green spaces in Chicago's North Side (OpenStreetMap, ODbL). */
 export async function loadS3ChicagoParks(): Promise<S3Polygons> {
-  return decodePolygons((await import('../../data/s3-chicago-parks.json')).default);
+  return decodePolygons((await EMBEDDED_DATASET_LOADERS['s3-chicago-parks.json']()).default);
 }
 
 /** 17 adjacent Chicago community areas: a coverage with shared edges (City of Chicago). */
 export async function loadS3ChicagoCommunityAreas(): Promise<S3Polygons> {
-  const json = (await import('../../data/s3-chicago-community-areas.json')).default as JsonRecord;
+  const json = (await EMBEDDED_DATASET_LOADERS['s3-chicago-community-areas.json']())
+    .default as JsonRecord;
   const polygons = decodePolygons(json);
   return {...polygons, names: (json['areaIds'] as number[]).map(id => `area ${id}`)};
 }
 
 /** NOAA anchorage and channel polygons inside Upper New York Bay (public domain). */
 export async function loadS3NewYorkHarborZones(): Promise<S3Polygons> {
-  return decodePolygons((await import('../../data/s3-ny-harbor-zones.json')).default);
+  return decodePolygons((await EMBEDDED_DATASET_LOADERS['s3-ny-harbor-zones.json']()).default);
 }
 
 /** 223 street centrelines in Wicker Park, Chicago (OpenStreetMap, ODbL). */
 export async function loadS3ChicagoRoads(): Promise<S3Lines> {
-  const json = (await import('../../data/s3-chicago-roads.json')).default as JsonRecord;
+  const json = (await EMBEDDED_DATASET_LOADERS['s3-chicago-roads.json']()).default as JsonRecord;
   return {
     ...info(json),
     lineCount: Number(json['lineCount']),
@@ -144,7 +146,7 @@ export async function loadS3ChicagoRoads(): Promise<S3Lines> {
 
 /** 1,275 Overture places in Wicker Park, Chicago (CDLA-Permissive-2.0 and others). */
 export async function loadS3ChicagoPlaces(): Promise<S3Points> {
-  const json = (await import('../../data/s3-chicago-places.json')).default as JsonRecord;
+  const json = (await EMBEDDED_DATASET_LOADERS['s3-chicago-places.json']()).default as JsonRecord;
   return {
     ...info(json),
     pointCount: Number(json['pointCount']),
@@ -158,7 +160,7 @@ export async function loadS3ChicagoPlaces(): Promise<S3Points> {
 
 /** 12 AIS vessel tracks in Upper New York Bay over two hours (NOAA/USCG, CC0). */
 export async function loadS3NewYorkHarborTracks(): Promise<S3Tracks> {
-  const json = (await import('../../data/s3-ny-harbor-ais.json')).default as JsonRecord;
+  const json = (await EMBEDDED_DATASET_LOADERS['s3-ny-harbor-ais.json']()).default as JsonRecord;
   return {
     ...info(json),
     trackCount: Number(json['trackCount']),
@@ -175,7 +177,7 @@ export async function loadS3NewYorkHarborTracks(): Promise<S3Tracks> {
 
 /** The 40 busiest airport pairs touching Chicago O'Hare (OpenFlights, ODbL). */
 export async function loadS3OpenFlightsHub(): Promise<S3FlightPairs> {
-  const json = (await import('../../data/s3-openflights-ord.json')).default as JsonRecord;
+  const json = (await EMBEDDED_DATASET_LOADERS['s3-openflights-ord.json']()).default as JsonRecord;
   return {
     ...info(json),
     hub: json['hub'] as {iata: string; lonLat: [number, number]},

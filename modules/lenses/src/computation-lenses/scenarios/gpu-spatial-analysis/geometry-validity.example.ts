@@ -24,7 +24,13 @@ export async function runExample(
   {parks, spatialContext}: GeometryValidityExampleInput
 ) {
   const usage = Buffer.STORAGE | Buffer.COPY_SRC;
-  const mask = createTransientView(graph, 'mask', 'uint32', parks.featureOffsets.length - 1, usage);
+  const issueCode = createTransientView(
+    graph,
+    'issueCode',
+    'uint32',
+    parks.featureOffsets.length - 1,
+    usage
+  );
   const overflow = createTransientView(graph, 'overflow', 'uint32', 1, usage);
   const intersectionCount = createTransientView(graph, 'intersectionCount', 'uint32', 1, usage);
   // #region example
@@ -34,10 +40,10 @@ export async function runExample(
       polygons: parks,
       orientation: 'ignore', // winding is a convention, not a validity rule
       intersectionCapacity: 4096,
-      output: {mask, status: {overflow, intersectionCount}}
+      output: {issueCode, status: {overflow, intersectionCount}}
     })
   );
-  // mask: 0 for a valid park, otherwise GPU_GEOMETRY_VALIDITY_BIT flags
+  // issueCode: 0 for no listed issue, otherwise GPU_GEOMETRY_VALIDITY_BIT flags
   // #endregion example
-  return {mask, overflow, intersectionCount};
+  return {issueCode, overflow, intersectionCount};
 }

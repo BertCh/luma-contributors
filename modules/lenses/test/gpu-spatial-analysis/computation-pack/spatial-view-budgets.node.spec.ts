@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import '../../../src/gpu-spatial-analysis/computation-pack/index';
+
 import {expect, test} from 'vitest';
 import {
   createGPUComputationRecord,
@@ -13,7 +15,7 @@ import {buildLensTwin, validateLensTwin} from '../../../src/computation-views/tw
 import {
   buildMoranScatterModel,
   buildFdrStaircaseModel
-} from '../../../src/gpu-spatial-analysis/computation-pack';
+} from '../../../src/gpu-spatial-analysis/computation-pack/views/index';
 
 function makeDenseRecord() {
   const count = 4096;
@@ -46,6 +48,7 @@ function makeDenseRecord() {
     ...record,
     captures: createGPUComputationCaptures({
       runId: record.runId,
+      executionId: record.executionId,
       snapshots: Object.entries(columns).map(([name, values]) => ({
         id: name,
         name,

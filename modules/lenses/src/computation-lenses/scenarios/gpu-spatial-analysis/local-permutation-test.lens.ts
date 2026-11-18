@@ -26,7 +26,7 @@ defineLensScenario({
       utilities,
       spatial,
       gpuCore,
-      {GPULocalPermutationReplay},
+      {createLocalPermutationReplay},
       {STATISTICS_OPERATORS},
       {Buffer}
     ] = await Promise.all([
@@ -35,10 +35,7 @@ defineLensScenario({
       import('./spatial-scenario-utils'),
       import('@luma-contributors/analysis/gpu-spatial-analysis'),
       import('@luma.gl/graph/gpu-core'),
-      // Internal operator used only by this lens; graph-lenses is a private in-repo package.
-      import(
-        '@luma-contributors/analysis/gpu-spatial-analysis/permutation-inference/gpu-local-permutation-replay'
-      ),
+      import('@luma-contributors/analysis/gpu-spatial-analysis'),
       import('../../../gpu-spatial-analysis/computation-pack/operators/statistics'),
       import('@luma.gl/core')
     ]);
@@ -92,22 +89,29 @@ defineLensScenario({
               PERMUTATIONS,
               usage
             );
+            const replayInfo = gpuCore.createTransientView(
+              graph,
+              'replayInfo',
+              'float32',
+              3,
+              usage
+            );
             graph.add(
-              new GPULocalPermutationReplay({
+              createLocalPermutationReplay({
                 test: execution.test,
-                keySpace: 'tract',
                 row: upload('replayRow', Uint32Array.of(REPLAY_ROW), 'uint32'),
                 output: {
                   nullDistribution,
-                  replayInfo: gpuCore.createTransientView(graph, 'replayInfo', 'float32', 3, usage)
+                  replayInfo
                 }
               })
             );
             return {
               ...execution,
-              views: {...execution.views, nullDistribution},
+              views: {...execution.views, nullDistribution, replayInfo},
               replays: {
                 nullDistribution: {
+                  infoCapture: 'replayInfo',
                   keySpace: 'permutation',
                   meaning: `null distribution (raw local term) of row ${REPLAY_ROW}`
                 }

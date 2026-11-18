@@ -4,16 +4,15 @@ Run only after the coordinator grants the browser lease, with no competing GPU w
 
 ```sh
 nvm use
-LUMA_TEST_BROWSER_BENCHMARKS=true \
-VITE_COVERAGE_TRANCHE_ONE_BENCHMARK=true \
 VITE_BENCHMARK_REVISION="$(git rev-parse HEAD)" \
 VITE_BENCHMARK_SOURCE_STATE=clean \
-yarn test-headless --maxWorkers=1 modules/lenses/test/computation-lenses/raster-terrain/coverage-tranche-one-benchmark.spec.ts
+yarn test-benchmarks modules/lenses/test/computation-lenses/raster-terrain/coverage-tranche-one-benchmark.spec.ts
 ```
 
 Use `clean` only when `git status --short` confirms it. Otherwise preserve the patch and new files
-with the log, and set the source state to that artifact's name. The two opt-in flags select and
-enable the benchmark. Retain every metadata/measurement record and the final test outcome.
+with the log, and set the source state to that artifact's name. The launcher selects the benchmark
+inventory and enables workload flags automatically. Retain every metadata/measurement record and
+the final test outcome.
 
 Six cases exercise the actual public example wrappers: focal paired regression, fractional zonal
 distribution, and prepared-coverage dasymetric redistribution, each on 8 × 8 and 32 × 32 grids.

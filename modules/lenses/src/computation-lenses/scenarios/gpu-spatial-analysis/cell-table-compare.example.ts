@@ -34,7 +34,8 @@ export async function runExample(
     zScore: column('zScore', 'float32'),
     status: {
       count: createTransientView(graph, 'count', 'uint32', 1, usage),
-      overflow: createTransientView(graph, 'overflow', 'uint32', 1, usage)
+      overflow: createTransientView(graph, 'overflow', 'uint32', 1, usage),
+      candidateOverflow: createTransientView(graph, 'candidate-overflow', 'uint32', 1, usage)
     }
   };
   graph.add(new GPUCellTableCompare({before: restaurants, after: shops, measure: 'count', output}));

@@ -72,7 +72,7 @@ export async function buildScalarFieldRidgesScenario(session: RasterLensSession)
 export async function run(device: Device) {
   const [{runRasterLens}, {getRasterOperatorEntries}] = await Promise.all([
     import('./raster-lens-harness'),
-    import('../../../gpu-raster/computation-pack')
+    import('../../../gpu-raster/computation-pack/pack')
   ]);
   const formula = getRasterOperatorEntries()['GPUScalarFieldRidges'].formula;
   return runRasterLens({

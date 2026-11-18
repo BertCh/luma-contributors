@@ -98,9 +98,10 @@ defineLensScenario({
             captures['resultAnchorages'] = {
               view: anchorageGeometry.display,
               role: 'output',
-              keySpace: 'anchorages',
+              keySpace: 'anchorages-display-vertex',
               geometry: {
                 kind: 'polygons',
+                featureKeySpace: 'anchorages',
                 offsetsCapture: 'anchoragesDisplayOffsets',
                 valuesCapture: 'zoneDwell',
                 coordinateModel: 'projected',

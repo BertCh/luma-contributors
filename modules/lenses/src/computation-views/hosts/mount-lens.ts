@@ -5,7 +5,7 @@
 import type {LensRecord} from '../registry/view-registration';
 import type {ViewRegistry} from '../registry/view-registry';
 import {createDefaultViewRegistry} from '../registry/default-registry';
-import {getLensScenario} from '../../computation-lenses/registry';
+import {getLensScenario} from '../../computation-lenses/registry-implementation';
 import {getPageCoordinator, type LadderCoordinator} from '../coordinator/ladder-coordinator';
 import {LENS_RUNG_IDS, type LensRungId} from '../types';
 import {viewNodeToDom} from '../view-node';
@@ -72,6 +72,9 @@ export function mountLadderLens(
   const registry = options.registry ?? createDefaultViewRegistry();
   const controller = new LensController({
     ...options,
+    presentation:
+      options.presentation ??
+      (options.scenarioId ? getLensScenario(options.scenarioId)?.presentation : undefined),
     registry,
     guards:
       options.guards ??
@@ -211,6 +214,7 @@ export function mountLadderLens(
           type: 'pick',
           axis,
           keys: keysFor(mark),
+          keySpace: mark.getAttribute('data-key-space') ?? undefined,
           label: mark.getAttribute('aria-label') ?? undefined
         });
         break;
@@ -244,10 +248,11 @@ export function mountLadderLens(
       return;
     const axis = mark.getAttribute('data-axis') ?? 'entity';
     const keys = keysFor(mark);
-    const identity = `${axis}:${keys.join(',')}`;
+    const keySpace = mark.getAttribute('data-key-space') ?? undefined;
+    const identity = `${keySpace ?? ''}:${axis}:${keys.join(',')}`;
     if (hovered === identity) return;
     hovered = identity;
-    dispatch({type: 'hover', axis, keys});
+    dispatch({type: 'hover', axis, keys, keySpace});
   };
   const pointerLeave = (event: Event) => {
     const mark = actionTarget(event);

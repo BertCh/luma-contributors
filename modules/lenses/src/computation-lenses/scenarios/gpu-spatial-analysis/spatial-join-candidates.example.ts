@@ -42,7 +42,7 @@ export async function runExample(
   );
   graph.add(
     new GPUHistogram({
-      input: input.pairs.rightIds,
+      input: input.pairs.rightRows,
       output: tractMatches,
       domain: [0, tractMatches.length - 1]
     })

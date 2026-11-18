@@ -10,7 +10,7 @@ import {
   type GPUComputationRecord
 } from '@luma-contributors/analysis/computation-record';
 import '../../../src/computation-lenses/scenarios/gpu-network/index';
-import {getLensScenario} from '../../../src/computation-lenses/registry';
+import {getLensScenario} from '../../../src/computation-lenses/registry-implementation';
 import {
   extractLensExample,
   findNonPublicImports
@@ -42,7 +42,7 @@ const CASES: SearchCase[] = [
   {
     kebab: 'network-path-extraction',
     element: 'GPUNetworkPathExtraction',
-    outputs: /const \{ids, lineOffsets, pathFound\} = paths\.props\.output;$/
+    outputs: /const \{ids, nodeRows, lineOffsets, pathFound\} = paths\.props\.output;$/
   },
   {
     kebab: 'network-neighborhood',

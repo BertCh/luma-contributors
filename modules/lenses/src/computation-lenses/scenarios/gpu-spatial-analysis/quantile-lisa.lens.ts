@@ -29,6 +29,7 @@ defineLensScenario({
           element: 'GPUQuantileLISA',
           datasets: ['quantile-lisa-cycle/1'],
           seed: 314159,
+          choices: {quantileParameters: 'quantile 4 of 4', permutationCount: 199},
           build: buildQuantileLISAScenario
         })
     };

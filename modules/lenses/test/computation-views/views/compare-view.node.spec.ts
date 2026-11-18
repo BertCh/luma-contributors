@@ -11,8 +11,185 @@ import {
 import {getRunScaleRegistry} from '../../../src/computation-views/views/value-strip';
 import {viewNodeToHtml, findViewNodes} from '../../../src/computation-views/view-node';
 import {makeContext, makeRecord, makeCapture} from '../fixtures/v4-record';
+import {
+  buildBufferStripModel,
+  renderBufferStrip
+} from '../../../src/computation-views/views/buffer-strip';
+import {buildDatumReceiptModel} from '../../../src/computation-views/views/datum-receipt';
+import {
+  assertValidLensRecord,
+  assertValidLensSidecars
+} from '../../../src/computation-lenses/validate-lens-record';
 
 describe('CompareView', () => {
+  test('H4 refuses incompatible raster geometry shapes on otherwise compatible validated records', () => {
+    const context = makeContext({bindings: {buffer: 'result'}});
+    const other = makeRecord();
+    for (const [record, values, shape] of [
+      [context.record, [1, 2, 3, 4], [2, 2]],
+      [other, [10, 20, 30, 40], [4, 1]]
+    ] as const) {
+      record.axes.keySpaces = [{id: 'cells', label: 'cells', size: 4}];
+      record.captures!.snapshots = [makeCapture({values, geometry: {kind: 'raster', shape}})];
+      expect(() => assertValidLensRecord(record)).not.toThrow();
+      expect(() => assertValidLensSidecars(record, record)).not.toThrow();
+    }
+    context.compare = {record: other, label: 'A', referenceLabel: 'B'};
+    expect(COMPARE_VIEW.satisfies(context)).toMatchObject({ok: false});
+    expect(() => buildCompareViewModel(context)).toThrow();
+    other.captures!.snapshots[0].geometry = {kind: 'raster', shape: [2, 2]};
+    expect(COMPARE_VIEW.satisfies(context)).toEqual({ok: true});
+    expect(buildCompareViewModel(context).delta).toEqual([9, 18, 27, 36]);
+    for (const geometry of [
+      {rowDirection: 'north' as const},
+      {cellSize: 2},
+      {origin: [10, 0] as const},
+      {coordinateModel: 'projected' as const},
+      {unit: 'm'}
+    ]) {
+      other.captures!.snapshots[0].geometry = {kind: 'raster', shape: [2, 2], ...geometry};
+      expect(COMPARE_VIEW.satisfies(context)).toMatchObject({ok: false});
+    }
+    other.captures!.snapshots[0].geometry = {
+      kind: 'raster',
+      shape: [2, 2],
+      rowDirection: 'south',
+      cellSize: 1,
+      origin: [0, 2],
+      coordinateModel: 'unknown'
+    };
+    expect(COMPARE_VIEW.satisfies(context)).toEqual({ok: true});
+  });
+  test('G2 compares every vector component and labels the scalar strip component', () => {
+    const context = makeContext({bindings: {buffer: 'result'}});
+    context.record.captures!.snapshots = [
+      makeCapture({
+        id: 'first',
+        iteration: 0,
+        meaning: 'first:8',
+        components: 2,
+        values: [10, 12, 11, 13]
+      }),
+      makeCapture({
+        id: 'second',
+        iteration: 1,
+        meaning: 'first:8',
+        components: 2,
+        values: [10, 92, 11, 93]
+      })
+    ];
+    const compare = buildCompareViewModel(context);
+    const buffer = buildBufferStripModel(context).diff!;
+    expect(compare).toMatchObject({changedCount: 2, equalCount: 0, maxAbsDelta: 80});
+    expect(compare.changedCount).toBe(buffer.changedCount);
+    expect(compare.maxAbsDelta).toBe(buffer.maxAbsDelta);
+    expect(compare.delta).toEqual([0, 0]);
+    expect(viewNodeToHtml(renderCompareView(compare, context))).toContain('component 0');
+  });
+  test('G9 refuses cross-run captures from unrelated domains and incompatible layouts', () => {
+    const context = makeContext({bindings: {buffer: 'rainfall'}});
+    context.record.captures!.snapshots = [
+      makeCapture({name: 'rainfall', keySpace: 'stations', meaning: 'first:8', values: [1, 2]})
+    ];
+    context.record.axes.keySpaces = [{id: 'stations', label: 'stations', size: 10}];
+    context.record.axes.axes[0].keySpace = 'stations';
+    const other = makeRecord();
+    other.runId = 'other-run';
+    other.captures!.runId = other.runId;
+    other.metrics = other.metrics?.map(metrics => ({...metrics, runId: other.runId}));
+    other.axes.keySpaces = [{id: 'cells', label: 'cells', size: 10}];
+    other.captures!.snapshots = [
+      makeCapture({name: 'rainfall', keySpace: 'cells', meaning: 'first:8', values: [10, 20]})
+    ];
+    context.compare = {record: other, label: 'A', referenceLabel: 'B'};
+    for (const record of [context.record, other]) {
+      expect(() => assertValidLensRecord(record)).not.toThrow();
+      expect(() => assertValidLensSidecars(record, record)).not.toThrow();
+    }
+    expect(COMPARE_VIEW.satisfies(context)).toMatchObject({ok: false});
+    expect(() => buildCompareViewModel(context)).toThrow();
+    other.axes.keySpaces = [...context.record.axes.keySpaces];
+    other.axes.axes[0].keySpace = 'stations';
+    other.captures!.snapshots[0].keySpace = 'stations';
+    other.captures!.snapshots[0].components = 2;
+    other.captures!.snapshots[0].values = [10, 12, 20, 22];
+    expect(COMPARE_VIEW.satisfies(context)).toMatchObject({ok: false});
+    other.captures!.snapshots[0].components = 1;
+    other.captures!.snapshots[0].values = [10, 20];
+    expect(COMPARE_VIEW.satisfies(context)).toEqual({ok: true});
+    expect(buildCompareViewModel(context).delta).toEqual([9, 18]);
+  });
+  test('G9 buffer differences also refuse mismatched iteration domains or components', () => {
+    for (const previous of [
+      makeCapture({id: 'first', iteration: 0, keySpace: 'stations', values: [1, 2]}),
+      makeCapture({id: 'first', iteration: 0, components: 2, values: [1, 2, 3, 4]})
+    ]) {
+      const context = makeContext({bindings: {buffer: 'result'}});
+      context.record.captures!.snapshots = [previous, makeCapture({values: [10, 20]})];
+      expect(COMPARE_VIEW.satisfies(context)).toMatchObject({ok: false});
+      expect(buildBufferStripModel(context).diff).toBeUndefined();
+      expect(buildBufferStripModel(context).envelope).toBeUndefined();
+    }
+  });
+  for (const [firstA, firstB, expectedKeys, expectedDelta] of [
+    [8, 8, [8, 9], [10, 10]],
+    [8, 9, [9], [9]],
+    [8, 10, [], []]
+  ] as const) {
+    test(`F1 compares absolute window intersection ${firstA}/${firstB}`, () => {
+      const context = makeContext({bindings: {buffer: 'result'}});
+      context.record.captures!.snapshots = [
+        makeCapture({id: 'first', iteration: 0, meaning: `first:${firstA}`, values: [10, 11]}),
+        makeCapture({id: 'second', iteration: 1, meaning: `first:${firstB}`, values: [20, 21]})
+      ];
+      const model = buildCompareViewModel(context);
+      expect(model.delta).toEqual(expectedDelta);
+      expect(model).toMatchObject({
+        changedCount: expectedKeys.length,
+        equalCount: 0,
+        maxAbsDelta: expectedDelta.length ? Math.max(...expectedDelta) : 0
+      });
+      const keys = findViewNodes(
+        renderCompareView(model, context),
+        node => node.attributes['data-action'] === 'pick'
+      ).map(node => Number(node.attributes['data-key']));
+      expect(keys).toEqual(expectedKeys);
+      expect(buildBufferStripModel(context).diff).toMatchObject({
+        comparedCount: expectedKeys.length,
+        changedCount: expectedKeys.length
+      });
+    });
+  }
+  test('F1 buffer and receipt use absolute keys for windowed vector captures', () => {
+    const context = makeContext({bindings: {entity: 8, buffer: 'result'}});
+    context.record.axes = {
+      ...context.record.axes,
+      keySpaces: [
+        {...context.record.axes.keySpaces[0], size: 10, indexSpace: '1d', shape: undefined}
+      ]
+    };
+    context.record.captures!.snapshots = [
+      makeCapture({meaning: 'first:8', components: 2, values: [10, 12, 11, 13]})
+    ];
+    const model = buildBufferStripModel(context);
+    expect(model.table.map(row => [row.key, row.value])).toEqual([
+      [8, '10, 12'],
+      [9, '11, 13']
+    ]);
+    expect(
+      findViewNodes(
+        renderBufferStrip(model, context),
+        node => node.attributes['data-action'] === 'pick'
+      ).map(node => Number(node.attributes['data-key']))
+    ).toContain(8);
+    expect(buildDatumReceiptModel(context).rows[0].value).toBe('10, 12');
+    expect(
+      findViewNodes(
+        renderBufferStrip(model, context),
+        node => node.attributes['data-action'] === 'pick'
+      ).every(node => node.attributes['data-key-space'] === 'cells')
+    ).toBe(true);
+  });
   test('handles unchanged and nonfinite references without inventing finite deltas', () => {
     const context = makeContext();
     context.record.captures!.snapshots = [

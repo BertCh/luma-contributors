@@ -10,7 +10,7 @@ import {
   createDataFrameElementPackData,
   getDataFrameOperatorEntries,
   DATAFRAME_FAMILY_OPERATORS
-} from '../../../src/gpu-dataframe/computation-pack';
+} from '../../../src/gpu-dataframe/computation-pack/pack';
 import {listTexTerms} from '../../../src/computation-views/views/formula-tex';
 
 const scopes = ['local', 'focal', 'block', 'zonal', 'global', 'frontier', 'pairwise', 'solver'];

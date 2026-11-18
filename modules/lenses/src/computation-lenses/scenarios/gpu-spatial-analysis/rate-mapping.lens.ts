@@ -38,6 +38,8 @@ for (const [element, slug, title] of [
             scenarioId: id,
             element,
             datasets: ['rate-mapping-illustrative/1'],
+            choices:
+              element === 'addSpatialRateRecipe' ? {islandPolicy: 'undefined', scale: 1000} : {},
             build: (graph, uploads) => buildRateMappingScenario(element, graph, uploads)
           })
       };

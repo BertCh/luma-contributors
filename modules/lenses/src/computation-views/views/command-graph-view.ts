@@ -28,6 +28,7 @@ import {foldGraphByDegreeOfInterest, type FoldedGraph, type GraphUnit} from './d
 import {
   buildMemoryAliasing,
   buildPassResourceLadder,
+  formatRecordedResourceBytes,
   type CommandGraphPreset,
   type MemoryAliasing,
   type PassResourceLadder
@@ -541,7 +542,7 @@ function renderAliasing(model: CommandGraphViewModel, context: ViewContext): Vie
                   h(
                     'title',
                     null,
-                    `${resource.id}: ${resource.firstIndex}–${resource.lastIndex}, ${resource.bytes} bytes${resource.retained ? '; retained for observation (lens twin)' : ''}`
+                    `${resource.id}: ${resource.firstIndex}–${resource.lastIndex}, ${formatRecordedResourceBytes(resource)} bytes${resource.retained ? '; retained for observation (lens twin)' : ''}`
                   )
                 )
           )
@@ -552,8 +553,15 @@ function renderAliasing(model: CommandGraphViewModel, context: ViewContext): Vie
     h(
       'p',
       null,
-      `Imported: ${aliasing.imported.map(resource => `${resource.id} (${resource.bytes} bytes)`).join(', ') || '—'}`
+      `Imported: ${aliasing.imported.map(resource => `${resource.id} (${formatRecordedResourceBytes(resource)} bytes)`).join(', ') || '—'}`
     ),
+    aliasing.unknown.length
+      ? h(
+          'p',
+          null,
+          `Unknown ownership: ${aliasing.unknown.map(resource => `${resource.id} (${formatRecordedResourceBytes(resource)} bytes)`).join(', ')}`
+        )
+      : undefined,
     renderReceipt(getReceipt(model)!)
   );
 }
@@ -582,7 +590,7 @@ function getReceipt(model: CommandGraphViewModel): LensReceiptTable | undefined 
         resource.id,
         resource.lifetime === 'unknown' ? 'unknown' : String(resource.firstIndex),
         resource.lifetime === 'unknown' ? 'unknown' : String(resource.lastIndex),
-        String(resource.bytes),
+        formatRecordedResourceBytes(resource),
         resource.retained ? 'retained for observation (lens twin)' : '—'
       ])
     );
@@ -592,7 +600,17 @@ function getReceipt(model: CommandGraphViewModel): LensReceiptTable | undefined 
         resource.id,
         '—',
         '—',
-        String(resource.bytes),
+        formatRecordedResourceBytes(resource),
+        '—'
+      ])
+    );
+    rows.push(
+      ...model.aliasing.unknown.map(resource => [
+        'unknown ownership',
+        resource.id,
+        '—',
+        '—',
+        formatRecordedResourceBytes(resource),
         '—'
       ])
     );

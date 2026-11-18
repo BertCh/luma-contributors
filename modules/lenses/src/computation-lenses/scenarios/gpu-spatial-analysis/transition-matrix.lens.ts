@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import {defineLensScenario, FORMULA_LENS_RUNGS} from '../../define-lens-scenarios';
 import {S2_DATASETS} from './s2-datasets';
 
@@ -15,7 +16,7 @@ defineLensScenario({
     const [{runS2Lens, getS2PeriodMajorColumn}, {runExample}, counties] = await Promise.all([
       import('./s2-lens-run'),
       import('./transition-matrix.example'),
-      import('../../data/s2-midwest-counties.json').then(module => module.default)
+      EMBEDDED_DATASET_LOADERS['s2-midwest-counties.json']().then(module => module.default)
     ]);
     return {
       run: device => {

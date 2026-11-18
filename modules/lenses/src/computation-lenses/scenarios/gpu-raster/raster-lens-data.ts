@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 
@@ -47,7 +48,7 @@ function toLensGrid(file: TGridFile): TLensGrid {
 
 /** 64 × 64 Dixie Fire DEM, 120 m UTM 10N cells, elevations in metres. */
 export async function loadDixieDem(): Promise<TLensGrid & {elevation: Float32Array}> {
-  const file = (await import('../../data/t-dixie-dem.json')).default as TGridFile & {
+  const file = (await EMBEDDED_DATASET_LOADERS['t-dixie-dem.json']()).default as TGridFile & {
     values: number[];
   };
   return {...toLensGrid(file), elevation: Float32Array.from(file.values)};
@@ -61,7 +62,7 @@ export async function loadDixieBands(): Promise<
     bands: Record<'nirBefore' | 'swirBefore' | 'nirAfter' | 'swirAfter', Float32Array>;
   }
 > {
-  const file = (await import('../../data/t-dixie-bands.json')).default as TGridFile & {
+  const file = (await EMBEDDED_DATASET_LOADERS['t-dixie-bands.json']()).default as TGridFile & {
     scale: number;
     noData: number;
     bands: Record<'nirBefore' | 'swirBefore' | 'nirAfter' | 'swirAfter', number[]>;
@@ -83,7 +84,7 @@ export async function loadDixieBands(): Promise<
 export async function loadDixieLandCover(): Promise<
   TLensGrid & {classes: Uint32Array; classNames: Readonly<Record<string, string>>}
 > {
-  const file = (await import('../../data/t-dixie-landcover.json')).default as TGridFile & {
+  const file = (await EMBEDDED_DATASET_LOADERS['t-dixie-landcover.json']()).default as TGridFile & {
     values: number[];
     classes: Record<string, string>;
   };
@@ -94,7 +95,7 @@ export async function loadDixieLandCover(): Promise<
 export async function loadDixiePerimeter(): Promise<
   TLensGrid & {rings: Float32Array[]; outer: boolean[]; coverage: number}
 > {
-  const file = (await import('../../data/t-dixie-perimeter.json')).default as TGridFile & {
+  const file = (await EMBEDDED_DATASET_LOADERS['t-dixie-perimeter.json']()).default as TGridFile & {
     rings: number[][];
     inside: boolean[];
     coverage: number;
@@ -109,7 +110,7 @@ export async function loadDixiePerimeter(): Promise<
 
 /** GFS 10 m wind u/v (m/s) on a 64 × 48 lon/lat grid of 0.25° cells. */
 export async function loadGFSWind(): Promise<TLensGrid & {u: Float32Array; v: Float32Array}> {
-  const file = (await import('../../data/t-gfs-wind.json')).default as TGridFile & {
+  const file = (await EMBEDDED_DATASET_LOADERS['t-gfs-wind.json']()).default as TGridFile & {
     u: number[];
     v: number[];
   };
@@ -118,7 +119,7 @@ export async function loadGFSWind(): Promise<TLensGrid & {u: Float32Array; v: Fl
 
 /** Raw Terrarium RGBA bytes (one value per channel) of a 32 × 32 block at 20 m. */
 export async function loadDixieTerrarium(): Promise<TLensGrid & {rgba: Uint8Array}> {
-  const file = (await import('../../data/t-dixie-terrarium.json')).default as TGridFile & {
+  const file = (await EMBEDDED_DATASET_LOADERS['t-dixie-terrarium.json']()).default as TGridFile & {
     rgba: number[];
   };
   return {...toLensGrid(file), rgba: Uint8Array.from(file.rgba)};

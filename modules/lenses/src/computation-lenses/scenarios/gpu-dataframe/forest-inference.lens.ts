@@ -107,7 +107,7 @@ export async function buildForestInferenceScenario(session: RasterLensSession): 
 export async function run(device: Device) {
   const [{runRasterLens}, {getDataFrameOperatorEntries}] = await Promise.all([
     import('../gpu-raster/raster-lens-harness'),
-    import('../../../gpu-dataframe/computation-pack')
+    import('../../../gpu-dataframe/computation-pack/pack')
   ]);
   const formula = getDataFrameOperatorEntries()['GPUForestInference'].formula;
   return runRasterLens({
@@ -124,6 +124,12 @@ export async function run(device: Device) {
       {id: 'class-score', label: 'row-major class probability', size: 10, indexSpace: '1d'}
     ],
     choices: [
+      {
+        stage: 'representation',
+        name: 'featureLayout',
+        value: 'disabled: rasterStack input',
+        sweepable: false
+      },
       {stage: 'classify', name: 'task', value: 'classification', sweepable: false},
       {stage: 'classify', name: 'transform', value: 'identity', sweepable: false}
     ],

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import {defineLensScenario, DEFAULT_LENS_RUNGS} from '../../define-lens-scenarios';
 import {S2_DATASETS} from './s2-datasets';
 
@@ -11,6 +12,9 @@ defineLensScenario({
   title: 'Seeded population dots in Chicago tracts',
   rungs: DEFAULT_LENS_RUNGS,
   dataset: S2_DATASETS.tracts,
+  presentation: {
+    primaryOutputCaptureId: 'gpu-spatial-analysis-dot-density-snapshots-points-0'
+  },
   load: async () => {
     const [
       {runS2Lens, createS2ChicagoFrame, projectS2Positions, closeS2Rings},
@@ -19,7 +23,7 @@ defineLensScenario({
     ] = await Promise.all([
       import('./s2-lens-run'),
       import('./dot-density.example'),
-      import('../../data/s2-chicago-north-tracts.json').then(module => module.default)
+      EMBEDDED_DATASET_LOADERS['s2-chicago-north-tracts.json']().then(module => module.default)
     ]);
     return {
       run: device => {
@@ -48,7 +52,7 @@ defineLensScenario({
             {id: 'boundary', label: 'path boundary', size: featureCount + 1, indexSpace: '1d'},
             {id: 'run', label: 'sampling status', size: 1, indexSpace: '1d'}
           ],
-          choices: {seed: 2026, dotsPerUnit: 1 / 500},
+          choices: {seed: 2026, dotsPerUnit: 1 / 500, maximumAttempts: 32},
           async build(graph, uploads) {
             const positions = uploads.view('positions', geometry.positions, 'float32x2');
             const ringOffsets = uploads.view('ring-offsets', geometry.ringOffsets, 'uint32');
@@ -95,7 +99,12 @@ defineLensScenario({
                 view: result.points,
                 role: 'output',
                 keySpace: 'point',
-                geometry: {kind: 'points', coordinateModel: 'projected', unit: 'm'}
+                geometry: {
+                  kind: 'points',
+                  coordinateModel: 'projected',
+                  unit: 'm',
+                  countCapture: 'count'
+                }
               },
               sourceIds: {view: result.sourceIds, role: 'output', keySpace: 'point'},
               count: {view: result.count, role: 'output', keySpace: 'run'},

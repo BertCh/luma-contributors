@@ -71,7 +71,12 @@ function createPolygonizeOutput(
       dangleCount: make('dangleCount', 'uint32', 1),
       unusedEdgeCount: make('unusedEdgeCount', 'uint32', 1)
     },
-    status: status('polygon')
+    status: {
+      count: make('polygonCount', 'uint32', 1),
+      requiredRingCount: make('polygonRequiredRingCount', 'uint32', 1),
+      overflow: make('polygonOverflow', 'uint32', 1),
+      candidateOverflow: make('polygonCandidateOverflow', 'uint32', 1)
+    }
   };
 }
 

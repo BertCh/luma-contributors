@@ -13,15 +13,18 @@ import {
 import type {LensRecord} from '../../computation-views/registry/view-registration';
 import type {GuardSpec} from '../../computation-views/guards/guards';
 
-/** Converts scalar analysis choices into guard metadata; later choices win. */
+/** Reads declared choices and observed graph attributes; observations override legacy choices. */
 export function getSpatialGuardMetadata(
   record?: LensRecord
 ): Record<string, string | number | boolean> {
-  return Object.fromEntries(
-    (record?.choices ?? [])
-      .filter(choice => ['string', 'number', 'boolean'].includes(typeof choice.value))
-      .map(choice => [choice.name, choice.value])
-  ) as Record<string, string | number | boolean>;
+  return {
+    ...Object.fromEntries(
+      (record?.choices ?? [])
+        .filter(choice => ['string', 'number', 'boolean'].includes(typeof choice.value))
+        .map(choice => [choice.name, choice.value])
+    ),
+    ...Object.assign({}, ...(record?.graphs ?? []).map(graph => graph.attrs ?? {}))
+  } as Record<string, string | number | boolean>;
 }
 
 /** Adds record-choice fallback while preserving explicitly supplied metadata, including unknowns. */

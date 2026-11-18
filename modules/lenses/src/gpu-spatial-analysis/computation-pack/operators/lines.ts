@@ -633,7 +633,7 @@ export const LINES_OPERATORS: SpatialFamilyOperators = {
     guards: ['coordinate-model'],
     choices: [
       {stage: 'support', name: 'cellSize', unit: 'position units', sweepable: true},
-      {stage: 'support', name: 'timeCellSize', unit: 'seconds', sweepable: true},
+      {stage: 'support', name: 'timeCellSize', unit: 'timestamp unit', sweepable: true},
       {stage: 'neighbourhood', name: 'distance', unit: 'context length unit', sweepable: true},
       {stage: 'operator', name: 'entryCapacity', sweepable: true},
       {stage: 'operator', name: 'hitCapacity', sweepable: true}

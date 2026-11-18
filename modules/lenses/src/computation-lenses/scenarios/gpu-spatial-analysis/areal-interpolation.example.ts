@@ -101,6 +101,11 @@ export async function runExample(
     );
   rasterize('tract-zones', tracts, tractZones, tractRasterOverflow);
   rasterize('area-zones', communityAreas, areaZones, areaRasterOverflow);
+  const overlapOutput = {
+    weights,
+    areas: overlapAreas,
+    sourceTransferredFractions: transferredFractions
+  };
   // #region example
   // tractZones and areaZones: both systems rasterized to one grid by GPUPolygonRasterization
   graph.add(
@@ -113,15 +118,16 @@ export async function runExample(
       targetZones: areaZones,
       sourceZoneCount: tractCount,
       targetZoneCount: areaCount,
-      output: {
-        weights,
-        areas: overlapAreas,
-        sourceTransferredFractions: transferredFractions,
-        status: {overflow: pairOverflow}
-      }
+      output: {...overlapOutput, status: {overflow: pairOverflow}}
     })
   );
-  graph.add(new GPUSpatialLag({weights, values: population, output: areaPopulation}));
+  graph.add(
+    new GPUSpatialLag({
+      weights: {...weights, status: {overflow: pairOverflow}},
+      values: population,
+      output: areaPopulation
+    })
+  );
   // areaPopulation: tract residents shared out to the 13 community areas by overlap area
   // #endregion example
   return {

@@ -2,18 +2,20 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {expect, test, vi} from 'vitest';
+import {afterAll, expect, test, vi} from 'vitest';
 import {
   buildLensTwin,
   parseLensDirective,
   renderLensTwinHtml,
   validateLensTwin
 } from '../../../src/computation-views/twin/static-twin';
-import {
-  getLensScenario,
-  registerLensScenario,
-  toRecordedLensFile
-} from '../../../src/computation-lenses/registry';
+import {getLensScenario} from '../../../src/computation-lenses/registry-implementation';
+import {registerLensScenario, toRecordedLensFile} from '../../../src/computation-lenses/registry';
+
+const disposeRegistrations: (() => void)[] = [];
+afterAll(() => {
+  for (const dispose of disposeRegistrations) dispose();
+});
 import {
   COORDINATE_MODEL_GUARD,
   CONSERVATION_GUARD
@@ -147,7 +149,7 @@ test('evaluates the element guards of the record packs and prints verdict chips'
     load: async () => ({run: async () => makeScanRecord()})
   };
   // Reused Node workers must not register a fixture under a production scenario ID.
-  registerLensScenario(scenario);
+  disposeRegistrations.push(registerLensScenario(scenario));
   const scenarioRecord = {...recorded, scenarioId: scenario.id};
   const twin = buildLensTwin(scenarioRecord, {scenario: scenario.id, rung: 'table'}, {registry});
   expect(guardsFor).toHaveBeenCalledWith(

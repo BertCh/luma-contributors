@@ -33,6 +33,10 @@ registerS2LensScenarios(
     {
       id: 'gpu-spatial-analysis.multiscale-geographically-weighted-regression',
       element: 'GPUMultiscaleGeographicallyWeightedRegression',
+      choices: {
+        'bandwidthSelection.criterion': 'disabled',
+        'bandwidthSelection.searchMethod': 'disabled'
+      },
       title: 'GPUMultiscaleGeographicallyWeightedRegression: explicit illustrative inputs'
     },
     {

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import {assert} from '@luma.gl/core';
 import {defineLensScenario, FORMULA_LENS_RUNGS} from '../../define-lens-scenarios';
 
@@ -10,7 +11,7 @@ const SCENARIO_ID = 'gpu-spatial-analysis.line-length-per-polygon';
 /** Loads streets crossing three named community areas in a shared UTM 16N metre frame. */
 export async function loadLineLengthPerPolygonInputs() {
   const [roadData, areas] = await Promise.all([
-    import('../../data/s3-chicago-area-roads.json').then(module => module.default),
+    EMBEDDED_DATASET_LOADERS['s3-chicago-area-roads.json']().then(module => module.default),
     import('./s3-lens-data').then(module => module.loadS3ChicagoCommunityAreas())
   ]);
   // Both extracts must use the same projected coordinate frame.

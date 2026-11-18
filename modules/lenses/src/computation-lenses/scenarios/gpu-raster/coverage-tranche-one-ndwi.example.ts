@@ -8,6 +8,6 @@ import {GPURasterNDWI, type GPURasterNDWIProps} from '@luma-contributors/analysi
 /** Adds the public contributor with caller-owned input and output views. */
 export async function runExample(graph: GPUCommandGraph, input: GPURasterNDWIProps): Promise<void> {
   // #region example
-  new GPURasterNDWI(input).addToGraph(graph);
+  graph.add(new GPURasterNDWI(input));
   // #endregion example
 }

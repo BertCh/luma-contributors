@@ -3,6 +3,32 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {registerLensScenarios} from '../../define-lens-scenarios';
+import type {GPUComputationAttributeValue} from '@luma-contributors/analysis/computation-record';
+
+/** Choice receipts for the executed point-process branch. */
+export function getPointProcessLensChoices(
+  element: string,
+  choices: Readonly<Record<string, GPUComputationAttributeValue>>
+): Readonly<Record<string, GPUComputationAttributeValue>> {
+  if (element === 'GPUOPTICS') {
+    const method = choices['extractionMethod'] ?? 'dbscan';
+    return {
+      ...choices,
+      ...(method === 'xi'
+        ? {extractionDistance: 'disabled: xi extraction'}
+        : {xi: 'disabled: dbscan extraction', minimumClusterSize: 'disabled: dbscan extraction'})
+    };
+  }
+  if (element === 'GPUPointPatternEnvelope') {
+    return {
+      ...choices,
+      ...(choices['statistic'] === 'extreme-rank'
+        ? {rank: 'disabled: extreme-rank envelope'}
+        : {significanceLevel: `disabled: ${choices['statistic'] ?? 'maximum-deviation'}`})
+    };
+  }
+  return choices;
+}
 
 registerLensScenarios(
   {
@@ -32,6 +58,12 @@ registerLensScenarios(
             runS2Lens(device, {
               scenarioId: 'gpu-spatial-analysis.inhomogeneous-point-pattern',
               element: 'GPUInhomogeneousPointPattern',
+              choices: {
+                bandwidth: 'disabled: supplied intensity',
+                edgeCorrection: 'border',
+                pairCorrelation: 'annular finite difference',
+                selfContribution: 'exclude'
+              },
               datasets: ['point-process-illustrative/1'],
               seed: 7,
               keySpaces: [{id: 'entry', label: 'Point-process input/output row', indexSpace: '1d'}],
@@ -55,6 +87,13 @@ registerLensScenarios(
             runS2Lens(device, {
               scenarioId: 'gpu-spatial-analysis.point-pattern-envelope',
               element: 'GPUPointPatternEnvelope',
+              choices: getPointProcessLensChoices('GPUPointPatternEnvelope', {
+                statistic: 'integrated-squared-deviation',
+                rank: 1,
+                significanceLevel: 0.05,
+                simulationCount: 3,
+                fittedParameters: 'none'
+              }),
               datasets: ['point-process-illustrative/1'],
               seed: 7,
               keySpaces: [{id: 'entry', label: 'Point-process input/output row', indexSpace: '1d'}],
@@ -78,6 +117,7 @@ registerLensScenarios(
             runS2Lens(device, {
               scenarioId: 'gpu-spatial-analysis.spatial-balanced-sample',
               element: 'GPUSpatialBalancedSample',
+              choices: {seed: 7, replicate: 0, allocations: 'stratum 0: 2'},
               datasets: ['point-process-illustrative/1'],
               seed: 7,
               keySpaces: [{id: 'entry', label: 'Point-process input/output row', indexSpace: '1d'}],
@@ -101,6 +141,18 @@ registerLensScenarios(
             runS2Lens(device, {
               scenarioId: 'gpu-spatial-analysis.optics',
               element: 'GPUOPTICS',
+              choices: getPointProcessLensChoices('GPUOPTICS', {
+                minimumSamples: 2,
+                maximumDistance: 2,
+                extractionDistance: 1.5,
+                extractionMethod: 'dbscan',
+                xi: 0.05,
+                minimumClusterSize: 2,
+                neighborIndex: 'auto',
+                orderingMethod: 'sequential',
+                frontierBatchSize: 64,
+                maximumIterations: 4
+              }),
               datasets: ['point-process-illustrative/1'],
               seed: 7,
               keySpaces: [{id: 'entry', label: 'Point-process input/output row', indexSpace: '1d'}],

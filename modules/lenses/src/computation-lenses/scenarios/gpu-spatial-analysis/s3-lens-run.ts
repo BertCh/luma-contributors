@@ -36,18 +36,17 @@ export type S3LensRunProps = Omit<S2LensRunProps, 'build'> & {
     uploads: S3Uploads
   ): Promise<Record<string, S3CaptureSpec>> | Record<string, S3CaptureSpec>;
   /**
-   * Factual run metadata for the element's guards (coordinate model, CRS, conservation sums). A
-   * function receives the captured snapshots, so sums are taken from GPU readbacks, never estimated.
-   * Recorded as `presentation`-stage choices, the convention S1's spatial guards read.
+   * Declared guard metadata (coordinate model, CRS), entering identity as presentation choices.
    */
-  metadata?: S3RunMetadata | ((snapshots: readonly GPUComputationCapture[]) => S3RunMetadata);
+  metadata?: S3RunMetadata;
+  /** Readback-derived guard observations, stored in graph attributes outside comparison identity. */
+  observations?: (snapshots: readonly GPUComputationCapture[]) => S3RunMetadata;
 };
 
 /**
  * Runs one S3 lens scenario through the shared spatial lens run (`runS2Lens`: recording graph,
  * `describe()`, one end-of-run capture), then applies the `context` roles and highlights and
- * appends the run metadata to the record's choices. The run id hashes structure, adapter, dataset
- * and seed, none of which these annotations change.
+ * supplies static guard choices before identification. Readback observations do not change identity.
  */
 export async function runS3Lens(
   device: Device,
@@ -56,6 +55,12 @@ export async function runS3Lens(
   let specs: Record<string, S3CaptureSpec> = {};
   const result = await runS2Lens(device, {
     ...props,
+    recordChoices: [
+      ...(props.recordChoices ?? []),
+      ...Object.entries(props.metadata ?? {}).map(([name, value]) =>
+        createSpatialChoice({name, stage: 'presentation', sweepable: false}, value)
+      )
+    ],
     async build(graph, uploads) {
       specs = await props.build(graph, uploads);
       return Object.fromEntries(
@@ -74,14 +79,14 @@ export async function runS3Lens(
       ...(spec?.highlight && {highlight: spec.highlight})
     };
   });
-  const metadata =
-    typeof props.metadata === 'function' ? props.metadata(snapshots) : (props.metadata ?? {});
-  const metadataChoices = Object.entries(metadata).map(([name, value]) =>
-    createSpatialChoice({name, stage: 'presentation', sweepable: false}, value)
-  );
+  const observations = props.observations?.(snapshots);
   return {
     ...result,
-    choices: [...result.choices, ...metadataChoices],
+    ...(observations && {
+      graphs: result.graphs.map((graph, index) =>
+        index === 0 ? {...graph, attrs: {...graph.attrs, ...observations}} : graph
+      )
+    }),
     ...(result.captures && {captures: {...result.captures, snapshots}})
   };
 }
@@ -89,7 +94,7 @@ export async function runS3Lens(
 /** Geometry tag for coordinates in a dataset's projected frame (metres). */
 export function projectedGeometry(
   kind: 'points' | 'lines' | 'polygons',
-  options: {offsetsCapture?: string; valuesCapture?: string} = {}
+  options: {offsetsCapture?: string; valuesCapture?: string; featureKeySpace?: string} = {}
 ): GPUComputationCaptureGeometry {
   return {kind, coordinateModel: 'projected', unit: 'm', ...options};
 }
@@ -97,7 +102,7 @@ export function projectedGeometry(
 /** Geometry tag for lon/lat coordinates in degrees. */
 export function geographicGeometry(
   kind: 'points' | 'lines' | 'polygons',
-  options: {offsetsCapture?: string; valuesCapture?: string} = {}
+  options: {offsetsCapture?: string; valuesCapture?: string; featureKeySpace?: string} = {}
 ): GPUComputationCaptureGeometry {
   return {kind, coordinateModel: 'geographic', ...options};
 }

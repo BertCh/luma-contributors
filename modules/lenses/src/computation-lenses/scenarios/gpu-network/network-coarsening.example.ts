@@ -38,7 +38,8 @@ export async function runExample(_device: Device, input: NetworkCoarseningExampl
         ids: createTransientView(graph, 'sourceGroups', 'uint32', superedgeCapacity),
         status: {
           count: createTransientView(graph, 'superedgeCount', 'uint32', 1),
-          overflow: createTransientView(graph, 'overflow', 'uint32', 1)
+          overflow: createTransientView(graph, 'overflow', 'uint32', 1),
+          candidateOverflow: createTransientView(graph, 'candidateOverflow', 'uint32', 1)
         }
       },
       edgeTargetGroups: createTransientView(graph, 'targetGroups', 'uint32', superedgeCapacity),
@@ -57,6 +58,21 @@ export async function runExample(_device: Device, input: NetworkCoarseningExampl
     targetGroups: edgeTargetGroups,
     edgeCounts,
     superedgeCount: edges.status.count!,
-    overflow: edges.status.overflow
+    overflow: edges.status.overflow,
+    candidateOverflow: edges.status.candidateOverflow!
   };
+}
+
+/** Refuse capture of a quotient graph that lost live nodes/edges or final superedge rows. */
+export function validateNetworkCoarseningCapture(result: {
+  overflow: number;
+  candidateOverflow: number;
+  groupNodeCount: ArrayLike<number>;
+}): void {
+  if (result.overflow !== 0)
+    throw new Error('Network coarsening overflowed its superedge capacity');
+  if (result.candidateOverflow !== 0)
+    throw new Error('Network coarsening excluded labels or edges (candidateOverflow)');
+  if (Array.from(result.groupNodeCount).some(nodes => nodes === 0))
+    throw new Error('Network coarsening: a zone is empty');
 }

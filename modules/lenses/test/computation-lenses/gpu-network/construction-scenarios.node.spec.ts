@@ -10,7 +10,7 @@ import {
   type GPUComputationRecord
 } from '@luma-contributors/analysis/computation-record';
 import '../../../src/computation-lenses/scenarios/gpu-network/index';
-import {getLensScenario} from '../../../src/computation-lenses/registry';
+import {getLensScenario} from '../../../src/computation-lenses/registry-implementation';
 import {
   extractLensExample,
   findNonPublicImports

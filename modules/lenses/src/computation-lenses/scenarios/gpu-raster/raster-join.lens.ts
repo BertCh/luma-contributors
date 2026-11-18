@@ -27,7 +27,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
     import('./raster-join.example'),
     import('./raster-lens-harness'),
     import('./raster-lens-data'),
-    import('../../../gpu-raster/computation-pack/index')
+    import('../../../gpu-raster/computation-pack/pack')
   ]);
   const [perimeter, bands] = await Promise.all([loadDixiePerimeter(), loadDixieBands()]);
   const entry = getRasterOperatorEntries()['GPURasterJoin'];

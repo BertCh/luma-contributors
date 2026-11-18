@@ -73,6 +73,15 @@ export function getLensRecordSourceText(scenarioId: string): boolean {
 /** Named packed views or whole buffers a lens snapshots at the end of its graph. */
 export type LensSnapshotViews = Readonly<Record<string, GraphDataView | GraphBufferHandle>>;
 
+const captureNamesByGraph = new WeakMap<object, readonly string[]>();
+
+/** Final sidecar names declared before execution, including host-tagged geometry aliases. */
+export function getLensCaptureNames<Parameters>(
+  graph: GPUCommandGraph<Parameters>
+): readonly string[] {
+  return captureNamesByGraph.get(graph) ?? [];
+}
+
 /** Pending end-of-run snapshot: an arena plus the views it copies. */
 export type LensViewSnapshot = {
   /** Arena the tap node copies into; read once with {@link readLensViewSnapshot}. */
@@ -100,10 +109,15 @@ export function addLensViewSnapshot<Parameters>(
   props: {
     id: string;
     views: LensSnapshotViews;
+    /** Final names after host tagging; defaults to the copied view names. */
+    captureNames?: readonly string[];
     elementTypes?: Readonly<Record<string, GPUComputationCaptureElementType>>;
     afterNode?: string;
   }
 ): LensViewSnapshot {
+  captureNamesByGraph.set(graph, [
+    ...new Set([...getLensCaptureNames(graph), ...(props.captureNames ?? Object.keys(props.views))])
+  ]);
   const entries = Object.entries(props.views);
   const slots = entries.map(([name, view]) => {
     if (view instanceof GraphDataView && view.byteStride !== view.rowByteLength) {
@@ -191,12 +205,19 @@ export function submitTimedLensGraph<Parameters>(
  */
 export async function readLensRunMetrics(
   submission: GPUCommandGraphTimedSubmission,
-  props: {runId: string; graphId: string; taps: number; retained?: readonly string[]}
+  props: {
+    runId: string;
+    executionId?: string;
+    graphId: string;
+    taps: number;
+    retained?: readonly string[];
+  }
 ): Promise<GPUComputationMetrics> {
   const timing = await submission.readTimings();
   const stats = submission.encoding.stats;
   return createGPUComputationMetrics({
     runId: props.runId,
+    executionId: props.executionId,
     graph: props.graphId,
     timing: timing ?? {nodes: []},
     encoding: {

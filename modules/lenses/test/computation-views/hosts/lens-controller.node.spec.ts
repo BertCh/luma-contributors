@@ -41,6 +41,73 @@ afterEach(() => {
 });
 
 describe('LensController', () => {
+  test.each([
+    'size',
+    'mapping'
+  ] as const)('R4/R5 restoring an owner restores its %s in the survivor', scenario => {
+    const record = makeV7Record();
+    record.axes = {
+      ...record.axes,
+      keySpaces: [...record.axes.keySpaces, {id: 'external', label: 'external', size: 16}],
+      relations: [
+        {
+          id: 'external-row',
+          from: 'external',
+          to: 'row',
+          cardinality: '1:1',
+          kind: 'function',
+          ref: {function: 'identity'},
+          timeDependent: false
+        }
+      ]
+    };
+    const coordinator = new LadderCoordinator();
+    const first = makeController({
+      record,
+      coordinator,
+      rung: BUFFER_STRIP_VIEW.rung,
+      viewId: BUFFER_STRIP_VIEW.id
+    });
+    const next = {
+      ...record,
+      axes: {
+        ...record.axes,
+        keySpaces: record.axes.keySpaces.map(space =>
+          space.id === 'external' && scenario === 'size' ? {...space, size: 2} : space
+        ),
+        relations: record.axes.relations.map(relation =>
+          scenario === 'mapping'
+            ? {...relation, ref: {function: 'divide', params: {divisor: 2}}}
+            : relation
+        )
+      }
+    };
+    const second = makeController({record: next, coordinator});
+    coordinator.pick('selection', {viewId: 'external-peer', keySpace: 'external'}, [6]);
+    const before = first.getFrame();
+    if (scenario === 'mapping')
+      expect(
+        findViewNodes(
+          before.tree,
+          node => node.attributes['data-key'] === 3 && node.attributes['data-state'] === 'highlight'
+        ).length
+      ).toBeGreaterThan(0);
+    second.destroy();
+    if (scenario === 'size')
+      coordinator.pick('selection', {viewId: 'external-peer', keySpace: 'external'}, [5]);
+    const expected = scenario === 'size' ? 5 : 6;
+    expect(coordinator.resolve('selection', 'row', {keyCount: 16})).toEqual({
+      status: 'ok',
+      keys: new Set([expected])
+    });
+    expect(
+      findViewNodes(
+        first.getFrame().tree,
+        node =>
+          node.attributes['data-key'] === expected && node.attributes['data-state'] === 'highlight'
+      ).length
+    ).toBeGreaterThan(0);
+  });
   test('renders table, an honest disabled fallback and a single generated description', () => {
     const controller = makeController();
     const frame = controller.getFrame();
@@ -134,7 +201,13 @@ describe('LensController', () => {
     expect(viewNodeToHtml(controller.dispatch({type: 'mark-stale'}).tree)).toContain(
       'stale — re-running on this GPU'
     );
-    const record = {...makeV7Record(), runId: 'next-run'};
+    const previous = makeV7Record();
+    const record = {
+      ...previous,
+      runId: 'next-run',
+      captures: {...previous.captures!, runId: 'next-run'},
+      metrics: previous.metrics?.map(metrics => ({...metrics, runId: 'next-run'}))
+    };
     const updated = controller.dispatch({type: 'set-record', record});
     expect(viewNodeToHtml(updated.tree)).not.toContain('lens-badge--stale');
     expect(updated.state.runId).toBe('next-run');
@@ -308,6 +381,50 @@ describe('LensController', () => {
       getViewNodeText(controller.dispatch({type: 'pick', axis: 'entity', keys: [3]}).tree)
     ).toContain('Selection unknown: key space size unknown');
   });
+  test.each([
+    'destroy',
+    'replace'
+  ] as const)('shared record relations survive when one controller chooses to %s', action => {
+    const record = makeV7Record();
+    record.axes = {
+      ...record.axes,
+      keySpaces: [...record.axes.keySpaces, {id: 'external', label: 'external', size: 16}],
+      relations: [
+        {
+          id: 'external-row',
+          from: 'external',
+          to: 'row',
+          cardinality: '1:1',
+          kind: 'function',
+          ref: {function: 'identity'},
+          timeDependent: false
+        }
+      ]
+    };
+    const coordinator = new LadderCoordinator();
+    const first = makeController({record, coordinator});
+    const second = makeController({
+      record,
+      coordinator,
+      rung: BUFFER_STRIP_VIEW.rung,
+      viewId: BUFFER_STRIP_VIEW.id
+    });
+    coordinator.pick('selection', {viewId: 'external', keySpace: 'external'}, [4]);
+    expect(viewNodeToHtml(second.getFrame().tree)).toContain('data-state="highlight"');
+    if (action === 'destroy') first.destroy();
+    else
+      first.dispatch({
+        type: 'set-record',
+        record: {...record, axes: {...record.axes, relations: []}}
+      });
+    coordinator.pick('selection', {viewId: 'external', keySpace: 'external'}, [5]);
+    const resolved = coordinator.resolve('selection', 'row', {keyCount: 16});
+    expect(resolved).toEqual({status: 'ok', keys: new Set([5])});
+    expect(viewNodeToHtml(second.getFrame().tree)).toContain('data-state="highlight"');
+    second.destroy();
+    expect(coordinator.resolve('selection', 'row', {keyCount: 16})).toEqual({status: 'unlinked'});
+  });
+
   test('replacing a record invalidates relations retained by a supplied coordinator', () => {
     const record = makeV7Record();
     record.axes = {

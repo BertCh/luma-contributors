@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import '../../../src/gpu-spatial-analysis/computation-pack/index';
+
 import {describe, expect, test} from 'vitest';
 import type {LensRecord} from '../../../src/computation-views/registry/view-registration';
 import {createDefaultViewRegistry} from '../../../src/computation-views/registry/default-registry';
@@ -20,7 +22,7 @@ import {
   buildNeighbourhoodViewModel,
   buildMoranScatterModel,
   buildFdrStaircaseModel
-} from '../../../src/gpu-spatial-analysis/computation-pack';
+} from '../../../src/gpu-spatial-analysis/computation-pack/views/index';
 
 function makeRecord(standardisation = 'row'): LensRecord {
   const captures: Record<string, number[]> = {

@@ -33,7 +33,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
     import('./isoband-rings.example'),
     import('./raster-lens-harness'),
     import('./raster-lens-data'),
-    import('../../../gpu-raster/computation-pack/index')
+    import('../../../gpu-raster/computation-pack/pack')
   ]);
   const terrain = await loadDixieDem();
   const entry = getRasterOperatorEntries()['GPUIsobandRings'];
@@ -43,7 +43,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
     const source = (grid.height - 1 - row) * grid.width;
     southUp.set(terrain.elevation.subarray(source, source + grid.width), row * grid.width);
   }
-  return runRasterLens({
+  const result = await runRasterLens({
     device,
     scenarioId: SCENARIO_ID,
     domain: 'gpu-raster',
@@ -88,6 +88,15 @@ export async function run(device: Device): Promise<LensScenarioResult> {
         {
           role: 'intermediate',
           meaning: '1 when rings or vertices were dropped for lack of capacity'
+        },
+        1
+      );
+      const edgeOverflow = session.output(
+        'isobandEdgeOverflow',
+        'uint32',
+        {
+          role: 'intermediate',
+          meaning: '1 means intermediate boundary edges were lost; rings are incomplete'
         },
         1
       );
@@ -137,11 +146,18 @@ export async function run(device: Device): Promise<LensScenarioResult> {
         positions,
         ringGroups,
         count,
-        overflow
+        overflow,
+        edgeOverflow
       });
       session.track(parameters);
     }
   });
+  for (const name of ['isobandRingOverflow', 'isobandEdgeOverflow']) {
+    const flag = result.captures?.snapshots.find(capture => capture.name === name);
+    if (!flag || flag.values[0] !== 0)
+      throw new Error(`${SCENARIO_ID}: incomplete rings (${name})`);
+  }
+  return result;
 }
 
 defineLensScenario({

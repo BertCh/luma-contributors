@@ -27,6 +27,7 @@ defineLensScenario({
           element: 'GPUContinuousSpatialSample',
           datasets: ['continuous-frame/1'],
           seed: 43,
+          choices: {spacing: 0.5, seed: 43, waves: 2},
           keySpaces: [{id: 'entry', label: 'Continuous frame sample row', indexSpace: '1d'}],
           build: async (graph, uploads) => {
             const frame = uploads.view(

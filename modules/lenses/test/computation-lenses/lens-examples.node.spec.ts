@@ -8,9 +8,9 @@ import {
   extractLensExample,
   findNonPublicImports,
   getLensExamplePath,
-  LENS_EXAMPLE_MAX_LINES,
-  listLensScenarios
-} from '../../src/computation-lenses';
+  LENS_EXAMPLE_MAX_LINES
+} from '../../src/computation-lenses/lens-example';
+import {listLensScenarios} from '../../src/computation-lenses/index';
 
 const region = (code: string) => `// #region example\n${code}\n// #endregion example`;
 
@@ -46,12 +46,46 @@ describe('lens example mechanism', () => {
     );
   });
   test('accepts only public entry imports, including dynamic imports and re-exports', () => {
+    for (const kind of ['import', 'require']) {
+      expect(findNonPublicImports(`${kind}('@luma.gl/graph/no-such-entry');`)).toEqual([
+        '@luma.gl/graph/no-such-entry'
+      ]);
+      expect(findNonPublicImports(`${kind}('@luma.gl/graph/gpu-core');`)).toEqual([]);
+    }
+    expect(
+      findNonPublicImports(`
+      import '@luma-contributors/lenses/bogus/computation-pack/index';
+      import '@luma-contributors/lenses/computation-lenses/data/example.json';
+      require('@luma-contributors/lenses/computation-lenses/registry');
+    `)
+    ).toEqual([
+      '@luma-contributors/lenses/bogus/computation-pack/index',
+      '@luma-contributors/lenses/computation-lenses/data/example.json',
+      '@luma-contributors/lenses/computation-lenses/registry'
+    ]);
+    expect(
+      findNonPublicImports(`
+      import '@luma-contributors/analysis/gpu-spatial-analysis/not-published';
+      export * from '@luma-contributors/lenses/computation-views/hosts/mount-lens';
+      import '@luma-contributors/analysis/not-an-entry';
+    `)
+    ).toEqual([
+      '@luma-contributors/analysis/gpu-spatial-analysis/not-published',
+      '@luma-contributors/lenses/computation-views/hosts/mount-lens',
+      '@luma-contributors/analysis/not-an-entry'
+    ]);
+    expect(
+      findNonPublicImports(`
+      import '@luma-contributors/lenses/gpu-spatial-analysis/computation-pack/index';
+      import '@luma-contributors/lenses/computation-lenses/data/s1-chicago-tracts.json' with {type: 'json'};
+    `)
+    ).toEqual([]);
     expect(findNonPublicImports('import(`./private`);')).toEqual(['./private']);
     expect(
       findNonPublicImports(`import type {Device} from '@luma.gl/core';
       import {Model} from '@luma.gl/engine';
       import '@luma.gl/graph';
-      import {GPUData} from '@luma.gl/graph/gpu-data';
+      import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
       export {Result} from '@luma-contributors/analysis/computation-record';
       const module = import('@luma.gl/graph/gpu-raster');`)
     ).toEqual([]);

@@ -125,7 +125,21 @@ export async function buildExpansion(
       datumKeySpace: 'row',
       choices: [
         {stage: 'filter', name: 'coordinateModel', value: 'projected', sweepable: false},
-        {stage: 'group', name: 'lagCount', value: 2, sweepable: false}
+        {stage: 'group', name: 'lagCount', value: 2, sweepable: false},
+        {stage: 'group', name: 'maximumDistance', value: marked ? 4 : 5, sweepable: false},
+        ...(temporal
+          ? [
+              {stage: 'group', name: 'temporalLagCount', value: 2, sweepable: false},
+              {stage: 'group', name: 'maximumTimeLag', value: 3, sweepable: false}
+            ]
+          : [
+              {
+                stage: 'operator',
+                name: 'edgeCorrection',
+                value: marked ? 'translation' : 'none',
+                sweepable: false
+              }
+            ])
       ],
       datasetVersion: 'synthetic-four-point-pair-statistics-v1'
     };

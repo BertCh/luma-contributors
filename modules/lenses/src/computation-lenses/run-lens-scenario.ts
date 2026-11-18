@@ -23,7 +23,10 @@ export async function runLensScenario(
   return loaded.run(device, options);
 }
 
-/** Runs a scenario and wraps the result in the recorded envelope written to docs/lens-records. */
+/**
+ * Runs a scenario and returns the encoded file written to docs/lens-records. Decode it with
+ * fromRecordedLensFile before accessing graphs or numeric capture values.
+ */
 export async function captureLensScenarioRecord(
   scenario: Pick<LensScenarioDescriptor, 'id' | 'load'>,
   device: Device,

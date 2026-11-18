@@ -30,8 +30,8 @@ export async function runExample(
 ) {
   const usage = Buffer.STORAGE | Buffer.COPY_SRC;
   const capacity = points.length;
-  const leftIds = createTransientView(graph, 'leftIds', 'uint32', capacity, usage);
-  const rightIds = createTransientView(graph, 'rightIds', 'uint32', capacity, usage);
+  const leftRows = createTransientView(graph, 'leftRows', 'uint32', capacity, usage);
+  const rightRows = createTransientView(graph, 'rightRows', 'uint32', capacity, usage);
   const kinds = createTransientView(graph, 'kinds', 'uint32', capacity, usage);
   const count = createTransientView(graph, 'count', 'uint32', 1, usage);
   const overflow = createTransientView(graph, 'overflow', 'uint32', 1, usage);
@@ -43,7 +43,7 @@ export async function runExample(
       spatialContext,
       left: {kind: 'lines', positions, lineOffsets}, // no `right`: self mode
       output: {
-        pairs: {leftIds, rightIds, status: {count, overflow, requiredCount}},
+        pairs: {leftRows, rightRows, status: {count, overflow, requiredCount}},
         status: {uncertainCount},
         kinds,
         points
@@ -52,5 +52,5 @@ export async function runExample(
   );
   // points, coloured by kinds, are where street segments meet or cross
   // #endregion example
-  return {leftIds, rightIds, kinds, count, overflow, requiredCount, uncertainCount};
+  return {leftRows, rightRows, kinds, count, overflow, requiredCount, uncertainCount};
 }

@@ -35,13 +35,18 @@ export type LensScenarioRow = Pick<LensScenarioDescriptor, 'id' | 'element' | 't
  * `'analyst'`, `rungs` to {@link DEFAULT_LENS_RUNGS} and `defaultRung` to `'result'`.
  */
 export function defineLensScenario(row: LensScenarioRow): void {
-  registerLensScenario({
+  registerLensScenario(createLensScenarioDescriptor(row));
+}
+
+/** Build the same defaulted descriptor without mutating the registry. @internal */
+export function createLensScenarioDescriptor(row: LensScenarioRow): LensScenarioDescriptor {
+  return {
     entry: row.id.split('.')[0],
     audience: 'analyst',
     rungs: DEFAULT_LENS_RUNGS,
     defaultRung: 'result',
     ...row
-  });
+  };
 }
 
 /**

@@ -88,6 +88,7 @@ test('seeded K graph includes GPU simulations and envelope with room inside the 
     const {final} = makeReadbacks();
     const captures = createGPUComputationCaptures({
       runId: record.runId,
+      executionId: record.executionId,
       snapshots: captureNetworkKFunction(final)
     });
     const result = {...record, captures};

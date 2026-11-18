@@ -29,7 +29,12 @@ defineLensScenario({
             {id: 'observation', label: 'observation', size: points.count, indexSpace: '1d'},
             {id: 'status', label: 'run status', size: 1, indexSpace: '1d'}
           ],
-          choices: {minimumClusterSize: 12, minimumSamples: 5},
+          choices: {
+            minimumClusterSize: 12,
+            minimumSamples: 5,
+            times: 'none',
+            timeScale: 'not applicable'
+          },
           async build(graph, uploads) {
             const observations = uploads.view('observations', points.positions, 'float32x2');
             const result = await runExample(graph, {

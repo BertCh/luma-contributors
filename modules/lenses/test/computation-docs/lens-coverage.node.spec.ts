@@ -5,6 +5,7 @@
 import {existsSync, readdirSync, readFileSync} from 'node:fs';
 import {basename, join, relative, resolve, sep} from 'node:path';
 import {describe, expect, it} from 'vitest';
+import {PENDING_LENS_RECORDS, collectPendingRecordFailures} from './pending-lens-records';
 import type {GPUComputationFormulaRef} from '@luma-contributors/analysis/computation-record';
 // Registers every scenario descriptor (lazy; no GPU code runs).
 import '../../src/computation-lenses/scenarios/index';
@@ -13,14 +14,14 @@ import {
   listLensScenarios,
   type LensScenarioDescriptor
 } from '../../src/computation-lenses/index';
+import {parseLensDirective} from '../../src/computation-views/twin/static-twin';
 import {
-  parseLensDirective,
   type LensRungId,
   type OperatorScope,
   type OperatorReduction,
-  type ViewPackData,
   LENS_RUNG_IDS
-} from '../../src/computation-views/index';
+} from '../../src/computation-views/types';
+import {type ViewPackData} from '../../src/computation-views/registry/view-registration';
 import {
   DOCS_ROOT,
   getLensElementId,
@@ -64,6 +65,8 @@ const GPU_DATAFRAME_PENDING: Readonly<Record<string, string>> = {
   GPUValueCube: SPATIOTEMPORAL_REVIEW_PENDING
 };
 const GPU_SPATIAL_ANALYSIS_PENDING: Readonly<Record<string, string>> = {
+  GPUChunkedSpatialWeightsAlgebra:
+    'lenses: pack operator, formula, supported row-local family scenario, directives and records; the whole-CSR algebra scenario uses unsupported higherOrder',
   GPUEnsembleScores: SPATIOTEMPORAL_REVIEW_PENDING,
   GPUGaussianPredictiveScores: SPATIOTEMPORAL_REVIEW_PENDING,
   GPUJacquezTest: SPATIOTEMPORAL_REVIEW_PENDING,
@@ -132,6 +135,12 @@ const GPU_RASTER_PENDING: Readonly<Record<string, string>> = {
   GPURasterEmbeddingCovariance: SPATIOTEMPORAL_REVIEW_PENDING,
   GPURasterEmbeddingDequantize: SPATIOTEMPORAL_REVIEW_PENDING,
   GPURasterEmbeddingKNearestClassifier: SPATIOTEMPORAL_REVIEW_PENDING,
+  // These existing adapters previously exposed only addToGraph; getCommandNodes discovery now
+  // includes them. They have no family scenario yet, rather than silently counting as covered.
+  GPURasterEmbeddingKMeans:
+    'lenses: pack operator, formula, scenario, directives and records (existing raster embedding adapter)',
+  GPURasterEmbeddingNearestPixels:
+    'lenses: pack operator, formula, scenario, directives and records (existing raster embedding adapter)',
   GPURasterEmbeddingLinearProbe: SPATIOTEMPORAL_REVIEW_PENDING,
   GPURasterEmbeddingProjection: SPATIOTEMPORAL_REVIEW_PENDING,
   GPURasterEmbeddingPyramidLevel: SPATIOTEMPORAL_REVIEW_PENDING,
@@ -163,7 +172,7 @@ export const COVERED_ENTRIES: readonly CoveredEntry[] = [
     barrel: 'modules/analysis/src/dataframe-analysis/index.ts',
     docs: ['docs/api/gpu-dataframe-analysis.md', 'docs/api/variable-standardization.md'],
     loadPack: async () =>
-      (await import('../../src/gpu-dataframe/computation-pack/index')).createDataFramePackData(),
+      (await import('../../src/gpu-dataframe/computation-pack/pack')).createDataFramePackData(),
     exempt: {
       GPUWideNumericScan:
         'Low-level word-phase executor shared by exact aggregates and narrowing diagnostics; the domain contracts are documented in reused-analysis-preparation.md.'
@@ -175,21 +184,25 @@ export const COVERED_ENTRIES: readonly CoveredEntry[] = [
     barrel: 'modules/analysis/src/gpu-spatial-analysis/index.ts',
     docs: ['docs/api/gpu-spatial-analysis'],
     requireVariableKinds: true,
-    // Chunked variants run the whole-CSR kernels once per chunk and are verified equal to them, so they
-    // are documented (slot below the whole operator) but have no scenario, pack operator or lens of their own.
-    exempt: {
-      GPUChunkedSpatialWeightsValidation:
-        'Per-chunk dispatch of GPUSpatialWeightsValidation; lens shown on the whole operator.',
-      GPUChunkedSpatialWeightsTranspose:
-        'Per-chunk dispatch of GPUSpatialWeightsTranspose; lens shown on the whole operator.',
-      GPUChunkedSpatialWeightsTransform:
-        'Per-chunk dispatch of GPUSpatialWeightsTransform; lens shown on the whole operator.',
-      GPUChunkedSpatialWeightsAlgebra:
-        'Per-chunk dispatch of GPUSpatialWeightsAlgebra; lens shown on the whole operator.'
+    // These three chunked variants share the demonstrated whole-CSR computation. Algebra remains
+    // pending: its whole-CSR example uses higherOrder, outside the chunked row-local contract.
+    familyScenarios: {
+      GPUChunkedSpatialWeightsValidation: {
+        scenarioId: 'gpu-spatial-analysis.spatial-weights-validation',
+        reason: 'Per-chunk dispatch of the whole-CSR validation kernels.'
+      },
+      GPUChunkedSpatialWeightsTranspose: {
+        scenarioId: 'gpu-spatial-analysis.spatial-weights-transpose',
+        reason: 'Per-chunk dispatch of the whole-CSR transpose kernels.'
+      },
+      GPUChunkedSpatialWeightsTransform: {
+        scenarioId: 'gpu-spatial-analysis.spatial-weights-transform',
+        reason: 'Per-chunk dispatch of the whole-CSR transform kernels.'
+      }
     },
     loadPack: async () =>
       (
-        await import('../../src/gpu-spatial-analysis/computation-pack/index')
+        await import('../../src/gpu-spatial-analysis/computation-pack/pack')
       ).createSpatialPackData(),
     pending: GPU_SPATIAL_ANALYSIS_PENDING
   },
@@ -207,7 +220,7 @@ export const COVERED_ENTRIES: readonly CoveredEntry[] = [
     barrel: 'modules/analysis/src/raster-analysis/index.ts',
     docs: ['docs/api/gpu-raster'],
     loadPack: async () =>
-      (await import('../../src/gpu-raster/computation-pack/index')).getRasterViewPack(),
+      (await import('../../src/gpu-raster/computation-pack/pack')).getRasterViewPack(),
     pending: GPU_RASTER_PENDING
   },
   {
@@ -215,7 +228,7 @@ export const COVERED_ENTRIES: readonly CoveredEntry[] = [
     barrel: 'modules/analysis/src/gpu-terrain/index.ts',
     docs: ['docs/api/gpu-terrain'],
     loadPack: async () =>
-      (await import('../../src/gpu-terrain/computation-pack/index')).getTerrainViewPack(),
+      (await import('../../src/gpu-terrain/computation-pack/pack')).getTerrainViewPack(),
     pending: GPU_TERRAIN_PENDING
   }
 ];
@@ -245,6 +258,8 @@ type CoveredEntry = {
   requireVariableKinds?: boolean;
   /** Exported contributor classes intentionally without a lens, with the reason. */
   exempt?: Readonly<Record<string, string>>;
+  /** Variants demonstrated by a named family scenario, with an explicit justification. */
+  familyScenarios?: Readonly<Record<string, {scenarioId: string; reason: string}>>;
   /** Instance methods that make an exported class a contributor (default `getCommandNodes`). */
   contributorMethods?: readonly string[];
   /**
@@ -371,6 +386,26 @@ function collectEntryFailures(
 ): string[] {
   const failures: string[] = [];
   const names = [...elements.contributors, ...elements.recipes];
+  for (const [name, coverage] of Object.entries(entry.familyScenarios ?? {})) {
+    // This named example executes a cross-row frontier, not the row-local algebra subset.
+    if (
+      name === 'GPUChunkedSpatialWeightsAlgebra' &&
+      coverage.scenarioId === 'gpu-spatial-analysis.spatial-weights-algebra'
+    ) {
+      failures.push(
+        `${name}: family ${coverage.scenarioId} exercises unsupported operation higherOrder`
+      );
+    }
+    const family = scenarios.find(scenario => scenario.id === coverage.scenarioId);
+    if (
+      !names.includes(name) ||
+      !isNonEmpty(coverage.reason) ||
+      family?.entry !== entry.entry ||
+      !names.includes(family.element)
+    ) {
+      failures.push(`${name}: invalid family scenario coverage`);
+    }
+  }
   for (const [name, reason] of Object.entries(entry.exempt ?? {})) {
     if (!elements.contributors.includes(name) || !isNonEmpty(reason)) {
       failures.push(`${name}: invalid exemption (requires an exported contributor and a reason)`);
@@ -383,15 +418,18 @@ function collectEntryFailures(
   }
   for (const name of names) {
     if (elements.contributors.includes(name) && isNonEmpty(entry.exempt?.[name])) continue;
+    const familyScenarioId = entry.familyScenarios?.[name]?.scenarioId;
+    const family = scenarios.find(scenario => scenario.id === familyScenarioId);
+    if (familyScenarioId !== undefined && !family) continue; // Reported above.
     const elementFailures = collectElementFailures(
       entry,
-      name,
+      family?.element ?? name,
       pack,
       pages,
-      scenarios,
+      family ? [family] : scenarios,
       allowMissingRecords,
       hasRecord
-    );
+    ).map(failure => (family ? `${name}: family ${family.id}: ${failure}` : failure));
     const pending = entry.pending?.[name];
     if (pending === undefined) {
       failures.push(...elementFailures);
@@ -427,8 +465,16 @@ function collectElementFailures(
       failures.push(`${name}: (a) missing variableKinds`);
     }
   }
+  const elementScenarios = scenarios.filter(
+    scenario => scenario.entry === entry.entry && scenario.element === name
+  );
+  const selectedScenarioIds = new Set(elementScenarios.map(scenario => scenario.id));
   const directives = pages.flatMap(page =>
-    page.directives.filter(directive => directive.sectionClasses.includes(name))
+    page.directives.filter(
+      directive =>
+        directive.sectionClasses.includes(name) &&
+        selectedScenarioIds.has(directive.attributes['scenario'])
+    )
   );
   const formula = pack.formulas?.[name];
   if (!formula) failures.push(`${name}: (b) missing formula`);
@@ -448,9 +494,6 @@ function collectElementFailures(
   )
     failures.push(`${name}: (b) invalid formula`);
   // `element` is the exported name; the kebab form is only the scenario id's second segment.
-  const elementScenarios = scenarios.filter(
-    scenario => scenario.entry === entry.entry && scenario.element === name
-  );
   if (elementScenarios.length === 0) {
     failures.push(`${name}: (c) missing registered scenario`);
   } else if (
@@ -465,13 +508,13 @@ function collectElementFailures(
     failures.push(`${name}: (d) expected exactly one marker, found ${markerCount}`);
   if (
     !directives.some(directive =>
-      scenarios.some(
+      elementScenarios.some(
         scenario =>
           scenario.id === directive.attributes['scenario'] && scenario.entry === entry.entry
       )
     )
   )
-    failures.push(`${name}: (d) missing directive for a registered ${entry.entry} scenario`);
+    failures.push(`${name}: (d) missing directive for its registered scenario`);
   if (!allowMissingRecords) {
     for (const directive of directives) {
       const scenario = directive.attributes['scenario'];
@@ -541,6 +584,18 @@ describe('lens coverage contract', () => {
     expect(failures).toEqual([]);
   });
 
+  it('allows only explicitly pending captures and retires their entries on capture', () => {
+    expect(scanFailures).toEqual([]);
+    const scenarioIds = new Set(
+      pages.flatMap(page => page.directives.map(directive => directive.attributes['scenario']))
+    );
+    expect(
+      collectPendingRecordFailures(scenarioIds, PENDING_LENS_RECORDS, scenarioId =>
+        existsSync(join(DOCS_ROOT, 'lens-records', `${scenarioId}.json`))
+      )
+    ).toEqual([]);
+  });
+
   for (const entry of SLOT_ENTRIES) {
     it(`${entry} has exactly one slot for every contributor and recipe`, () => {
       const directory = join(DOCS_ROOT, 'api', entry);
@@ -607,6 +662,64 @@ describe('lens coverage contract', () => {
 });
 
 describe('coverage helpers', () => {
+  it('rejects higherOrder algebra as coverage for the chunked row-local variant', () => {
+    expect(
+      readFileSync(
+        join(
+          REPOSITORY_ROOT,
+          'modules/lenses/src/computation-lenses/scenarios/gpu-spatial-analysis/spatial-weights-algebra.example.ts'
+        ),
+        'utf8'
+      )
+    ).toContain("operation: 'higherOrder'");
+    const covered = COVERED_ENTRIES.find(entry => entry.entry === 'gpu-spatial-analysis')!;
+    const family = listLensScenarios().find(
+      scenario => scenario.id === 'gpu-spatial-analysis.spatial-weights-algebra'
+    )!;
+    expect(
+      collectEntryFailures(
+        {
+          ...covered,
+          pending: {},
+          exempt: {},
+          familyScenarios: {
+            GPUChunkedSpatialWeightsAlgebra: {scenarioId: family.id, reason: 'Algebra family'}
+          }
+        },
+        {
+          contributors: ['GPUChunkedSpatialWeightsAlgebra', 'GPUSpatialWeightsAlgebra'],
+          recipes: [],
+          otherClasses: []
+        },
+        {id: 'fixture'},
+        [],
+        [family],
+        true,
+        () => true
+      )
+    ).toContain(
+      'GPUChunkedSpatialWeightsAlgebra: family gpu-spatial-analysis.spatial-weights-algebra exercises unsupported operation higherOrder'
+    );
+  });
+  it('rejects unlisted capture gaps, unexplained entries and obsolete pending entries', () => {
+    expect(
+      collectPendingRecordFailures(
+        new Set(['test.lost', 'test.pending', 'test.captured']),
+        {
+          'test.pending': '',
+          'test.captured': 'Awaiting capture',
+          'test.removed': 'Awaiting capture'
+        },
+        scenarioId => scenarioId === 'test.captured'
+      )
+    ).toEqual([
+      'test.captured: captured; remove pending entry',
+      'test.lost: missing record without a documented pending entry',
+      'test.pending: missing record without a documented pending entry',
+      'test.pending: pending entry needs a reason',
+      'test.removed: pending entry has no directive'
+    ]);
+  });
   const elements = {contributors: ['GPUExample'], recipes: [], otherClasses: []};
   const entry: CoveredEntry = {
     entry: 'test',
@@ -626,6 +739,21 @@ describe('coverage helpers', () => {
       throw new Error('Coverage must never load GPU code');
     }
   };
+  it('does not borrow a sibling graph for a formula exemption', () => {
+    const own = {...scenario, rungs: ['result', 'graph'] as LensRungId[]};
+    const sibling = {...scenario, id: 'test.other', element: 'GPUOther'};
+    const pack: PackCoverageData = {
+      id: 'test',
+      operators: {GPUExample: {scope: 'local', reduction: 'none'}},
+      formulas: {GPUExample: {formula: 'none', reason: 'Structural operator'}}
+    };
+    const page = makePage(
+      '### Example\n<!-- lens:GPUExample -->\n::lens{scenario=test.example rung=result}\n::lens{scenario=test.other rung=graph}'
+    );
+    expect(
+      collectEntryFailures(entry, elements, pack, [page], [own, sibling], true, () => true)
+    ).toContain('GPUExample: (b) formula:none needs an iterations or graph directive');
+  });
   function makePage(text: string, file = 'inline.md'): ScannedPage {
     return {file, markers: scanLensMarkers(file, text), directives: scanLensDirectives(file, text)};
   }
@@ -671,7 +799,7 @@ describe('coverage helpers', () => {
       'GPUExample: (b) missing formula',
       'GPUExample: (c) missing registered scenario',
       'GPUExample: (d) expected exactly one marker, found 0',
-      'GPUExample: (d) missing directive for a registered test scenario'
+      'GPUExample: (d) missing directive for its registered scenario'
     ]);
   });
 
@@ -707,6 +835,63 @@ describe('coverage helpers', () => {
     expect(
       collectEntryFailures(entry, elements, pack, [noFallback], [scenario], true, () => false)
     ).toContain('GPUExample: (b) formula:none needs an iterations or graph directive');
+  });
+
+  it('rejects a sibling scenario in an element section', () => {
+    const pack: PackCoverageData = {
+      id: 'test',
+      operators: {GPUExample: {scope: 'local', reduction: 'none'}},
+      formulas: {GPUExample: {formula: 'none', reason: 'Structural operator'}}
+    };
+    const sibling = {...scenario, id: 'test.other', element: 'GPUOther'};
+    const page = makePage(
+      '### Example\n<!-- lens:GPUExample -->\n::lens{scenario=test.other rung=graph}'
+    );
+    expect(
+      collectEntryFailures(entry, elements, pack, [page], [scenario, sibling], true, () => false)
+    ).toContain('GPUExample: (d) missing directive for its registered scenario');
+  });
+
+  it('covers a variant only through its explicitly named family scenario', () => {
+    const familyEntry: CoveredEntry = {
+      ...entry,
+      familyScenarios: {
+        GPUVariant: {scenarioId: scenario.id, reason: 'Same observable family computation'}
+      }
+    };
+    const familyElements = {...elements, contributors: ['GPUExample', 'GPUVariant']};
+    const pack: PackCoverageData = {
+      id: 'test',
+      operators: {GPUExample: {scope: 'local', reduction: 'none'}},
+      formulas: {GPUExample: {formula: 'none', reason: 'Structural operator'}}
+    };
+    const page = makePage(
+      '### Example\n<!-- lens:GPUExample -->\n::lens{scenario=test.example rung=graph}'
+    );
+    expect(
+      collectEntryFailures(familyEntry, familyElements, pack, [page], [scenario], true, () => true)
+    ).toEqual([]);
+    expect(
+      collectEntryFailures(
+        {
+          ...familyEntry,
+          familyScenarios: {
+            GPUVariant: {scenarioId: 'test.missing', reason: 'Same computation'}
+          }
+        },
+        familyElements,
+        pack,
+        [page],
+        [scenario],
+        true,
+        () => true
+      )
+    ).toContain('GPUVariant: invalid family scenario coverage');
+    expect(
+      collectEntryFailures(familyEntry, familyElements, pack, [], [scenario], true, () => true)
+    ).toContain(
+      'GPUVariant: family test.example: GPUExample: (d) missing directive for its registered scenario'
+    );
   });
 
   it('skips pending elements honestly and fails once they are complete', async () => {

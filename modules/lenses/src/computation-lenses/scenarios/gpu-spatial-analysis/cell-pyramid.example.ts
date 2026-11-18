@@ -23,12 +23,14 @@ export async function runExample(
 ) {
   // #region example
   const usage = Buffer.STORAGE | Buffer.COPY_SRC;
+  const scalar = (name: string) => createTransientView(graph, name, 'uint32', 1, usage);
   const levels = capacities.map((capacity, level) => ({
     cells: createTransientView(graph, `level${level}Cells`, 'uint32x2', capacity, usage),
     counts: createTransientView(graph, `level${level}Counts`, 'uint32', capacity, usage),
     status: {
-      count: createTransientView(graph, `level${level}Count`, 'uint32', 1, usage),
-      overflow: createTransientView(graph, `level${level}Overflow`, 'uint32', 1, usage)
+      count: scalar(`level${level}Count`),
+      overflow: scalar(`level${level}Overflow`),
+      candidateOverflow: scalar(`level${level}CandidateOverflow`)
     }
   }));
   const levelCounts = createTransientView(graph, 'levelCounts', 'uint32', 3, usage);
@@ -40,8 +42,7 @@ export async function runExample(
       output: {levels, levelCounts}
     })
   );
-  // levels[0] is aggregated from the places; each coarser level rolls up the one before it.
-  const [finest, , coarsest] = levels;
   // #endregion example
+  const [finest, , coarsest] = levels;
   return {levels, levelCounts, finest, coarsest};
 }

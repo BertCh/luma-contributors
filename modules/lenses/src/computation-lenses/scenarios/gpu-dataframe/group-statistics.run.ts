@@ -79,6 +79,8 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
       ],
       datumKeySpace: 'group',
       choices: [
+        createDataFrameChoice('aggregate', 'percentiles', 'disabled: median statistic only'),
+        createDataFrameChoice('group', 'keyCount', 'disabled: sparse observed-key mode'),
         createDataFrameChoice('aggregate', 'statistics', 'count, mean, variance, median'),
         createDataFrameChoice('aggregate', 'variance', 'sample', {
           alternatives: ['sample', 'population']

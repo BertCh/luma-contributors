@@ -89,6 +89,8 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
       ],
       datumKeySpace: 'row',
       choices: [
+        createDataFrameChoice('derive', 'utcOffsets', 'disabled: fixed UTC offset'),
+        createDataFrameChoice('derive', 'timeZone', 'disabled: fixed UTC offset'),
         createDataFrameChoice('derive', 'utcOffsetMinutes', 0, {unit: 'min'}),
         createDataFrameChoice('derive', 'firstDayOfWeek', 0, {
           alternatives: [0, 1, 2, 3, 4, 5, 6]

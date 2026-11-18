@@ -380,7 +380,7 @@ it('executes the registered continuous sampling lens and captures complete weigh
   await import(
     '../../../src/computation-lenses/scenarios/gpu-spatial-analysis/continuous-spatial-sample.lens'
   );
-  const {getLensScenario} = await import('../../../src/computation-lenses/registry');
+  const {getLensScenario} = await import('../../../src/computation-lenses/registry-implementation');
   const descriptor = getLensScenario('gpu-spatial-analysis.continuous-spatial-sample')!;
   const loaded = await descriptor.load();
   const result = await loaded.run(device);

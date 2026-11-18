@@ -69,6 +69,8 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
       ],
       datumKeySpace: 'row',
       choices: [
+        createDataFrameChoice('derive', 'logFloor', 'disabled: threshold scale'),
+        createDataFrameChoice('derive', 'exponent', 'disabled: threshold scale'),
         createDataFrameChoice('classify', 'scale', 'threshold', {
           alternatives: Object.keys(GPU_COLOR_SCALE_CODES)
         }),

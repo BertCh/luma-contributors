@@ -15,6 +15,8 @@ export type ZoneEventsExampleInput = {
   tracks: GPUTrajectoryGeometryFields;
   zones: GPUPolygonGeometryFields;
   trackEventCapacity: number;
+  /** Candidate scratch rows; defaults to 131072. Scratch loss can invalidate every result. */
+  candidateCapacity?: number;
 };
 
 /** Runs GPUZoneEvents and returns the views drawn or inspected by its card. */
@@ -29,7 +31,8 @@ export async function runExample(graph: GPUCommandGraph<undefined>, input: ZoneE
       ids: createTransientView(graph, 'eventTracks', 'uint32', eventCapacity, usage),
       status: {
         count: createTransientView(graph, 'eventCount', 'uint32', 1, usage),
-        overflow: createTransientView(graph, 'eventOverflow', 'uint32', 1, usage)
+        overflow: createTransientView(graph, 'eventOverflow', 'uint32', 1, usage),
+        candidateOverflow: createTransientView(graph, 'eventCandidateOverflow', 'uint32', 1, usage)
       },
       eventZones: createTransientView(graph, 'eventZones', 'uint32', eventCapacity, usage),
       eventTypes: createTransientView(graph, 'eventTypes', 'uint32', eventCapacity, usage),
@@ -37,7 +40,10 @@ export async function runExample(graph: GPUCommandGraph<undefined>, input: ZoneE
     },
     dwellTimes: createTransientView(graph, 'dwellTimes', 'float32', trackCount * zoneCount, usage),
     visitCounts: createTransientView(graph, 'visitCounts', 'uint32', trackCount * zoneCount, usage),
-    trackEventCounts: createTransientView(graph, 'trackEventCounts', 'uint32', trackCount, usage)
+    trackEventCounts: createTransientView(graph, 'trackEventCounts', 'uint32', trackCount, usage),
+    status: {
+      candidateOverflow: createTransientView(graph, 'candidateScratchOverflow', 'uint32', 1, usage)
+    }
   };
   // #region example
   // Planar UTM 18N metres, seconds: tracks crossing 13 anchorage polygons.
@@ -45,7 +51,7 @@ export async function runExample(graph: GPUCommandGraph<undefined>, input: ZoneE
     new GPUZoneEvents({
       tracks: {kind: 'trajectories', ...tracks},
       zones: {kind: 'polygons', ...zones},
-      candidateCapacity: 1 << 17,
+      candidateCapacity: input.candidateCapacity ?? 1 << 17,
       trackEventCapacity,
       output
     })

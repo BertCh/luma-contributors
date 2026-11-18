@@ -44,7 +44,9 @@ defineLensScenario({
           choices: {
             spatialContext: 'native planar (UTM 18N metres)',
             densify: 0.25,
-            maximumFrechetVertexCount: 512
+            maximumFrechetVertexCount: 512,
+            frechetEpsilon: 'not applicable',
+            dynamicTimeWarpingBandRadius: 'not applicable'
           },
           metadata: projectedMetadata(data.projected),
           async build(graph, uploads) {

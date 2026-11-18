@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import {defineLensScenario, FORMULA_LENS_RUNGS} from '../../define-lens-scenarios';
 
 const SCENARIO_ID = 'gpu-spatial-analysis.lattice-weights';
@@ -22,7 +23,7 @@ defineLensScenario({
       import('./lattice-weights.example'),
       import('./spatial-scenario-utils'),
       import('../../../gpu-spatial-analysis/computation-pack/operators/weights'),
-      import('../../data/s1-dixie-lattice.json').then(module => module.default)
+      EMBEDDED_DATASET_LOADERS['s1-dixie-lattice.json']().then(module => module.default)
     ]);
     const {width, height} = data;
     return {

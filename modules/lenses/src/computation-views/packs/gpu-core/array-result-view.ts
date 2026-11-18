@@ -30,9 +30,16 @@ export function renderGPUCoreArrayResult(
     panel => getArrayTokenValue(panel.tokens, 'column') !== undefined
   );
   const panels = model.panels.filter(panel => !tablePanels.includes(panel));
-  const tableGroups = ['input', 'context', 'output']
-    .map(role => tablePanels.filter(panel => panel.role === role))
-    .filter(columns => columns.length);
+  const tableGroups = ['input', 'context', 'output'].flatMap(role => {
+    const groups = new Map<string | (typeof tablePanels)[number], typeof tablePanels>();
+    for (const panel of tablePanels.filter(candidate => candidate.role === role)) {
+      const key = panel.capture.keySpace || panel;
+      const columns = groups.get(key) ?? [];
+      columns.push(panel);
+      groups.set(key, columns);
+    }
+    return [...groups.values()];
+  });
   const classed = model.panels.filter(
     panel => panel.role === 'output' && (panel.shape || panel.tokens.includes('stencil'))
   );
@@ -121,7 +128,25 @@ export const GPU_CORE_ARRAY_RESULT_VIEW: ViewRegistration<GPUCoreArrayResultMode
   level: 'realized',
   grain: 'contributor',
   satisfies(context) {
+    if (context.options?.['primaryOutputCaptureId'] !== undefined)
+      return {ok: false, reason: 'Explicit primary outputs use result-view'};
     const captures = getArrayResultCaptures(context);
+    if (
+      captures.length === 1 &&
+      (context.record.captures?.snapshots ?? []).filter(
+        capture => capture.name === captures[0].name && capture.iteration !== undefined
+      ).length > 1
+    )
+      return {ok: false, reason: 'Animated single arrays use result-view'};
+    if (
+      captures.some(
+        capture =>
+          !capture.geometry &&
+          (capture.components ?? 1) > 1 &&
+          !getArrayTokens(capture).includes('complex-magnitude')
+      )
+    )
+      return {ok: false, reason: 'Raw vector entities use result-view'};
     if (!captures.some(capture => capture.role === 'output'))
       return {
         ok: false,

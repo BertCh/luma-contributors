@@ -8,6 +8,7 @@ import type {MarkProvenance} from '../types';
 import {h} from '../view-node';
 import type {ViewElementNode} from '../view-node';
 import {getAdapterLabel, getMostConcreteGraph, getRecordCaptures} from './view-utils';
+import {getDatumKeySpace, getCaptureFirstKey} from './record-queries';
 
 /** A display table with inferred column types and bounded row count. */
 export type TypedTable = {
@@ -99,13 +100,14 @@ function summarizeCapture(
   const entity = context.bindings.entity;
   if (entity !== undefined) {
     const components = capture.components ?? 1;
-    const keySpace = context.record.axes.axes.find(axis => axis.id === 'entity')?.keySpace;
+    const keySpace = getDatumKeySpace(context);
     const index =
       typeof entity === 'number' &&
       Number.isInteger(entity) &&
       entity >= 0 &&
-      (!keySpace || keySpace === capture.keySpace)
-        ? entity * components
+      keySpace !== undefined &&
+      keySpace === capture.keySpace
+        ? (entity - getCaptureFirstKey(capture)) * components
         : -1;
     row[`value at ${Array.isArray(entity) ? `{${entity.length} keys}` : entity}`] =
       index >= 0 && index + components <= capture.values.length
@@ -162,7 +164,11 @@ function buildTableView(context: ViewContext): TableViewModel {
         id: resource.id,
         kind: resource.kind,
         bytes: resource.bytes,
-        ownership: resource.ownership,
+        bytesKind: resource.bytesKind ?? 'unspecified',
+        ownership:
+          resource.ownership === 'imported' && resource.bytesKind === undefined
+            ? 'unknown'
+            : resource.ownership,
         allocation: resource.allocation,
         firstNode: resource.firstNode,
         lastNode: resource.lastNode,

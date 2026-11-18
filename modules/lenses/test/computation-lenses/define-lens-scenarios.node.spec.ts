@@ -5,19 +5,17 @@
 import {expect, test} from 'vitest';
 import {
   DEFAULT_LENS_RUNGS,
-  defineLensScenario,
-  getLensScenario,
-  runLensScenario
-} from '../../src/computation-lenses/index';
+  createLensScenarioDescriptor
+} from '../../src/computation-lenses/define-lens-scenarios';
+import {runLensScenario} from '../../src/computation-lenses/run-lens-scenario';
 
 test('defineLensScenario derives entry, audience, rungs and defaultRung from a data row', () => {
-  defineLensScenario({
+  const descriptor = createLensScenarioDescriptor({
     id: 'define-test.row-defaults',
     element: 'RowDefaults',
     title: 'Row defaults',
     load: async () => ({run: async () => ({}) as never})
   });
-  const descriptor = getLensScenario('define-test.row-defaults');
   expect(descriptor?.entry).toBe('define-test');
   expect(descriptor?.audience).toBe('analyst');
   expect(descriptor?.rungs).toEqual(DEFAULT_LENS_RUNGS);

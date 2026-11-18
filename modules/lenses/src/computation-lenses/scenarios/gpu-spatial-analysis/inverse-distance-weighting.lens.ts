@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import {defineLensScenario, FORMULA_LENS_RUNGS} from '../../define-lens-scenarios';
 import {S2_DATASETS} from './s2-datasets';
 
@@ -21,7 +22,7 @@ defineLensScenario({
       import('./s2-lens-run'),
       import('./inverse-distance-weighting.example'),
       import('@luma-contributors/analysis/analysis-core'),
-      import('../../data/s2-helene-rain.json').then(module => module.default)
+      EMBEDDED_DATASET_LOADERS['s2-helene-rain.json']().then(module => module.default)
     ]);
     return {
       run: device => {

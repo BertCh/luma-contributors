@@ -12,6 +12,41 @@ import {viewNodeToHtml, findViewNodes} from '../../../src/computation-views/view
 import {makeContext, makeCapture} from '../fixtures/v4-record';
 
 describe('DatumReceipt', () => {
+  test('F1 CSR receipt resolves absolute offsets into a windowed target capture', () => {
+    const context = makeContext({
+      bindings: {entity: 0},
+      packs: [{id: 'test', neighbourhoods: {cells: {kind: 'csr-star', relation: 'neighbours'}}}]
+    });
+    context.record.axes.relations = [
+      {
+        id: 'neighbours',
+        from: 'cells',
+        to: 'cells',
+        cardinality: 'N:M',
+        kind: 'buffer',
+        timeDependent: false,
+        ref: {layout: 'csr', resource: 'targets', offsetsResource: 'offsets', capture: 'targets'}
+      }
+    ];
+    context.record.captures!.stamps = [
+      makeCapture({
+        id: 'targets',
+        name: 'targets',
+        keySpace: 'edges',
+        meaning: 'first:8',
+        values: [1, 2]
+      }),
+      makeCapture({
+        id: 'targets-offsets',
+        name: 'targets-offsets',
+        keySpace: 'offsets',
+        values: [8, 10]
+      })
+    ];
+    expect(
+      buildDatumReceiptModel(context).neighbourhoods[0].neighbours?.map(neighbour => neighbour.key)
+    ).toEqual([1, 2]);
+  });
   test('requires a pin and captured value, orders stages, and substitutes captured symbols', () => {
     const context = makeContext();
     expect(DATUM_RECEIPT_VIEW.satisfies(context)).toEqual({ok: true});

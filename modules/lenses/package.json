@@ -50,6 +50,9 @@
     "README.md"
   ],
   "sideEffects": [
+    "./src/computation-views/packs/gpu-core/index.ts",
+    "./dist/computation-views/packs/gpu-core/index.js",
+    "./dist/computation-views/packs/gpu-core/index.cjs",
     "./dist/computation-lenses/scenarios/**",
     "./src/computation-lenses/scenarios/**",
     "./dist/**/computation-pack/**",
@@ -63,6 +66,7 @@
   "peerDependencies": {
     "@luma.gl/core": "~10.0.0-alpha.14",
     "@luma.gl/graph": "~10.0.0-alpha.14",
-    "@luma.gl/shaders": "~10.0.0-alpha.14"
+    "@luma.gl/shaders": "~10.0.0-alpha.14",
+    "apache-arrow": ">=17.0.0"
   }
 }

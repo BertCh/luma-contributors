@@ -20,7 +20,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
     import('./profile-peaks.example'),
     import('../gpu-raster/raster-lens-harness'),
     import('../gpu-raster/raster-lens-data'),
-    import('../../../gpu-terrain/computation-pack/index')
+    import('../../../gpu-terrain/computation-pack/pack')
   ]);
   const data = await loadDixieDem();
   const entry = getTerrainOperatorEntries()['GPUProfilePeaks'];
@@ -66,7 +66,8 @@ export async function run(device: Device): Promise<LensScenarioResult> {
           role: 'output',
           keySpace: 'profile-samples',
           geometry: stripGeometry,
-          meaning: 'prominence of kept peaks (m); NaN elsewhere',
+          meaning:
+            'prominence (m) at mask 1 kept; NaN at mask 0 absent; +Infinity at mask 0xffffffff undecided',
           highlightExtreme: {
             pick: 'max',
             label: value => `most prominent peak: ${value.toFixed(0)} m`
@@ -103,7 +104,8 @@ export async function run(device: Device): Promise<LensScenarioResult> {
           role: 'intermediate',
           keySpace: 'profile-samples',
           geometry: stripGeometry,
-          meaning: 'kept peak mask (1 on a kept peak)'
+          meaning:
+            '1 kept, 0 absent, 0xffffffff undecided with +Infinity prominence; incomplete suppression'
         },
         64
       );

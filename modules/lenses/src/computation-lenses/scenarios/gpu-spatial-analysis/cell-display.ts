@@ -145,7 +145,8 @@ export function createCellTable(
     counts: createTransientView(graph, `${name}Counts`, 'uint32', capacity, usage),
     status: {
       count: createTransientView(graph, `${name}Count`, 'uint32', 1, usage),
-      overflow: createTransientView(graph, `${name}Overflow`, 'uint32', 1, usage)
+      overflow: createTransientView(graph, `${name}Overflow`, 'uint32', 1, usage),
+      candidateOverflow: createTransientView(graph, `${name}CandidateOverflow`, 'uint32', 1, usage)
     }
   };
 }

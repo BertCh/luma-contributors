@@ -24,8 +24,8 @@ export type ExpansionKind =
   | 'network-disruption-recipe'
   | 'facility-scenario-recipe';
 
-/** Small explicitly synthetic CSR keeps bounded detours and component inspection bounded. */
-function createScenario(kind: ExpansionKind): NetworkElementScenario {
+/** Small explicitly synthetic CSR keeps bounded detours and component inspection bounded. @internal */
+export function createNetworkExpansionScenario(kind: ExpansionKind): NetworkElementScenario {
   return {
     id: `gpu-network.${kind}`,
     weights: 'lengthMeters',
@@ -241,6 +241,12 @@ function createScenario(kind: ExpansionKind): NetworkElementScenario {
         throw new Error('Synthetic k-shortest path search did not complete');
       return captured.map(capture => ({
         ...capture,
+        ...(kind === 'network-strongly-connected-components' && {
+          role:
+            capture.name === 'offsets' || capture.name === 'neighbors'
+              ? ('input' as const)
+              : ('output' as const)
+        }),
         keySpace:
           capture.name === 'offsets' || capture.name === 'componentOffsets'
             ? 'node-offset'
@@ -258,8 +264,8 @@ function createScenario(kind: ExpansionKind): NetworkElementScenario {
   };
 }
 export function runExpansion(device: Device, kind: ExpansionKind) {
-  return recordNetworkElement(device, createScenario(kind));
+  return recordNetworkElement(device, createNetworkExpansionScenario(kind));
 }
 export function describeExpansion(device: Device, kind: ExpansionKind) {
-  return describeNetworkElement(device, createScenario(kind));
+  return describeNetworkElement(device, createNetworkExpansionScenario(kind));
 }

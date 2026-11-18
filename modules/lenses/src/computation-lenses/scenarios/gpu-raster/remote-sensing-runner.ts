@@ -8,6 +8,8 @@ import {
 } from '@luma-contributors/analysis/raster-analysis';
 
 import type {Device} from '@luma.gl/core';
+import type {GPUComputationAttributes} from '@luma-contributors/analysis/computation-record';
+import {getRasterOperatorEntries} from '../../../gpu-raster/computation-pack/pack';
 import '../../../gpu-raster/computation-pack/index';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {runRasterLens, type RasterLensSession} from './raster-lens-harness';
@@ -29,6 +31,29 @@ export const REMOTE_SENSING_GRID: GPURasterMetadata = {
 
 /** Executes public contributors and captures actual GPU outputs and graph diagnostics. */
 export function runRemoteSensingLens(device: Device, element: string, scenarioId: string) {
+  const choiceValues: Readonly<Record<string, GPUComputationAttributes>> = {
+    GPURasterSpectralFilter: {
+      filter: 'low-pass',
+      cutoff: 0,
+      sigma: 'disabled: low-pass filter (packed default 0.1)'
+    },
+    GPURasterConservativeRemapping: {weightMode: 'prepare', normalization: 'covered-area'},
+    GPURasterTexture: {radius: 1, levels: 2, symmetric: true},
+    GPURasterTemporal: {operation: 'savitzky-golay', windowLength: 7},
+    GPURasterRegistration: {mode: 'masked-linear', upsampleFactor: 1, ambiguityTolerance: 1e-4},
+    GPURasterRegionGraph: {mergeMode: 'adaptive', mergeThreshold: 1.1, maximumIterations: 3},
+    GPURasterSpectralUnmixing: {constraint: 'simplex', maximumIterations: 256},
+    GPURasterSeasonalBreak: {
+      period: 4,
+      seasonality: 'dummy',
+      fitMethod: 'joint',
+      missingPolicy: 'omit',
+      maximumIterations: 'disabled: joint fit',
+      monitoring: 'historyLength=24, threshold=4, minimumConsecutive=2',
+      minimumSegmentLength: 8,
+      minimumBICGain: 0
+    }
+  };
   return runRasterLens({
     device,
     scenarioId,
@@ -38,11 +63,14 @@ export function runRemoteSensingLens(device: Device, element: string, scenarioId
     coordinateModel: 'projected',
     unit: 'm',
     dataset: {id: 'remote-sensing-synthetic', version: '1'},
-    ...(element === 'GPURasterSpectralFilter' && {
-      choices: [
-        {stage: 'operator', name: 'filter', value: 'low-pass', sweepable: false},
-        {stage: 'operator', name: 'cutoff', value: 0, sweepable: true}
-      ]
+    choices: (getRasterOperatorEntries()[element]?.choices ?? []).map(template => {
+      const value = choiceValues[element]?.[template.name];
+      return {
+        ...template,
+        value,
+        sweepable:
+          template.sweepable && !(typeof value === 'string' && value.startsWith('disabled:'))
+      };
     }),
     keySpaces: [
       {id: 'regions', label: 'original source regions', size: 4},

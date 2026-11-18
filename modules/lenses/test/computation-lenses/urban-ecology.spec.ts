@@ -53,7 +53,8 @@ for (const element of elements)
     switch (element) {
       case 'GPUPopulationSupportAlignment':
         close('output-populations', [6, 4, NaN, NaN, NaN, NaN, NaN, NaN, NaN, NaN, 3, 7]);
-        expect(read('output-validity')).toEqual([0, 2, 1, 2, 2, 0]);
+        expect(read('output-alignmentCode')).toEqual([0, 2, 1, 2, 2, 0]);
+        expect(read('output-matchedMask')).toEqual([1, 0, 0, 0, 0, 1]);
         expect(read('output-status')).toEqual([0, 1, 3, 1]);
         break;
       case 'addSegregationCounterfactualRecipe':
@@ -62,6 +63,8 @@ for (const element of elements)
         break;
       case 'addPopulationSupportAlignmentRecipe':
         close('output-populations', [6, 4, 2, 8]);
+        expect(read('output-alignmentCode')).toEqual([0, 0]);
+        expect(read('output-matchedMask')).toEqual([1, 1]);
         expect(read('status')).toEqual([1, 0, 0, 0]);
         break;
       case 'addStreetProfilesRecipe':
@@ -73,7 +76,13 @@ for (const element of elements)
         expect(pairs[4]).toBeCloseTo(2, 5);
         expect(pairs[5]).toBeCloseTo(Math.PI * 0.02, 5);
         expect(pairs[6]).toBe(1);
-        expect(pairs[8]).toBe(0);
+        expect(pairs).toHaveLength(16);
+        expect(pairs[8]).toBeCloseTo(2, 5);
+        expect(read('output-components')).toEqual([0, 0]);
+        const morphology = read('output-morphology');
+        expect(morphology).toHaveLength(8);
+        expect(morphology[3]).toBeCloseTo(8, 5);
+        expect(morphology[7]).toBeCloseTo(8, 5);
         expect(read('status-complete')).toEqual([1]);
         break;
       }
@@ -90,6 +99,13 @@ for (const element of elements)
         expect(read('status-sampling')).toEqual([8, 8, 0, 0]);
         for (let building = 0; building < 2; building++) {
           const prefix = `output-${building}`;
+          for (const flag of [
+            'status-overflow',
+            'status-candidateOverflow',
+            'boundary-status-overflow',
+            'boundary-status-candidateOverflow'
+          ])
+            expect(read(`${prefix}-${flag}`)).toEqual([0]);
           const count = read(`${prefix}-status-count`)[0];
           expect(count).toBeGreaterThan(0);
           const features = read(`${prefix}-geometry-featureOffsets`);

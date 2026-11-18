@@ -5,10 +5,10 @@
 import type {Device} from '@luma.gl/core';
 import {runExample} from './spatial-correlogram.example';
 import {
-  capturePairStatisticsViews,
+  preparePairStatisticsViews,
   createDataFrameChoice,
   createDataFrameLensGraph,
-  createDataFrameLensRecord,
+  runDataFrameLensRecord,
   getDataFrameElementFormulas,
   loadDataFrameLensData
 } from './dataframe-lens-support';
@@ -50,7 +50,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
         length: 1,
         byteOffset: row * Float32Array.BYTES_PER_ELEMENT
       });
-    const {captures, description} = await capturePairStatisticsViews(device, graph, graphId, {
+    const prepared = preparePairStatisticsViews(device, graph, graphId, {
       positions: {
         view: example.positions,
         role: 'input',
@@ -92,10 +92,10 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
         meaning: 'Row 3 of statistics: centered sum of squares M2.'
       }
     });
-    return createDataFrameLensRecord({
+    return await runDataFrameLensRecord({
       scenarioId: SCENARIO_ID,
       device,
-      graphs: [description],
+      prepared,
       formulas: getDataFrameElementFormulas('GPUSpatialCorrelogram'),
       keySpaces: [
         {id: 'point', label: 'Weather station', size: x.length, indexSpace: '1d'},
@@ -103,6 +103,8 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
         {id: 'statistic', label: 'Summary row', size: 5, indexSpace: '1d'}
       ],
       choices: [
+        createDataFrameChoice('select', 'gridSize', '64 x 64'),
+        createDataFrameChoice('filter', 'studyWindow', 'rectangle'),
         createDataFrameChoice('filter', 'coordinateModel', 'projected', {
           alternatives: ['projected', 'geographic']
         }),
@@ -120,8 +122,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
           sweepable: true
         }),
         createDataFrameChoice('infer', 'pCorrection', 'none')
-      ],
-      captures
+      ]
     });
   } finally {
     example.parameters.destroy();

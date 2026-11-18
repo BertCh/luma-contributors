@@ -13,8 +13,40 @@ import {
 import {findViewNodes, viewNodeToHtml} from '../../../src/computation-views/view-node';
 import {resolveValueScale} from '../../../src/computation-views/views/value-strip';
 import {makeContext, makeCapture} from '../fixtures/v5-record';
+import {decodeRasterImage} from '../fixtures/png';
 
 describe('realized view', () => {
+  test('G3 positions a window in its full 4 by 3 grid and pins absolute cell eight', () => {
+    const context = makeContext({bindings: {entity: 8}});
+    context.record.axes.keySpaces = [
+      {id: 'rows', label: 'rows', size: 12, indexSpace: '2d', shape: [4, 3]}
+    ];
+    context.record.captures!.snapshots = [
+      makeCapture({id: 'window', meaning: 'first:8', values: [10, 20]})
+    ];
+    const tree = renderRealizedView(buildRealizedViewModel(context), context);
+    const image = findViewNodes(tree, node => node.tag === 'image')[0];
+    const decoded = decodeRasterImage(image);
+    expect([decoded.width, decoded.height]).toEqual([4, 3]);
+    // Cell ten is outside the captured window and supplies the no-data palette entry.
+    const noData = decoded.pixels[10];
+    expect(
+      decoded.pixels.map((pixel, key) => (pixel !== noData ? key : -1)).filter(key => key >= 0)
+    ).toEqual([8, 9]);
+    expect(
+      findViewNodes(tree, node => node.attributes['data-state'] === 'selection')[0].attributes
+    ).toMatchObject({x: 0, y: 2});
+  });
+  test('F1 key-frame colours retain captured values when their absolute window starts at eight', () => {
+    const context = makeContext({bindings: {entity: 8}});
+    const original = renderRealizedView(buildRealizedViewModel(context), context);
+    const images = (tree: typeof original) =>
+      findViewNodes(tree, node => node.tag === 'image').map(node => node.attributes['href']);
+    for (const capture of context.record.captures!.snapshots) capture.meaning = 'first:8';
+    expect(images(renderRealizedView(buildRealizedViewModel(context), context))).toEqual(
+      images(original)
+    );
+  });
   test('uses recorded execution, log-spaced frames, one scale and pinned stamps', () => {
     const context = makeContext({bindings: {entity: 1, iteration: 4}});
     expect(REALIZED_VIEW.satisfies(context)).toEqual({ok: true});

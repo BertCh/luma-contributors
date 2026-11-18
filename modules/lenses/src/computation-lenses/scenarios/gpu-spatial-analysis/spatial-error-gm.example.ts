@@ -76,6 +76,7 @@ export async function runExample(device: Device, input: SpatialErrorGMInput) {
     graph,
     output,
     table,
-    weightsOverflow: weightOutput.status.overflow
+    weightsOverflow: weightOutput.status.overflow,
+    weightsCandidateOverflow: queen.outputWeights.status!.candidateOverflow!
   };
 }

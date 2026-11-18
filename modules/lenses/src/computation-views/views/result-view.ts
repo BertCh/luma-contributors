@@ -3,7 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {renderRasterImage, getRasterSamplingNote} from '../encoding/raster-image';
-import {assert} from '@luma.gl/core';
 import type {
   GPUComputationCapture,
   GPUComputationCaptureGeometry
@@ -32,14 +31,23 @@ import {
   getAdapterLabel,
   getAllCaptures,
   getCaptureProvenance,
+  getCaptureRowCount,
+  getCaptureFirstKey,
   getCaptureValue,
-  getPinnedEntity
+  getPinnedEntity,
+  getDatumKeySpace
 } from './record-queries';
 import {getFinalStateCapture, resolveValueScale} from './value-strip';
 import {createGeometryProjection, type GeometryProjection} from './geometry-projection';
 
+type SampledGeometryFeature = {row: number; vertices: [number, number][]};
+type DrawableGeometryFeature = SampledGeometryFeature & {minimumVertices: number};
+type GeometryFeatureSample = {features: SampledGeometryFeature[]; note: string; fallback?: string};
+
 type ResultPanel = {
   capture: GPUComputationCapture;
+  /** Row domain for rendered features, which may differ from coordinate vertex keys. */
+  keySpace?: string;
   geometry?: GPUComputationCaptureGeometry;
   role: 'input' | 'output' | 'context';
   points: [number, number][];
@@ -54,9 +62,10 @@ type ResultPanel = {
   palette: CardPalette;
   scale?: ResolvedScale;
   categories?: number[];
+  featureSample?: GeometryFeatureSample;
 };
 
-/** Final input/output captures and their single shared native-space projection. */
+/** Final captures, drawable feature samples and their single shared native-space projection. */
 export type ResultViewModel = {
   panels: ResultPanel[];
   output: ResultPanel;
@@ -133,12 +142,47 @@ function buildPanel(capture: GPUComputationCapture, context: ViewContext): Resul
         : geometry.kind === 'graph' && capture.values.length
           ? capture
           : undefined;
-  const points =
+  let points =
     geometry?.kind === 'graph'
       ? getPoints(resolve(geometry.layoutCapture))
       : geometry && geometry.kind !== 'raster'
         ? getPoints(capture)
         : [];
+  let pointCount: number | 'unknown' = points.length;
+  if (geometry?.kind === 'points' && geometry.countCapture !== undefined) {
+    const count = resolve(geometry.countCapture);
+    const activeCount = count && getCaptureValue(count, getCaptureFirstKey(count));
+    const resource = context.record.graphs
+      .find(graph => graph.id === capture.graph)
+      ?.resources?.find(
+        resource =>
+          resource.id === capture.resource &&
+          resource.kind === 'buffer' &&
+          resource.bytesKind === 'logical'
+      );
+    const pointCapacity =
+      context.record.axes.keySpaces.find(space => space.id === capture.keySpace)?.size ??
+      (resource ? Math.floor(resource.bytes / ((capture.components ?? 2) * 4)) : undefined);
+    if (
+      count &&
+      getCaptureRowCount(count) === 1 &&
+      (count.components ?? 1) === 1 &&
+      activeCount !== undefined &&
+      Number.isSafeInteger(activeCount) &&
+      activeCount >= 0 &&
+      activeCount !== 0xffffffff &&
+      (pointCapacity === undefined || activeCount <= pointCapacity)
+    ) {
+      pointCount = activeCount;
+      points = points.slice(
+        0,
+        Math.min(points.length, Math.max(0, activeCount - getCaptureFirstKey(capture)))
+      );
+    } else {
+      pointCount = 'unknown';
+      points = [];
+    }
+  }
   const palette = getCardPaletteForVariable(
     context,
     values?.name ?? capture.name,
@@ -146,6 +190,10 @@ function buildPanel(capture: GPUComputationCapture, context: ViewContext): Resul
   );
   const panel: ResultPanel = {
     capture,
+    keySpace:
+      geometry?.kind === 'lines' || geometry?.kind === 'polygons'
+        ? geometry.featureKeySpace
+        : capture.keySpace,
     geometry,
     role: getRole(capture),
     points,
@@ -155,16 +203,18 @@ function buildPanel(capture: GPUComputationCapture, context: ViewContext): Resul
     palette,
     scale: values ? resolveValueScale(context, values.name)?.scale : undefined,
     count: !geometry
-      ? capture.values.length
+      ? getCaptureRowCount(capture)
       : geometry.kind === 'raster'
         ? geometry.shape[0] * geometry.shape[1]
         : geometry.kind === 'points'
-          ? points.length
+          ? pointCount
           : offsets
             ? Math.max(0, offsets.values.length - 1)
             : 'unknown',
     noun: !geometry
-      ? 'values'
+      ? (capture.components ?? 1) > 1
+        ? 'rows'
+        : 'values'
       : geometry.kind === 'raster'
         ? 'cells'
         : geometry.kind === 'graph'
@@ -173,9 +223,15 @@ function buildPanel(capture: GPUComputationCapture, context: ViewContext): Resul
     blockSize: 1,
     notes: []
   };
+  if (pointCount === 'unknown') panel.unknown = 'active point count capture missing or invalid';
   if (palette === 'nom' && values) {
     const frequencies = new Map<number, number>();
-    const finalValues = getFinalStateCapture(context.record, values.name)?.values ?? values.values;
+    const finalValues =
+      geometry?.kind === 'points' && geometry.countCapture !== undefined
+        ? points.map(
+            (_, index) => getCaptureValue(values, getCaptureFirstKey(capture) + index) ?? NaN
+          )
+        : (getFinalStateCapture(context.record, values.name)?.values ?? values.values);
     for (const value of Array.from(finalValues)) {
       if (Number.isFinite(value)) frequencies.set(value, (frequencies.get(value) ?? 0) + 1);
     }
@@ -186,13 +242,21 @@ function buildPanel(capture: GPUComputationCapture, context: ViewContext): Resul
       panel.categories = panel.categories.slice(0, 5);
     }
   }
-  if (points.length)
+  if (points.length && (geometry?.kind === 'points' || geometry?.kind === 'graph'))
     panel.notes.push(
       `${points.length} source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)`
     );
   if (!geometry) {
-    if (capture.values.length > CARD_FIGURE.maxStripCells)
-      panel.notes.push(`${capture.values.length} values, 16 shown`);
+    const keySpace = context.record.axes.keySpaces.find(space => space.id === capture.keySpace);
+    if (
+      keySpace?.size !== undefined &&
+      getCaptureFirstKey(capture) + getCaptureRowCount(capture) > keySpace.size
+    ) {
+      panel.unknown = `capture row range exceeds key space ${keySpace.id} (${keySpace.size} rows); component layout must be recorded, values withheld`;
+      panel.count = 'unknown';
+    }
+    if (getCaptureRowCount(capture) > CARD_FIGURE.maxStripCells)
+      panel.notes.push(`${getCaptureRowCount(capture)} ${panel.noun}, 16 shown`);
     return panel;
   }
   if (geometry.kind === 'raster') {
@@ -236,33 +300,36 @@ function buildPanel(capture: GPUComputationCapture, context: ViewContext): Resul
 /** Builds the final input → output comparison, retaining recorded geometry and feature order. */
 export function buildResultViewModel(context: ViewContext): ResultViewModel {
   const captures = getResultCaptures(context.record);
-  const outputCapture = captures.filter(capture => capture.role === 'output').at(-1);
-  // satisfies requires a tagged output, with or without spatial geometry.
-  assert(outputCapture);
+  const primaryOutputCaptureId = context.options?.['primaryOutputCaptureId'];
+  const outputCapture =
+    primaryOutputCaptureId === undefined
+      ? captures.filter(capture => capture.role === 'output').at(-1)
+      : captures.find(
+          capture => capture.role === 'output' && capture.id === primaryOutputCaptureId
+        );
+  if (!outputCapture)
+    throw new Error('result-view: primaryOutputCaptureId must identify a final output capture');
   const panels = ['context', 'input', 'output'].flatMap(role =>
     captures
       .filter(capture => getRole(capture) === role)
       .map(capture => buildPanel(capture, context))
   );
-  const output = panels[panels.length - 1];
+  const output = panels.find(panel => panel.capture === outputCapture)!;
   const rolePanels = panels.filter(panel => panel.role !== 'context');
   const arrays = rolePanels.filter(panel => !panel.geometry);
+  const loneAnimatedArray =
+    arrays.length === 1 &&
+    getAllCaptures(context.record).filter(
+      capture => capture.name === arrays[0].capture.name && capture.iteration !== undefined
+    ).length > 1;
   const table =
-    arrays.length >= 2 &&
-    (arrays.filter(panel => panel.capture.meaning?.startsWith('column')).length >= 2 ||
-      arrays.some(
-        (panel, index) =>
-          panel.capture.keySpace &&
-          arrays.some(
-            (other, otherIndex) =>
-              index !== otherIndex && other.capture.keySpace === panel.capture.keySpace
-          )
-      ));
+    !loneAnimatedArray &&
+    arrays.some(panel => panel.capture.keySpace || panel.capture.meaning?.startsWith('column'));
   const grammar = output.geometry ? 'geometry' : table ? 'table' : 'strips';
-  if (grammar === 'table')
+  if (grammar === 'table' || grammar === 'geometry')
     for (const panel of arrays) {
       panel.noun = 'rows';
-      panel.notes = panel.notes.filter(note => !note.endsWith('values, 16 shown'));
+      panel.notes = panel.notes.filter(note => !/^(\d+) (values|rows), 16 shown$/.test(note));
     }
   const thumbnail = context.options?.['size'] === 'thumbnail';
   const sameSupport = rolePanels.some(
@@ -287,10 +354,11 @@ export function buildResultViewModel(context: ViewContext): ResultViewModel {
     requestedLayout === 'overlay' || requestedLayout === 'side-by-side'
       ? requestedLayout
       : defaultLayout;
+  const spatialRoleCount = rolePanels.filter(panel => panel.geometry).length;
   const width = thumbnail
     ? CARD_FIGURE.thumbnailWidth
     : layout === 'side-by-side' && grammar === 'geometry'
-      ? (CARD_FIGURE.width - CARD_FIGURE.panelGap * (rolePanels.length - 1)) / rolePanels.length
+      ? (CARD_FIGURE.width - CARD_FIGURE.panelGap * (spatialRoleCount - 1)) / spatialRoleCount
       : CARD_FIGURE.width;
   const height = thumbnail
     ? CARD_FIGURE.thumbnailHeight
@@ -299,39 +367,6 @@ export function buildResultViewModel(context: ViewContext): ResultViewModel {
         (arrays.length - 1) * CARD_FIGURE.stripRowGap +
         2 * CARD_FIGURE.stripPadding
       : CARD_FIGURE.height;
-  const spatialPanels = panels.filter(panel => panel.geometry);
-  const models = spatialPanels.map(panel =>
-    panel.geometry!.kind === 'raster'
-      ? // A raster without a recorded origin is drawn in its own cell space.
-        panel.geometry!.origin
-        ? (panel.geometry!.coordinateModel ?? 'unknown')
-        : ('projected' as const)
-      : (panel.geometry!.coordinateModel ?? 'unknown')
-  );
-  const points = spatialPanels.flatMap(panel => {
-    const geometry = panel.geometry;
-    if (geometry?.kind !== 'raster') return panel.points;
-    const {columns, rows} = getRasterPlacement(geometry);
-    return [
-      [columns(0), rows(0)],
-      [columns(geometry.shape[0]), rows(geometry.shape[1])]
-    ] as [number, number][];
-  });
-  const units = spatialPanels.map(panel =>
-    panel.geometry && 'unit' in panel.geometry ? panel.geometry.unit : undefined
-  );
-  const projection = createGeometryProjection({
-    coordinateModel: models.every(model => model === models[0])
-      ? (models[0] ?? 'unknown')
-      : 'unknown',
-    points,
-    width,
-    height,
-    padding: thumbnail ? CARD_FIGURE.thumbnailPadding : CARD_FIGURE.padding,
-    unit: units.every(unit => unit === units[0]) ? units[0] : undefined
-  });
-  if (!models.every(model => model === models[0]))
-    projection.statement += ' Captures have differing coordinate models; alignment is unknown.';
   const iterations = new Map<number, GPUComputationCapture>();
   if (
     !thumbnail &&
@@ -366,7 +401,250 @@ export function buildResultViewModel(context: ViewContext): ResultViewModel {
     const note = getRasterSamplingNote(...output.geometry.shape, 96, output.palette === 'nom');
     if (note) output.notes.push(`Animation: ${note}`);
   }
-  return {panels, output, projection, layout, thumbnail, width, height, grammar, frames};
+  const spatialPanels = (
+    thumbnail
+      ? [...panels.filter(panel => panel.role === 'context'), output]
+      : panels.flatMap(panel => (panel === output && frames.length ? frames : [panel]))
+  ).filter(panel => panel.geometry && !panel.unknown);
+  const models = spatialPanels.map(panel =>
+    panel.geometry!.kind === 'raster' && !panel.geometry!.origin
+      ? ('projected' as const)
+      : (panel.geometry!.coordinateModel ?? 'unknown')
+  );
+  const points = spatialPanels.flatMap(panel => {
+    const geometry = panel.geometry!;
+    if (geometry.kind === 'lines' || geometry.kind === 'polygons')
+      return getDrawablePanelFeatures(panel).flatMap(feature => feature.vertices);
+    if (geometry.kind !== 'raster') return panel.points;
+    const {columns, rows} = getRasterPlacement(geometry);
+    return [
+      [columns(0), rows(0)],
+      [columns(geometry.shape[0]), rows(geometry.shape[1])]
+    ] as [number, number][];
+  });
+  const units = spatialPanels.map(panel =>
+    'unit' in panel.geometry! ? panel.geometry!.unit : undefined
+  );
+  const projection = createGeometryProjection({
+    coordinateModel: models.every(model => model === models[0])
+      ? (models[0] ?? 'unknown')
+      : 'unknown',
+    points,
+    width,
+    height,
+    padding: thumbnail ? CARD_FIGURE.thumbnailPadding : CARD_FIGURE.padding,
+    unit: units.every(unit => unit === units[0]) ? units[0] : undefined
+  });
+  if (!models.every(model => model === models[0]))
+    projection.statement += ' Captures have differing coordinate models; alignment is unknown.';
+  const model: ResultViewModel = {
+    panels,
+    output,
+    projection,
+    layout,
+    thumbnail,
+    width,
+    height,
+    grammar,
+    frames
+  };
+  for (const panel of new Set([...panels, ...frames])) {
+    if (
+      !panel.unknown &&
+      panel.offsets &&
+      (panel.geometry?.kind === 'lines' || panel.geometry?.kind === 'polygons')
+    ) {
+      panel.featureSample = samplePanelFeatures(panel, model, context);
+      panel.notes.push(panel.featureSample.note);
+    }
+  }
+  return model;
+}
+
+/** Base geometry shares a vertex budget; selection and highlight overlays reuse its samples. */
+function getPanelVertexBudget(model: ResultViewModel): number {
+  return Math.max(
+    3,
+    Math.floor(
+      (model.thumbnail ? 64 : 400) /
+        (Math.max(1, model.panels.length) * Math.max(1, model.frames.length))
+    )
+  );
+}
+
+/** Only offset-delimited, finite, drawable spans contribute to the projection or sampling. */
+function getDrawablePanelFeatures(panel: ResultPanel): DrawableGeometryFeature[] {
+  const polygons = panel.geometry?.kind === 'polygons';
+  const candidates: DrawableGeometryFeature[] = [];
+  const offsets = panel.offsets!.values;
+  const featureCount = Math.max(0, offsets.length - 1);
+  for (let row = 0; row < featureCount; row++) {
+    const first = Number(offsets[row]);
+    const end = Number(offsets[row + 1]);
+    if (
+      !Number.isInteger(first) ||
+      !Number.isInteger(end) ||
+      first < 0 ||
+      end > panel.points.length ||
+      end <= first
+    )
+      continue;
+    const vertices = panel.points.slice(first, end);
+    if (vertices.some(point => !point.every(Number.isFinite))) continue;
+    const closed =
+      vertices.length > 1 &&
+      vertices[0][0] === vertices.at(-1)![0] &&
+      vertices[0][1] === vertices.at(-1)![1];
+    // SVG closes polygons with Z. Sampling a repeated closing vertex would waste a corner.
+    if (polygons && closed) vertices.pop();
+    const minimumVertices = polygons || closed ? 3 : 2;
+    if (vertices.length < minimumVertices) continue;
+    if (
+      polygons
+        ? !findPolygonCorners(vertices)
+        : !vertices.some(point => point[0] !== vertices[0][0] || point[1] !== vertices[0][1])
+    )
+      continue;
+    candidates.push({row, vertices, minimumVertices});
+  }
+  return candidates;
+}
+
+function getPolygonArea(vertices: [number, number][]): number {
+  if (vertices.length < 3) return 0;
+  const [originX, originY] = vertices[0];
+  return vertices.reduce((area, point, index) => {
+    const next = vertices[(index + 1) % vertices.length];
+    return (
+      area + (point[0] - originX) * (next[1] - originY) - (next[0] - originX) * (point[1] - originY)
+    );
+  }, 0);
+}
+
+/** Picks source-order corners with a nonzero triangle area in the displayed coordinate space. */
+function findPolygonCorners(
+  vertices: [number, number][],
+  project: (point: [number, number]) => [number, number] = point => point
+): [number, number][] | undefined {
+  const origin = project(vertices[0]);
+  let second = 0;
+  let maximumDistance = 0;
+  for (let index = 1; index < vertices.length; index++) {
+    const point = project(vertices[index]);
+    const distance = Math.hypot(point[0] - origin[0], point[1] - origin[1]);
+    if (distance > maximumDistance) {
+      maximumDistance = distance;
+      second = index;
+    }
+  }
+  const endpoint = project(vertices[second]);
+  let third = 0;
+  let maximumArea = 0;
+  for (let index = 1; index < vertices.length; index++) {
+    const point = project(vertices[index]);
+    const area = Math.abs(
+      (endpoint[0] - origin[0]) * (point[1] - origin[1]) -
+        (endpoint[1] - origin[1]) * (point[0] - origin[0])
+    );
+    if (Number.isFinite(area) && area > maximumArea) {
+      maximumArea = area;
+      third = index;
+    }
+  }
+  return maximumArea
+    ? [0, second, third].sort((first, last) => first - last).map(index => vertices[index])
+    : undefined;
+}
+
+/** Resolves only the selection image in this panel's declared key space. */
+function getPanelSelection(panel: ResultPanel, context: ViewContext) {
+  return panel.keySpace
+    ? (context.selections?.get(panel.keySpace) ??
+        (panel.keySpace === getDatumKeySpace(context) ? context.selection : undefined))
+    : panel.geometry?.kind === 'lines' || panel.geometry?.kind === 'polygons'
+      ? undefined
+      : context.selection;
+}
+
+/** Selects complete drawable features before allocating their vertex samples. */
+function samplePanelFeatures(
+  panel: ResultPanel,
+  model: ResultViewModel,
+  context: ViewContext
+): GeometryFeatureSample {
+  const polygons = panel.geometry?.kind === 'polygons';
+  const candidates = getDrawablePanelFeatures(panel);
+  const featureCount = Math.max(0, panel.offsets!.values.length - 1);
+  const reservedRows = new Set([
+    panel.keySpace === getDatumKeySpace(context) ? getPinnedEntity(context) : undefined,
+    getHighlight(panel)?.key
+  ]);
+  const authored = candidates.filter(feature => reservedRows.has(feature.row));
+  const minimumVertices = candidates.some(feature => feature.minimumVertices === 3) ? 3 : 2;
+  // A panel always retains its pinned/highlighted drawable features, even at the minimum budget.
+  const vertexBudget = Math.max(getPanelVertexBudget(model), authored.length * minimumVertices);
+  const featureCapacity = Math.floor(vertexBudget / minimumVertices);
+  const liveRows = new Set([
+    ...(getPanelSelection(panel, context)?.highlighted?.keys() ?? []),
+    ...(getPanelSelection(panel, context)?.hovered ?? [])
+  ]);
+  const reserved = [
+    ...authored,
+    ...candidates.filter(feature => !reservedRows.has(feature.row) && liveRows.has(feature.row))
+  ].slice(0, featureCapacity);
+  for (const feature of reserved) reservedRows.add(feature.row);
+  const selected = [
+    ...reserved,
+    ...sampleEvenly(
+      candidates.filter(feature => !reservedRows.has(feature.row)),
+      Math.max(0, featureCapacity - reserved.length)
+    )
+  ].sort((first, second) => first.row - second.row);
+  const verticesPerFeature = selected.length ? Math.floor(vertexBudget / selected.length) : 0;
+  const remainder = selected.length ? vertexBudget % selected.length : 0;
+  const project = (point: [number, number]): [number, number] =>
+    model.projection.project(...point).map(value => Math.round(value * 100) / 100) as [
+      number,
+      number
+    ];
+  const features = selected.flatMap((feature, index) => {
+    let vertices = sampleEvenly(feature.vertices, verticesPerFeature + (index < remainder ? 1 : 0));
+    if (polygons && !getPolygonArea(vertices.map(project))) {
+      const corners = findPolygonCorners(feature.vertices, project);
+      if (!corners) return [];
+      vertices = corners;
+    }
+    if (!polygons) {
+      const projected = vertices.map(project);
+      if (projected.every(point => point[0] === projected[0][0] && point[1] === projected[0][1]))
+        return [];
+    }
+    return [{row: feature.row, vertices}];
+  });
+  const fallback = !featureCount
+    ? 'empty captured geometry'
+    : !features.length
+      ? 'no drawable captured features'
+      : undefined;
+  const shownRows = new Set(features.map(feature => feature.row));
+  const omittedLiveRows = candidates.filter(
+    feature => liveRows.has(feature.row) && !shownRows.has(feature.row)
+  ).length;
+  return {
+    features,
+    note:
+      `${panel.capture.name}: ${features.length} of ${featureCount} ${panel.noun} shown; ` +
+      (fallback ??
+        `evenly sampled features and vertices${polygons ? '' : '; line endpoints retained'}`) +
+      (candidates.length < featureCount
+        ? `; ${featureCount - candidates.length} invalid or uncaptured features omitted`
+        : '') +
+      (features.length < selected.length
+        ? `; ${selected.length - features.length} features below figure resolution omitted`
+        : '') +
+      (omittedLiveRows ? `; ${omittedLiveRows} selected or hovered features omitted` : ''),
+    fallback
+  };
 }
 
 function getMarkStyle(
@@ -407,7 +685,8 @@ function drawMark(
   context: ViewContext,
   value = panel.values ? getCaptureValue(panel.values, key) : undefined,
   role: CardRole = panel.role,
-  selected = getPinnedEntity(context) === key
+  selected = (!panel.keySpace || panel.keySpace === getDatumKeySpace(context)) &&
+    getPinnedEntity(context) === key
 ): ViewElementNode {
   const style = getMarkStyle(panel, shape, value, model, role);
   const provenance = provenanceMarkAttributes(
@@ -415,12 +694,23 @@ function drawMark(
     style['fill'],
     context.idPrefix
   );
-  const interactive = style['data-role'] !== 'context' && role !== 'highlight';
+  const interactive =
+    style['data-role'] !== 'context' &&
+    role !== 'highlight' &&
+    (!(panel.geometry?.kind === 'lines' || panel.geometry?.kind === 'polygons') ||
+      Boolean(panel.keySpace));
   const mark = h(tag, {
     ...style,
     ...attributes,
     'data-provenance': provenance['data-provenance'],
-    ...(interactive ? {'data-action': 'pick', 'data-axis': 'entity', 'data-key': key} : {})
+    ...(interactive
+      ? {
+          'data-action': 'pick',
+          'data-axis': 'entity',
+          'data-key': key,
+          'data-key-space': panel.keySpace
+        }
+      : {})
   });
   const overlays: ViewElementNode[] = [];
   if (getCaptureProvenance(panel.values ?? panel.capture) === 'replay')
@@ -463,16 +753,27 @@ function drawPanel(
   context: ViewContext,
   highlightOnly = false
 ): ViewElementNode[] {
-  if (panel.unknown) return [];
+  const renderFallback = (reason: string) => [
+    h(
+      'text',
+      {
+        class: 'cv-label',
+        x: 8,
+        y: 16,
+        'data-geometry-fallback': panel.role,
+        'data-capture-id': panel.capture.id
+      },
+      reason
+    )
+  ];
+  if (panel.unknown)
+    return !highlightOnly &&
+      (panel.geometry?.kind === 'lines' || panel.geometry?.kind === 'polygons')
+      ? renderFallback(`unknown — ${panel.unknown}`)
+      : [];
   const project = (horizontal: number, vertical: number) =>
     model.projection.project(horizontal, vertical).map(value => Math.round(value * 100) / 100);
-  const panelBudget = Math.max(
-    3,
-    Math.floor(
-      (model.thumbnail ? 64 : 400) /
-        (Math.max(1, model.panels.length) * Math.max(1, model.frames.length))
-    )
-  );
+  const panelBudget = getPanelVertexBudget(model);
   const marks: ViewElementNode[] = [];
   const geometry = panel.geometry;
   if (!geometry) return marks;
@@ -507,7 +808,7 @@ function drawPanel(
         panel.points[
           geometry.kind === 'lines' || geometry.kind === 'polygons'
             ? Number(panel.offsets?.values[key])
-            : key
+            : key - (geometry.kind === 'points' ? getCaptureFirstKey(panel.capture) : 0)
         ];
       const position = point
         ? project(...point)
@@ -537,7 +838,7 @@ function drawPanel(
           columns,
           rows,
           limit: model.thumbnail ? 64 : model.frames.length ? 96 : 160,
-          valueAt: key => Number(panel.capture.values[key]),
+          valueAt: key => getCaptureValue(panel.capture, key) ?? NaN,
           categorical: panel.palette === 'nom',
           flipRows: firstEdge > lastEdge,
           colorFor: value => String(getMarkStyle(panel, 'cell', value, model)['fill']),
@@ -552,8 +853,18 @@ function drawPanel(
         })
       );
     }
-    const selectedKey = highlightOnly ? highlight?.key : getPinnedEntity(context);
-    if (selectedKey !== undefined && selectedKey >= 0 && selectedKey < columns * rows) {
+    const selectionMatches =
+      !panel.capture.keySpace || panel.capture.keySpace === getDatumKeySpace(context);
+    const selectedKeys = highlightOnly
+      ? [highlight?.key]
+      : [
+          ...new Set([
+            selectionMatches ? getPinnedEntity(context) : undefined,
+            ...(getPanelSelection(panel, context)?.highlighted?.keys() ?? [])
+          ])
+        ].slice(0, 64);
+    for (const selectedKey of selectedKeys) {
+      if (selectedKey === undefined || selectedKey < 0 || selectedKey >= columns * rows) continue;
       const column = selectedKey % columns;
       const row = Math.floor(selectedKey / columns);
       const [startX, startY] = project(placement.columns(column), placement.rows(row));
@@ -619,31 +930,29 @@ function drawPanel(
       }
     }
     const pointStride = Math.max(1, Math.ceil(panel.points.length / Math.min(2000, panelBudget)));
-    panel.points.forEach((point, key) => {
-      if ((!highlightOnly && key % pointStride !== 0) || !point.every(Number.isFinite)) return;
+    panel.points.forEach((point, row) => {
+      if ((!highlightOnly && row % pointStride !== 0) || !point.every(Number.isFinite)) return;
+      const key = row + (geometry.kind === 'points' ? getCaptureFirstKey(panel.capture) : 0);
       const [horizontal, vertical] = project(...point);
       addMark('circle', {cx: horizontal, cy: vertical}, key, 'point');
     });
   } else if (panel.offsets) {
-    const stride = Math.max(1, Math.ceil(panel.points.length / panelBudget));
-    for (let feature = 0; feature < panel.offsets.values.length - 1; feature++) {
-      const start = Number(panel.offsets.values[feature]);
-      const vertices = panel.points
-        .slice(Number(panel.offsets.values[feature]), Number(panel.offsets.values[feature + 1]))
-        .filter((_, index) => (start + index) % stride === 0);
-      if (
-        vertices.length < (geometry.kind === 'polygons' ? 3 : 2) ||
-        vertices.some(point => !point.every(Number.isFinite))
-      )
-        continue;
+    const sample = panel.featureSample ?? samplePanelFeatures(panel, model, context);
+    if (sample.fallback && !highlightOnly) return renderFallback(sample.fallback);
+    for (const {row, vertices} of sample.features) {
       const path =
         vertices
           .map((point, index) => `${index ? 'L' : 'M'}${project(...point).join(',')}`)
           .join(' ') + (geometry.kind === 'polygons' ? ' Z' : '');
       addMark(
         'path',
-        {d: path, 'fill-rule': 'evenodd'},
-        feature,
+        {
+          d: path,
+          'fill-rule': 'evenodd',
+          'data-feature-row': row,
+          'data-capture-id': panel.capture.id
+        },
+        row,
         geometry.kind === 'lines' ? 'line' : 'area'
       );
     }
@@ -781,7 +1090,8 @@ function renderSvg(
   model: ResultViewModel,
   context: ViewContext,
   children: ViewElementNode[],
-  panel = false
+  panel = false,
+  displayedPanel = model.output
 ): ViewElementNode {
   const patterns = provenancePatternDefs(context.idPrefix, context.ground);
   for (const pattern of findViewNodes(patterns, node => node.tag === 'pattern')) {
@@ -798,10 +1108,11 @@ function renderSvg(
       preserveAspectRatio: 'xMidYMid meet',
       'data-extent': JSON.stringify(model.projection.extent),
       role: 'img',
-      'aria-label': `Result: ${model.output.capture.name}`
+      'aria-label': `Result: ${displayedPanel.capture.name}`
     },
     patterns,
     crispnessDefs(context.idPrefix),
+    displayedPanel.featureSample ? h('desc', null, displayedPanel.featureSample.note) : null,
     children
   );
 }
@@ -847,7 +1158,7 @@ function renderSpatialGroups(
 
 function renderSpatialFigure(model: ResultViewModel, context: ViewContext): ViewElementNode {
   const contexts = model.panels.filter(panel => panel.role === 'context');
-  const roles = model.panels.filter(panel => panel.role !== 'context');
+  const roles = model.panels.filter(panel => panel.role !== 'context' && panel.geometry);
   if (model.thumbnail) {
     const output = model.output;
     if (
@@ -895,6 +1206,7 @@ function renderSpatialFigure(model: ResultViewModel, context: ViewContext): View
           h(
             'g',
             {class: 'cv-frame', 'data-cv-frame': index, hidden: index !== model.frames.length - 1},
+            frame.featureSample ? h('desc', null, frame.featureSample.note) : null,
             renderSpatialGroups([frame], model, panelContext, frame)
           )
         )
@@ -920,7 +1232,8 @@ function renderSpatialFigure(model: ResultViewModel, context: ViewContext): View
               ...renderOutput(panel, panelContext),
               ...renderScaleTick(panel, model)
             ],
-            true
+            true,
+            panel
           ),
           renderAdjacency(panel, model),
           h(
@@ -952,15 +1265,40 @@ function formatValue(value: number | undefined): string {
   return Number.isInteger(value) ? String(value) : String(Number(value.toPrecision(3)));
 }
 
+function hasCaptureKey(capture: GPUComputationCapture, key: number): boolean {
+  const index = key - getCaptureFirstKey(capture);
+  return index >= 0 && index < getCaptureRowCount(capture);
+}
+
+function formatCaptureEntity(capture: GPUComputationCapture, key: number): string {
+  if (!hasCaptureKey(capture, key)) return formatValue(undefined);
+  const components = capture.components ?? 1;
+  const index = (key - getCaptureFirstKey(capture)) * components;
+  return Array.from({length: components}, (_, component) =>
+    formatValue(Number(capture.values[index + component]))
+  ).join(', ');
+}
+
 function renderStrips(model: ResultViewModel, context: ViewContext): ViewElementNode {
-  const rows = model.panels.filter(panel => !panel.geometry && panel.role !== 'context');
+  const availableRows = model.panels.filter(panel => !panel.geometry && panel.role !== 'context');
+  const selectedRows = new Set(
+    [
+      model.output,
+      ...availableRows.filter(panel => panel.role === 'input').slice(0, 1),
+      ...availableRows
+    ].slice(0, 4)
+  );
+  const rows = model.thumbnail
+    ? availableRows.filter(panel => selectedRows.has(panel))
+    : availableRows;
   const padding = model.thumbnail ? CARD_FIGURE.thumbnailPadding : CARD_FIGURE.stripPadding;
   const gutter = model.thumbnail ? 0 : 72;
   const rowHeight = model.thumbnail
     ? Math.min(28, (model.height - padding * 2) / rows.length - 4)
     : CARD_FIGURE.stripRowHeight;
   const renderRow = (panel: ResultPanel, row: number): ViewElementNode => {
-    const count = panel.capture.values.length;
+    const count = panel.unknown ? 0 : getCaptureRowCount(panel.capture);
+    const first = getCaptureFirstKey(panel.capture);
     const keys: (number | null)[] = model.thumbnail
       ? Array.from({length: Math.min(8, count)}, (_, index) => index)
       : count <= 16
@@ -976,8 +1314,8 @@ function renderStrips(model: ResultViewModel, context: ViewContext): ViewElement
         1,
         ...rows.map(candidate =>
           Math.min(
-            model.thumbnail ? 8 : candidate.capture.values.length > 16 ? 17 : 16,
-            candidate.capture.values.length
+            model.thumbnail ? 8 : getCaptureRowCount(candidate.capture) > 16 ? 17 : 16,
+            getCaptureRowCount(candidate.capture)
           )
         )
       );
@@ -1024,6 +1362,7 @@ function renderStrips(model: ResultViewModel, context: ViewContext): ViewElement
           );
         return;
       }
+      key += first;
       marks.push(
         drawMark(
           'rect',
@@ -1071,7 +1410,7 @@ function renderStrips(model: ResultViewModel, context: ViewContext): ViewElement
           h(
             'text',
             {class: 'cv-cell-text', x: left + cellWidth / 2, y: top + rowHeight / 2},
-            formatValue(getCaptureValue(panel.capture, key))
+            formatCaptureEntity(panel.capture, key)
           )
         );
     });
@@ -1101,35 +1440,84 @@ function renderStrips(model: ResultViewModel, context: ViewContext): ViewElement
 
 function renderTable(model: ResultViewModel, context: ViewContext): ViewElementNode {
   const columns = model.panels.filter(panel => !panel.geometry && panel.role !== 'context');
-  const rowCount = Math.max(...columns.map(panel => panel.capture.values.length));
+  // A missing key space supplies no evidence of alignment, even for equally sized columns.
+  const groups = new Map<string | ResultPanel, ResultPanel[]>();
+  for (const panel of columns) {
+    const key = panel.capture.keySpace || panel;
+    const group = groups.get(key) ?? [];
+    group.push(panel);
+    groups.set(key, group);
+  }
+  if (!model.thumbnail)
+    return h(
+      'div',
+      {class: 'cv-result-tables'},
+      [...groups.values()].map(group => renderTableGroup(group, context))
+    );
+  // A picture of one domain must not imply a positional join with another domain.
+  const primaryColumns = [...groups.values()].find(group => group.includes(model.output)) ?? [
+    model.output
+  ];
+  const first = Math.min(...primaryColumns.map(panel => getCaptureFirstKey(panel.capture)));
+  const rowCount =
+    Math.max(
+      ...primaryColumns.map(
+        panel => getCaptureFirstKey(panel.capture) + getCaptureRowCount(panel.capture)
+      )
+    ) - first;
   const count = Math.min(6, rowCount);
-  if (model.thumbnail)
-    return renderSvg(
-      model,
-      context,
-      Array.from({length: count}, (_, row) =>
-        h(
-          'g',
-          null,
-          columns.map((panel, column) =>
-            h('rect', {
-              ...getCardMarkAttributes(panel.role, 'cell', {scale: CARD_FIGURE.thumbnailMarkScale}),
-              x: 6 + (column * 148) / columns.length,
-              y: 6 + row * 14,
-              width: 148 / columns.length,
-              height: 14,
-              'data-provenance': getCaptureProvenance(panel.capture)
-            })
-          )
+  return renderSvg(
+    model,
+    context,
+    Array.from({length: count}, (_, row) =>
+      h(
+        'g',
+        null,
+        primaryColumns.map((panel, column) =>
+          !panel.unknown && hasCaptureKey(panel.capture, first + row)
+            ? h('rect', {
+                ...getCardMarkAttributes(panel.role, 'cell', {
+                  scale: CARD_FIGURE.thumbnailMarkScale
+                }),
+                x: 6 + (column * 148) / primaryColumns.length,
+                y: 6 + row * 14,
+                width: 148 / primaryColumns.length,
+                height: 14,
+                'data-provenance': getCaptureProvenance(panel.capture)
+              })
+            : null
         )
       )
-    );
+    )
+  );
+}
+
+function renderTableGroup(columns: ResultPanel[], context: ViewContext): ViewElementNode {
+  const usableColumns = columns.filter(panel => !panel.unknown);
+  const first = usableColumns.length
+    ? Math.min(...usableColumns.map(panel => getCaptureFirstKey(panel.capture)))
+    : 0;
+  const rowCount =
+    Math.max(
+      first,
+      ...usableColumns.map(
+        panel => getCaptureFirstKey(panel.capture) + getCaptureRowCount(panel.capture)
+      )
+    ) - first;
+  const count = Math.min(6, rowCount);
+  const keySpace = columns[0].capture.keySpace;
+  const label = context.record.axes.keySpaces.find(space => space.id === keySpace)?.label;
   const columnAttributes = (panel: ResultPanel) => ({
     class: panel.role === 'output' ? 'cv-col--output' : undefined
   });
   return h(
     'table',
-    {class: 'cv-table'},
+    {class: 'cv-table', 'data-key-space': keySpace},
+    h(
+      'caption',
+      null,
+      `${keySpace ? (label ? `${label} (${keySpace})` : keySpace) : `${columns[0].capture.name}: row domain unknown`} · ${rowCount} rows`
+    ),
     h(
       'thead',
       null,
@@ -1152,7 +1540,9 @@ function renderTable(model: ResultViewModel, context: ViewContext): ViewElementN
             h(
               'td',
               {...columnAttributes(panel), 'data-provenance': getCaptureProvenance(panel.capture)},
-              formatValue(getCaptureValue(panel.capture, row))
+              panel.unknown
+                ? formatValue(undefined)
+                : formatCaptureEntity(panel.capture, first + row)
             )
           )
         )
@@ -1195,6 +1585,13 @@ function renderMotion(model: ResultViewModel, context: ViewContext): ViewElement
           bindings: {},
           idPrefix: `${context.idPrefix}-key-frame-${index}`
         };
+        const smallFrame: ResultPanel = {...frame, featureSample: undefined};
+        if (
+          !smallFrame.unknown &&
+          smallFrame.offsets &&
+          (smallFrame.geometry?.kind === 'lines' || smallFrame.geometry?.kind === 'polygons')
+        )
+          smallFrame.featureSample = samplePanelFeatures(smallFrame, smallModel, frameContext);
         return h(
           'figure',
           null,
@@ -1203,9 +1600,13 @@ function renderMotion(model: ResultViewModel, context: ViewContext): ViewElement
                 {...smallModel, panels: [frame], output: frame, frames: []},
                 frameContext
               )
-            : renderSvg(smallModel, frameContext, [
-                h('g', null, drawPanel(frame, smallModel, frameContext))
-              ]),
+            : renderSvg(
+                smallModel,
+                frameContext,
+                [h('g', null, drawPanel(smallFrame, smallModel, frameContext))],
+                false,
+                smallFrame
+              ),
           h(
             'figcaption',
             null,
@@ -1234,6 +1635,11 @@ export function renderResultView(model: ResultViewModel, context: ViewContext): 
     'section',
     {class: 'lens-view lens-result-view'},
     figure,
+    model.grammar === 'geometry' &&
+      !model.thumbnail &&
+      model.panels.some(panel => !panel.geometry && panel.role !== 'context')
+      ? renderTable(model, context)
+      : null,
     model.thumbnail
       ? null
       : [
@@ -1257,13 +1663,19 @@ export const RESULT_VIEW: ViewRegistration<ResultViewModel> = {
   level: 'realized',
   grain: 'contributor',
   satisfies: context =>
-    getResultCaptures(context.record).some(capture => capture.role === 'output')
-      ? {ok: true}
-      : {
-          ok: false,
-          reason:
-            'no captures tagged role: output (set capture.role, and capture.geometry for spatial results, when recording)'
-        },
+    context.options?.['primaryOutputCaptureId'] !== undefined &&
+    !getResultCaptures(context.record).some(
+      capture =>
+        capture.role === 'output' && capture.id === context.options?.['primaryOutputCaptureId']
+    )
+      ? {ok: false, reason: 'primaryOutputCaptureId does not identify a final output capture'}
+      : getResultCaptures(context.record).some(capture => capture.role === 'output')
+        ? {ok: true}
+        : {
+            ok: false,
+            reason:
+              'no captures tagged role: output (set capture.role, and capture.geometry for spatial results, when recording)'
+          },
   build: buildResultViewModel,
   render: renderResultView,
   describe: (model, context) => ({

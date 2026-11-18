@@ -2,7 +2,33 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUComputationGraph} from '@luma-contributors/analysis/computation-record';
+import type {
+  GPUComputationGraph,
+  GPUComputationResource
+} from '@luma-contributors/analysis/computation-record';
+
+type ResourceSize = Pick<GPUComputationResource, 'id' | 'bytes' | 'bytesKind'>;
+
+export function formatRecordedResourceBytes(
+  resource: Pick<ResourceSize, 'bytes' | 'bytesKind'>
+): string {
+  if (resource.bytesKind === 'unavailable') return 'unavailable';
+  return resource.bytesKind === 'logical'
+    ? String(resource.bytes)
+    : resource.bytesKind === 'lower-bound'
+      ? `≥${resource.bytes}`
+      : resource.bytesKind === 'estimated'
+        ? `~${resource.bytes}`
+        : `${resource.bytes} (precision unknown)`;
+}
+
+function getRecordedOwnership(
+  resource: GPUComputationResource
+): GPUComputationResource['ownership'] {
+  return resource.ownership === 'imported' && resource.bytesKind === undefined
+    ? 'unknown'
+    : resource.ownership;
+}
 
 /** Alternate projections of the same ordered command graph. */
 export type CommandGraphPreset = 'algorithm' | 'pass-resource' | 'memory-aliasing';
@@ -25,11 +51,13 @@ export type MemoryAliasing = {
       firstIndex?: number;
       lastIndex?: number;
       bytes: number;
+      bytesKind?: GPUComputationResource['bytesKind'];
       retained: boolean;
       lifetime: 'known' | 'unknown';
     }[];
   }[];
-  imported: {id: string; bytes: number}[];
+  imported: ResourceSize[];
+  unknown: ResourceSize[];
   scheduleLength: number;
   /** Peak of live physical allocation bytes; retained resources remain live through the schedule. */
   peakTransientBytes: number;
@@ -42,9 +70,11 @@ export type MemoryAliasing = {
 
 /** Builds one cell per node/resource pair, merging reads and writes without duplicate cells. */
 export function buildPassResourceLadder(graph: GPUComputationGraph): PassResourceLadder {
-  const resources: PassResourceLadder['resources'] = (graph.resources ?? []).map(
-    ({id, ownership, allocation}) => ({id, ownership, allocation})
-  );
+  const resources: PassResourceLadder['resources'] = (graph.resources ?? []).map(resource => ({
+    id: resource.id,
+    ownership: getRecordedOwnership(resource),
+    allocation: resource.allocation
+  }));
   const resourceIds = new Set(resources.map(resource => resource.id));
   const cells: PassResourceLadder['cells'] = [];
   for (const node of graph.nodes) {
@@ -79,11 +109,18 @@ export function buildMemoryAliasing(graph: GPUComputationGraph): MemoryAliasing 
   const allocations: MemoryAliasing['allocations'] = [];
   const byAllocation = new Map<string, MemoryAliasing['allocations'][number]>();
   const imported: MemoryAliasing['imported'] = [];
+  const unknown: MemoryAliasing['unknown'] = [];
   let logicalBytes = 0;
   let totalsKnown = graph.resources !== undefined;
   for (const resource of graph.resources ?? []) {
-    if (resource.ownership === 'imported') {
-      imported.push({id: resource.id, bytes: resource.bytes});
+    const ownership = getRecordedOwnership(resource);
+    if (ownership !== 'transient') {
+      (ownership === 'imported' ? imported : unknown).push({
+        id: resource.id,
+        bytes: resource.bytes,
+        bytesKind: resource.bytesKind
+      });
+      if (ownership === 'unknown') totalsKnown = false;
       continue;
     }
     logicalBytes += resource.bytes;
@@ -112,6 +149,7 @@ export function buildMemoryAliasing(graph: GPUComputationGraph): MemoryAliasing 
       firstIndex: lifetime === 'known' ? firstIndex : undefined,
       lastIndex: lifetime === 'known' ? lastIndex : undefined,
       bytes: resource.bytes,
+      bytesKind: resource.bytesKind,
       retained: resource.retained ?? false,
       lifetime
     });
@@ -137,12 +175,19 @@ export function buildMemoryAliasing(graph: GPUComputationGraph): MemoryAliasing 
   return {
     allocations,
     imported,
+    unknown,
     scheduleLength: graph.nodes.length,
     peakTransientBytes,
     aliasedSavingsBytes:
       logicalBytes - allocations.reduce((total, allocation) => total + allocation.bytes, 0),
     totalsKnown,
     savingsKnown:
-      graph.resources !== undefined && allocations.every(allocation => allocation.allocationKnown)
+      graph.resources !== undefined &&
+      unknown.length === 0 &&
+      allocations.every(
+        allocation =>
+          allocation.allocationKnown &&
+          allocation.resources.every(resource => resource.bytesKind === 'logical')
+      )
   };
 }

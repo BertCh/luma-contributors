@@ -53,7 +53,7 @@ export async function runExample(
     values: getGPUTimeWindowFilterParameterValues({start: 151 * day, end: 243 * day})
   });
   const output = {
-    ids: createOutput('ids', timestamps.length),
+    rows: createOutput('rows', timestamps.length),
     status: {count: createOutput('count', 1), overflow: createOutput('overflow', 1)},
     outputMask: createOutput('outputMask', timestamps.length) // 1 inside the window
   };
@@ -65,11 +65,11 @@ export async function runExample(
       output
     })
   );
-  const {ids, status, outputMask} = output;
+  const {rows, status, outputMask} = output;
   // #endregion example
   return {
     timestamps,
-    ids,
+    rows,
     count: status.count,
     outputMask,
     window: {start: 151 * day, end: 243 * day},

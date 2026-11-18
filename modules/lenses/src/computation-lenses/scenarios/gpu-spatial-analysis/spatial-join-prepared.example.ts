@@ -11,7 +11,10 @@ import {
   GPUSpatialPredicateJoin,
   GPUSpatialJoinCandidates
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {type GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
+import {
+  createWGSLKernelNode,
+  type GPUSpatialContext
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Uploaded inputs and caller-owned outputs for this recorded example. */
 export type SpatialJoinPreparedExampleInput = {
@@ -34,11 +37,36 @@ export async function runExample(
     input.tracts.featureOffsets.length - 1,
     Buffer.STORAGE | Buffer.COPY_SRC
   );
-  const tractCounts = new GPUHistogram({
-    input: input.pairs.rightIds,
-    output: tractMatches,
-    domain: [0, tractMatches.length - 1]
-  });
+  const addTractHistogram = () => {
+    // Keep setup local so this example needs only published package imports.
+    const pairMask = createTransientView(
+      graph,
+      'prepared-join-active-pairs',
+      'uint32',
+      input.pairs.rightRows.length,
+      Buffer.STORAGE
+    );
+    graph.add(
+      createWGSLKernelNode(graph, {
+        id: 'prepared-join-active-pairs',
+        operation: 'lens-pair-histogram-membership',
+        invocationCount: pairMask.length,
+        bindings: [
+          {name: 'pairCount', view: input.pairs.status.count, type: 'u32', access: 'read'},
+          {name: 'mask', view: pairMask, type: 'u32', access: 'read_write'}
+        ],
+        body: 'mask[maskOffset + index] = select(0u, 1u, index < pairCount[pairCountOffset]);'
+      })
+    );
+    graph.add(
+      new GPUHistogram({
+        input: input.pairs.rightRows,
+        mask: pairMask,
+        output: tractMatches,
+        domain: [0, tractMatches.length - 1]
+      })
+    );
+  };
   // #region example
   const prepared = new GPUSpatialJoinPrepared({geometry: input.tracts, spatialSort: false});
   graph.add(prepared);
@@ -58,12 +86,12 @@ export async function runExample(
       spatialContext: input.spatialContext,
       predicate: 'intersects',
       engine: 'relate',
-      candidateCapacity: input.pairs.leftIds.length,
+      candidateCapacity: input.pairs.leftRows.length,
       prepared,
       output: {pairs: input.pairs}
     })
   );
-  graph.add(tractCounts);
+  addTractHistogram();
   // tractMatches colours tracts; pairs identify parks and tracts.
   // #endregion example
   return {tractMatches, prepared};

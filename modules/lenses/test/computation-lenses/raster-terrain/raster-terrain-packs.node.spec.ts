@@ -10,15 +10,17 @@ import '../../../src/computation-lenses/scenarios/gpu-raster/index';
 import '../../../src/computation-lenses/scenarios/gpu-terrain/index';
 import {
   getRasterOperatorEntries,
-  getRasterViewPack,
-  RASTER_GUARDS,
+  getRasterViewPack
+} from '../../../src/gpu-raster/computation-pack/pack';
+import {RASTER_GUARDS} from '../../../src/gpu-raster/computation-pack/guards';
+import {
   RASTER_VARIABLE_KINDS,
   type RasterOperatorEntry
-} from '../../../src/gpu-raster/computation-pack/index';
+} from '../../../src/gpu-raster/computation-pack/types';
 import {
   getTerrainOperatorEntries,
   getTerrainViewPack
-} from '../../../src/gpu-terrain/computation-pack/index';
+} from '../../../src/gpu-terrain/computation-pack/pack';
 import {listEntryElements, REPOSITORY_ROOT} from '../../computation-docs/lens-directives';
 
 const SCOPES = ['local', 'focal', 'block', 'zonal', 'global', 'frontier', 'pairwise', 'solver'];

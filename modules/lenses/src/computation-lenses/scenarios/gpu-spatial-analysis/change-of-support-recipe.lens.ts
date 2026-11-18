@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import type {GPUComputationKeySpace} from '@luma-contributors/analysis/computation-record';
 import {defineLensScenario} from '../../define-lens-scenarios';
 import {S2_DATASETS} from './s2-datasets';
@@ -25,8 +26,8 @@ defineLensScenario({
     ] = await Promise.all([
       import('./s2-lens-run'),
       import('./change-of-support-recipe.example'),
-      import('../../data/s2-chicago-north-tracts.json').then(module => module.default),
-      import('../../data/s2-chicago-north-areas.json').then(module => module.default)
+      EMBEDDED_DATASET_LOADERS['s2-chicago-north-tracts.json']().then(module => module.default),
+      EMBEDDED_DATASET_LOADERS['s2-chicago-north-areas.json']().then(module => module.default)
     ]);
     return {
       run: device => {
@@ -67,26 +68,39 @@ defineLensScenario({
               ...areaGeometry.captures
             };
             captures['tractCounts'] = {view: tractCounts, role: 'input', keySpace: 'tracts'};
-            const polygonGeometry = (valuesCapture: string, offsetsCapture: string) => ({
+            const polygonGeometry = (
+              valuesCapture: string,
+              offsetsCapture: string,
+              featureKeySpace: string
+            ) => ({
               kind: 'polygons' as const,
+              featureKeySpace,
               offsetsCapture,
               valuesCapture,
               coordinateModel: 'projected' as const,
               unit: 'm'
             });
-            captures['tracts'].geometry = polygonGeometry('tractCounts', 'tractsDisplayOffsets');
+            captures['tracts'].geometry = polygonGeometry(
+              'tractCounts',
+              'tractsDisplayOffsets',
+              'tracts'
+            );
             captures['areas'].meaning = 'context';
             captures['resultAreas'] = {
               view: areaGeometry.display,
               role: 'output',
-              keySpace: 'areas',
-              geometry: polygonGeometry('areaCounts', 'areasDisplayOffsets')
+              keySpace: 'areas-display-vertex',
+              geometry: polygonGeometry('areaCounts', 'areasDisplayOffsets', 'areas')
             };
             captures['resultTracts'] = {
               view: tractGeometry.display,
               role: 'output',
-              keySpace: 'tracts',
-              geometry: polygonGeometry('sourceTransferredFractions', 'tractsDisplayOffsets')
+              keySpace: 'tracts-display-vertex',
+              geometry: polygonGeometry(
+                'sourceTransferredFractions',
+                'tractsDisplayOffsets',
+                'tracts'
+              )
             };
             captures['areaCounts'] = {view: result.areaCounts, role: 'output', keySpace: 'areas'};
             captures['areaMeans'] = {view: result.areaMeans, role: 'output', keySpace: 'areas'};

@@ -26,10 +26,10 @@ export type NetworkPathExtractionExampleInput = {
 export async function runExample(_device: Device, input: NetworkPathExtractionExampleInput) {
   const {graph, roads, startNodes, targets} = input;
   const nodeCount = roads.offsets.length - 1;
-  // #region example
-  const costs = createTransientView(graph, 'costs', 'float32', nodeCount);
-  const predecessors = createTransientView(graph, 'predecessors', 'uint32', nodeCount);
   const converged = createTransientView(graph, 'converged', 'uint32', 1);
+  const costs = createTransientView(graph, 'costs', 'float32', nodeCount);
+  // #region example
+  const predecessors = createTransientView(graph, 'predecessors', 'uint32', nodeCount);
   const reachability = new GPUNetworkReachability({
     topology: roads,
     startNodes,
@@ -42,16 +42,18 @@ export async function runExample(_device: Device, input: NetworkPathExtractionEx
     predecessorsComplete: converged,
     output: {
       ids: createTransientView(graph, 'ids', 'uint32', nodeCount),
+      nodeRows: createTransientView(graph, 'nodeRows', 'uint32', nodeCount),
       lineOffsets: createTransientView(graph, 'lineOffsets', 'uint32', 2),
       pathFound: createTransientView(graph, 'pathFound', 'uint32', 1),
       status: {
         count: createTransientView(graph, 'count', 'uint32', 1),
-        overflow: createTransientView(graph, 'overflow', 'uint32', 1)
+        overflow: createTransientView(graph, 'overflow', 'uint32', 1),
+        candidateOverflow: createTransientView(graph, 'candidateOverflow', 'uint32', 1)
       }
     }
   });
   graph.add([reachability, paths]);
-  const {ids, lineOffsets, pathFound} = paths.props.output;
+  const {ids, nodeRows, lineOffsets, pathFound} = paths.props.output;
   // #endregion example
   return {
     paths,
@@ -59,6 +61,7 @@ export async function runExample(_device: Device, input: NetworkPathExtractionEx
     predecessors,
     converged,
     ids,
+    nodeRows: nodeRows!,
     lineOffsets: lineOffsets!,
     pathFound: pathFound!
   };

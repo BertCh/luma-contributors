@@ -103,7 +103,8 @@ export function renderArrayTable(
     {
       role: 'table',
       class: `cv-array-table cv-array-table--${role}`,
-      'aria-label': `${role} columns`
+      'data-key-space': panels[0]?.capture.keySpace,
+      'aria-label': `${role} columns · ${panels[0]?.capture.keySpace ?? 'row domain unknown'}`
     },
     children
   );

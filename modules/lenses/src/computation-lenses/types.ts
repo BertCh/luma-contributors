@@ -8,6 +8,7 @@ import type {
   GPUComputationRecordWithSidecars
 } from '@luma-contributors/analysis/computation-record';
 import type {LensRungId} from '../computation-views/types';
+import type {LensRecordEncoding} from './record-encoding';
 
 /** Scenario identifier: `<entry>.<element>[.<variant>]`, with kebab-case segments. */
 export type LensScenarioId = string;
@@ -32,6 +33,11 @@ export type LensScenarioDescriptor = {
   /** Defaults to getLensExamplePath(id); required by the coverage spec once scenarios exist. */
   example?: {path: string};
   dataset?: {id: string; licence: string; source: string};
+  /** Result presentation shared by live hosts and static twins. */
+  presentation?: {
+    /** Final output capture ID used for the headline and result grammar; absent selects the last output. */
+    primaryOutputCaptureId?: string;
+  };
   /** Imports GPU code only when explicitly activated; never during a docs build. */
   load(): Promise<{
     run(device: Device, options?: {signal?: AbortSignal}): Promise<LensScenarioResult>;
@@ -39,17 +45,26 @@ export type LensScenarioDescriptor = {
   }>;
 };
 
-/**
- * Recorded scenario envelope. Use fromRecordedLensFile for parsed JSON: on disk, typed capture
- * values are base64 text (other value arrays encode non-finite numbers as NaN/Infinity/-Infinity
- * strings) and the record is losslessly compacted (repeated captures, word runs, source lines and
- * graph strings; see `record-encoding.ts`, `encoding` table); in memory values are numeric.
- */
-export type RecordedLensFile = {
+/** Provenance shared by encoded files and decoded recordings. */
+export type LensRecordingMetadata = {
   schema: 'luma.lens-record/1';
   scenarioId: LensScenarioId;
   recordedAt: string;
   adapterLabel: string;
   variant?: string;
+};
+
+/**
+ * JSON-safe file returned by toRecordedLensFile and captureLensScenarioRecord. Its opaque
+ * payload contains compact graphs and encoded capture values, not a LensScenarioResult.
+ * Pass it (or parsed legacy JSON) to fromRecordedLensFile before inspecting or rendering data.
+ */
+export type RecordedLensFile = LensRecordingMetadata & {
+  encoding?: LensRecordEncoding;
+  record: unknown;
+};
+
+/** In-memory recording returned by fromRecordedLensFile, with graph objects and numeric values. */
+export type DecodedLensFile = LensRecordingMetadata & {
   record: LensScenarioResult;
 };

@@ -23,7 +23,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
     import('./raster-zonal-statistics.example'),
     import('./raster-lens-harness'),
     import('./raster-lens-data'),
-    import('../../../gpu-raster/computation-pack/index')
+    import('../../../gpu-raster/computation-pack/pack')
   ]);
   const [landCover, terrain] = await Promise.all([loadDixieLandCover(), loadDixieDem()]);
   const entry = getRasterOperatorEntries()['GPURasterZonalStatistics'];

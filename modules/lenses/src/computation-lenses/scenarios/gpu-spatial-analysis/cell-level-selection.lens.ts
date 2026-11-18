@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {defineLensScenario, FORMULA_LENS_RUNGS} from '../../define-lens-scenarios';
-import {checkDrawnPrefix} from './cell-display-check';
+import {checkCellPyramidCompleteness, checkDrawnPrefix} from './cell-display-check';
 
 const SCENARIO_ID = 'gpu-spatial-analysis.cell-level-selection';
 const ZOOMS = [18, 17, 16];
@@ -59,12 +59,14 @@ defineLensScenario({
             }
           ],
           choices: {activeLevel: ACTIVE_LEVEL},
-          metadata: snapshots => {
+          metadata: geographicMetadata(),
+          observations: snapshots => {
+            checkCellPyramidCompleteness(snapshots, ZOOMS.length);
             // Draw exactly the rows the GPU wrote.
             checkDrawnPrefix(snapshots, [
               {capture: 'selectedCount', drawn: occupied[ACTIVE_LEVEL] as number}
             ]);
-            return geographicMetadata();
+            return {};
           },
           async build(graph, uploads) {
             const places = uploads.view('places', data.positionsLonLat, 'float32x2');
@@ -91,6 +93,26 @@ defineLensScenario({
               'uint32'
             );
             return {
+              ...Object.fromEntries(
+                pyramid.levels.flatMap((table, level) => [
+                  [
+                    `level${level}Overflow`,
+                    {
+                      view: table.status.overflow,
+                      role: 'intermediate' as const,
+                      meaning: `level ${level} destination capacity loss`
+                    }
+                  ],
+                  [
+                    `level${level}CandidateOverflow`,
+                    {
+                      view: table.status.candidateOverflow!,
+                      role: 'intermediate' as const,
+                      meaning: `level ${level} inherited source loss`
+                    }
+                  ]
+                ])
+              ),
               places: {
                 view: places,
                 role: 'input',

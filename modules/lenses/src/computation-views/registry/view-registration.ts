@@ -120,6 +120,8 @@ export type ViewContext = {
   compare?: {label: string; record: LensRecord; referenceLabel: string};
   /** Live selection state; absent in static twins. */
   selection?: ViewSelectionState;
+  /** Independently resolved selections for multi-domain views; cross-domain images require a relation. */
+  selections?: ReadonlyMap<string, ViewSelectionState>;
   /**
    * The run's frozen scales (§E rule 1: one scale per variable, shared by every view of the lens
    * page). Views resolve value colours through it and never build private scales.

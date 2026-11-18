@@ -5,7 +5,7 @@
 import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {registerLensScenarios} from '../../define-lens-scenarios';
 import type {LensScenarioDescriptor} from '../../types';
-import type {S2CaptureSpec, S2Uploads} from './s2-lens-run';
+import type {S2CaptureSpec, S2Uploads, S2LensRunProps} from './s2-lens-run';
 
 /** Builds one named element's graph and returns the views to capture. */
 export type S2ScenarioBuilder = (
@@ -23,12 +23,14 @@ export function registerS2LensScenarios(
     dataset: NonNullable<LensScenarioDescriptor['dataset']>;
     loadBuilder: () => Promise<S2ScenarioBuilder>;
   },
-  entries: readonly Pick<LensScenarioDescriptor, 'id' | 'element' | 'title'>[]
+  entries: readonly (Pick<LensScenarioDescriptor, 'id' | 'element' | 'title'> & {
+    choices?: S2LensRunProps['choices'];
+  })[]
 ): void {
   const {dataset, loadBuilder} = defaults;
   registerLensScenarios(
     {entry: 'gpu-spatial-analysis', dataset},
-    entries.map(({id, element, title}) => ({
+    entries.map(({id, element, title, choices}) => ({
       id,
       element,
       title,
@@ -43,6 +45,7 @@ export function registerS2LensScenarios(
               scenarioId: id,
               element,
               datasets: [dataset.id],
+              choices,
               build: (graph, uploads) => buildScenario(element, graph, uploads)
             })
         };

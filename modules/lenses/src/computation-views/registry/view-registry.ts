@@ -15,6 +15,7 @@ import type {
   ViewPackRegistration
 } from './view-registration';
 import {TABLE_VIEW} from '../views/table-view';
+import {assertLensSidecarIdentity} from '../../computation-lenses/validate-lens-record';
 
 /** A satisfied rung or an honest explanation with a table fallback. */
 export type RungResolution =
@@ -156,6 +157,7 @@ export function createViewContext(
   record: LensRecord,
   partial: Partial<Omit<ViewContext, 'record'>> = {}
 ): ViewContext {
+  assertLensSidecarIdentity(record);
   return {
     ...partial,
     record,

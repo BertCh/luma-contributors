@@ -8,7 +8,7 @@ import * as lensViewSnapshot from '../../../src/computation-lenses/lens-view-sna
 import {createNullWebGPUDevice} from '@luma-contributors/analysis/testing';
 import {validateGPUComputationRecord} from '@luma-contributors/analysis/computation-record';
 import '../../../src/computation-lenses/scenarios/gpu-network/index';
-import {getLensScenario} from '../../../src/computation-lenses/registry';
+import {getLensScenario} from '../../../src/computation-lenses/registry-implementation';
 import {
   extractLensExample,
   findNonPublicImports

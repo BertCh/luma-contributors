@@ -5,10 +5,10 @@
 import type {Device} from '@luma.gl/core';
 import {runExample} from './variogram.example';
 import {
-  capturePairStatisticsViews,
+  preparePairStatisticsViews,
   createDataFrameChoice,
   createDataFrameLensGraph,
-  createDataFrameLensRecord,
+  runDataFrameLensRecord,
   getDataFrameElementFormulas,
   loadDataFrameLensData
 } from './dataframe-lens-support';
@@ -43,7 +43,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
   try {
     options?.signal?.throwIfAborted();
     const graphId = `${SCENARIO_ID}-compiled`;
-    const {captures, description} = await capturePairStatisticsViews(device, graph, graphId, {
+    const prepared = preparePairStatisticsViews(device, graph, graphId, {
       positions: {
         view: example.positions,
         role: 'input',
@@ -65,16 +65,19 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
         meaning: 'Mean pair distance in metres.'
       }
     });
-    return createDataFrameLensRecord({
+    return await runDataFrameLensRecord({
       scenarioId: SCENARIO_ID,
       device,
-      graphs: [description],
+      prepared,
       formulas: getDataFrameElementFormulas('GPUVariogram'),
       keySpaces: [
         {id: 'point', label: 'Weather station', size: x.length, indexSpace: '1d'},
         {id: 'lag', label: 'Lag (25 km)', size: LAG_COUNT, indexSpace: '1d'}
       ],
       choices: [
+        createDataFrameChoice('group', 'azimuthOffset', 0),
+        createDataFrameChoice('select', 'gridSize', '64 x 64'),
+        createDataFrameChoice('filter', 'studyWindow', 'rectangle'),
         createDataFrameChoice('filter', 'coordinateModel', 'projected', {
           alternatives: ['projected', 'geographic']
         }),
@@ -85,8 +88,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
         }),
         createDataFrameChoice('group', 'lagCount', LAG_COUNT, {sweepable: true}),
         createDataFrameChoice('group', 'directionCount', 1)
-      ],
-      captures
+      ]
     });
   } finally {
     example.parameters.destroy();

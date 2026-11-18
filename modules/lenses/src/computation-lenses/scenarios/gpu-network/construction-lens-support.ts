@@ -7,10 +7,7 @@ import type {
   GPUComputationKeySpace
 } from '@luma-contributors/analysis/computation-record';
 import {createGPULocalFrame} from '@luma-contributors/analysis/analysis-core';
-import crashes from '../../data/n-chicago-loop-crashes.json';
-import odFlows from '../../data/n-chicago-od-flows.json';
-import polylines from '../../data/n-chicago-loop-polylines.json';
-import traces from '../../data/n-chicago-loop-traces.json';
+import {crashes, odFlows, polylines, traces} from './construction-data.js';
 import type {NetworkRoads} from './network-element-lens';
 import {loadChicagoLoopRoads} from './network-lens-support';
 

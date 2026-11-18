@@ -82,7 +82,7 @@ defineLensScenario({
                     role: 'intermediate',
                     keySpace: 'status',
                     meaning:
-                      'Regions, feasible, under-threshold regions, invalid count, start, improvement moves'
+                      'Regions, feasible, under-threshold regions, invalid count, start, successful improvement rounds'
                   }
                 },
                 keySpaces: [{id: 'status', label: 'Scalar and status words', indexSpace: '1d'}]

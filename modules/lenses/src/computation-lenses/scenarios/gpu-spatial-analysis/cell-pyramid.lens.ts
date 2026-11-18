@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {defineLensScenario, FORMULA_LENS_RUNGS} from '../../define-lens-scenarios';
-import {checkDrawnPrefix} from './cell-display-check';
+import {checkCellPyramidCompleteness, checkDrawnPrefix} from './cell-display-check';
 
 const SCENARIO_ID = 'gpu-spatial-analysis.cell-pyramid';
 const ZOOMS = [18, 17, 16];
@@ -63,15 +63,15 @@ defineLensScenario({
             }
           ],
           choices: {family: 'quadbin', resolutions: ZOOMS.join(', '), sumScale: 65536},
-          metadata: snapshots => {
+          metadata: {...geographicMetadata(), mappedVariableExtent: 'extensive'},
+          observations: snapshots => {
+            checkCellPyramidCompleteness(snapshots, ZOOMS.length);
             // Draw exactly the rows the GPU wrote.
             checkDrawnPrefix(snapshots, [
               {capture: 'levelCounts', drawn: occupied[0] as number, index: 0},
               {capture: 'levelCounts', drawn: occupied[2] as number, index: 2}
             ]);
             return {
-              ...geographicMetadata(),
-              mappedVariableExtent: 'extensive',
               // Totals compared between two individual levels, never summed across levels.
               sumBefore: sumCapture(snapshots, 'level0Counts') ?? Number.NaN,
               sumAfter: sumCapture(snapshots, 'level2Counts') ?? Number.NaN
@@ -104,6 +104,26 @@ defineLensScenario({
               'uint32'
             );
             return {
+              ...Object.fromEntries(
+                output.levels.flatMap((table, level) => [
+                  [
+                    `level${level}Overflow`,
+                    {
+                      view: table.status.overflow,
+                      role: 'intermediate' as const,
+                      meaning: `level ${level} destination capacity loss`
+                    }
+                  ],
+                  [
+                    `level${level}CandidateOverflow`,
+                    {
+                      view: table.status.candidateOverflow,
+                      role: 'intermediate' as const,
+                      meaning: `level ${level} inherited source loss; nonzero makes counts incomplete`
+                    }
+                  ]
+                ])
+              ),
               finestBoundaries: {
                 view: finestDisplay.boundaries,
                 role: 'input',

@@ -27,10 +27,12 @@ const scenario: NetworkElementScenario = {
     'predecessors',
     'converged',
     'ids',
+    'nodeRows',
     'lineOffsets',
     'pathFound',
     'count',
-    'overflow'
+    'overflow',
+    'candidateOverflow'
   ],
   formulas: [],
   keySpaces: getSearchKeySpaces(roads, 0),
@@ -60,10 +62,12 @@ const scenario: NetworkElementScenario = {
         predecessors: example.predecessors,
         converged: example.converged,
         ids: example.ids,
+        nodeRows: example.nodeRows,
         lineOffsets: example.lineOffsets,
         pathFound: example.pathFound,
         count: example.paths.props.output.status.count,
-        overflow: example.paths.props.output.status.overflow
+        overflow: example.paths.props.output.status.overflow,
+        candidateOverflow: example.paths.props.output.status.candidateOverflow!
       }
     };
   },
@@ -71,14 +75,16 @@ const scenario: NetworkElementScenario = {
     // The search must be complete, the walk untruncated and the target found, or the path is partial.
     if (final('converged').values[0] === 0)
       throw new Error('Network path extraction: the reachability search did not converge');
+    if (final('candidateOverflow').values[0] !== 0)
+      throw new Error('Network path extraction: path walk budget exhausted');
     if (final('overflow').values[0] !== 0)
-      throw new Error('Network path extraction: path output overflowed or a walk was truncated');
+      throw new Error('Network path extraction: path output capacity exceeded');
     if (final('pathFound').values[0] !== 1)
       throw new Error('Network path extraction: the target was not found');
     const positions = final('nodePositions');
     const count = final('count').values[0];
     const ids = final('ids');
-    const nodes = Array.from(ids.values).slice(0, count);
+    const nodeRows = Array.from(final('nodeRows').values).slice(0, count);
     return [
       gatherNodePoints(positions, [startNode, targetNode], {
         id: 'start-and-target',
@@ -89,7 +95,7 @@ const scenario: NetworkElementScenario = {
       {...final('predecessors'), keySpace: 'node'},
       {
         ...ids,
-        values: Uint32Array.from(nodes),
+        values: Uint32Array.from(Array.from(ids.values).slice(0, count)),
         meaning: 'first count entries of the GPU ids output'
       },
       final('lineOffsets'),
@@ -100,12 +106,12 @@ const scenario: NetworkElementScenario = {
         name: 'extracted-path',
         keySpace: undefined,
         values: Float32Array.from(
-          nodes.flatMap(node => [positions.values[node * 2], positions.values[node * 2 + 1]])
+          nodeRows.flatMap(node => [positions.values[node * 2], positions.values[node * 2 + 1]])
         ),
         role: 'output',
         highlight: {key: 0, label: 'path'},
         meaning:
-          'output: extracted path (node ids from the GPU ids and lineOffsets outputs; positions gathered from the nodePositions readback)',
+          'output: extracted path (node rows from the GPU nodeRows and lineOffsets outputs; positions gathered from the nodePositions readback)',
         geometry: {kind: 'lines', coordinateModel: 'geographic', offsetsCapture: 'lineOffsets'}
       }
     ];

@@ -9,7 +9,7 @@ export const JOINS_OPERATORS: SpatialFamilyOperators = {
   GPUSpatialPredicateJoin: {
     family: 'joins',
     descriptor: {scope: 'pairwise', reduction: 'select'},
-    variables: {leftIds: 'category', rightIds: 'category', tractMatches: 'count'},
+    variables: {leftRows: 'category', rightRows: 'category', tractMatches: 'count'},
     stages: ['neighbourhood', 'operator'],
     datumKinds: [{kind: 'tract', label: 'tract', indexSpace: '1d'}],
     guards: ['coordinate-model'],
@@ -57,7 +57,7 @@ export const JOINS_OPERATORS: SpatialFamilyOperators = {
   GPUSpatialJoinPrepared: {
     family: 'joins',
     descriptor: {scope: 'global', reduction: 'none'},
-    variables: {tractMatches: 'count', candidateRight: 'category', rightIds: 'category'},
+    variables: {tractMatches: 'count', candidateRight: 'category', rightRows: 'category'},
     stages: ['representation', 'neighbourhood'],
     datumKinds: [{kind: 'tract', label: 'tract', indexSpace: '1d'}],
     guards: ['coordinate-model'],
@@ -76,7 +76,7 @@ export const JOINS_OPERATORS: SpatialFamilyOperators = {
   GPUSpatialJoinCandidates: {
     family: 'joins',
     descriptor: {scope: 'pairwise', reduction: 'select'},
-    variables: {leftIds: 'category', rightIds: 'category', tractMatches: 'count'},
+    variables: {leftRows: 'category', rightRows: 'category', tractMatches: 'count'},
     stages: ['neighbourhood'],
     datumKinds: [{kind: 'tract', label: 'tract', indexSpace: '1d'}],
     guards: ['coordinate-model'],

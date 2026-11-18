@@ -33,7 +33,7 @@ export const CELLS_FORMULAS = {
     derivation: 'curated',
     tex: String.raw`\term{counts}{n_p}=\sum_{\term{child}{c}\in\term{members}{C_p}}\term{childCounts}{n_c}\pmod{2^{32}},\qquad \term{sums}{S_p}=\sum_{\term{child}{c}\in\term{members}{C_p}}\term{childSums}{S_c}\pmod{2^{64}}`,
     ascii:
-      'For each retained parent p, C[p] is the source table rows assigned to p by truncated keys: counts[p] = sum(c in C[p]) childCounts[c] modulo 2^32; sums[p] = sum(c in C[p]) childSums[c] modulo 2^64. No re-quantization occurs; sumValues decodes the signed sum with the existing sumScale. Minimums/maximums reduce the matching source extremes. Source rows must be at sourceResolution; capacity drops largest parent keys and source overflow propagates.',
+      'For each retained parent p, C[p] is the source table rows assigned to p by truncated keys: counts[p] = sum(c in C[p]) childCounts[c] modulo 2^32; sums[p] = sum(c in C[p]) childSums[c] modulo 2^64. No re-quantization occurs; sumValues decodes the signed sum with the existing sumScale. Minimums/maximums reduce the matching source extremes. Source rows must be at sourceResolution. Final overflow reports only destination capacity drops; source overflow and candidateOverflow propagate as candidateOverflow, making requiredCount a lower bound on the full parent requirement.',
     symbols: [
       {id: 'counts', role: 'output', binding: 'wgsl:countsOut'},
       {id: 'sums', role: 'output', binding: 'wgsl:sums'},
@@ -151,12 +151,12 @@ export const CELLS_FORMULAS = {
   compare: {
     id: 's3.cell-table-compare',
     derivation: 'curated',
-    tex: String.raw`\begin{aligned}\term{delta}{\delta}&=\term{decode}{D}(\term{afterInteger}{A}-\term{beforeInteger}{B})/\term{scale}{s},\quad \term{ratio}{r}=\term{after}{a}/\term{before}{b},\quad \term{percent}{p}=100\term{delta}{\delta}/\term{before}{b}\\\term{score}{z}&=\begin{cases}\term{delta}{\delta}/\sqrt{\term{before}{b}+\term{after}{a}}&\text{Poisson}\\(\term{delta}{\delta}-\term{mean}{\mu})/\term{deviation}{\sigma}&\text{standardized}\end{cases}\end{aligned}`,
+    tex: String.raw`\begin{aligned}\term{delta}{\delta}&=\term{decode}{D}(\term{afterInteger}{A}-\term{beforeInteger}{B})/\term{scale}{s},\quad \term{ratio}{r}=\term{after}{a}/\term{before}{b},\quad \term{percent}{p}=100\term{delta}{\delta}/\term{before}{b}\\\term{score}{z}&=\begin{cases}\term{delta}{\delta}/\sqrt{\term{before}{b}+\term{after}{a}}&\text{Poisson}\\(\term{normalizedDelta}{d}-\term{mean}{\mu})/\term{deviation}{\sigma}&\text{standardized}\end{cases},\quad \term{normalizedDelta}{d}=\term{delta}{\delta}2^{-\term{normalizationExponent}{e}}\end{aligned}`,
     ascii:
-      'On retained union rows, A/B are after/before integer measures (zero when absent), D decodes a signed 64-bit word pair to f32, and s is sumScale for sums or 1 for counts. a=D(A)/s, b=D(B)/s; delta=D(A-B)/s, with integer subtraction modulo 2^64 before decoding; ratio=a/b and percentChange=100*delta/b (both NaN for b=0). Poisson z=delta/sqrt(b+a), zero for b+a=0. Standardized z=(delta-mu)/sigma, zero for sigma=0; mu and population sigma are reduced in fixed order over retained union deltas, not dropped rows. Empty tail derived values are NaN.',
+      'On retained union rows, A/B are after/before signed integer measures (zero when absent), D rounds the full integer magnitude once to nearest f32 with ties to even and applies its sign, and s is sumScale for sums or 1 for counts. a=D(A)/s, b=D(B)/s; delta=D(A-B)/s, with exact integer subtraction even outside the signed 64-bit range; ratio=a/b and percentChange=100*delta/b (both NaN for b=0). Poisson z=delta/sqrt(b+a), zero when both measures are zero and NaN for other nonpositive denominators. Standardized z=(d-mu)/sigma, zero for sigma=0; d=delta*2^-e uses one common exponent from the maximum absolute retained finite delta. The normalized mean mu and population sigma are reduced in fixed order over retained rows, not dropped rows, avoiding overflow of squared deltas. Empty tail derived values are NaN. Final overflow reports only union capacity drops; input overflow and candidateOverflow propagate as candidateOverflow, making requiredCount a lower bound on the full union.',
     symbols: [
       {id: 'delta', role: 'output', binding: 'wgsl:deltaOut'},
-      {id: 'decode', role: 'intermediate', binding: 'wgsl:cellI64ToF32'},
+      {id: 'decode', role: 'intermediate', binding: 'wgsl:difference'},
       {id: 'afterInteger', role: 'input', binding: 'wgsl:afterMeasure'},
       {id: 'beforeInteger', role: 'input', binding: 'wgsl:beforeMeasure'},
       {
@@ -170,6 +170,8 @@ export const CELLS_FORMULAS = {
       {id: 'after', role: 'intermediate', binding: 'wgsl:afterValues'},
       {id: 'before', role: 'intermediate', binding: 'wgsl:beforeValues'},
       {id: 'score', role: 'output', binding: 'wgsl:zScoreOut'},
+      {id: 'normalizedDelta', role: 'intermediate', binding: 'wgsl:normalizedDelta'},
+      {id: 'normalizationExponent', role: 'intermediate', binding: 'wgsl:normalizationExponent'},
       {id: 'mean', role: 'intermediate', binding: 'wgsl:mean'},
       {id: 'deviation', role: 'intermediate', binding: 'wgsl:deviation'}
     ]

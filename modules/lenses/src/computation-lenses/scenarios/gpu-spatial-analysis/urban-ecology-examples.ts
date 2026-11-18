@@ -109,22 +109,23 @@ export async function buildUrbanEcologyScenario(
             },
             status: {count: input('wall-count', 'uint32', [1])}
           },
-          lineBuildingIds: input('line-building-ids', 'uint32', [0, 1, 2]),
-          orientations: input('orientations', 'float32', [Math.PI * 0.49, -Math.PI * 0.49, 0]),
+          lineBuildingIds: input('line-building-ids', 'uint32', [0, 1]),
+          orientations: input('orientations', 'float32', [Math.PI * 0.49, -Math.PI * 0.49]),
           structures: {
             geometry: {
               kind: 'polygons',
               positions: input(
                 'building-positions',
                 'float32x2',
-                [-1, -1, 0, -1, 0, 1, -1, 1, 0, -1, 1, -1, 1, 1, 0, 1, 3, 0, 4, 0, 4, 1, 3, 1]
+                [-1, -1, 0, -1, 0, 1, -1, 1, 0, -1, 1, -1, 1, 1, 0, 1]
               ),
-              ringOffsets: input('building-rings', 'uint32', [0, 4, 8, 12]),
-              polygonOffsets: input('building-polygons', 'uint32', [0, 1, 2, 3]),
-              featureOffsets: input('building-features', 'uint32', [0, 1, 2, 3])
+              ringOffsets: input('building-rings', 'uint32', [0, 4, 8]),
+              polygonOffsets: input('building-polygons', 'uint32', [0, 1, 2]),
+              featureOffsets: input('building-features', 'uint32', [0, 1, 2])
             },
             vertexTolerance: 1 / 1024,
-            // Three rectangles need at most twelve edges; keep this captured graph compact.
+            // Two rectangles retain the shared-wall and true union-perimeter evidence while
+            // avoiding a third independently unrolled structure dissolve in this docs record.
             capacity: {intersections: 16, nodedSegments: 32, vertices: 24, rings: 8}
           }
         })
@@ -169,7 +170,8 @@ export async function buildUrbanEcologyScenario(
           sampleSpacing: 1,
           sampleCapacity: 8,
           vertexTolerance: 1 / 1024,
-          capacity: {intersections: 256, nodedSegments: 256, vertices: 128, rings: 32}
+          // Four rectangular Voronoi fragments per building; retain headroom for their dissolve.
+          capacity: {intersections: 64, nodedSegments: 32, vertices: 16, rings: 4}
         })
       );
     case 'addLandscapeMetricsRecipe':
@@ -319,20 +321,25 @@ export async function buildUrbanEcologyScenario(
             new Float32Array(targetIds.length * 2),
             'float32x2'
           ),
-          validity: uploads.view('alignment-codes', new Uint32Array(targetIds.length), 'uint32'),
+          alignmentCode: uploads.view(
+            'alignment-codes',
+            new Uint32Array(targetIds.length),
+            'uint32'
+          ),
+          matchedMask: uploads.view('matched-mask', new Uint32Array(targetIds.length), 'uint32'),
           status: uploads.view('alignment-status', new Uint32Array(4), 'uint32x4')
         }
       });
       return finish({outputs: output});
     }
-    case 'addPopulationSupportAlignmentRecipe':
-      return finish(
-        await runaddPopulationSupportAlignmentRecipe(graph, {
-          populations: input('populations', 'float32x2', [2, 8, 6, 4]),
-          sourceIds: input('source-ids', 'uint32', [20, 10]),
-          targetIds: input('target-ids', 'uint32', [10, 20])
-        })
-      );
+    case 'addPopulationSupportAlignmentRecipe': {
+      const result = await runaddPopulationSupportAlignmentRecipe(graph, {
+        populations: input('populations', 'float32x2', [2, 8, 6, 4]),
+        sourceIds: input('source-ids', 'uint32', [20, 10]),
+        targetIds: input('target-ids', 'uint32', [10, 20])
+      });
+      return finish({...result, status: result.packedStatus});
+    }
     default:
       throw new Error(`Unknown urban/ecology scenario: ${element}`);
   }

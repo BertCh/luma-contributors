@@ -21,6 +21,8 @@ export type SkaterRegionsInput = {
   tracts: GPUContiguityWeightsProps['polygons'];
   values: GraphDataView<'float32'>;
   parameters: GraphDataView<'uint32'>;
+  /** Optional candidate-pair budget for the contiguity producer. */
+  pairCapacity?: number;
 };
 
 /** Runs the exact public-API example shown below the SKATER result figure. */
@@ -39,7 +41,10 @@ export async function runExample(device: Device, input: SkaterRegionsInput) {
     offsets: createInteger('weightsRowOffsets', count + 1),
     neighbors: createInteger('weightsNeighbors', 2048),
     weights: createFloat('weightsValues', 2048),
-    status: {overflow: createInteger('weightsOverflow', 1)}
+    status: {
+      overflow: createInteger('weightsOverflow', 1),
+      candidateOverflow: createInteger('weightsCandidateOverflow', 1)
+    }
   };
   const treeOutput = {
     treeEdgeFlags: createInteger('treeEdgeFlags', 2048),
@@ -53,10 +58,12 @@ export async function runExample(device: Device, input: SkaterRegionsInput) {
     cutEdges: createInteger('cutEdges', 7),
     cutGains: createFloat('cutGains', 7)
   };
+  const {labels, cutGains} = output;
   // #region example
   const queen = new GPUContiguityWeights({
     polygons: tracts,
     criterion: 'queen',
+    pairCapacity: input.pairCapacity,
     output: weightOutput
   });
   graph.add(queen);
@@ -78,7 +85,6 @@ export async function runExample(device: Device, input: SkaterRegionsInput) {
       output
     })
   );
-  const {labels, cutGains} = output;
   // #endregion example
   return {
     graph,
@@ -91,7 +97,8 @@ export async function runExample(device: Device, input: SkaterRegionsInput) {
       cutGains,
       weightsRowOffsets: weightOutput.offsets,
       weightsNeighbors: weightOutput.neighbors,
-      weightsOverflow: weightOutput.status.overflow
+      weightsOverflow: weightOutput.status.overflow,
+      weightsCandidateOverflow: weightOutput.status.candidateOverflow
     }
   };
 }

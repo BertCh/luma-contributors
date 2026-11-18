@@ -33,7 +33,7 @@ it.each(
     for (const output of outputs) expect(output.spec.meaning?.length).toBeGreaterThan(10);
     const kernels = getParsedKernelSources((harness.graph as unknown as {nodes: unknown[]}).nodes);
     expect(kernels.size).toBeGreaterThan(0);
-    for (const [name, source] of kernels)
+    for (const {id: name, source} of kernels.configurations)
       expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
     const compiled = harness.graph.compile();
     try {

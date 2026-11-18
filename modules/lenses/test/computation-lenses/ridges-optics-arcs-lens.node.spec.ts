@@ -7,7 +7,7 @@ import {createNullWebGPUDevice, getParsedKernelSources} from '@luma-contributors
 import {auditWGSLModule} from '@luma-contributors/analysis/test/analysis-core/kernel-audit/kernel-audit-wgsl';
 import {buildScalarFieldRidgesScenario} from '../../src/computation-lenses/scenarios/gpu-raster/scalar-field-ridges.lens';
 import {createCoverageTrancheOneHarness} from './raster-terrain/coverage-tranche-one-harness';
-import {getRasterOperatorEntries} from '../../src/gpu-raster/computation-pack';
+import {getRasterOperatorEntries} from '../../src/gpu-raster/computation-pack/pack';
 import {LINES_FORMULAS} from '../../src/gpu-spatial-analysis/computation-pack/operators/lines-formulas';
 import {POINT_PROCESS_OPERATORS} from '../../src/gpu-spatial-analysis/point-process/point-process-operators';
 import {listLensScenarios} from '../../src/computation-lenses';
@@ -58,7 +58,8 @@ it('builds the ridge lens through its public example with typed, meaningful capt
     }
     const kernels = getParsedKernelSources((harness.graph as unknown as {nodes: unknown[]}).nodes);
     expect(kernels.size).toBeGreaterThan(0);
-    for (const source of kernels.values()) expect(auditWGSLModule(source)).toEqual([]);
+    for (const {source, constants} of kernels.configurations)
+      expect(auditWGSLModule(source, constants)).toEqual([]);
     const compiled = harness.graph.compile();
     compiled.destroy();
   } finally {

@@ -6,10 +6,10 @@ import type {Device} from '@luma.gl/core';
 import {GPU_RIPLEY_EDGE_CORRECTION} from '@luma-contributors/analysis/dataframe-analysis';
 import {runExample} from './ripley-envelope.example';
 import {
-  capturePairStatisticsViews,
+  preparePairStatisticsViews,
   createDataFrameChoice,
   createDataFrameLensGraph,
-  createDataFrameLensRecord,
+  runDataFrameLensRecord,
   getDataFrameElementFormulas,
   loadDataFrameLensData
 } from './dataframe-lens-support';
@@ -50,7 +50,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
         length: 1,
         byteOffset: row * Float32Array.BYTES_PER_ELEMENT
       });
-    const {captures, description} = await capturePairStatisticsViews(device, graph, graphId, {
+    const prepared = preparePairStatisticsViews(device, graph, graphId, {
       positions: {
         view: example.positions,
         role: 'input',
@@ -119,10 +119,10 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
         meaning: 'Row 4 of statistics: Monte Carlo maximum-absolute-deviation p-value.'
       }
     });
-    return createDataFrameLensRecord({
+    return await runDataFrameLensRecord({
       scenarioId: SCENARIO_ID,
       device,
-      graphs: [description],
+      prepared,
       formulas: getDataFrameElementFormulas('GPURipleyEnvelope'),
       keySpaces: [
         {id: 'point', label: 'Observation', size: x.length, indexSpace: '1d'},
@@ -130,6 +130,8 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
         {id: 'index', label: 'Summary row', size: STATISTICS_LENGTH, indexSpace: '1d'}
       ],
       choices: [
+        createDataFrameChoice('select', 'gridSize', '32 x 32'),
+        createDataFrameChoice('infer', 'maximumAttempts', 32),
         createDataFrameChoice('filter', 'coordinateModel', 'projected', {
           alternatives: ['projected', 'geographic']
         }),
@@ -153,8 +155,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
         createDataFrameChoice('infer', 'rank', 1),
         createDataFrameChoice('infer', 'seed', SEED),
         createDataFrameChoice('infer', 'pCorrection', 'none')
-      ],
-      captures
+      ]
     });
   } finally {
     example.parameters.destroy();

@@ -68,7 +68,7 @@ export async function buildRasterEmbeddingQuantizeScenario(
 export async function run(device: Device) {
   const [{runRasterLens}, {getRasterOperatorEntries}] = await Promise.all([
     import('./raster-lens-harness'),
-    import('../../../gpu-raster/computation-pack')
+    import('../../../gpu-raster/computation-pack/pack')
   ]);
   const formula = getRasterOperatorEntries()['GPURasterEmbeddingQuantize'].formula;
   return runRasterLens({

@@ -7,6 +7,83 @@ import {TABLE_VIEW, buildTypedTable} from '../../../src/computation-views/views/
 import {createViewContext} from '../../../src/computation-views/registry/view-registry';
 import {viewNodeToHtml} from '../../../src/computation-views/view-node';
 import {makeScanRecord} from '../fixtures/scan-record';
+import {readFileSync} from 'node:fs';
+import {fromRecordedLensFile} from '../../../src/computation-lenses/registry';
+
+function expectFiniteRainfall(actual: string, capturedValue: number): void {
+  const parsed = Number(actual);
+  expect(Number.isFinite(parsed)).toBe(true);
+  expect(parsed).toBe(capturedValue);
+}
+
+test('final2 lenses-consumers:G11 rainfall assertions reject an injected NaN capture', () => {
+  const record = fromRecordedLensFile(
+    JSON.parse(
+      readFileSync(
+        new URL(
+          '../../../../../docs/lens-records/gpu-spatial-analysis.kriging.json',
+          import.meta.url
+        ),
+        'utf8'
+      )
+    )
+  ).record;
+  const rainfall = record.captures!.snapshots.find(
+    capture => capture.name === 'rainfall' && capture.keySpace === 'cell'
+  )!;
+  (rainfall.values as Float32Array)[0] = NaN;
+  const table = TABLE_VIEW.build(
+    createViewContext(record, {bindings: {entity: 0}, options: {keySpace: 'cell'}})
+  ).sections.find(section => section.id === 'captures')!.table;
+  const nameColumn = table.columns.findIndex(column => column.name === 'name');
+  const valueColumn = table.columns.findIndex(column => column.name === 'value at 0');
+  const actual = table.rows.find(row => row[nameColumn] === 'rainfall')![valueColumn];
+  expect(actual).toBe('NaN');
+  expect(() => expectFiniteRainfall(actual, Number(rainfall.values[0]))).toThrow();
+});
+
+test('final1 lenses-consumers:F7 inspector pins only the matching capture domain and window', () => {
+  const record = fromRecordedLensFile(
+    JSON.parse(
+      readFileSync(
+        new URL(
+          '../../../../../docs/lens-records/gpu-spatial-analysis.kriging.json',
+          import.meta.url
+        ),
+        'utf8'
+      )
+    )
+  ).record;
+  const table = TABLE_VIEW.build(
+    createViewContext(record, {bindings: {entity: 0}, options: {keySpace: 'cell'}})
+  ).sections.find(section => section.id === 'captures')!.table;
+  const rows = table.rows.map(row =>
+    Object.fromEntries(table.columns.map((column, index) => [column.name, row[index]]))
+  );
+  const rainfall = record.captures!.snapshots.find(
+    capture => capture.name === 'rainfall' && capture.keySpace === 'cell'
+  )!;
+  expectFiniteRainfall(
+    rows.find(row => row['name'] === 'rainfall')!['value at 0'],
+    Number(rainfall.values[0])
+  );
+  expect(rows.some(row => row['name'] === 'precipitation' && row['keySpace'] === 'station')).toBe(
+    true
+  );
+  expect(rows.some(row => row['name'] === 'invalidCount' && row['keySpace'] === 'run')).toBe(true);
+  expect(
+    rows
+      .filter(row => row['keySpace'] === 'station' || row['keySpace'] === 'run')
+      .every(row => row['value at 0'] === '—')
+  ).toBe(true);
+  const scan = makeScanRecord();
+  const capture = scan.captures!.snapshots[1];
+  capture.meaning = 'first:10';
+  const window = TABLE_VIEW.build(createViewContext(scan, {bindings: {entity: 11}})).sections.find(
+    section => section.id === 'captures'
+  )!.table;
+  expect(window.rows[1].at(-1)).toBe(String(capture.values[1]));
+});
 
 test('complete sections, numeric cells, receipt and no blank cells', () => {
   const context = createViewContext(makeScanRecord());

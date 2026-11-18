@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import {assert} from '@luma.gl/core';
 import type {GPULocalFrame} from '@luma-contributors/analysis/analysis-core';
 import {createS2ChicagoFrame, projectS2Positions} from './s2-lens-run';
@@ -30,7 +31,7 @@ export type NaturePoints = {
 export async function loadNaturePoints(options: {step?: number; padding?: number} = {}) {
   const step = options.step ?? 1;
   assert(Number.isInteger(step) && step >= 1);
-  const nature = (await import('../../data/s2-chicago-north-nature.json')).default;
+  const nature = (await EMBEDDED_DATASET_LOADERS['s2-chicago-north-nature.json']()).default;
   const total = nature.positions.length / 2;
   const kept: number[] = [];
   for (let observation = 0; observation < total; observation += step) kept.push(observation);

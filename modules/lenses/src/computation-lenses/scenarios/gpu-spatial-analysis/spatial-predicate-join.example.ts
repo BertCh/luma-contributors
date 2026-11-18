@@ -9,7 +9,10 @@ import {
   type GPUSpatialPredicateJoinProps,
   type GPUPointInPolygonJoinProps
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {type GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
+import {
+  createWGSLKernelNode,
+  type GPUSpatialContext
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Uploaded inputs and caller-owned outputs for this recorded example. */
 export type SpatialPredicateJoinExampleInput = {
@@ -31,6 +34,33 @@ export async function runExample(
     input.tracts.featureOffsets.length - 1,
     Buffer.STORAGE | Buffer.COPY_SRC
   );
+  const addPairHistogramMask = (
+    graph: GPUCommandGraph<undefined>,
+    pairs: SpatialPredicateJoinExampleInput['pairs'],
+    id: string
+  ) => {
+    // Keep setup local so this example needs only published package imports.
+    const pairMask = createTransientView(
+      graph,
+      id,
+      'uint32',
+      pairs.rightRows.length,
+      Buffer.STORAGE
+    );
+    graph.add(
+      createWGSLKernelNode(graph, {
+        id,
+        operation: 'lens-pair-histogram-membership',
+        invocationCount: pairMask.length,
+        bindings: [
+          {name: 'pairCount', view: pairs.status.count, type: 'u32', access: 'read'},
+          {name: 'mask', view: pairMask, type: 'u32', access: 'read_write'}
+        ],
+        body: 'mask[maskOffset + index] = select(0u, 1u, index < pairCount[pairCountOffset]);'
+      })
+    );
+    return pairMask;
+  };
   // #region example
   graph.add(
     new GPUSpatialPredicateJoin({
@@ -39,13 +69,14 @@ export async function runExample(
       spatialContext: input.spatialContext,
       predicate: 'intersects',
       engine: 'relate',
-      candidateCapacity: input.pairs.leftIds.length,
+      candidateCapacity: input.pairs.leftRows.length,
       output: {pairs: input.pairs}
     })
   );
   graph.add(
     new GPUHistogram({
-      input: input.pairs.rightIds,
+      input: input.pairs.rightRows,
+      mask: addPairHistogramMask(graph, input.pairs, 'predicate-join-active-pairs'),
       output: tractMatches,
       domain: [0, tractMatches.length - 1]
     })

@@ -29,8 +29,10 @@ import {
   submitTimedLensGraph
 } from '../../lens-view-snapshot';
 import {createSpatialChoice} from '../../../gpu-spatial-analysis/computation-pack/choices';
+import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import {mergeGPUCoreFormulaRefsForGraphs} from '../../../computation-views/packs/gpu-core/formulas';
 import type {SpatialOperatorEntry} from '../../../gpu-spatial-analysis/computation-pack/types';
+import {createSpatialReplayCaptures, type SpatialReplayTag} from './replay-captures';
 
 /** Creates an explicit observation graph whose transients can all be snapshotted. */
 export function createSpatialRecordingGraph(device: Device, id: string): GPUCommandGraph {
@@ -68,6 +70,10 @@ export type SpatialCaptureTag = {
   meaning?: string;
 };
 
+function getSpatialGeometryCaptureName(name: string): string {
+  return `${name}.geometry`;
+}
+
 /**
  * Tags scalar captures and adds coordinate views for ResultView's single-ring polygon grammar.
  * Scalar names remain the kernel output names. Geometry aliases share actual GPU-readback arrays;
@@ -99,12 +105,13 @@ export function tagSpatialCaptures(
     result.push({
       ...vertices,
       id: `${capture.id}-geometry`,
-      name: `${capture.name}.geometry`,
+      name: getSpatialGeometryCaptureName(capture.name),
       role: tag.role,
       keySpace: tags[vertices.name]?.keySpace,
       meaning: tag.meaning,
       geometry: {
         kind: 'polygons',
+        featureKeySpace: tag.keySpace,
         coordinateModel: 'geographic',
         offsetsCapture: offsets.id,
         valuesCapture: capture.id
@@ -132,7 +139,7 @@ export type SpatialScenarioRun = {
    * Names of `views` that a GPU replay wrote (for example one pinned row's null distribution). They are
    * stored in the sidecar's `replays` with `gpu-replay` provenance instead of as run snapshots.
    */
-  replays?: Readonly<Record<string, {keySpace: string; meaning: string}>>;
+  replays?: Readonly<Record<string, SpatialReplayTag>>;
   /**
    * CSR slot captures keyed by the capture name of their row offsets. Each slot capture is read
    * back only up to the used slot count (the last row offset): slots past it are unused capacity
@@ -142,16 +149,63 @@ export type SpatialScenarioRun = {
   csrSlotCaptures?: Readonly<Record<string, readonly string[]>>;
 };
 
+/** Refuses final or candidate adjacency loss at the readback-to-record boundary. */
+export function validateSpatialWeightsCaptures(
+  captures: readonly {name: string; values: ArrayLike<number>}[]
+): void {
+  for (const capture of captures)
+    if (
+      [
+        'weightsOverflow',
+        'weightsCandidateOverflow',
+        'edgeOverflow',
+        'edgeCandidateOverflow'
+      ].includes(capture.name)
+    )
+      validateRequirement(
+        'spatial-lens',
+        capture.values[0] === 0,
+        `${capture.name} must be zero; incomplete weights cannot be captured`
+      );
+}
+
+/** Readback boundary shared by recording and host-side loss tests. @internal */
+export async function readCompleteSpatialCaptures(
+  snapshot: Parameters<typeof readLensViewSnapshot>[0],
+  props: Parameters<typeof readLensViewSnapshot>[1]
+) {
+  const captures = await readLensViewSnapshot(snapshot, props);
+  validateSpatialWeightsCaptures(captures);
+  return captures;
+}
+
 /**
  * Compiles once, captures at the end and validates both record and readback sidecar.
  * Imported buffers remain caller-owned; compiled transients are always released here.
- * Node timings are recorded when the device writes timestamps and are absent otherwise, never estimated.
+ * Node timings are recorded when the device wrote timestamps, never estimated.
  */
 export async function runSpatialScenario(
   props: SpatialScenarioRun
 ): Promise<GPUComputationRecordWithSidecars> {
+  const choices = props.entry.choices.map(template => {
+    validateRequirement(
+      props.id,
+      Object.hasOwn(props.choices, template.name),
+      `choices.${template.name} must be supplied for the declared choice template`
+    );
+    const value = props.choices[template.name];
+    validateRequirement(
+      props.id,
+      value !== undefined,
+      `choices.${template.name} must have a value`
+    );
+    return createSpatialChoice(template, value);
+  });
   const snapshot = addLensViewSnapshot(props.graph, props.graph.device, {
     id: props.id,
+    captureNames: Object.keys(props.views).flatMap(name =>
+      props.tags[name]?.polygons ? [name, getSpatialGeometryCaptureName(name)] : [name]
+    ),
     views: props.views
   });
   const compiled = await props.graph.compileAsync();
@@ -167,17 +221,14 @@ export async function runSpatialScenario(
       graphs: [description],
       axes: props.axes,
       datasetVersion: props.datasetVersion,
+      parameters: props.choices,
       seed: props.seed,
       formulas: mergeGPUCoreFormulaRefsForGraphs(
         [description],
         'formula' in props.entry.formula ? [] : [props.entry.formula]
       ),
       choices: [
-        ...props.entry.choices.map(template => {
-          // Every displayed choice must describe the actual run.
-          assert(Object.hasOwn(props.choices, template.name));
-          return createSpatialChoice(template, props.choices[template.name]);
-        }),
+        ...choices,
         ...Object.entries(props.metadata ?? {}).map(([name, value]) =>
           createSpatialChoice({name, stage: 'presentation', sweepable: false}, value)
         )
@@ -188,34 +239,28 @@ export async function runSpatialScenario(
     // Node timings are present only when the device wrote timestamps; never estimated.
     const metrics = await readLensRunMetrics(submission, {
       runId: record.runId,
+      executionId: record.executionId,
       graphId: description.graph.id,
       taps: 1
     });
     const captured = {
-      captures: await readLensViewSnapshot(snapshot, {
+      captures: await readCompleteSpatialCaptures(snapshot, {
         graphId: description.graph.id,
         runId: record.runId
       })
     };
     // Capacity failure must not produce a plausible-looking figure from truncated weights.
-    const overflow = captured.captures.find(capture => capture.name === 'weightsOverflow');
-    if (overflow && overflow.values[0] !== 0)
-      throw new Error('Spatial lens weights capacity exceeded');
     trimCSRSlotCaptures(captured.captures, props.csrSlotCaptures ?? {});
     const replayTags = props.replays ?? {};
     const isReplay = (capture: GPUComputationCapture) => Object.hasOwn(replayTags, capture.name);
     const captures = createGPUComputationCaptures({
       runId: record.runId,
+      executionId: record.executionId,
       snapshots: tagSpatialCaptures(
         captured.captures.filter(capture => !isReplay(capture)),
         props.tags
       ),
-      replays: captured.captures.filter(isReplay).map(capture => ({
-        ...capture,
-        ...replayTags[capture.name],
-        role: 'intermediate' as const,
-        provenance: 'gpu-replay' as const
-      }))
+      replays: createSpatialReplayCaptures(captured.captures, replayTags)
     });
     assertValidLensSidecars(record, {captures, metrics: [metrics]});
     return {...record, captures, metrics: [metrics]};
@@ -348,26 +393,88 @@ export function finishSpatialWeightsRecord(
     if (capture.name === 'conflictCount') assert(capture.values[0] === 0);
     if (capture.name === 'converged') assert(capture.values[0] === 1);
   }
-  const captures = createGPUComputationCaptures({runId: record.runId, snapshots});
+  assertValidLensSidecars(record, record);
+  const captures = createGPUComputationCaptures({
+    runId: record.runId,
+    executionId: record.executionId,
+    snapshots
+  });
   const result = {
     ...record,
     captures,
-    choices: [
-      ...(record.choices ?? []),
-      ...(islandCount !== undefined && Number.isFinite(islandCount)
-        ? [
-            createSpatialChoice(
-              {name: 'islandCount', stage: 'neighbourhood', sweepable: false},
-              islandCount
-            )
-          ]
-        : [])
-    ]
+    graphs: record.graphs.map((graph, index) =>
+      index === 0 && islandCount !== undefined && Number.isFinite(islandCount)
+        ? {...graph, attrs: {...graph.attrs, islandCount}}
+        : graph
+    )
   };
-  // Choice metadata is appended from actual readback; the recorded run identity remains unchanged.
+  // Observations from actual readback leave identity-bearing choices unchanged.
   assert(validateGPUComputationRecord(result).valid);
   assert(validateGPUComputationSidecars(result, {captures}).valid);
   return result;
+}
+
+/** Uses the forest's published compact count to size captured edges and their geometry. */
+export function finishSpatialForestRecord(
+  record: GPUComputationRecordWithSidecars
+): GPUComputationRecordWithSidecars {
+  const snapshots = record.captures!.snapshots;
+  validateSpatialWeightsCaptures(snapshots);
+  const edgeCount = snapshots.find(capture => capture.name === 'edgeCount')?.values[0];
+  const capacity =
+    snapshots.find(capture => capture.name === 'edgeDissimilarities')?.values.length ?? 0;
+  validateRequirement(
+    record.id,
+    edgeCount !== undefined &&
+      Number.isSafeInteger(edgeCount) &&
+      edgeCount >= 0 &&
+      edgeCount <= capacity,
+    'edgeCount must be a published count within edge capacity'
+  );
+  const count = edgeCount!;
+  const lengths: Record<string, number> = {
+    edgeEndpoints: 2 * count,
+    edgeDissimilarities: count,
+    treeSegments: 2 * count,
+    treeSegmentOffsets: count + 1
+  };
+  const sizes: Record<string, number> = {edge: count, edgeVertex: 2 * count, edgeOffset: count + 1};
+  return finishSpatialWeightsRecord(
+    {
+      ...record,
+      axes: {
+        ...record.axes,
+        keySpaces: record.axes.keySpaces?.map(space =>
+          Object.hasOwn(sizes, space.id) ? {...space, size: sizes[space.id]} : space
+        )
+      },
+      captures: {
+        ...record.captures!,
+        snapshots: snapshots.map(capture =>
+          Object.hasOwn(lengths, capture.name)
+            ? {
+                ...capture,
+                values: (capture.values as Float32Array | Uint32Array | Int32Array).slice(
+                  0,
+                  lengths[capture.name] * (capture.components ?? 1)
+                )
+              }
+            : capture
+        )
+      }
+    },
+    {
+      treeSegments: {
+        role: 'output',
+        geometry: {
+          kind: 'lines',
+          coordinateModel: 'geographic',
+          offsetsCapture: 'treeSegmentOffsets',
+          valuesCapture: 'edgeDissimilarities'
+        }
+      }
+    }
+  );
 }
 
 /** Cuts CSR slot captures to the used slot count; see {@link SpatialScenarioRun.csrSlotCaptures}. */

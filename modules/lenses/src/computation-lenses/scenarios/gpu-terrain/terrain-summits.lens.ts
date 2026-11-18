@@ -20,7 +20,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
     import('./terrain-summits.example'),
     import('../gpu-raster/raster-lens-harness'),
     import('../gpu-raster/raster-lens-data'),
-    import('../../../gpu-terrain/computation-pack/index')
+    import('../../../gpu-terrain/computation-pack/pack')
   ]);
   const data = await loadDixieDem();
   const entry = getTerrainOperatorEntries()['GPUTerrainSummits'];

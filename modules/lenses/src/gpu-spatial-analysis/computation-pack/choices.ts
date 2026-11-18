@@ -30,7 +30,9 @@ export function createSpatialChoice(
   template: SpatialChoiceTemplate,
   value: GPUComputationAttributeValue
 ): GPUAnalysisChoice {
-  return {...template, value};
+  const disabled =
+    typeof value === 'string' && (value === 'disabled' || value.startsWith('disabled:'));
+  return {...template, value, sweepable: template.sweepable && !disabled};
 }
 
 /** Record-choice names consumed by spatial guards; scalar values become guard metadata.

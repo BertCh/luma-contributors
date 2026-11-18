@@ -8,7 +8,7 @@ import {
   recordNetworkElement,
   type NetworkElementScenario
 } from './network-element-lens';
-import {runExample} from './network-coarsening.example';
+import {runExample, validateNetworkCoarseningCapture} from './network-coarsening.example';
 import {loadChicagoLoopRoads} from './network-lens-support';
 import {createNodeValuePoints} from './search-lens-support';
 import {
@@ -26,7 +26,7 @@ const ZONE_COLUMNS = 2;
 const ZONE_ROWS = 2;
 const GROUP_CAPACITY = ZONE_COLUMNS * ZONE_ROWS;
 
-const scenario: NetworkElementScenario = {
+export const networkCoarseningScenario: NetworkElementScenario = {
   id: scenarioId,
   weights: 'travelTimeSeconds',
   seed: GROUP_CAPACITY,
@@ -37,7 +37,8 @@ const scenario: NetworkElementScenario = {
     'targetGroups',
     'edgeCounts',
     'superedgeCount',
-    'overflow'
+    'overflow',
+    'candidateOverflow'
   ],
   formulas: [],
   keySpaces: getStructureKeySpaces(roads, [
@@ -88,23 +89,25 @@ const scenario: NetworkElementScenario = {
         targetGroups: example.targetGroups,
         edgeCounts: example.edgeCounts,
         superedgeCount: example.superedgeCount,
-        overflow: example.overflow
+        overflow: example.overflow,
+        candidateOverflow: example.candidateOverflow
       }
     };
   },
   capture(final) {
-    // Overflow means a label reached groupCapacity or the superedge list was cut.
-    if (final('overflow').values[0] !== 0)
-      throw new Error('Network coarsening overflowed its group or superedge capacity');
+    const counts = final('groupNodeCount');
+    validateNetworkCoarseningCapture({
+      overflow: final('overflow').values[0],
+      candidateOverflow: final('candidateOverflow').values[0],
+      groupNodeCount: counts.values
+    });
     const positions = final('nodePositions');
     const count = final('superedgeCount').values[0];
     const groupNodeCount = {
-      ...final('groupNodeCount'),
+      ...counts,
       keySpace: 'group',
       meaning: 'GPU intersections per zone'
     };
-    if (Array.from(groupNodeCount.values).some(nodes => nodes === 0))
-      throw new Error('Network coarsening: a zone is empty');
     const centroids = final('groupCentroid');
     const sources = takeFirstRows(final('sourceGroups'), count, {
       keySpace: 'superedge',
@@ -191,10 +194,10 @@ const scenario: NetworkElementScenario = {
 
 /** Executes the zone coarsening on the Chicago Loop roads and reads the summary graph back. */
 export async function run(device: Device) {
-  return recordNetworkElement(device, scenario);
+  return recordNetworkElement(device, networkCoarseningScenario);
 }
 
 /** Builds the same graph on a null device, without execution. */
 export async function describeStructure(device: Device) {
-  return describeNetworkElement(device, scenario);
+  return describeNetworkElement(device, networkCoarseningScenario);
 }

@@ -2,23 +2,36 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync} from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync
+} from 'node:fs';
+import {createHash} from 'node:crypto';
+import {tmpdir} from 'node:os';
 import {join, relative} from 'node:path';
-import {describe, expect, it} from 'vitest';
+import {describe, expect, it, vi} from 'vitest';
+import * as recordingRegistry from '../../src/computation-lenses/registry-implementation';
+import {collectPendingRecordFailures, PENDING_LENS_RECORDS} from './pending-lens-records';
 // Registers scenario descriptors (example paths, elements for pack guards) and their domain packs.
 import '../../src/computation-lenses/scenarios/index';
 import {
   fromRecordedLensFile,
-  getLensExamplePath,
   getLensScenario,
-  type RecordedLensFile
+  type DecodedLensFile
 } from '../../src/computation-lenses/index';
+import {getLensExamplePath} from '../../src/computation-lenses/lens-example';
+import {buildDecodedLensTwin} from '../../src/computation-views/index';
 import {
-  buildLensTwin,
   parseLensDirective,
   validateLensTwin,
   type LensTwin
-} from '../../src/computation-views/index';
+} from '../../src/computation-views/twin/static-twin';
 import {
   DOCS_ROOT,
   REPOSITORY_ROOT,
@@ -54,7 +67,7 @@ function getThumbnailTwinFile(attributes: Record<string, string>): string | unde
 }
 
 function serializeTwin(
-  recorded: RecordedLensFile,
+  recorded: DecodedLensFile,
   attributes: Record<string, string>,
   size: 'full' | 'thumbnail' = 'full'
 ): string {
@@ -78,16 +91,16 @@ function serializeTwin(
     size === 'full' && parsed.rung === 'result'
       ? readLensExampleSource(parsed.scenarioId)
       : undefined;
-  const twin = buildLensTwin(recorded, directive, {
+  const twin = buildDecodedLensTwin(recorded, directive, {
     size,
     ...(example === undefined ? {} : {example})
   });
   return `${JSON.stringify({...envelope, ...twin}, null, 2)}\n`;
 }
 
-function listTwinFiles(): string[] {
-  return existsSync(TWINS_DIRECTORY)
-    ? readdirSync(TWINS_DIRECTORY, {withFileTypes: true})
+function listTwinFiles(directory = TWINS_DIRECTORY): string[] {
+  return existsSync(directory)
+    ? readdirSync(directory, {withFileTypes: true})
         .filter(file => file.isFile() && file.name.endsWith('.json'))
         .map(file => file.name)
         .sort()
@@ -106,6 +119,7 @@ function collectTwinDrift(
   }
   for (const file of existing.keys()) {
     if (!referenced.has(file)) failures.push(`orphan twin: ${file}`);
+    else if (!expected.has(file)) failures.push(`missing source record: ${file}`);
   }
   return failures.sort();
 }
@@ -131,74 +145,115 @@ function collectTwinContractFailures(twin: LensTwin): string[] {
   return failures;
 }
 
-describe('documentation lens twins', () => {
-  it('materializes canonical twins and detects missing, stale and orphan files', () => {
-    const files = listDocsMarkdownFiles();
-    expect(files.length).toBeGreaterThan(0);
-    const expected = new Map<string, string>();
-    const referenced = new Set<string>();
-    const failures: string[] = [];
-    for (const file of files) {
+function materializeCanonicalTwins(
+  files: readonly string[],
+  options: {
+    update?: boolean;
+    recordsDirectory?: string;
+    twinsDirectory?: string;
+    pending?: Readonly<Record<string, string>>;
+    writeTwin?: (path: string, data: Uint8Array) => void;
+    removeTwin?: (path: string) => void;
+  } = {}
+): void {
+  const recordsDirectory = options.recordsDirectory ?? RECORDS_DIRECTORY;
+  const twinsDirectory = options.twinsDirectory ?? TWINS_DIRECTORY;
+  const writeTwin = options.writeTwin ?? writeFileSync;
+  const removeTwin = options.removeTwin ?? unlinkSync;
+  expect(files.length).toBeGreaterThan(0);
+  // Retain only filenames and hashes across scenarios, never all serialized or decoded records.
+  const expected = new Map<string, string>();
+  const referenced = new Set<string>();
+  const failures: string[] = [];
+  const groups = new Map<string, ReturnType<typeof scanLensDirectives>>();
+  for (const file of files) {
+    try {
+      for (const directive of scanLensDirectives(file)) {
+        const scenarioId = directive.attributes['scenario'];
+        const group = groups.get(scenarioId) ?? [];
+        group.push(directive);
+        groups.set(scenarioId, group);
+      }
+    } catch (error) {
+      failures.push(String(error));
+    }
+  }
+  failures.push(
+    ...collectPendingRecordFailures(
+      new Set(groups.keys()),
+      options.pending ?? PENDING_LENS_RECORDS,
+      scenarioId => existsSync(join(recordsDirectory, `${scenarioId}.json`))
+    )
+  );
+  if (failures.length) throw new Error(failures.join('\n'));
+  const update = options.update ?? process.env['UPDATE_LENS_TWINS'] === '1';
+  const stagingDirectory = update ? mkdtempSync(join(tmpdir(), 'lens-twins-')) : undefined;
+  const existingFiles = listTwinFiles(twinsDirectory);
+  function checkTwin(file: string, text: string): void {
+    const hash = createHash('sha256').update(text).digest('hex');
+    if (expected.has(file)) {
+      if (expected.get(file) !== hash)
+        failures.push(`${file}: directives with the same key produced different twins`);
+      return;
+    }
+    expected.set(file, hash);
+    if (stagingDirectory) writeFileSync(join(stagingDirectory, file), text);
+  }
+  try {
+    for (const [scenarioId, directives] of groups) {
+      for (const {attributes} of directives) {
+        referenced.add(`${twinKey(attributes)}.json`);
+        const thumbnail = getThumbnailTwinFile(attributes);
+        if (thumbnail) referenced.add(thumbnail);
+      }
+      const recordFile = join(recordsDirectory, `${scenarioId}.json`);
+      if (!existsSync(recordFile)) continue;
       try {
-        for (const directive of scanLensDirectives(file)) {
-          const attributes = directive.attributes;
-          const twinFile = `${twinKey(attributes)}.json`;
-          referenced.add(twinFile);
-          const thumbnailFile = getThumbnailTwinFile(attributes);
-          if (thumbnailFile) referenced.add(thumbnailFile);
-          const recordFile = join(RECORDS_DIRECTORY, `${attributes['scenario']}.json`);
-          if (!existsSync(recordFile)) continue;
-          try {
-            const recorded = fromRecordedLensFile(JSON.parse(readFileSync(recordFile, 'utf8')));
-            const serialized = serializeTwin(recorded, attributes);
-            if (expected.has(twinFile) && expected.get(twinFile) !== serialized) {
-              failures.push(`${twinFile}: directives with the same key produced different twins`);
-            }
-            expected.set(twinFile, serialized);
-            const thumbnailFile = getThumbnailTwinFile(attributes);
-            if (thumbnailFile) {
-              expected.set(thumbnailFile, serializeTwin(recorded, attributes, 'thumbnail'));
-            }
-          } catch (error) {
-            failures.push(`${relative(REPOSITORY_ROOT, file)}:${directive.line}: ${String(error)}`);
-          }
+        // Decode once, render this scenario's variants, then release its capture arrays.
+        const recorded = fromRecordedLensFile(JSON.parse(readFileSync(recordFile, 'utf8')));
+        for (const {attributes} of directives) {
+          checkTwin(`${twinKey(attributes)}.json`, serializeTwin(recorded, attributes));
+          const thumbnail = getThumbnailTwinFile(attributes);
+          if (thumbnail) checkTwin(thumbnail, serializeTwin(recorded, attributes, 'thumbnail'));
         }
       } catch (error) {
-        failures.push(String(error));
+        const directive = directives[0];
+        failures.push(
+          `${relative(REPOSITORY_ROOT, directive.file)}:${directive.line}: ${String(error)}`
+        );
       }
     }
-    // Never update or prune after a failed scan or build: the reference set may be incomplete.
+    // Include orphan twins: losing their capture must fail even an opt-in regeneration.
+    const existing = new Map<string, string>();
+    for (const file of existingFiles) {
+      const text = readFileSync(join(twinsDirectory, file), 'utf8');
+      existing.set(file, createHash('sha256').update(text).digest('hex'));
+      const twin = JSON.parse(text);
+      if (!existsSync(join(recordsDirectory, `${twin.scenario}.json`)))
+        failures.push(`missing source record: ${file}`);
+    }
+    // Never update or prune after a failed scan or build.
     expect(failures).toEqual([]);
-    const existingFiles = listTwinFiles();
-    if (process.env['UPDATE_LENS_TWINS'] === '1') {
-      if (expected.size > 0) mkdirSync(TWINS_DIRECTORY, {recursive: true});
-      for (const [file, text] of expected) {
-        if (
-          !existsSync(join(TWINS_DIRECTORY, file)) ||
-          readFileSync(join(TWINS_DIRECTORY, file), 'utf8') !== text
-        )
-          writeFileSync(join(TWINS_DIRECTORY, file), text);
-      }
-      for (const file of existingFiles) {
-        if (!referenced.has(file)) unlinkSync(join(TWINS_DIRECTORY, file));
-      }
+    if (stagingDirectory) {
+      if (expected.size > 0) mkdirSync(twinsDirectory, {recursive: true});
+      for (const file of expected.keys())
+        writeTwin(join(twinsDirectory, file), readFileSync(join(stagingDirectory, file)));
+      for (const file of existingFiles)
+        if (!referenced.has(file)) removeTwin(join(twinsDirectory, file));
     } else {
       expect(
-        [...expected]
-          .flatMap(([file, text]) =>
-            !existsSync(join(TWINS_DIRECTORY, file))
-              ? [`missing twin: ${file}`]
-              : readFileSync(join(TWINS_DIRECTORY, file), 'utf8') !== text
-                ? [`stale twin: ${file}`]
-                : []
-          )
-          .concat(
-            existingFiles.filter(file => !referenced.has(file)).map(file => `orphan twin: ${file}`)
-          )
-          .sort(),
+        collectTwinDrift(expected, existing, referenced),
         'Run with UPDATE_LENS_TWINS=1 to regenerate docs/lens-records/twins'
       ).toEqual([]);
     }
+  } finally {
+    if (stagingDirectory) rmSync(stagingDirectory, {recursive: true, force: true});
+  }
+}
+
+describe('documentation lens twins', () => {
+  it('materializes canonical twins and detects missing, stale and orphan files', () => {
+    materializeCanonicalTwins(listDocsMarkdownFiles());
   });
 
   it('every existing twin satisfies the accessible documentation contract and size budget', () => {
@@ -220,7 +275,66 @@ describe('documentation lens twins', () => {
 });
 
 describe('twin helpers', () => {
-  const recorded: RecordedLensFile = {
+  it('a one-directive scenario typo cannot write or prune existing twins', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'lens-typo-'));
+    const recordsDirectory = join(directory, 'records');
+    const twinsDirectory = join(directory, 'twins');
+    mkdirSync(recordsDirectory);
+    mkdirSync(twinsDirectory);
+    const documentFile = join(directory, 'page.md');
+    writeFileSync(documentFile, '::lens{scenario=gpu-dataframe.class-breaxs rung=result}');
+    writeFileSync(
+      join(recordsDirectory, 'gpu-dataframe.class-breaks.json'),
+      readFileSync(join(RECORDS_DIRECTORY, 'gpu-dataframe.class-breaks.json'))
+    );
+    writeFileSync(
+      join(twinsDirectory, 'gpu-dataframe.class-breaks~result.json'),
+      readFileSync(join(TWINS_DIRECTORY, 'gpu-dataframe.class-breaks~result.json'))
+    );
+    const writeTwin = vi.fn();
+    const removeTwin = vi.fn();
+    let error: string | undefined;
+    try {
+      try {
+        materializeCanonicalTwins([documentFile], {
+          update: true,
+          recordsDirectory,
+          twinsDirectory,
+          pending: {},
+          writeTwin,
+          removeTwin
+        });
+      } catch (caught) {
+        error = String(caught);
+      }
+      expect({
+        error,
+        writes: writeTwin.mock.calls.length,
+        deletions: removeTwin.mock.calls.length
+      }).toEqual({
+        error: expect.stringContaining(
+          'gpu-dataframe.class-breaxs: missing record without a documented pending entry'
+        ),
+        writes: 0,
+        deletions: 0
+      });
+      // The guard must still allow regeneration when the same directive names the real capture.
+      writeFileSync(documentFile, '::lens{scenario=gpu-dataframe.class-breaks rung=result}');
+      materializeCanonicalTwins([documentFile], {
+        update: true,
+        recordsDirectory,
+        twinsDirectory,
+        pending: {},
+        writeTwin,
+        removeTwin
+      });
+      expect(writeTwin).toHaveBeenCalledTimes(2);
+      expect(removeTwin).not.toHaveBeenCalled();
+    } finally {
+      rmSync(directory, {recursive: true, force: true});
+    }
+  });
+  const recorded: DecodedLensFile = {
     schema: 'luma.lens-record/1',
     scenarioId: 'test.example',
     recordedAt: '2026-10-14T00:00:00.000Z',
@@ -291,7 +405,19 @@ describe('twin helpers', () => {
     expect(withoutPins).not.toHaveProperty('iteration');
   });
 
-  it('reports all drift and preserves referenced twins whose source records are pending', () => {
+  it('reuses one decoded record for full and thumbnail twins', () => {
+    const restored = fromRecordedLensFile(JSON.parse(JSON.stringify(recorded)));
+    const decode = vi.spyOn(recordingRegistry, 'fromRecordedLensFile');
+    try {
+      serializeTwin(restored, {scenario: 'test.example', rung: 'table'});
+      serializeTwin(restored, {scenario: 'test.example', rung: 'table'}, 'thumbnail');
+      expect(decode).not.toHaveBeenCalled();
+    } finally {
+      decode.mockRestore();
+    }
+  });
+
+  it('rejects a checked-in twin whose source record has become pending', () => {
     expect(
       collectTwinDrift(
         new Map([
@@ -305,7 +431,12 @@ describe('twin helpers', () => {
         ]),
         new Set(['missing.json', 'stale.json', 'pending.json'])
       )
-    ).toEqual(['missing twin: missing.json', 'orphan twin: orphan.json', 'stale twin: stale.json']);
+    ).toEqual([
+      'missing source record: pending.json',
+      'missing twin: missing.json',
+      'orphan twin: orphan.json',
+      'stale twin: stale.json'
+    ]);
   });
 
   it('rejects empty required contract fields', () => {

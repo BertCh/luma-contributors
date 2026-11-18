@@ -54,6 +54,24 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
       ],
       datumKeySpace: 'edge',
       choices: [
+        createDataFrameChoice(
+          'classify',
+          'standardDeviationInterval',
+          'disabled: equal-interval and quantile'
+        ),
+        createDataFrameChoice('classify', 'headTailRatio', 'disabled: equal-interval and quantile'),
+        createDataFrameChoice('classify', 'boxPlotHinge', 'disabled: equal-interval and quantile'),
+        createDataFrameChoice('classify', 'customEdges', 'disabled: equal-interval and quantile'),
+        createDataFrameChoice(
+          'classify',
+          'naturalBreaksBinCount',
+          'disabled: equal-interval and quantile'
+        ),
+        createDataFrameChoice(
+          'classify',
+          'naturalBreaksMode',
+          'disabled: equal-interval and quantile'
+        ),
         createDataFrameChoice('classify', 'method', 'equal-interval', {
           alternatives: GPU_CLASS_BREAKS_METHODS
         }),

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import {defineLensScenario, FORMULA_LENS_RUNGS} from '../../define-lens-scenarios';
 import {S2_DATASETS} from './s2-datasets';
 import type {S2CaptureSpec} from './s2-lens-run';
@@ -29,8 +30,8 @@ defineLensScenario({
     ] = await Promise.all([
       import('./s2-lens-run'),
       import('./areal-interpolation.example'),
-      import('../../data/s2-chicago-north-tracts.json').then(module => module.default),
-      import('../../data/s2-chicago-north-areas.json').then(module => module.default)
+      EMBEDDED_DATASET_LOADERS['s2-chicago-north-tracts.json']().then(module => module.default),
+      EMBEDDED_DATASET_LOADERS['s2-chicago-north-areas.json']().then(module => module.default)
     ]);
     return {
       run: device => {
@@ -114,9 +115,10 @@ defineLensScenario({
             captures['resultAreas'] = {
               view: areaGeometry.display,
               role: 'output',
-              keySpace: 'areas',
+              keySpace: 'areas-display-vertex',
               geometry: {
                 kind: 'polygons',
+                featureKeySpace: 'areas',
                 offsetsCapture: 'areasDisplayOffsets',
                 valuesCapture: 'areaPopulation',
                 coordinateModel: 'projected',

@@ -85,7 +85,7 @@ export async function buildGaussianRandomFieldScenario(session: RasterLensSessio
 export async function run(device: Device) {
   const [{runRasterLens}, {getSpatialOperatorEntries}] = await Promise.all([
     import('../gpu-raster/raster-lens-harness'),
-    import('../../../gpu-spatial-analysis/computation-pack')
+    import('../../../gpu-spatial-analysis/computation-pack/pack')
   ]);
   const formula = getSpatialOperatorEntries()['GPUGaussianRandomField'].formula;
   return runRasterLens({

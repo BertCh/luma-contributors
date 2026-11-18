@@ -33,7 +33,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
     import('./isolines.example'),
     import('./raster-lens-harness'),
     import('./raster-lens-data'),
-    import('../../../gpu-raster/computation-pack/index')
+    import('../../../gpu-raster/computation-pack/pack')
   ]);
   const terrain = await loadDixieDem();
   const entry = getRasterOperatorEntries()['GPUIsolines'];
@@ -59,6 +59,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
       {id: 'vertices', label: 'polyline vertices', size: VERTEX_CAPACITY, indexSpace: '1d'}
     ],
     choices: [
+      {stage: 'support', name: 'tile', value: 'whole input grid', sweepable: false},
       {stage: 'operator', name: 'levelCount', value: LEVELS.length, sweepable: true},
       {stage: 'support', name: 'localOrigin', value: 'south-west corner', sweepable: false}
     ],

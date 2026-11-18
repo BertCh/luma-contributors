@@ -222,6 +222,7 @@ export async function runRasterLens(props: RunRasterLensProps): Promise<LensScen
       // Node timings are present only when the device wrote timestamps; never estimated.
       const metrics = await readLensRunMetrics(submission, {
         runId: record.runId,
+        executionId: record.executionId,
         graphId,
         taps: 1
       });
@@ -229,6 +230,7 @@ export async function runRasterLens(props: RunRasterLensProps): Promise<LensScen
       const sidecar = arrangeCaptures(props, captures, readback);
       const captureSidecar = createGPUComputationCaptures({
         runId: record.runId,
+        executionId: record.executionId,
         snapshots: sidecar.snapshots,
         stamps: sidecar.stamps
       });

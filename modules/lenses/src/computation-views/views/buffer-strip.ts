@@ -20,6 +20,8 @@ import {
   getAdapterLabel,
   getAllCaptures,
   getCaptureProvenance,
+  getCaptureFirstKey,
+  getCaptureRowCount,
   getCaptureValue,
   getPinnedEntity
 } from './record-queries';
@@ -38,7 +40,12 @@ export type BufferStripModel = {
   stats: {min: number; max: number; nanCount: number; infCount: number; finiteCount: number};
   histogram: {bins: 16; counts: number[]; edges: number[]};
   envelope?: {min: number[]; max: number[]};
-  diff?: {againstCaptureId: string; changedCount: number; maxAbsDelta: number};
+  diff?: {
+    againstCaptureId: string;
+    comparedCount: number;
+    changedCount: number;
+    maxAbsDelta: number;
+  };
   table: {key: number; value: number | string; delta?: number}[];
 };
 
@@ -68,6 +75,7 @@ export function buildBufferStripModel(context: ViewContext): BufferStripModel {
   assert(capture);
   const components = capture.components ?? 1;
   const count = Math.floor(capture.values.length / components);
+  const firstKey = getCaptureFirstKey(capture);
   const keySpace = context.record.axes.keySpaces.find(
     candidate => candidate.id === capture.keySpace
   );
@@ -102,44 +110,57 @@ export function buildBufferStripModel(context: ViewContext): BufferStripModel {
           : Math.min(15, Math.floor(((value - minimum) / (maximum - minimum)) * 16))
       ]++;
   }
-  const iterations = getIterationCaptures(context, capture.name);
+  const iterations = getIterationCaptures(context, capture.name).filter(
+    candidate =>
+      candidate.keySpace === capture.keySpace &&
+      (candidate.components ?? 1) === components &&
+      candidate.elementType === capture.elementType
+  );
   const previous = iterations
     .filter(candidate => candidate.iteration! < (capture.iteration ?? Infinity))
     .at(-1);
   let diff: BufferStripModel['diff'];
   if (previous) {
+    let comparedCount = 0;
     let changedCount = 0;
     let maxAbsDelta = 0;
     for (let key = 0; key < count; key++) {
+      const previousRow = firstKey + key - getCaptureFirstKey(previous);
+      if (previousRow < 0 || previousRow >= getCaptureRowCount(previous)) continue;
+      comparedCount++;
       let changed = false;
       for (let component = 0; component < components; component++) {
         const index = key * components + component;
         const value = Number(capture.values[index]);
-        const prior = previous.values[index];
+        const prior = previous.values[previousRow * (previous.components ?? 1) + component];
         if (!Object.is(value, prior) && value !== prior) changed = true;
         const delta = value - prior;
         if (!Number.isNaN(delta)) maxAbsDelta = Math.max(maxAbsDelta, Math.abs(delta));
       }
       if (changed) changedCount++;
     }
-    diff = {againstCaptureId: previous.id, changedCount, maxAbsDelta};
+    diff = {againstCaptureId: previous.id, comparedCount, changedCount, maxAbsDelta};
   }
   let envelope: BufferStripModel['envelope'];
   if (new Set(iterations.map(candidate => candidate.iteration)).size >= 2 && count <= 4096) {
     envelope = {min: [], max: []};
     for (let key = 0; key < count; key++) {
       const values = iterations
-        .map(candidate => getCaptureValue(candidate, key))
+        .map(candidate => getCaptureValue(candidate, firstKey + key))
         .filter((value): value is number => value !== undefined && Number.isFinite(value));
       envelope.min.push(values.length ? Math.min(...values) : NaN);
       envelope.max.push(values.length ? Math.max(...values) : NaN);
     }
   }
-  const start = clamp((getPinnedEntity(context) ?? 32) - 32, 0, Math.max(0, count - 64));
+  const start = clamp(
+    (getPinnedEntity(context) ?? firstKey + 32) - firstKey - 32,
+    0,
+    Math.max(0, count - 64)
+  );
   const table = Array.from({length: Math.min(64, count - start)}, (_, offset) => {
-    const key = start + offset;
+    const key = firstKey + start + offset;
     const values = Array.from({length: components}, (_, component) =>
-      Number(capture.values[key * components + component])
+      Number(capture.values[(key - firstKey) * components + component])
     );
     const prior = previous && getCaptureValue(previous, key);
     return {
@@ -153,7 +174,13 @@ export function buildBufferStripModel(context: ViewContext): BufferStripModel {
     name: capture.name,
     keySpace: capture.keySpace ?? 'unknown',
     indexSpace:
-      keySpace?.indexSpace === '2d' ? '2d' : keySpace?.indexSpace === 'csr' ? 'csr' : '1d',
+      keySpace?.indexSpace === '2d' &&
+      firstKey === 0 &&
+      count === keySpace.shape?.reduce((product, size) => product * size, 1)
+        ? '2d'
+        : keySpace?.indexSpace === 'csr'
+          ? 'csr'
+          : '1d',
     shape: keySpace?.shape,
     count,
     elementType: capture.elementType,
@@ -172,7 +199,10 @@ function renderIndexSpace(
   context: ViewContext
 ): ViewElementNode {
   const scale = resolveValueScale(context, model.name)?.scale;
-  const values = Array.from({length: model.count}, (_, key) => getCaptureValue(capture, key)!);
+  const values = Array.from(
+    {length: model.count},
+    (_, index) => getCaptureValue(capture, getCaptureFirstKey(capture) + index)!
+  );
   const provisional =
     capture.iteration !== undefined &&
     getFinalStateCapture(context.record, model.name)?.id !== capture.id
@@ -231,6 +261,8 @@ function renderIndexSpace(
       ground: context.ground,
       width,
       pinnedKey: getPinnedEntity(context),
+      keyOffset: getCaptureFirstKey(capture),
+      keySpace: capture.keySpace,
       provisional,
       label: `${model.name} by ${model.keySpace}`
     });
@@ -401,7 +433,13 @@ export function renderBufferStrip(model: BufferStripModel, context: ViewContext)
               null,
               h(
                 'button',
-                {type: 'button', 'data-action': 'pick', 'data-axis': 'entity', 'data-key': row.key},
+                {
+                  type: 'button',
+                  'data-action': 'pick',
+                  'data-axis': 'entity',
+                  'data-key': row.key,
+                  'data-key-space': capture.keySpace
+                },
                 String(row.key)
               )
             ),
@@ -427,7 +465,7 @@ export function renderBufferStrip(model: BufferStripModel, context: ViewContext)
     h(
       'p',
       null,
-      `min ${model.stats.min} · max ${model.stats.max}${model.diff ? ` · ${model.diff.changedCount} keys changed vs ${model.diff.againstCaptureId}` : ''}`
+      `min ${model.stats.min} · max ${model.stats.max}${model.diff ? ` · ${model.diff.changedCount} of ${model.diff.comparedCount} shared keys changed vs ${model.diff.againstCaptureId}` : ''}`
     ),
     h('p', null, getAdapterLabel(context.record))
   );
@@ -466,7 +504,11 @@ export const BUFFER_STRIP_VIEW: ViewRegistration<BufferStripModel> = {
           ]
         : []),
       `${model.stats.nanCount} NaN, ${model.stats.infCount} Inf`,
-      ...(model.diff ? [`${model.diff.changedCount} keys changed vs previous iteration`] : [])
+      ...(model.diff
+        ? [
+            `${model.diff.changedCount} of ${model.diff.comparedCount} shared keys changed vs previous iteration`
+          ]
+        : [])
     ],
     provenance: model.provenance,
     adapterLabel: getAdapterLabel(context.record)

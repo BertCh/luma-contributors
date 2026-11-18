@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {expect, test} from 'vitest';
+import {afterAll, expect, expectTypeOf, test} from 'vitest';
+import type {Device} from '@luma.gl/core';
+import {captureLensScenarioRecord} from '../../../src/computation-lenses/run-lens-scenario';
 import {
   getLensScenario,
   isLensScenarioId,
-  listLensScenarios,
+  listLensScenarios
+} from '../../../src/computation-lenses/registry-implementation';
+import {
   registerLensScenario,
   toRecordedLensFile,
   fromRecordedLensFile
@@ -25,6 +29,28 @@ const descriptor: LensScenarioDescriptor = {
   load: async () => ({run: async () => makeScanRecord()})
 };
 
+const disposeRegistrations: (() => void)[] = [];
+afterAll(() => {
+  for (const dispose of disposeRegistrations) dispose();
+});
+
+test('R6 rejects compact graphs with a missing dictionary and accepts genuine legacy graphs', () => {
+  const record = makeScanRecord();
+  delete record.captures;
+  delete record.metrics;
+  const encoded = toRecordedLensFile(record, {
+    scenarioId: 'gpu-core.scan',
+    recordedAt: record.createdAt,
+    adapterLabel: 'Fixture GPU'
+  });
+  const {encoding: ignoredEncoding, ...missingDictionary} = encoded;
+  expect(ignoredEncoding).toBeDefined();
+  expect(() => fromRecordedLensFile(missingDictionary)).toThrow('graph');
+  expect(fromRecordedLensFile({...missingDictionary, record}).record.graphs[0].id).toBe(
+    record.graphs[0].id
+  );
+});
+
 test('validates scenario ids, coverage contract, duplicates and sorted lookup', () => {
   expect(isLensScenarioId('gpu-core.scan.small-data')).toBe(true);
   for (const id of ['scan', 'GPU.scan', 'gpu-.scan', 'gpu.scan.a.b', '.scan'])
@@ -33,7 +59,9 @@ test('validates scenario ids, coverage contract, duplicates and sorted lookup', 
   expect(() => registerLensScenario({...descriptor, defaultRung: 'kernel'})).toThrow('defaultRung');
   expect(() => registerLensScenario({...descriptor, element: 'local-moran'})).toThrow('element');
   expect(() => registerLensScenario({...descriptor, id: 'bad'})).toThrow('id');
-  registerLensScenario(descriptor);
+  const previous = listLensScenarios();
+  const dispose = registerLensScenario(descriptor);
+  disposeRegistrations.push(dispose);
   expect(getLensScenario(descriptor.id)).toBe(descriptor);
   expect(() => registerLensScenario(descriptor)).toThrow('Duplicate');
   expect(listLensScenarios().map(scenario => scenario.id)).toEqual(
@@ -41,6 +69,15 @@ test('validates scenario ids, coverage contract, duplicates and sorted lookup', 
       .map(scenario => scenario.id)
       .sort()
   );
+  dispose();
+  expect(getLensScenario(descriptor.id)).toBeUndefined();
+  const replacement = {...descriptor, title: 'replacement'};
+  const disposeReplacement = registerLensScenario(replacement);
+  disposeRegistrations.push(disposeReplacement);
+  dispose();
+  expect(getLensScenario(descriptor.id)).toBe(replacement);
+  disposeReplacement();
+  expect(listLensScenarios()).toEqual(previous);
 });
 
 test('JSON round trip preserves typed capture arrays and non-finite tokens', () => {
@@ -93,4 +130,49 @@ test('series values and unrelated attributes survive deep conversion', () => {
   const restored = fromRecordedLensFile(JSON.parse(JSON.stringify(serialized)));
   expect(restored.record.graphs[0].attrs?.['values']).toBe('a named attribute');
   expect(restored.record.metrics![0].series![0].values).toEqual([NaN, Infinity, 0]);
+});
+
+test('writer rejects metadata that the reader would reject', () => {
+  const record = makeScanRecord();
+  const options = {
+    scenarioId: 'gpu-core.scan',
+    recordedAt: record.createdAt,
+    adapterLabel: 'Fixture GPU'
+  };
+  expect(() => toRecordedLensFile(record, {...options, recordedAt: 'bad'})).toThrow('recordedAt');
+  expect(() => toRecordedLensFile(record, {...options, adapterLabel: '  '})).toThrow(
+    'adapterLabel'
+  );
+  expect(() => toRecordedLensFile(record, {...options, variant: 42 as unknown as string})).toThrow(
+    'variant'
+  );
+});
+
+test('encoded payloads require decoding before graph access', () => {
+  const record = makeScanRecord();
+  const serialized = toRecordedLensFile(record, {
+    scenarioId: 'gpu-core.scan',
+    recordedAt: record.createdAt,
+    adapterLabel: 'Fixture GPU'
+  });
+  expectTypeOf(serialized.record).toBeUnknown();
+  const payload = JSON.parse(JSON.stringify(serialized));
+  expect(Array.isArray(payload.record.graphs[0])).toBe(true);
+  const decoded = fromRecordedLensFile(serialized);
+  expect(decoded.record.graphs[0].id).toBe(record.graphs[0].id);
+  expect(decoded.record.captures!.snapshots[0].values).toBeInstanceOf(Uint32Array);
+});
+
+test('capture returns an encoded file that decodes into an inspectable recording', async () => {
+  const record = makeScanRecord();
+  const device = {info: {renderer: 'Fixture GPU', gpuBackend: 'webgpu'}} as unknown as Device;
+  const captured = await captureLensScenarioRecord(descriptor, device, {
+    recordedAt: record.createdAt
+  });
+  expectTypeOf(captured.record).toBeUnknown();
+  const decoded = fromRecordedLensFile(captured);
+  expect(decoded.record.graphs[0].id).toBe(record.graphs[0].id);
+  expect(decoded.adapterLabel).toBe('Fixture GPU (webgpu)');
+  const legacy = {...decoded, record};
+  expect(fromRecordedLensFile(legacy).record.graphs).toEqual(record.graphs);
 });

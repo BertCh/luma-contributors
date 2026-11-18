@@ -1,0 +1,116 @@
+{
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./computation-lenses": {
+      "types": "./dist/computation-lenses/index.d.ts",
+      "import": "./dist/computation-lenses/index.js",
+      "require": "./dist/computation-lenses/index.cjs"
+    },
+    "./computation-views": {
+      "types": "./dist/computation-views/index.d.ts",
+      "import": "./dist/computation-views/index.js",
+      "require": "./dist/computation-views/index.cjs"
+    },
+    "./computation-lenses/scenarios/index": {
+      "types": "./dist/computation-lenses/scenarios/index.d.ts",
+      "import": "./dist/computation-lenses/scenarios/index.js",
+      "require": "./dist/computation-lenses/scenarios/index.cjs"
+    },
+    "./computation-lenses/registry": {
+      "types": "./dist/computation-lenses/registry.d.ts",
+      "import": "./dist/computation-lenses/registry.js"
+    },
+    "./computation-lenses/data/*": "./dist/computation-lenses/data/*",
+    "./*/computation-pack/index": {
+      "types": "./dist/*/computation-pack/index.d.ts",
+      "import": "./dist/*/computation-pack/index.js"
+    }
+  },
+  "entries": {
+    ".": {
+      "values": [
+        "captureLensScenarioRecord",
+        "fromRecordedLensFile",
+        "registerLensScenario",
+        "registerLensScenarios",
+        "toRecordedLensFile"
+      ],
+      "types": [
+        "DecodedLensFile",
+        "RecordedLensFile"
+      ]
+    },
+    "./computation-lenses": {
+      "values": [
+        "LensUserInputRoleError",
+        "applyLensUserInput",
+        "captureLensScenarioRecord",
+        "fromRecordedLensFile",
+        "getLensScenario",
+        "getLensUserInputDatasetId",
+        "listLensScenarios",
+        "listLensUserInputRoles",
+        "registerLensScenario",
+        "registerLensScenarios",
+        "runLensScenarioWithUserInput",
+        "toRecordedLensFile"
+      ],
+      "types": [
+        "DecodedLensFile",
+        "LensScenarioDescriptor",
+        "LensScenarioResult",
+        "RecordedLensFile"
+      ]
+    },
+    "./computation-views": {
+      "values": [
+        "LadderCoordinator",
+        "LensController",
+        "buildDecodedLensTwin",
+        "buildLensTwin",
+        "createDefaultViewRegistry",
+        "defineLadderLensElement",
+        "mountLadderLens"
+      ],
+      "types": [
+        "LensControllerOptions"
+      ]
+    },
+    "./computation-lenses/scenarios/index": {
+      "values": [],
+      "types": []
+    },
+    "./computation-lenses/registry": {
+      "values": [
+        "fromRecordedLensFile",
+        "registerLensScenario",
+        "toRecordedLensFile"
+      ],
+      "types": []
+    },
+    "./gpu-dataframe/computation-pack/index": {
+      "values": ["createViewPack"],
+      "types": []
+    },
+    "./gpu-network/computation-pack/index": {
+      "values": ["createViewPack"],
+      "types": []
+    },
+    "./gpu-raster/computation-pack/index": {
+      "values": ["createViewPack"],
+      "types": []
+    },
+    "./gpu-spatial-analysis/computation-pack/index": {
+      "values": ["createViewPack"],
+      "types": []
+    },
+    "./gpu-terrain/computation-pack/index": {
+      "values": ["createViewPack"],
+      "types": []
+    }
+  }
+}

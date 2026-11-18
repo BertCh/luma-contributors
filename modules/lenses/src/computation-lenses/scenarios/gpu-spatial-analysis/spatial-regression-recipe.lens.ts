@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import type {GPUComputationKeySpace} from '@luma-contributors/analysis/computation-record';
 import {defineLensScenario} from '../../define-lens-scenarios';
 import {S2_DATASETS} from './s2-datasets';
@@ -18,7 +19,7 @@ defineLensScenario({
       await Promise.all([
         import('./s2-lens-run'),
         import('./spatial-regression-recipe.example'),
-        import('../../data/s2-chicago-north-tracts.json').then(module => module.default)
+        EMBEDDED_DATASET_LOADERS['s2-chicago-north-tracts.json']().then(module => module.default)
       ]);
     return {
       run: device => {
@@ -63,6 +64,7 @@ defineLensScenario({
             uploads.own(result.parameters);
             const polygonGeometry = (valuesCapture: string) => ({
               kind: 'polygons' as const,
+              featureKeySpace: 'tracts',
               offsetsCapture: 'tractsDisplayOffsets',
               valuesCapture,
               coordinateModel: 'projected' as const,
@@ -71,11 +73,11 @@ defineLensScenario({
             const captures: Record<string, S2CaptureSpec> = {
               ...tractGeometry.captures,
               observations: {view: observations, role: 'input', keySpace: 'tracts'},
-              predictors: {view: predictors, role: 'input', keySpace: 'tracts'},
+              predictors: {view: predictors, role: 'input', keySpace: 'tracts', components: 2},
               resultTracts: {
                 view: tractGeometry.display,
                 role: 'output',
-                keySpace: 'tracts',
+                keySpace: 'tracts-display-vertex',
                 geometry: polygonGeometry('residuals')
               },
               residuals: {view: result.residuals, role: 'output', keySpace: 'tracts'},

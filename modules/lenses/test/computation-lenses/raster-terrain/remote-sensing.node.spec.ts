@@ -33,8 +33,8 @@ it.each(
     for (const output of outputs) expect(output.spec.meaning?.length).toBeGreaterThan(10);
     const kernels = getParsedKernelSources((harness.graph as unknown as {nodes: unknown[]}).nodes);
     expect(kernels.size).toBeGreaterThan(0);
-    for (const source of kernels.values()) {
-      expect(auditWGSLModule(source)).toEqual([]);
+    for (const {source, constants} of kernels.configurations) {
+      expect(auditWGSLModule(source, constants)).toEqual([]);
       expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
     }
     const compiled = harness.graph.compile();

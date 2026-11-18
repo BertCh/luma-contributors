@@ -79,8 +79,8 @@ defineLensScenario({
                   'class bits per noded segment: 1 closed ring, 2 open chain, 4 cut, 8 dangle, 16 unused'
               },
               polygonCount: {view: status.count, role: 'intermediate', meaning: 'faces written'},
-              polygonRequiredCount: {
-                view: status.requiredCount,
+              polygonRequiredRingCount: {
+                view: status.requiredRingCount,
                 role: 'intermediate',
                 meaning: 'face rings needed (ring capacity to allocate)'
               },

@@ -54,14 +54,16 @@ defineLensScenario({
             }
           ],
           choices: {family: 'quadbin', resolution: ZOOM, sumScale: 65536},
-          metadata: snapshots => {
+          metadata: {
+            ...geographicMetadata(),
+            mappedVariableExtent: 'extensive',
+            sumBefore: data.pointCount
+          },
+          observations: snapshots => {
             // Draw exactly the rows the GPU wrote.
             checkDrawnPrefix(snapshots, [{capture: 'cellCount', drawn: occupiedCells}]);
             return {
-              ...geographicMetadata(),
-              mappedVariableExtent: 'extensive',
               // Every place is a finite lon/lat row, so all of them are accepted; counts are summed back.
-              sumBefore: data.pointCount,
               sumAfter: sumCapture(snapshots, 'counts') ?? Number.NaN
             };
           },

@@ -83,6 +83,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
       ],
       datumKeySpace: 'row',
       choices: [
+        createDataFrameChoice('derive', 'noDataColor', 0),
         createDataFrameChoice('classify', 'classCountX', 3, {sweepable: true}),
         createDataFrameChoice('classify', 'classCountY', 3, {sweepable: true}),
         createDataFrameChoice('classify', 'maximumClassCount', 3),

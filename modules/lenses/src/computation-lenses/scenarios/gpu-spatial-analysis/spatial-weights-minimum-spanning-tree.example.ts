@@ -21,6 +21,8 @@ export type MinimumSpanningTreeInput = {
   graph: GPUCommandGraph;
   tracts: GPUContiguityWeightsProps['polygons'] & {positions: GraphDataView<'float32x2'>};
   values: GraphDataView<'float32'>;
+  /** Optional candidate-pair budget for the contiguity producer. */
+  pairCapacity?: number;
 };
 
 /** Runs the exact public-API example shown below the minimum spanning tree result figure. */
@@ -39,7 +41,10 @@ export async function runExample(device: Device, input: MinimumSpanningTreeInput
     offsets: createInteger('weightsRowOffsets', count + 1),
     neighbors: createInteger('weightsNeighbors', 2048),
     weights: createFloat('weightsValues', 2048),
-    status: {overflow: createInteger('weightsOverflow', 1)}
+    status: {
+      overflow: createInteger('weightsOverflow', 1),
+      candidateOverflow: createInteger('weightsCandidateOverflow', 1)
+    }
   };
   const output = {
     treeEdgeFlags: createInteger('treeEdgeFlags', 2048),
@@ -47,7 +52,11 @@ export async function runExample(device: Device, input: MinimumSpanningTreeInput
     standardizedValues: createFloat('standardizedValues'),
     edges: {
       ids: createInteger('edgeIds', count - 1),
-      status: {count: createInteger('edgeCount', 1), overflow: createInteger('edgeOverflow', 1)}
+      status: {
+        count: createInteger('edgeCount', 1),
+        overflow: createInteger('edgeOverflow', 1),
+        candidateOverflow: createInteger('edgeCandidateOverflow', 1)
+      }
     },
     edgeEndpoints: createInteger('edgeEndpoints', 2 * (count - 1)),
     edgeDissimilarities: createFloat('edgeDissimilarities', count - 1)
@@ -64,6 +73,7 @@ export async function runExample(device: Device, input: MinimumSpanningTreeInput
   const queen = new GPUContiguityWeights({
     polygons: tracts,
     criterion: 'queen',
+    pairCapacity: input.pairCapacity,
     output: weightOutput
   });
   graph.add(queen);
@@ -106,7 +116,10 @@ export async function runExample(device: Device, input: MinimumSpanningTreeInput
       weightsRowOffsets: weightOutput.offsets,
       weightsNeighbors: weightOutput.neighbors,
       weightsOverflow: weightOutput.status.overflow,
-      edgeOverflow: output.edges.status.overflow
+      weightsCandidateOverflow: weightOutput.status.candidateOverflow,
+      edgeCount: output.edges.status.count,
+      edgeOverflow: output.edges.status.overflow,
+      edgeCandidateOverflow: output.edges.status.candidateOverflow
     }
   };
 }

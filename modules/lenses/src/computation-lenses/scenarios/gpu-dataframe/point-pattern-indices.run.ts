@@ -6,10 +6,10 @@ import type {Device} from '@luma.gl/core';
 import {GPU_CLARK_EVANS_CORRECTION} from '@luma-contributors/analysis/dataframe-analysis';
 import {runExample} from './point-pattern-indices.example';
 import {
-  capturePairStatisticsViews,
+  preparePairStatisticsViews,
   createDataFrameChoice,
   createDataFrameLensGraph,
-  createDataFrameLensRecord,
+  runDataFrameLensRecord,
   getDataFrameElementFormulas,
   loadDataFrameLensData
 } from './dataframe-lens-support';
@@ -42,7 +42,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
         length: 1,
         byteOffset: index * Float32Array.BYTES_PER_ELEMENT
       });
-    const {captures, description} = await capturePairStatisticsViews(device, graph, graphId, {
+    const prepared = preparePairStatisticsViews(device, graph, graphId, {
       positions: {
         view: example.positions,
         role: 'input',
@@ -104,10 +104,10 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
         meaning: 'Row 4 of quadratStatistics: sum of (count - expected)^2 / expected.'
       }
     });
-    return createDataFrameLensRecord({
+    return await runDataFrameLensRecord({
       scenarioId: SCENARIO_ID,
       device,
-      graphs: [description],
+      prepared,
       formulas: getDataFrameElementFormulas('GPUPointPatternIndices'),
       keySpaces: [
         {id: 'point', label: 'Observation', size: x.length, indexSpace: '1d'},
@@ -121,6 +121,9 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
         }
       ],
       choices: [
+        createDataFrameChoice('filter', 'guardDistance', 0),
+        createDataFrameChoice('select', 'gridSize', '32 x 32'),
+        createDataFrameChoice('aggregate', 'quadratSamples', 'disabled: rectangle window'),
         createDataFrameChoice('filter', 'coordinateModel', 'projected', {
           alternatives: ['projected', 'geographic']
         }),
@@ -136,8 +139,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
           alternatives: ['two-sided', 'greater', 'lesser']
         }),
         createDataFrameChoice('infer', 'pCorrection', 'none')
-      ],
-      captures
+      ]
     });
   } finally {
     example.parameters.destroy();

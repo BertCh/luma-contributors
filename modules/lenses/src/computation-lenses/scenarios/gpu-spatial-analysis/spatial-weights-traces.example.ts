@@ -64,6 +64,7 @@ export async function runExample(device: Device, input: SpatialWeightsTracesInpu
     output,
     powerTraces,
     powerSums,
-    weightsOverflow: weightOutput.status.overflow
+    weightsOverflow: weightOutput.status.overflow,
+    weightsCandidateOverflow: queen.outputWeights.status!.candidateOverflow!
   };
 }

@@ -54,6 +54,7 @@ defineLensScenario({
           ],
           choices: {
             shape: 'circle',
+            ellipseSpacing: 'not applicable',
             segmentCount: SEGMENT_COUNT,
             maximumSegments: MAXIMUM_SEGMENTS,
             radiusScale: 1

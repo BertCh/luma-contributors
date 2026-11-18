@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import type {GPUComputationKeySpace} from '@luma-contributors/analysis/computation-record';
 import {defineLensScenario} from '../../define-lens-scenarios';
 import {S2_DATASETS} from './s2-datasets';
@@ -18,7 +19,7 @@ defineLensScenario({
       await Promise.all([
         import('./s2-lens-run'),
         import('./rate-cluster-map-recipe.example'),
-        import('../../data/s2-chicago-north-tracts.json').then(module => module.default)
+        EMBEDDED_DATASET_LOADERS['s2-chicago-north-tracts.json']().then(module => module.default)
       ]);
     return {
       run: device => {
@@ -57,6 +58,7 @@ defineLensScenario({
             result.parameters.forEach(parameters => uploads.own(parameters));
             const polygonGeometry = (valuesCapture: string) => ({
               kind: 'polygons' as const,
+              featureKeySpace: 'tracts',
               offsetsCapture: 'tractsDisplayOffsets',
               valuesCapture,
               coordinateModel: 'projected' as const,
@@ -69,7 +71,7 @@ defineLensScenario({
               resultTracts: {
                 view: tractGeometry.display,
                 role: 'output',
-                keySpace: 'tracts',
+                keySpace: 'tracts-display-vertex',
                 geometry: polygonGeometry('quadrants')
               },
               quadrants: {view: result.quadrants, role: 'output', keySpace: 'tracts'},

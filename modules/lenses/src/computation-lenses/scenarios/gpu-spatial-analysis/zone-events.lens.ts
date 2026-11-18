@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {defineLensScenario, DEFAULT_LENS_RUNGS} from '../../define-lens-scenarios';
+import {getZoneEventLossCaptures} from './zone-event-loss-captures';
 
 const SCENARIO_ID = 'gpu-spatial-analysis.zone-events';
 const TRACK_EVENT_CAPACITY = 32;
@@ -78,6 +79,10 @@ defineLensScenario({
               trackEventCapacity: TRACK_EVENT_CAPACITY
             });
             const unused = 'rows past the event count are unused';
+            const lossCaptures = getZoneEventLossCaptures(
+              output.events.status,
+              output.status.candidateOverflow
+            );
             return {
               zones: {
                 view: zoneShells,
@@ -90,7 +95,10 @@ defineLensScenario({
                 view: tracks.positions,
                 role: 'input',
                 keySpace: 'fix',
-                geometry: projectedGeometry('lines', {offsetsCapture: 'trackOffsets'})
+                geometry: projectedGeometry('lines', {
+                  offsetsCapture: 'trackOffsets',
+                  featureKeySpace: 'track'
+                })
               },
               trackOffsets: {view: tracks.trackOffsets, role: 'intermediate'},
               eventTracks: {
@@ -118,31 +126,35 @@ defineLensScenario({
                 meaning: `crossing time in s since the track start; ${unused}`
               },
               eventCount: {view: output.events.status.count, role: 'intermediate'},
-              eventOverflow: {view: output.events.status.overflow, role: 'intermediate'},
+              eventOverflow: lossCaptures.eventOverflow,
+              eventCandidateOverflow: lossCaptures.eventCandidateOverflow,
+              candidateScratchOverflow: lossCaptures.scratchCandidateOverflow,
               dwellTimes: {
                 view: output.dwellTimes,
                 role: 'intermediate',
                 keySpace: 'trackZone',
-                meaning: `dwell in s; row = track * ${zones.featureCount} + zone`
+                meaning: `dwell in s; row = track * ${zones.featureCount} + zone; incomplete when candidateScratchOverflow is nonzero`
               },
               visitCounts: {
                 view: output.visitCounts,
                 role: 'intermediate',
                 keySpace: 'trackZone',
-                meaning: `visits; row = track * ${zones.featureCount} + zone`
+                meaning: `visits; row = track * ${zones.featureCount} + zone; incomplete when candidateScratchOverflow is nonzero`
               },
               trackEventCounts: {
                 view: output.trackEventCounts,
                 role: 'intermediate',
                 keySpace: 'track',
-                meaning: 'zone entries and exits per track (unclamped)'
+                meaning:
+                  'zone entries and exits per track (unclamped); incomplete when candidateScratchOverflow is nonzero'
               },
               countedTracks: {
                 view: tracks.positions,
                 role: 'output',
                 geometry: projectedGeometry('lines', {
                   offsetsCapture: 'trackOffsets',
-                  valuesCapture: 'trackEventCounts'
+                  valuesCapture: 'trackEventCounts',
+                  featureKeySpace: 'track'
                 })
               }
             };

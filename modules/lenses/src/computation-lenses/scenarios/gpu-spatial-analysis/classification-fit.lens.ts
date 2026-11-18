@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import type {GPUComputationKeySpace} from '@luma-contributors/analysis/computation-record';
 import {defineLensScenario, FORMULA_LENS_RUNGS} from '../../define-lens-scenarios';
 import {S2_DATASETS} from './s2-datasets';
@@ -16,8 +17,8 @@ defineLensScenario({
     const [{runS2Lens, uploadS2CountyShapes}, {runExample}, counties, shapes] = await Promise.all([
       import('./s2-lens-run'),
       import('./classification-fit.example'),
-      import('../../data/s2-midwest-counties.json').then(module => module.default),
-      import('../../data/s2-midwest-county-shapes.json').then(module => module.default)
+      EMBEDDED_DATASET_LOADERS['s2-midwest-counties.json']().then(module => module.default),
+      EMBEDDED_DATASET_LOADERS['s2-midwest-county-shapes.json']().then(module => module.default)
     ]);
     return {
       run: device => {

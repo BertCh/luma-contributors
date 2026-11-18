@@ -64,7 +64,11 @@ export function makeRecord(): LensRecord {
           }
         ],
         edges: [{from: 'start', to: 'finish', kind: 'dataflow'}],
-        resources: [{id: 'unused', kind: 'buffer', bytes: 4, ownership: 'imported'}]
+        resources: [
+          {id: 'input', kind: 'buffer', bytes: 36, ownership: 'imported'},
+          {id: 'output', kind: 'buffer', bytes: 36, ownership: 'imported'},
+          {id: 'unused', kind: 'buffer', bytes: 4, ownership: 'imported'}
+        ]
       }
     ],
     axes: {

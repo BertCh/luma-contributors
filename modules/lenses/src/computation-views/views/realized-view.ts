@@ -19,6 +19,8 @@ import {
   getPinnedEntity,
   getDatumKeySpace,
   getCaptureValue,
+  getCaptureFirstKey,
+  getCaptureRowCount,
   getCaptureProvenance,
   getMetricsForGraph,
   formatViewNumber
@@ -343,8 +345,8 @@ export function renderRealizedView(
           if (!capture) return h('p', {class: 'lens-unknown'}, 'unknown — capture missing');
           const idPrefix = `${context.idPrefix}-frame-${frame.iteration}`;
           const values = Array.from(
-            {length: Math.ceil(capture.values.length / (capture.components ?? 1))},
-            (_, index) => getCaptureValue(capture, index) ?? NaN
+            {length: getCaptureRowCount(capture)},
+            (_, index) => getCaptureValue(capture, getCaptureFirstKey(capture) + index) ?? NaN
           );
           const shape =
             capture.geometry?.kind === 'raster'
@@ -368,7 +370,7 @@ export function renderRealizedView(
               columns,
               rows,
               limit: 96,
-              valueAt: key => values[key],
+              valueAt: key => (shape ? (getCaptureValue(capture, key) ?? NaN) : values[key]),
               categorical: scale?.variableKind.level === 'nominal',
               colorFor: value =>
                 Number.isFinite(value)
@@ -382,11 +384,20 @@ export function renderRealizedView(
           );
           const pinned =
             capture.keySpace === getDatumKeySpace(context) ? model.pinned?.entity : undefined;
-          if (pinned !== undefined && pinned < values.length)
+          const localPin = pinned === undefined ? undefined : pinned - getCaptureFirstKey(capture);
+          const displayedPin = shape ? pinned : localPin;
+          if (
+            localPin !== undefined &&
+            localPin >= 0 &&
+            localPin < values.length &&
+            displayedPin !== undefined &&
+            displayedPin >= 0 &&
+            displayedPin < columns * rows
+          )
             strip.children.push(
               h('rect', {
-                x: pinned % columns,
-                y: Math.floor(pinned / columns),
+                x: displayedPin % columns,
+                y: Math.floor(displayedPin / columns),
                 width: 1,
                 height: 1,
                 fill: 'none',

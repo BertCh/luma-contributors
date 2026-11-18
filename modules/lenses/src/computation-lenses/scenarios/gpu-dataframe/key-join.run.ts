@@ -108,12 +108,26 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
       ],
       datumKeySpace: 'row',
       choices: [
+        createDataFrameChoice('aggregate', 'aggregates', 'none'),
+        createDataFrameChoice('aggregate', 'operation', 'disabled: gather only'),
+        createDataFrameChoice('aggregate', 'sumScale', 'disabled: no aggregates'),
         createDataFrameChoice('join', 'kind', 'left', {alternatives: ['left', 'inner']}),
         createDataFrameChoice('join', 'gather', 'poverty150Pct'),
         createDataFrameChoice('filter', 'rightMask', 'tracts with a poverty estimate')
       ],
       datasetVersion: `${tracts.id}+${nature.id}:${tracts.rowCount}:${nature.rowCount}`,
-      deriveCaptures: addMatchedRightKeys
+      deriveCaptures: addMatchedRightKeys,
+      derivedCaptureNames: [
+        'leftKeys',
+        'tractKeys',
+        'hasEstimate',
+        'poverty150Pct',
+        'rightRows',
+        'matchCounts',
+        'matched',
+        'joinedPoverty',
+        'rightKeys'
+      ]
     });
   } finally {
     example.buffers.forEach(buffer => buffer.destroy());

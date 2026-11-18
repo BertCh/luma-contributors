@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import {defineLensScenario, DEFAULT_LENS_RUNGS} from '../../define-lens-scenarios';
 import {S2_DATASETS} from './s2-datasets';
 
@@ -16,7 +17,7 @@ defineLensScenario({
       await Promise.all([
         import('./s2-lens-run'),
         import('./random-points-on-line.example'),
-        import('../../data/s2-chicago-north-roads.json').then(module => module.default)
+        EMBEDDED_DATASET_LOADERS['s2-chicago-north-roads.json']().then(module => module.default)
       ]);
     return {
       run: device => {

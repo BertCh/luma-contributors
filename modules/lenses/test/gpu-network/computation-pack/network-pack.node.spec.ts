@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import '../../../src/gpu-network/computation-pack/index';
+
 import {expect, test} from 'vitest';
-import * as pack from '../../../src/gpu-network/computation-pack/index';
+import * as pack from '../../../src/gpu-network/computation-pack/pack';
 import {createDefaultViewRegistry} from '../../../src/computation-views/registry/default-registry';
 
 const elements = [

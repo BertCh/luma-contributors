@@ -22,7 +22,7 @@ import {
   type GraphBufferHandle
 } from '@luma.gl/graph/gpu-core';
 import {recordWGSLKernelNodes} from '@luma-contributors/analysis/analysis-core';
-import roads from '../../data/n-chicago-loop-roads.json';
+import roads from './network-road-data.js';
 
 /** Shared, versioned provenance of the deterministic Chicago Loop extract. */
 export const NETWORK_DATASET = {

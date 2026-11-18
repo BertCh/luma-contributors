@@ -48,7 +48,13 @@ defineLensScenario({
               indexSpace: '1d'
             }
           ],
-          choices: {family: 'h3', 'operation.type': 'disk', 'operation.k': 4},
+          choices: {
+            family: 'h3',
+            'operation.type': 'disk',
+            'operation.k': 4,
+            'operation.resolution': 'not applicable',
+            'operation.inputResolution': 'not applicable'
+          },
           metadata: geographicMetadata(),
           async build(graph, uploads) {
             const place = uploads.view('place', positions, 'float32x2');

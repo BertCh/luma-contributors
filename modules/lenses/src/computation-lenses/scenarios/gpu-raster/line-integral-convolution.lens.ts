@@ -34,7 +34,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
     import('./line-integral-convolution.example'),
     import('./raster-lens-harness'),
     import('./raster-lens-data'),
-    import('../../../gpu-raster/computation-pack/index'),
+    import('../../../gpu-raster/computation-pack/pack'),
     import('@luma-contributors/analysis/raster-analysis')
   ]);
   const wind = await loadGFSWind();

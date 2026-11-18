@@ -35,7 +35,10 @@ export function makeV7Record(): LensRecord {
           }
         ],
         edges: [],
-        resources: [{id: 'output', kind: 'buffer', bytes: 64, ownership: 'imported'}]
+        resources: [
+          {id: 'input', kind: 'buffer', bytes: 64, ownership: 'imported'},
+          {id: 'output', kind: 'buffer', bytes: 64, ownership: 'imported'}
+        ]
       }
     ],
     axes: {

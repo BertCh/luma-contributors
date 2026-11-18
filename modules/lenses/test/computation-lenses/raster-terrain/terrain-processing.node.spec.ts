@@ -27,9 +27,9 @@ it.each(
     for (const output of outputs) expect(output.spec.meaning?.length).toBeGreaterThan(10);
     const kernels = getParsedKernelSources((harness.graph as unknown as {nodes: unknown[]}).nodes);
     expect(kernels.size).toBeGreaterThan(0);
-    for (const [name, source] of kernels) {
+    for (const {id: name, source, constants} of kernels.configurations) {
       expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
-      expect(auditWGSLModule(source), name).toEqual([]);
+      expect(auditWGSLModule(source, constants), name).toEqual([]);
     }
   } finally {
     harness.destroy();

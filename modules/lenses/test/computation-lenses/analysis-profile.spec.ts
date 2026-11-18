@@ -5,7 +5,7 @@
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {requireTestDevice} from '@luma-contributors/analysis/testing';
 import {expect, test} from 'vitest';
-import {listLensScenarios} from '../../src/computation-lenses/registry';
+import {listLensScenarios} from '../../src/computation-lenses/registry-implementation';
 import '../../src/computation-lenses/scenarios/gpu-spatial-analysis/analysis-spacing.lens';
 import '../../src/computation-lenses/scenarios/gpu-spatial-analysis/analysis-contiguity-statistics.lens';
 

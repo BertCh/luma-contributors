@@ -37,6 +37,8 @@ export type LensControllerOptions = {
   viewId?: string;
   bindings?: AxisBindings;
   params?: LensUrlState['params'];
+  /** Presentation defaults retained when URL parameters are replaced. */
+  presentation?: {primaryOutputCaptureId?: string};
   ground?: ViewGround;
   reducedMotion?: boolean;
   renderTeX?: RenderTeX;
@@ -52,8 +54,8 @@ export type LensAction =
   | {type: 'set-rung'; rung: LensRungId}
   | {type: 'bind'; axis: AxisId; value: AxisBindingValue}
   | {type: 'free'; axis: AxisId}
-  | {type: 'pick'; axis: AxisId; keys: readonly number[]; label?: string}
-  | {type: 'hover'; axis: AxisId; keys: readonly number[]}
+  | {type: 'pick'; axis: AxisId; keys: readonly number[]; keySpace?: string; label?: string}
+  | {type: 'hover'; axis: AxisId; keys: readonly number[]; keySpace?: string}
   | {type: 'hover-end'}
   | {type: 'scrub-preview'; value: number}
   | {type: 'scrub-commit'}
@@ -85,7 +87,7 @@ export class LensController {
   private record: LensRecord;
   private state: LensUrlState;
   private coordinator: LadderCoordinator;
-  private registeredRelationIds: string[] = [];
+  private releaseRelations?: () => void;
   private scales: ScaleRegistry;
   private unsubscribe: () => void;
   private listeners = new Set<() => void>();
@@ -120,6 +122,7 @@ export class LensController {
         if (
           event.type !== 'selection' &&
           event.type !== 'param' &&
+          event.type !== 'mapping' &&
           !(event.type === 'coupling' && event.viewId === options.lensId)
         )
           return;
@@ -168,7 +171,7 @@ export class LensController {
           break;
         case 'pick':
         case 'hover': {
-          const keySpace = getDatumKeySpace(this.createContext());
+          const keySpace = action.keySpace ?? getDatumKeySpace(this.createContext());
           if (keySpace)
             this.coordinator.pick(
               action.type === 'pick' ? 'selection' : 'hover',
@@ -327,7 +330,7 @@ export class LensController {
       this.coordinator.clearClauses('hover', this.options.lensId, {origin: this.options.lensId});
     }
     this.releaseScales();
-    this.coordinator.removeRelations(this.registeredRelationIds);
+    this.releaseRelations?.();
     if (!this.options.coordinator) this.coordinator.destroy();
   }
 
@@ -358,7 +361,7 @@ export class LensController {
       reducedMotion: this.options.reducedMotion,
       renderTeX: this.options.renderTeX,
       packs: this.options.registry.getPacksFor(this.record),
-      options: this.state.params,
+      options: {...this.options.presentation, ...this.state.params},
       scales: this.scales
     });
   }
@@ -370,24 +373,25 @@ export class LensController {
   }
 
   /**
-   * Registers this record's declared relations on the shared page coordinator (ids prefixed by
-   * run, so two lenses never replace each other's relations) and its key-space sizes. A re-run
-   * replaces the previous run's relations.
+   * Retains this record's declared relations on the shared page coordinator (ids prefixed by
+   * run) and its key-space metadata. Replacing a record releases only this lens's ownership;
+   * other mounted lenses retain their relations until they also release them.
    */
   private registerRecordRelations(): void {
-    this.coordinator.removeRelations(this.registeredRelationIds);
+    this.releaseRelations?.();
     const relations = createKeyRelationGraphFromRecord(this.record)
       .list()
       .map(relation => ({...relation, id: `${this.record.runId}/${relation.id}`}));
-    this.coordinator.addRelations(relations);
-    this.registeredRelationIds = relations.map(relation => relation.id);
-    for (const space of this.record.axes.keySpaces) {
-      if (space.size !== undefined) this.coordinator.registerKeySpace(space.id, space.size);
-    }
+    this.releaseRelations = this.coordinator.retainRelations(
+      relations,
+      this.record.axes.keySpaces.map(space => ({id: space.id, keyCount: space.size}))
+    );
   }
 
-  private resolveSelection(context: ViewContext): ViewSelectionState {
-    const keySpace = getDatumKeySpace(context);
+  private resolveSelection(
+    context: ViewContext,
+    keySpace = getDatumKeySpace(context)
+  ): ViewSelectionState {
     if (!keySpace)
       return this.coordinator.getClauses('selection').length
         ? {unknownReason: 'datum key space unknown'}
@@ -434,6 +438,9 @@ export class LensController {
     const start = now();
     const context = this.createContext();
     context.selection = this.resolveSelection(context);
+    context.selections = new Map(
+      this.record.axes.keySpaces.map(space => [space.id, this.resolveSelection(context, space.id)])
+    );
     const resolution = this.options.registry.resolveRung(
       context,
       this.state.rung,
@@ -464,15 +471,32 @@ export class LensController {
     }
     const rungs = this.options.registry.listRungs(context);
     const content = view.render(model, context);
+    const selections = new Map<string | undefined, ViewSelectionState>([
+      [getDatumKeySpace(context), context.selection]
+    ]);
     for (const mark of findViewNodes(
       content,
       node => node.attributes['data-axis'] === 'entity' && node.attributes['data-key'] !== undefined
     )) {
       const first = Number(mark.attributes['data-key']);
+      const keySpace =
+        typeof mark.attributes['data-key-space'] === 'string'
+          ? mark.attributes['data-key-space']
+          : getDatumKeySpace(context);
+      let selection = selections.get(keySpace);
+      if (!selection) {
+        selection = this.resolveSelection(context, keySpace);
+        selections.set(keySpace, selection);
+      }
       const last = Number(mark.attributes['data-key-end'] ?? first);
-      if (this.cursorVisible && first <= this.cursor && last >= this.cursor)
+      if (
+        keySpace === getDatumKeySpace(context) &&
+        this.cursorVisible &&
+        first <= this.cursor &&
+        last >= this.cursor
+      )
         mark.attributes['data-focus'] = 'true';
-      const covered = [...(context.selection.highlighted?.keys() ?? [])].filter(
+      const covered = [...(selection.highlighted?.keys() ?? [])].filter(
         key => key >= first && key <= last
       ).length;
       if (covered) {
@@ -480,7 +504,7 @@ export class LensController {
         mark.attributes['data-covered'] = covered;
         mark.attributes['data-total'] = last - first + 1;
       }
-      if ([...(context.selection.hovered ?? [])].some(key => key >= first && key <= last))
+      if ([...(selection.hovered ?? [])].some(key => key >= first && key <= last))
         mark.attributes['data-hover'] = 'true';
     }
     const viewContainer = h('div', {class: 'lens-view'}, content);

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import {defineLensScenario, FORMULA_LENS_RUNGS} from '../../define-lens-scenarios';
 import {S2_DATASETS} from './s2-datasets';
 import type {S2CaptureSpec} from './s2-lens-run';
@@ -13,13 +14,16 @@ defineLensScenario({
   title: 'Spatial Predicate Join, Chicago North Side',
   rungs: FORMULA_LENS_RUNGS,
   dataset: S2_DATASETS.parks,
+  presentation: {
+    primaryOutputCaptureId: 'gpu-spatial-analysis-spatial-predicate-join-snapshots-joinedTracts-0'
+  },
   load: async () => {
     const [{runS2Lens, createS2ChicagoFrame, uploadS2JoinPolygons}, {runExample}, parks, tracts] =
       await Promise.all([
         import('./s2-lens-run'),
         import('./spatial-predicate-join.example'),
-        import('../../data/s2-chicago-north-parks.json').then(module => module.default),
-        import('../../data/s2-chicago-north-tracts.json').then(module => module.default)
+        EMBEDDED_DATASET_LOADERS['s2-chicago-north-parks.json']().then(module => module.default),
+        EMBEDDED_DATASET_LOADERS['s2-chicago-north-tracts.json']().then(module => module.default)
       ]);
     return {
       run: device => {
@@ -48,7 +52,7 @@ defineLensScenario({
               cardinality: 'N:1',
               kind: 'buffer',
               timeDependent: false,
-              ref: {layout: 'index', resource: 'leftIds', capture: 'leftIds'}
+              ref: {layout: 'index', resource: 'leftRows', capture: 'leftRows'}
             },
             {
               id: 'pair-tracts',
@@ -57,7 +61,7 @@ defineLensScenario({
               cardinality: 'N:1',
               kind: 'buffer',
               timeDependent: false,
-              ref: {layout: 'index', resource: 'rightIds', capture: 'rightIds'}
+              ref: {layout: 'index', resource: 'rightRows', capture: 'rightRows'}
             }
           ],
           choices: {predicate: 'intersects', engine: 'relate'},
@@ -69,13 +73,13 @@ defineLensScenario({
               ...tractGeometry.keySpaces.filter(space => space.id !== 'tracts')
             );
             const pairs = {
-              leftIds: uploads.view(
-                'leftIds',
+              leftRows: uploads.view(
+                'leftRows',
                 new Uint32Array(capacity).fill(0xffffffff),
                 'uint32'
               ),
-              rightIds: uploads.view(
-                'rightIds',
+              rightRows: uploads.view(
+                'rightRows',
                 new Uint32Array(capacity).fill(0xffffffff),
                 'uint32'
               ),
@@ -93,17 +97,18 @@ defineLensScenario({
             const captures: Record<string, S2CaptureSpec> = {
               ...parkGeometry.captures,
               ...tractGeometry.captures,
-              leftIds: {view: pairs.leftIds, role: 'output', keySpace: 'pair'},
-              rightIds: {view: pairs.rightIds, role: 'output', keySpace: 'pair'},
+              leftRows: {view: pairs.leftRows, role: 'output', keySpace: 'pair'},
+              rightRows: {view: pairs.rightRows, role: 'output', keySpace: 'pair'},
               pairCount: {view: pairs.status.count, role: 'output', keySpace: 'status'},
               pairOverflow: {view: pairs.status.overflow, role: 'output', keySpace: 'status'},
               joinedTracts: {
                 view: tractGeometry.display,
                 role: 'output',
-                keySpace: 'tracts',
+                keySpace: 'tracts-display-vertex',
                 geometry: {
                   kind: 'polygons',
                   offsetsCapture: 'tractsDisplayOffsets',
+                  featureKeySpace: 'tracts',
                   valuesCapture: 'tractMatches',
                   coordinateModel: 'projected',
                   unit: 'm'

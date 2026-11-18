@@ -144,11 +144,22 @@ export function getBoundIteration(context: ViewContext): number | undefined {
   return typeof iteration === 'number' && Number.isInteger(iteration) ? iteration : undefined;
 }
 
+/** Number of complete entity rows, rather than scalar components, in a capture. */
+export function getCaptureRowCount(capture: GPUComputationCapture): number {
+  return Math.floor(capture.values.length / (capture.components ?? 1));
+}
+
 /** Value of one key in a capture (first component), or undefined when out of range. */
 export function getCaptureValue(capture: GPUComputationCapture, key: number): number | undefined {
   const components = capture.components ?? 1;
-  const index = key * components;
+  const index = (key - getCaptureFirstKey(capture)) * components;
   return index >= 0 && index < capture.values.length ? Number(capture.values[index]) : undefined;
+}
+
+/** First entity key in a recorded `first:<key>` capture window; zero without that annotation. */
+export function getCaptureFirstKey(capture: GPUComputationCapture): number {
+  const token = capture.meaning?.split(/\s+/).find(value => value.startsWith('first:'));
+  return token === undefined ? 0 : Number(token.slice('first:'.length));
 }
 
 /** Mark provenance of a capture: readback is solid, replay hatched. */

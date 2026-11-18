@@ -29,7 +29,8 @@ registerRegressionLens({
         powerTraces: execution.powerTraces,
         powerSums: execution.powerSums,
         infinityNorm: execution.output.infinityNorm,
-        weightsOverflow: execution.weightsOverflow
+        weightsOverflow: execution.weightsOverflow,
+        weightsCandidateOverflow: execution.weightsCandidateOverflow
       },
       tags: {
         powerTraces: tag('powerTraces', 'tr((W/s)^q)'),

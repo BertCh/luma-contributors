@@ -125,6 +125,10 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
       ],
       datumKeySpace: 'column',
       choices: [
+        createDataFrameChoice('aggregate', 'topCategoryCount', 'disabled: numeric columns'),
+        createDataFrameChoice('aggregate', 'categoryCount', 'disabled: numeric columns'),
+        createDataFrameChoice('aggregate', 'minimum', 'automatic per-column finite minimum'),
+        createDataFrameChoice('aggregate', 'maximum', 'automatic per-column finite maximum'),
         createDataFrameChoice('summarise', 'kind', 'numeric', {
           alternatives: ['numeric', 'category']
         }),
@@ -134,7 +138,8 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
         createDataFrameChoice('aggregate', 'hyperLogLogPrecision', 12)
       ],
       datasetVersion: `${dataset.id}:${dataset.rowCount}`,
-      deriveCaptures: splitStatistics
+      deriveCaptures: splitStatistics,
+      derivedCaptureNames: [...COLUMN_NAMES, 'histograms', ...SHOWN_STATISTICS]
     });
   } finally {
     example.destroy();

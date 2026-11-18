@@ -30,7 +30,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
       import('./streamlines.example'),
       import('./raster-lens-harness'),
       import('./raster-lens-data'),
-      import('../../../gpu-raster/computation-pack/index')
+      import('../../../gpu-raster/computation-pack/pack')
     ]);
   const wind = await loadGFSWind();
   const entry = getRasterOperatorEntries()['GPUStreamlines'];
@@ -105,11 +105,17 @@ export async function run(device: Device): Promise<LensScenarioResult> {
         'uint32',
         {
           role: 'intermediate',
-          meaning: 'bit 0: lines dropped for capacity; bit 1: pruning rounds ran out'
+          meaning: 'lines dropped for final line or point capacity only'
         },
         1
       );
       const positionCount = session.output('streamlinesPositionCount', 'uint32', false, 1);
+      const candidateOverflow = session.output(
+        'streamlinesCandidateOverflow',
+        'uint32',
+        {role: 'intermediate', meaning: 'pruning rounds ran out; unresolved seeds were dropped'},
+        1
+      );
       session.input('streamlinesWindSpeed', 'float32', windSpeed, {
         role: 'input',
         keySpace: 'cells',
@@ -155,7 +161,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
         graph: session.graph,
         grid,
         velocities: velocityView,
-        lines: {ids, status: {count, overflow, requiredCount}},
+        lines: {ids, status: {count, overflow, requiredCount, candidateOverflow}},
         lineOffsets,
         positions,
         positionCount

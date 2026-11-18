@@ -10,7 +10,12 @@ import {
   createUnavailableRelation,
   type KeyRelation
 } from '../coordinator/key-relations';
-import {getAllCaptures} from '../views/record-queries';
+import {
+  getAllCaptures,
+  getCaptureFirstKey,
+  getCaptureValue,
+  getCaptureRowCount
+} from '../views/record-queries';
 
 /** Builds only declared, captured or evaluable relations; missing evidence stays unknown. */
 export function createKeyRelationGraphFromRecord(record: LensRecord): KeyRelationGraph {
@@ -66,8 +71,25 @@ export function createKeyRelationGraphFromRecord(record: LensRecord): KeyRelatio
       if (reference.layout === 'index') {
         mapping = createFunctionRelation({
           ...relation,
-          fromCount: fromCount ?? capture.values.length,
-          map: key => (key < capture.values.length ? capture.values[key] : [])
+          fromCount: fromCount ?? getCaptureFirstKey(capture) + getCaptureRowCount(capture),
+          map: key => getCaptureValue(capture, key) ?? [],
+          getCoverageIssue: (keys, direction) => {
+            if (!keys.size) return undefined;
+            const first = getCaptureFirstKey(capture);
+            const end = first + getCaptureRowCount(capture);
+            if (direction === 'inverse')
+              return fromCount === undefined || first !== 0 || end < fromCount
+                ? 'relation inverse source coverage incomplete'
+                : undefined;
+            return [...keys].some(
+              key =>
+                key >= 0 &&
+                (fromCount === undefined || key < fromCount) &&
+                (key < first || key >= end)
+            )
+              ? 'relation source rows not fully captured'
+              : undefined;
+          }
         });
       } else {
         const offsets =
@@ -82,6 +104,9 @@ export function createKeyRelationGraphFromRecord(record: LensRecord): KeyRelatio
               ...relation,
               offsets: offsets.values,
               targets: capture.values,
+              firstKey: getCaptureFirstKey(offsets),
+              targetFirstKey: getCaptureFirstKey(capture),
+              fromCount: fromCount ?? Infinity,
               toCount: toCount ?? Infinity
             });
       }

@@ -118,6 +118,8 @@ export type ValueStripProps = {
   maxCells?: number;
   /** Key of `values[0]` (for windows into a larger buffer). */
   keyOffset?: number;
+  /** Identity domain of the represented absolute keys, when declared by the capture. */
+  keySpace?: string;
   /** Pinned key, drawn with the selection core and halo. */
   pinnedKey?: number;
   /** Highlighted keys (selection image), drawn with an achromatic outline. */
@@ -158,6 +160,7 @@ export function renderValueStrip(props: ValueStripProps): ViewElementNode {
       'data-action': 'pick',
       'data-axis': 'entity',
       'data-key': firstKey,
+      'data-key-space': props.keySpace,
       'data-key-end': binSize > 1 ? lastKey : undefined
     };
     if (binSize === 1 && count <= 32) {

@@ -16,24 +16,32 @@ import {
 } from '@luma-contributors/analysis/computation-record';
 import {createFillNode} from '@luma-contributors/analysis/analysis-core';
 import {createTransientView} from '@luma.gl/graph/gpu-core';
+import {requireTestDevice} from '../../../analysis/src/testing/require-test-device';
 import {
   GPUPointCloudFeatures,
   GPUPointCloudNeighborhoods,
   GPUPointCloudStatisticalFilter
 } from '@luma-contributors/analysis/pointcloud-analysis';
-import {
-  getLensScenario,
-  runLensScenario,
-  toRecordedLensFile
-} from '../../src/computation-lenses/index';
+import {getLensScenario, toRecordedLensFile} from '../../src/computation-lenses/index';
+import {runLensScenario} from '../../src/computation-lenses/run-lens-scenario';
 import {
   LENS_RECORD_SOURCE_TEXT,
   LensCommandGraph,
   readLensRunMetrics,
   submitTimedLensGraph
 } from '../../src/computation-lenses/lens-view-snapshot';
-// Registers every lens scenario descriptor (each loads its GPU code only when run).
-import '../../src/computation-lenses/scenarios/index';
+// Register the tested families without importing unrelated scenario examples into this suite.
+import '../../src/computation-views/packs/gpu-core/index';
+import '../../src/gpu-spatial-analysis/computation-pack/index';
+import '../../src/gpu-network/computation-pack/index';
+import '../../src/gpu-raster/computation-pack/index';
+import '../../src/gpu-terrain/computation-pack/index';
+import '../../src/gpu-dataframe/computation-pack/index';
+import '../../src/computation-lenses/scenarios/gpu-spatial-analysis/local-moran.lens';
+import '../../src/computation-lenses/scenarios/gpu-network/register-structure';
+import '../../src/computation-lenses/scenarios/gpu-raster/expansion.scenarios';
+import '../../src/computation-lenses/scenarios/gpu-terrain/geomorphons.lens';
+import '../../src/computation-lenses/scenarios/gpu-dataframe/class-breaks.lens';
 
 /** One real lens scenario per entry point family; point clouds have no lens and are built below. */
 const FAMILY_SCENARIOS = {
@@ -168,7 +176,7 @@ for (const [family, scenarioId] of Object.entries(FAMILY_SCENARIOS)) {
   test(`${family} lens record carries kernel facts (${scenarioId})`, async () => {
     const device = await getWebGPUTestDevice();
     expect(device, 'Kernel records require WebGPU').toBeTruthy();
-    if (!device) return;
+    requireTestDevice(device);
     const scenario = getLensScenario(scenarioId);
     expect(scenario).toBeTruthy();
     const result = await runLensScenario(scenario!, device);
@@ -180,7 +188,7 @@ for (const [family, scenarioId] of Object.entries(FAMILY_SCENARIOS)) {
     if (TIMED_FAMILIES.has(family)) coverage.timedNodes = expectTimings(device, result.metrics);
     const recorded = toRecordedLensFile(result, {
       scenarioId,
-      recordedAt: 'measure',
+      recordedAt: '2026-11-17T00:00:00.000Z',
       adapterLabel: 'measure'
     });
     const before = await commands.readFile(`docs/lens-records/${scenarioId}.json`).catch(() => '');
@@ -196,7 +204,7 @@ for (const [family, scenarioId] of Object.entries(FAMILY_SCENARIOS)) {
 test('point cloud graph record carries kernel facts and timings', async () => {
   const device = await getWebGPUTestDevice();
   expect(device, 'Kernel records require WebGPU').toBeTruthy();
-  if (!device) return;
+  requireTestDevice(device);
   const graph = new LensCommandGraph(device, {id: 'pointcloud-kernel-record'});
   const owned: Buffer[] = [];
   const upload = <Format extends 'float32' | 'float32x3' | 'uint32'>(
@@ -229,11 +237,9 @@ test('point cloud graph record carries kernel facts and timings', async () => {
   graph.add(
     new GPUPointCloudNeighborhoods({
       positions,
-      indices,
-      squaredDistances: distances,
-      counts,
       radius: 3,
-      capacity: 4
+      capacity: 4,
+      output: {indices, squaredDistances: distances, counts}
     })
   );
   graph.add(
@@ -241,11 +247,13 @@ test('point cloud graph record carries kernel facts and timings', async () => {
       positions,
       indices,
       counts,
-      normals: upload('normals', 'float32x3', new Float32Array(15), 3),
-      eigenvalues: upload('eigenvalues', 'float32x3', new Float32Array(15), 3),
-      shapes: upload('shapes', 'float32x3', new Float32Array(15), 3),
-      status: upload('status', 'uint32', new Uint32Array(5)),
-      capacity: 4
+      capacity: 4,
+      output: {
+        normals: upload('normals', 'float32x3', new Float32Array(15), 3),
+        eigenvalues: upload('eigenvalues', 'float32x3', new Float32Array(15), 3),
+        shapes: upload('shapes', 'float32x3', new Float32Array(15), 3),
+        status: upload('status', 'uint32', new Uint32Array(5))
+      }
     })
   );
   graph.add(
@@ -254,8 +262,10 @@ test('point cloud graph record carries kernel facts and timings', async () => {
       counts,
       capacity: 4,
       standardDeviations: 1,
-      meanDistances: upload('means', 'float32', new Float32Array(5)),
-      validity: upload('mask', 'uint32', new Uint32Array(5))
+      output: {
+        meanDistances: upload('means', 'float32', new Float32Array(5)),
+        validity: upload('mask', 'uint32', new Uint32Array(5))
+      }
     })
   );
   const compiled = await graph.compileAsync();
@@ -277,6 +287,7 @@ test('point cloud graph record carries kernel facts and timings', async () => {
     const submission = submitTimedLensGraph(device, compiled, {parameters: undefined});
     const metrics = await readLensRunMetrics(submission, {
       runId: record.runId,
+      executionId: record.executionId,
       graphId: description.graph.id,
       taps: 0
     });
@@ -294,7 +305,7 @@ test('point cloud graph record carries kernel facts and timings', async () => {
 test('a run without timestamps records no timing, not zero', async () => {
   const device = await getWebGPUTestDevice();
   expect(device, 'Kernel records require WebGPU').toBeTruthy();
-  if (!device) return;
+  requireTestDevice(device);
   const graph = new LensCommandGraph(device, {id: 'untimed-kernel-record'});
   const view = createTransientView(graph, 'filled', 'uint32', 64);
   graph.add(createFillNode(graph, {id: 'fill', operation: 'Fill', view, type: 'u32', value: '1u'}));

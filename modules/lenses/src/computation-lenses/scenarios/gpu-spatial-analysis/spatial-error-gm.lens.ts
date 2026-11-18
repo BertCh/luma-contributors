@@ -39,7 +39,8 @@ registerRegressionLens({
         summary: execution.output.summary,
         status: execution.output.status.code,
         residuals: execution.output.residuals,
-        weightsOverflow: execution.weightsOverflow
+        weightsOverflow: execution.weightsOverflow,
+        weightsCandidateOverflow: execution.weightsCandidateOverflow
       },
       tags: table.tags,
       keySpaces: table.keySpaces

@@ -56,10 +56,11 @@ export function makeV6Graph(): GPUComputationGraph {
       {from: 'node-2', to: 'node-26', kind: 'dataflow'}
     ],
     resources: [
-      {id: 'input', kind: 'buffer', bytes: 256, ownership: 'imported'},
-      {id: 'output', kind: 'buffer', bytes: 256, ownership: 'imported'},
+      {id: 'input', kind: 'buffer', bytes: 256, bytesKind: 'logical', ownership: 'imported'},
+      {id: 'output', kind: 'buffer', bytes: 256, bytesKind: 'logical', ownership: 'imported'},
       {
         id: 'scratch-a',
+        bytesKind: 'logical',
         kind: 'buffer',
         bytes: 128,
         ownership: 'transient',
@@ -70,6 +71,7 @@ export function makeV6Graph(): GPUComputationGraph {
       },
       {
         id: 'scratch-b',
+        bytesKind: 'logical',
         kind: 'buffer',
         bytes: 128,
         ownership: 'transient',
@@ -80,6 +82,7 @@ export function makeV6Graph(): GPUComputationGraph {
       },
       {
         id: 'observed',
+        bytesKind: 'logical',
         kind: 'buffer',
         bytes: 64,
         ownership: 'transient',

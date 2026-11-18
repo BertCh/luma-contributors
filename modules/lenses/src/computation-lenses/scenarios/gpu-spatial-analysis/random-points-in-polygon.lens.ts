@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMBEDDED_DATASET_LOADERS} from '../../embedded-dataset-loaders.js';
 import {defineLensScenario, DEFAULT_LENS_RUNGS} from '../../define-lens-scenarios';
 import {S2_DATASETS} from './s2-datasets';
 
@@ -19,7 +20,7 @@ defineLensScenario({
     ] = await Promise.all([
       import('./s2-lens-run'),
       import('./random-points-in-polygon.example'),
-      import('../../data/s2-chicago-north-areas.json').then(module => module.default)
+      EMBEDDED_DATASET_LOADERS['s2-chicago-north-areas.json']().then(module => module.default)
     ]);
     return {
       run: device => {
@@ -45,7 +46,7 @@ defineLensScenario({
             {id: 'boundary', label: 'path boundary', size: featureCount + 1, indexSpace: '1d'},
             {id: 'run', label: 'sampling status', size: 1, indexSpace: '1d'}
           ],
-          choices: {seed: 2026},
+          choices: {seed: 2026, maximumAttempts: 32},
           async build(graph, uploads) {
             const positions = uploads.view('positions', geometry.positions, 'float32x2');
             const ringOffsets = uploads.view('ring-offsets', geometry.ringOffsets, 'uint32');

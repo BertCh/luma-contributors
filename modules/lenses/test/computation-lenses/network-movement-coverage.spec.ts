@@ -47,6 +47,16 @@ for (const kind of [
         snapshots.find(capture => capture.name === 'objectiveTrace')!.values
       ).filter(Number.isFinite);
       expect(trace[trace.length - 1]).toBeCloseTo(0.5, 6);
+      if (kind === 'louvain-sparse') {
+        expect(Array.from(communities)).toEqual([1, 1, 3, 3]);
+        expect(trace).toEqual([-0.25, 0.5, 0.5, 0.5]);
+        expect(snapshots.find(capture => capture.name === 'objectiveTrace')!.values).toHaveLength(
+          9
+        );
+        expect(Array.from(snapshots.find(capture => capture.name === 'summary')!.values)).toEqual([
+          1, 1, 2, 3
+        ]);
+      }
     }
   });
 }

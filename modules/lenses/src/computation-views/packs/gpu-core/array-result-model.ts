@@ -123,6 +123,7 @@ function buildPanel(
           captures: {
             schema: 'luma.computation-captures/1',
             runId: context.record.runId,
+            executionId: context.record.executionId,
             snapshots: [{...capture, name: scaleName, values, components: 1}],
             stamps: [],
             replays: []

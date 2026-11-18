@@ -12,7 +12,7 @@ export const VALIDITY_OPERATORS: SpatialFamilyOperators = {
   GPUSegmentIntersection: {
     family: 'validity',
     descriptor: {scope: 'pairwise', reduction: 'select'},
-    variables: {kinds: 'category', points: 'measure', leftIds: 'category', rightIds: 'category'},
+    variables: {kinds: 'category', points: 'measure', leftRows: 'category', rightRows: 'category'},
     stages: ['representation', 'operator'],
     datumKinds: [{kind: 'segmentPair', label: 'intersecting segment pair', indexSpace: '1d'}],
     guards: ['coordinate-model'],
@@ -31,7 +31,7 @@ export const VALIDITY_OPERATORS: SpatialFamilyOperators = {
   GPUGeometryValidity: {
     family: 'validity',
     descriptor: {scope: 'local', reduction: 'none'},
-    variables: {mask: 'category'},
+    variables: {issueCode: 'category'},
     stages: ['representation', 'operator'],
     datumKinds: [{kind: 'feature', label: 'polygon feature', indexSpace: '1d'}],
     guards: ['coordinate-model'],

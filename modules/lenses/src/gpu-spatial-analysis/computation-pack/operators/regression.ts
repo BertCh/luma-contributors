@@ -287,7 +287,7 @@ export const REGRESSION_OPERATORS: SpatialFamilyOperators = {
         name: 'robust.method',
         label: 'Optional covariance estimator',
         stage: 'inference',
-        alternatives: ['HC0', 'HC1', 'HC2', 'HC3', 'CLUSTER', 'HAC'],
+        alternatives: ['none', 'HC0', 'HC1', 'HC2', 'HC3', 'CLUSTER', 'HAC'],
         sweepable: false
       },
       {
