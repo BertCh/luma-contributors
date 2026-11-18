@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {expect, test} from 'vitest';
+import {expect, test, vi} from 'vitest';
 import * as spatialAnalysis from '@luma-contributors/analysis/gpu-spatial-analysis';
 import * as terrainContributors from '@luma-contributors/analysis/gpu-terrain';
 import * as network from '@luma-contributors/analysis/gpu-network';
@@ -36,7 +36,8 @@ import {
   remapNodedSourceIndices,
   type CatalogNodedNetwork
 } from '../src/analysis/catalog-gpu-network';
-import {describeValidityMask} from '../src/analysis/catalog-gpu-geometry';
+import {describeValidityMask, runGpuGeometryValidity} from '../src/analysis/catalog-gpu-geometry';
+import * as validitySession from '../src/analysis/catalog-gpu-session';
 import {
   CATALOG_IDENTITY_FRAME,
   createCatalogAzimuthalFrame,
@@ -316,6 +317,40 @@ test('validity masks map to catalog issue names and separate errors from convent
     'shell-not-counterclockwise'
   ]);
   expect(describeValidityMask(0)).toEqual({errors: [], warnings: []});
+});
+
+test('GPU validity does not claim a clean row after intersection retries remain incomplete', async () => {
+  const polygons: CatalogFeatureCollection = {
+    type: 'FeatureCollection',
+    features: [
+      {
+        geometry: {
+          type: 'Polygon',
+          coordinates: [
+            [
+              [0, 0],
+              [1, 0],
+              [0, 1],
+              [0, 0]
+            ]
+          ]
+        },
+        properties: {}
+      }
+    ]
+  };
+  for (const overflow of [0, 1]) {
+    const spy = vi
+      .spyOn(validitySession, 'withCatalogGpuSession')
+      .mockResolvedValue({mask: [0], overflow} as never);
+    try {
+      const result = await runGpuGeometryValidity({device: null} as never, polygons);
+      expect(result.tables[0].columns['status']).toEqual([overflow ? 'incomplete' : 'valid']);
+      expect(spy).toHaveBeenCalledTimes(overflow ? 2 : 1);
+    } finally {
+      spy.mockRestore();
+    }
+  }
 });
 
 test('directed CSR groups arcs by source node in arc order', () => {

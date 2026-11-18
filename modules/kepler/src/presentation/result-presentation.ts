@@ -4,6 +4,7 @@
 
 import {
   classifyGPUAnalysisResultValues,
+  normalizeGPUAnalysisClassValue,
   getGPUAnalysisColumnPrecision,
   formatGPUAnalysisMeasuredValue,
   formatGPUAnalysisNumber,
@@ -1175,13 +1176,13 @@ export function encodeKeplerResultPresentation(
     if (excluded.has(row) && excludedIndex >= 0) index = excludedIndex;
     else if (plan.scale === 'categorical') {
       // Match the shared classifier's boolean decoding for the two flag schemes.
-      const category =
-        typeof value === 'boolean' &&
-        (plan.classScheme === 'significance-flag' || plan.classScheme === 'validity-flag')
-          ? value
-            ? 1
-            : 0
-          : value;
+      const category = plan.classScheme
+        ? normalizeGPUAnalysisClassValue(
+            plan.classScheme,
+            plan.classEncoding ?? 'contributor-integer',
+            value
+          )
+        : value;
       index =
         category === null ||
         category === undefined ||

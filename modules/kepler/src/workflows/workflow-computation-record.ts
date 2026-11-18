@@ -14,7 +14,8 @@ import type {WorkflowOperationRegistry, WorkflowRunRecord} from './workflow-type
  * Recorded workflow provenance in the existing computation views. This is an intent graph of
  * actual step invocations, not a compiled GPU graph. Durations are runner wall time, including
  * readback/host work, never GPU timestamps or CPU encode measurements. Only the run record is
- * read: later edits/results cannot rewrite an older trace.
+ * read: later edits/results cannot rewrite an older trace. The saved executionId is retained
+ * across conversions and reloads; saved legacy runs retain their absent execution identity.
  */
 export function makeWorkflowComputationRecord(
   run: WorkflowRunRecord,
@@ -70,9 +71,10 @@ export function makeWorkflowComputationRecord(
         edges.push({from: input.stepId, to: step.stepId, kind: 'dataflow'});
     }
   }
-  return createGPUComputationRecord({
+  const record = createGPUComputationRecord({
     id: run.workflowId,
     runId: run.runId,
+    executionId: run.executionId,
     createdAt: new Date(run.startedAt).toISOString(),
     adapter: {backend: 'workflow', description: 'Step-level provenance; adapter was not recorded'},
     domains: ['kepler-workflow'],
@@ -96,4 +98,6 @@ export function makeWorkflowComputationRecord(
       invocations: [{graph: 'workflow', label: run.runId, reason: run.status}]
     }
   });
+  if (run.executionId === undefined) delete record.executionId;
+  return record;
 }

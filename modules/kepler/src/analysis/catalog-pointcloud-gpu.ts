@@ -60,10 +60,12 @@ export async function runPointCloudOperation(
             }),
             'float32'
           ),
-          normals: normals.view,
-          normalScales: scales.view,
-          normalVariances: variances.view,
-          status: status.view
+          output: {
+            normals: normals.view,
+            normalScales: scales.view,
+            normalVariances: variances.view,
+            status: status.view
+          }
         })
       );
       session.run();
@@ -99,8 +101,7 @@ export async function runPointCloudOperation(
             counts: neighborhoods.counts.view,
             capacity: neighborhoods.capacity,
             standardDeviations: Number(parameters['standardDeviations']),
-            meanDistances: meanDistances.view,
-            validity: validity.view
+            output: {meanDistances: meanDistances.view, validity: validity.view}
           })
         );
       session.run();

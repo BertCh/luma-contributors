@@ -347,7 +347,7 @@ export async function runGpuGeometryValidity(
               ringClosure: 'explicit',
               orientation: 'counter-clockwise-shell',
               intersectionCapacity,
-              output: {mask: mask.view, status: {overflow: overflow.view}}
+              output: {issueCode: mask.view, status: {overflow: overflow.view}}
             })
           );
           session.run();
@@ -388,7 +388,7 @@ export async function runGpuGeometryValidity(
     appendCatalogRow(table, {
       source_index: sourceIndex,
       source_id: getFeatureIdentity(feature),
-      status: isInvalid ? 'invalid' : 'valid',
+      status: isInvalid ? 'invalid' : overflowed ? 'incomplete' : 'valid',
       error_count: errors.length,
       warning_count: warnings.length,
       issues: [...errors, ...warnings].join(','),
@@ -1332,7 +1332,7 @@ export async function runGpuTopologyRepair(
         };
         const status = {
           count: scalar('count'),
-          requiredCount: scalar('required'),
+          requiredRingCount: scalar('required-rings'),
           overflow: scalar('overflow'),
           candidateOverflow: scalar('candidate-overflow')
         };
@@ -1415,7 +1415,7 @@ export async function runGpuTopologyRepair(
               },
               status: {
                 count: status.count.view,
-                requiredCount: status.requiredCount.view,
+                requiredRingCount: status.requiredRingCount.view,
                 overflow: status.overflow.view,
                 candidateOverflow: status.candidateOverflow.view
               }

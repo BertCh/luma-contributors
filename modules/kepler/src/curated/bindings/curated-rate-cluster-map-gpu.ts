@@ -150,6 +150,7 @@ export type RateClusterReadback = {
   quadrants: Uint32Array;
   offsets: Uint32Array;
   weightsOverflow: number;
+  weightsCandidateOverflow: number;
   weightsRequiredCount: number;
   permutationOverflow: number;
 };
@@ -159,6 +160,11 @@ export function readGpuRateClusterComputation(
   prepared: ReturnType<typeof prepareGpuRateClusterMap>,
   readback: RateClusterReadback
 ): RateClusterComputation {
+  validateRequirement(
+    BINDING_ID,
+    readback.weightsCandidateOverflow === 0,
+    'GPU contiguity candidate overflow: grow pair capacity; no incomplete map is published'
+  );
   validateRequirement(
     BINDING_ID,
     readback.weightsOverflow === 0 && readback.weightsRequiredCount <= prepared.neighborCapacity,
@@ -288,6 +294,7 @@ export async function runGpuRateClusterMap(
       const quadrants = session.output('quadrants', 'uint32', rowCount);
       const offsets = session.output('weights-offsets', 'uint32', rowCount + 1);
       const weightsOverflow = session.output('weights-overflow', 'uint32', 1);
+      const weightsCandidateOverflow = session.output('weights-candidate-overflow', 'uint32', 1);
       const weightsRequiredCount = session.output('weights-required', 'uint32', 1);
       const permutationOverflow = session.output('permutation-overflow', 'uint32', 1);
       const recipe = addRateClusterMapRecipe(session.graph, {
@@ -340,6 +347,7 @@ export async function runGpuRateClusterMap(
           quadrants: quadrants.view,
           status: {
             weightsOverflow: weightsOverflow.view,
+            weightsCandidateOverflow: weightsCandidateOverflow.view,
             weightsRequiredCount: weightsRequiredCount.view
           },
           permutation: {
@@ -367,6 +375,7 @@ export async function runGpuRateClusterMap(
         quadrants: await session.readUint32(quadrants),
         offsets: await session.readUint32(offsets),
         weightsOverflow: await session.readScalar(weightsOverflow),
+        weightsCandidateOverflow: await session.readScalar(weightsCandidateOverflow),
         weightsRequiredCount: await session.readScalar(weightsRequiredCount),
         permutationOverflow: await session.readScalar(permutationOverflow)
       });

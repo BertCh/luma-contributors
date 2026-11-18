@@ -228,18 +228,33 @@ test('local IPC import keeps decimal labels by default and preserves numeric wor
   });
 });
 
-test('preserved IPC rejects unsafe integer narrowing and leaves other format routing unchanged', () => {
+test('preserved IPC enforces original-value precision budgets and leaves other format routing unchanged', () => {
   const source = new arrow.Table({
     i64: arrow.vectorFromArray([9_007_199_254_740_993n], new arrow.Int64())
   });
   const candidate = makeSourceCandidateFromTable(source, 'unsafe.arrow', 'arrow', {
     preserveArrowTypes: true
   });
+  expect(previewArrowSource(candidate.table).canUpload).toBe(false);
+  expect(previewArrowSource(candidate.table, {float64: {mode: 'exact'}}).canUpload).toBe(false);
   expect(
     previewArrowSource(candidate.table, {
-      float64: {mode: 'round', maximumAbsoluteError: 1e20, maximumRelativeError: 1}
+      float64: {mode: 'round', maximumAbsoluteError: 0.5, maximumRelativeError: 0}
     }).canUpload
   ).toBe(false);
+  const preview = previewArrowSource(candidate.table, {
+    float64: {mode: 'round', maximumAbsoluteError: 1, maximumRelativeError: 0}
+  });
+  expect(preview.canUpload).toBe(true);
+  expect(preview.fields).toMatchObject([
+    {
+      name: 'i64',
+      sourceType: 'Int64',
+      targetType: 'Float32',
+      maximumAbsoluteError: 1,
+      maximumRelativeError: 1.1102230246251564e-16
+    }
+  ]);
   expect(
     String(
       makeSourceCandidateFromTable(source, 'default.parquet', 'parquet', {

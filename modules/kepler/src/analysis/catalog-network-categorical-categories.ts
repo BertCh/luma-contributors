@@ -12,7 +12,7 @@ import {
   GPU_LOCAL_CATEGORY_DEPENDENCE_COLUMNS,
   GPU_SPATIAL_ENTROPY_LAYOUT,
   GPU_GEOGRAPHICAL_DETECTOR_LAYOUT,
-  getGeographicalDetectorPValue,
+  readGeographicalDetectorPValue,
   getGPURedcapSingleLinkageParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {COORDINATE_SYSTEM_PARAMETER, type CatalogOperationBinding} from './catalog-binding-types';
@@ -156,6 +156,11 @@ export const CATEGORY_BINDINGS: readonly CatalogOperationBinding[] = OPERATIONS.
       declaredBehavior: [
         'Categories are encoded in first-seen order with type retained; null/missing categories use 0xffffffff. At most 32 categories and 1024 source rows.',
         'Each feature must contain one finite point. Invalid coordinates or required numeric values fail before dispatch. Non-finite output statistics publish null.',
+        ...(detector
+          ? [
+              'Summary rows survive unavailable p-value inference: pValue is null, pValueStatus is unavailable, and a diagnostic explains the supported range or convergence failure.'
+            ]
+          : []),
         'Distance bands use the shared catalog local frame (meters for EPSG:4326, native planar units otherwise), with symmetric positive weights 1/(1+distance/radius). Self links are excluded.',
         'Single linkage cuts the heaviest spanning-tree edges; this is not the SSD partition of REDCAP. Disconnected components can exceed the requested region count. Convergence and exhausted iteration status are reported.'
       ],
@@ -316,9 +321,26 @@ export const CATEGORY_BINDINGS: readonly CatalogOperationBinding[] = OPERATIONS.
             const rows = Object.entries(layout)
               .filter(([name]) => name !== 'length')
               .map(([name, slot]) => ({statistic: name, value: output[slot]}));
-            if (detector)
-              rows.push({statistic: 'pValue', value: getGeographicalDetectorPValue(output)});
-            return makeResult(id, title, {statistic: 'string', value: 'float64'}, rows);
+            const probability = detector ? readGeographicalDetectorPValue(output) : undefined;
+            if (probability) rows.push({statistic: 'pValue', value: probability.pValue ?? NaN});
+            const result = makeResult(
+              id,
+              title,
+              {statistic: 'string', value: 'float64'},
+              rows,
+              probability
+                ? {pValueStatus: probability.unavailableReason ? 'unavailable' : 'available'}
+                : {}
+            );
+            if (probability?.unavailableReason) {
+              result.diagnostics.push({
+                code: 'geographical-detector-p-value-unavailable',
+                severity: 'warning',
+                count: 1,
+                message: probability.unavailableReason
+              });
+            }
+            return result;
           }
           const output =
             id === 'colocation-quotient'

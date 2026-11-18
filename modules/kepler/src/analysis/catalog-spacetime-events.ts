@@ -82,7 +82,7 @@ export async function runSpacetimeEvents(
     const result = await withCatalogGpuSession(context.device, 'catalog-hawkes', async session => {
       const estimates = session.output('estimates', 'float32', 4);
       const probability = session.output('probability', 'float32', points.count);
-      const likelihood = session.output('likelihood', 'float32', 1);
+      const likelihood = session.output('fitted-likelihood', 'float32', 1);
       const status = {
         converged: session.output('converged', 'uint32', 1),
         iterationCount: session.output('iterations', 'uint32', 1),
@@ -113,7 +113,7 @@ export async function runSpacetimeEvents(
           maximumParents,
           output: {
             estimates: estimates.view,
-            logLikelihood: likelihood.view,
+            fittedLogLikelihood: likelihood.view,
             backgroundProbability: probability.view,
             status: Object.fromEntries(
               Object.entries(status).map(([name, output]) => [name, output.view])
@@ -146,7 +146,9 @@ export async function runSpacetimeEvents(
       }),
       result.status,
       {
-        logLikelihood: Number.isFinite(result.likelihood[0]) ? result.likelihood[0] : 'undefined',
+        fittedLogLikelihood: Number.isFinite(result.likelihood[0])
+          ? result.likelihood[0]
+          : 'undefined',
         maximumIterations,
         maximumParents,
         spatialThreshold,

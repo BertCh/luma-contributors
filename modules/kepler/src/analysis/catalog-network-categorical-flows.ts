@@ -300,12 +300,13 @@ export const FLOW_BINDINGS: readonly CatalogOperationBinding[] = [
           new GPUMapMatchedEdgeVolumes({
             traversedEdges: {
               edges: session.input('edges', sequences.edges, 'uint32'),
-              counts: session.input('counts', sequences.counts, 'uint32')
+              counts: session.input('counts', sequences.counts, 'uint32'),
+              completeness: 'known-complete'
             },
             trackCount: tracks.features.length,
             traversedEdgeCapacity: capacity,
             edgeCount: edges.features.length,
-            output: {edgeVolumes: volumes.view, truncated: truncated.view}
+            output: {edgeVolumes: volumes.view, status: {candidateOverflow: truncated.view}}
           })
         );
         session.run();
@@ -318,7 +319,10 @@ export const FLOW_BINDINGS: readonly CatalogOperationBinding[] = [
             ...getSourceRow(edges, index),
             volume: output[index]
           })),
-          {truncated: await session.readScalar(truncated), trackCount: tracks.features.length}
+          {
+            candidateOverflow: await session.readScalar(truncated),
+            trackCount: tracks.features.length
+          }
         );
       });
     }

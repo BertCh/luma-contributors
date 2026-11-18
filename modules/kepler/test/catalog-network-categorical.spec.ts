@@ -144,6 +144,37 @@ test('categorical missing rows and islands publish null statistics without shift
   expect(result.tables[0].columns['proportion']).toEqual([null, null, null]);
 });
 
+test('factor detector retains q and F when a four-row result exceeds the p-value range', async () => {
+  const points = makePoints(
+    [
+      [0, 0],
+      [1, 0],
+      [2, 0],
+      [3, 0]
+    ],
+    [
+      {category: 'A', value: 1000},
+      {category: 'B', value: 1001},
+      {category: 'B', value: 1002},
+      {category: 'B', value: 1003}
+    ]
+  );
+  const detector = await run('geographical-detector', {}, {points});
+  const table = detector.tables[0];
+  const valueFor = (statistic: string) =>
+    table.columns['value'][table.columns['statistic'].indexOf(statistic)];
+  expect(valueFor('q')).toBeCloseTo(0.6, 5);
+  expect(valueFor('fStatistic')).toBeCloseTo(3, 4);
+  expect(valueFor('pValue')).toBeNull();
+  expect(detector.summary['pValueStatus']).toBe('unavailable');
+  expect(detector.diagnostics).toContainEqual({
+    code: 'geographical-detector-p-value-unavailable',
+    severity: 'warning',
+    count: 1,
+    message: expect.stringMatching(/nonCentrality.*10000/)
+  });
+});
+
 test('factor detector q and single-linkage regions match explicit partitions', async () => {
   const detector = await run('geographical-detector', {}, {points: CATEGORY_POINTS});
   const qIndex = detector.tables[0].columns['statistic'].indexOf('q');
@@ -268,7 +299,7 @@ test('edge volumes count repeated traversals across breaks and publish unused ed
   const result = await run('map-matched-edge-volumes', {}, {edges, tracks});
   expect(result.tables[0].columns['volume']).toEqual([2, 2, 0]);
   expect(result.tables[0].columns['source_id']).toEqual(['edge-0', 'edge-1', 'edge-2']);
-  expect(result.summary['truncated']).toBe(0);
+  expect(result.summary['candidateOverflow']).toBe(0);
 });
 
 const NETWORK: CatalogFeatureCollection = {

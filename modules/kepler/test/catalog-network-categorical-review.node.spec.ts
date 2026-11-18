@@ -18,6 +18,52 @@ import type {CatalogFeatureCollection} from '../src/analysis/catalog-geojson';
 const DEVICE = {type: 'webgpu', isLost: false, limits: {maxBufferSize: 1 << 24}} as Device;
 const CAPTURED_INPUTS = new Map<string, Float32Array | Uint32Array | Int32Array>();
 
+for (const candidateOverflow of [0, 1]) {
+  test(`edge-volume adapter retains incompleteness status ${candidateOverflow}`, async () => {
+    installSessionProbe();
+    vi.spyOn(CatalogGpuSession.prototype, 'readUint32').mockImplementation(async output =>
+      output.length === 3 ? Uint32Array.of(2, 2, 0) : Uint32Array.of(candidateOverflow)
+    );
+    const edges: CatalogFeatureCollection = {
+      type: 'FeatureCollection',
+      features: [0, 1, 2].map(row => ({
+        id: `edge-${row}`,
+        geometry: {
+          type: 'LineString',
+          coordinates: [
+            [row, 0],
+            [row + 1, 0]
+          ]
+        }
+      }))
+    };
+    const tracks: CatalogFeatureCollection = {
+      type: 'FeatureCollection',
+      features: [
+        {
+          geometry: {
+            type: 'LineString',
+            coordinates: [
+              [0, 0],
+              [2, 0]
+            ]
+          },
+          properties: {traversedEdges: [0, 1, null, 0, 1]}
+        }
+      ]
+    };
+    const result = await runCatalogOperationAsync(
+      getCatalogBinding('map-matched-edge-volumes')!,
+      {},
+      {edges, tracks},
+      {device: DEVICE}
+    );
+    expect(result.tables[0].columns['volume']).toEqual([2, 2, 0]);
+    expect(result.summary['candidateOverflow']).toBe(candidateOverflow);
+    expect(result.summary).not.toHaveProperty('truncated');
+  });
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   CAPTURED_INPUTS.clear();

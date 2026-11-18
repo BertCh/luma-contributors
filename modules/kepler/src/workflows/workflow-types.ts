@@ -526,6 +526,8 @@ export type WorkflowRunRecordStep = {
 export type WorkflowRunRecord = {
   schemaVersion: 1;
   runId: string;
+  /** Persisted unique execution identity; absent only in saved legacy runs. */
+  executionId?: string;
   workflowId: string;
   /** Step the run was asked to reach; absent for a whole-workflow run. */
   target?: string;

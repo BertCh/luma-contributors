@@ -49,10 +49,12 @@ export async function runPointCloudRegistration(
             target: session.input('target', other.positions, 'float32x3'),
             maximumDistance: Number(parameters['maximumDistance']),
             iterations,
-            transform: transform.view,
-            history: history.view,
-            inlierMask: inlierMask.view,
-            status: status.view
+            output: {
+              transform: transform.view,
+              history: history.view,
+              inlierMask: inlierMask.view,
+              status: status.view
+            }
           })
         );
         session.run();
@@ -142,10 +144,12 @@ export async function runPointCloudRegistration(
           halfDepth: Number(parameters['halfDepth']),
           minimumSupport: Number(parameters['minimumSupport']),
           registrationError: Number(parameters['registrationError']),
-          changes: changes.view,
-          roughness: roughness.view,
-          counts: counts.view,
-          status: status.view
+          output: {
+            changes: changes.view,
+            roughness: roughness.view,
+            counts: counts.view,
+            status: status.view
+          }
         })
       );
       session.run();
@@ -262,10 +266,12 @@ async function runVoxelMerge(
             ),
             sourceRowOffset: part.sourceRowOffset
           })),
-          counts: counts.view,
-          centroids: centroids.view,
-          representatives: representatives.view,
-          status: status.view
+          output: {
+            counts: counts.view,
+            centroids: centroids.view,
+            representatives: representatives.view,
+            status: status.view
+          }
         })
       );
       session.run();

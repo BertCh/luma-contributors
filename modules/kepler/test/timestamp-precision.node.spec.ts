@@ -19,6 +19,80 @@ import {
 test.each([
   new arrow.TimestampMicrosecond('UTC'),
   new arrow.TimestampNanosecond('UTC')
+])('dictionary timestamp reads match plain ticks across slices and distinct chunk dictionaries: %s', type => {
+  const makeTimestamp = (ticks: bigint[]) =>
+    arrow.makeVector(
+      arrow.makeData({
+        type,
+        data: BigInt64Array.from(ticks),
+        length: ticks.length
+      })
+    );
+  const dictionaryType = new arrow.Dictionary(type, new arrow.Int32(), 41);
+  const makeDictionary = (ticks: bigint[], indices: number[]) =>
+    arrow.makeVector(
+      arrow.makeData({
+        type: dictionaryType,
+        data: Int32Array.from(indices),
+        length: indices.length,
+        dictionary: makeTimestamp([123n, ...ticks]).slice(1)
+      })
+    );
+  const first = makeDictionary([1n, -1n, 0n], [0, 1, 2]);
+  const second = makeDictionary([0n, 1n, -1n], [1, 2]);
+  const combined = new arrow.Vector([...first.slice(1).data, ...second.data]);
+  const fraction = type.unit === arrow.TimeUnit.MICROSECOND ? '999999' : '999999999';
+  const positiveFraction = type.unit === arrow.TimeUnit.MICROSECOND ? '000001' : '000000001';
+  const exact = [
+    `1969-12-31T23:59:59.${fraction}Z`,
+    '1970-01-01T00:00:00Z',
+    `1970-01-01T00:00:00.${positiveFraction}Z`,
+    `1969-12-31T23:59:59.${fraction}Z`
+  ];
+  const plain = makeTimestamp([-1n, 0n, 1n, -1n]);
+  expect(readOriginalColumnValues(plain, [0, 1, 2, 3])).toEqual([-1, 0, 0, -1]);
+  expect(readOriginalColumnValues(plain, [0, 1, 2, 3], true)).toEqual(exact);
+  expect(readOriginalColumnValues(combined, [0, 1, 2, 3])).toEqual([-1, 0, 0, -1]);
+  expect(readOriginalColumnValues(combined, [0, 1, 2, 3], true)).toEqual(exact);
+  expect([0, 1, 2, 3].map(row => readOriginalTimestampTicks(combined, row))).toEqual([
+    -1n,
+    0n,
+    1n,
+    -1n
+  ]);
+  expect(readOriginalColumnValues(combined.slice(1, 3), [0, 1], true)).toEqual(exact.slice(1, 3));
+  expect([0, 1, 2, 3].map(row => formatCSVValue(combined, row, dictionaryType))).toEqual(exact);
+  const nullableDictionary = arrow.makeVector(
+    arrow.makeData({
+      type,
+      data: new BigInt64Array([-1n, 0n]),
+      length: 2,
+      nullCount: 1,
+      nullBitmap: new Uint8Array([1])
+    })
+  );
+  const nullable = arrow.makeVector(
+    arrow.makeData({
+      type: dictionaryType,
+      data: new Int32Array([0, 1, 0]),
+      length: 3,
+      nullCount: 1,
+      nullBitmap: new Uint8Array([3]),
+      dictionary: nullableDictionary
+    })
+  );
+  expect(readOriginalColumnValues(nullable, [0, 1, 2])).toEqual([-1, null, null]);
+  expect(readOriginalColumnValues(nullable, [0, 1, 2], true)).toEqual([exact[0], null, null]);
+  expect([0, 1, 2].map(row => formatCSVValue(nullable, row, dictionaryType))).toEqual([
+    exact[0],
+    '',
+    ''
+  ]);
+});
+
+test.each([
+  new arrow.TimestampMicrosecond('UTC'),
+  new arrow.TimestampNanosecond('UTC')
 ])('timestamp ticks survive slices, chunks, copy, CSV and native time admission: %s', type => {
   const scale = type.unit === arrow.TimeUnit.MICROSECOND ? 1000n : 1_000_000n;
   const makeVector = (values: bigint[]) =>
@@ -39,7 +113,7 @@ test.each([
   );
   expect(readOriginalColumnValues(vector, [0, 1, 2], true)).toEqual(expected);
   expect(readOriginalColumnValues(vector, [0, 1, 2])).toEqual([
-    1_700_000_000_000, 0, 1_700_000_000_000
+    1_700_000_000_000, -1, 1_700_000_000_000
   ]);
   expect([0, 1, 2].map(row => formatCSVValue(vector, row, type))).toEqual(expected);
   const metadata = prepareArrowTableForGPUAnalytics(new arrow.Table({time: vector})).timeColumns[
@@ -63,10 +137,26 @@ test('exact timestamp text retains nanoseconds before epoch and outside Date ran
   );
 });
 
+test('host date presentation refuses unsafe pre-epoch milliseconds while exact copying keeps ticks', () => {
+  const ticks = [-9_072_000_000_000_000_001n, -9_072_000_000_000_000_000n];
+  const vector = arrow.makeVector(
+    arrow.makeData({
+      type: new arrow.TimestampMicrosecond('UTC'),
+      data: BigInt64Array.from(ticks),
+      length: 2
+    })
+  );
+  for (const row of [0, 1])
+    expect(() => readOriginalColumnValues(vector, [row])).toThrow(/Date range/);
+  expect(readOriginalColumnValues(vector, [0, 1], true)).toEqual(
+    ticks.map(value => `${value} us since Unix epoch`)
+  );
+});
+
 test.each([
   new arrow.TimestampMicrosecond('UTC'),
   new arrow.TimestampNanosecond('UTC')
-])('numeric timestamp presentation truncates before Number conversion at calendar boundaries: %s', type => {
+])('calendar timestamp presentation floors before Number conversion at calendar boundaries: %s', type => {
   const scale = type.unit === arrow.TimeUnit.MICROSECOND ? 1000n : 1_000_000n;
   const boundary = BigInt(Date.UTC(2026, 0, 1));
   const ticks = [
@@ -82,8 +172,8 @@ test.each([
   const values = readOriginalColumnValues(vector, [0, 1, 2, 3, 4]);
   expect(values).toEqual([
     Number(boundary - 1n),
-    Number(-boundary + 1n),
-    0,
+    Number(-boundary),
+    -1,
     Number(boundary),
     Number(boundary)
   ]);

@@ -12,6 +12,18 @@ import {
   getStorageBindingCount
 } from '../../analysis/test/utils/gpu-contributor-test-utils';
 import {makeResidentCalendarTimeView} from '../../../examples/deck/kepler-compute/src/resident-calendar-time';
+import {normalizeResidentCalendarTimeOnCPU} from './resident-calendar-time.test-utils';
+
+test.each([
+  'microsecond',
+  'nanosecond'
+] as const)('resident %s normalization floors pre-epoch fractional ticks', unit => {
+  expect([-1n, 0n, 1n].map(value => normalizeResidentCalendarTimeOnCPU(value, unit))).toEqual([
+    -1n,
+    0n,
+    0n
+  ]);
+});
 
 function makeFixture() {
   const device = createNullWebGPUDevice();

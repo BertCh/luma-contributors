@@ -22,6 +22,26 @@ function trip(times: readonly (number | string)[]) {
   };
 }
 
+test('numeric Unix seconds keep every millisecond vertex when integer milliseconds round-trip', () => {
+  const start = Date.UTC(2004, 1, 1);
+  const milliseconds = [start, start + 1, start + 1000];
+  const seconds = milliseconds.map(value => value / 1000);
+  expect(seconds[1] * 1000).not.toBe(milliseconds[1]);
+  const prepared = prepareKeplerGeoJSONTrips([{id: 'seconds', rows: [trip(seconds)]}], {
+    timestampEncoding: 'unix-second'
+  });
+  expect(prepared.tripCount).toBe(1);
+  expect([...prepared.batches[0].epochMilliseconds]).toEqual(milliseconds);
+  expect([...prepared.batches[0].timestamps]).toEqual([0, 1, 1000]);
+  expect(prepared.batches[0].sourceTimestamps).toEqual(seconds);
+  expect(prepared.invalidRows).toEqual([]);
+  const fractional = prepareKeplerGeoJSONTrips([{id: 'fractional', rows: [trip([1.0001, 2])]}], {
+    timestampEncoding: 'unix-second'
+  });
+  expect(fractional.tripCount).toBe(0);
+  expect(fractional.invalidRows).toHaveLength(1);
+});
+
 test('direct GeoJSON trips preserve exact source time, altitude, source rows and physical batches', () => {
   const epoch = 1_700_000_000_000;
   const prepared = prepareKeplerGeoJSONTrips(

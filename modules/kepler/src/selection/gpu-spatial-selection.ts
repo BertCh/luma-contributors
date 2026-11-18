@@ -8,7 +8,8 @@ import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {
   GPUCommandGraph,
   type CompiledGPUCommandGraph,
-  type GraphDataView
+  type GraphDataView,
+  type GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import {GPUCrossfilterSelection} from '@luma.gl/graph/gpu-crossfilter';
 import {
@@ -60,7 +61,8 @@ export type GPUKeplerSpatialSelectionStatus = {
  *
  * Encode before an explorer's external mask consumer on the same command encoder. Submission is
  * caller-owned. Unless outputMask is supplied, the mask is owned here and borrowed by consumers;
- * release it only after their GPU work finishes. Each encoding captures its drawn vertices. Changing topology
+ * release it only after their GPU work finishes. Empty chunks stay in that public mask but are
+ * omitted from internal selection bindings. Each encoding captures its drawn vertices. Changing topology
  * requires a new adapter, which can reuse a caller-owned outputMask after prior work finishes.
  * Call invalidate() after changing source point contents so asynchronous diagnostics remain versioned.
  */
@@ -224,13 +226,13 @@ export class GPUKeplerSpatialSelection {
         uncertainCount: this.createBuffer(`${id}-uncertain`, new Uint32Array(1)),
         candidateCount: this.createBuffer(`${id}-candidates`, new Uint32Array(1))
       };
-      const pointFeatureIds = this.graph.importGPUVector(`${id}-feature-ids`, featureIds);
+      const pointFeatureIds = this.importSelectionVector(`${id}-feature-ids`, featureIds);
       this.graph.add(
         new GPUPointInPolygonJoin({
           id: `${id}-containment`,
           points: {
             kind: 'points',
-            positions: this.graph.importGPUVector(`${id}-points`, props.positions)
+            positions: this.importSelectionVector(`${id}-points`, props.positions)
           },
           polygons: {
             kind: 'polygons',
@@ -268,7 +270,7 @@ export class GPUKeplerSpatialSelection {
         id: `${id}-selected`,
         kind: 'range',
         input: pointFeatureIds,
-        mask: this.graph.importGPUVector(`${id}-mask`, this.mask)
+        mask: this.importSelectionVector(`${id}-mask`, this.mask)
       });
       this.maskSelection.setRange([0, 0]);
       this.maskSelection.addToGraph(this.graph);
@@ -418,6 +420,19 @@ export class GPUKeplerSpatialSelection {
         length: values.length
       }
     );
+  }
+
+  private importSelectionVector<Format extends 'float32x2' | 'uint32'>(
+    id: string,
+    vector: GPUVector<Format>
+  ): GraphVectorView<Format> {
+    // Empty upload chunks may have only a four-byte placeholder, too short for a bound XY row.
+    // They contribute no rows: omit them consistently without copying buffers or changing the
+    // source-row offsets. Preserve metadata and malformed nonzero lengths for graph validation.
+    return this.graph.importGPUVector(id, {
+      ...vector,
+      data: vector.data.filter(chunk => chunk.length !== 0)
+    });
   }
 
   private importStatus(id: string, buffer: Buffer): GraphDataView<'uint32'> {

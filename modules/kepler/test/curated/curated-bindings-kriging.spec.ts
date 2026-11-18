@@ -4,6 +4,7 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {GPUKriging} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {CatalogGpuSession} from '../../src/analysis/catalog-gpu-session';
 import {it, vi} from 'vitest';
 import {requireTestDevice} from '../../../analysis/test/utils/require-test-device';
 import {
@@ -209,6 +210,7 @@ for (const independent of [false, true]) {
     );
     const reference = runCatalogOperation(binding, request.parameters, inputs);
     const contributor = vi.spyOn(GPUKriging.prototype, 'getCommandNodes');
+    const submission = vi.spyOn(CatalogGpuSession.prototype, 'run');
     let result: CatalogRunResult;
     try {
       result = await runCatalogOperationAsync(binding, request.parameters, inputs, {device});
@@ -219,7 +221,22 @@ for (const independent of [false, true]) {
       check('engine', result.engine, 'gpu');
       check('fallback', result.fallbackReason, undefined);
       check('dispatched contributor names', result.dispatchedContributors, ['GPUKriging']);
-      check('actual GPUKriging graph construction', contributor.mock.calls.length, 1);
+      const callerGraphs = new Set(
+        submission.mock.contexts.map(session => (session as CatalogGpuSession).graph)
+      );
+      check('GPU session submissions', submission.mock.calls.length, 1, 0);
+      check(
+        'actual GPUKriging caller-graph construction',
+        contributor.mock.calls.filter(([graph]) => callerGraphs.has(graph)).length,
+        1,
+        0
+      );
+      check(
+        'GPUKriging preflight construction',
+        contributor.mock.calls.filter(([graph]) => !callerGraphs.has(graph)).length,
+        1,
+        0
+      );
       check(
         'mapped column',
         result.parameters['valueProperty'],
@@ -323,6 +340,7 @@ for (const independent of [false, true]) {
       }
       report.finish(result);
     } finally {
+      submission.mockRestore();
       contributor.mockRestore();
     }
   });

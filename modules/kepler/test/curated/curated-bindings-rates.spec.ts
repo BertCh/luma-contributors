@@ -6,7 +6,8 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
   compareRateClusterClasses,
-  createRateClusterOverflowDataset
+  createRateClusterOverflowDataset,
+  createRateClusterPairLossDataset
 } from './curated-bindings-rates-fixtures';
 import {runCatalogOperationAsync} from '../../src/analysis/catalog-bindings';
 import type {CatalogFeatureCollection, CatalogPosition} from '../../src/analysis/catalog-geojson';
@@ -340,6 +341,26 @@ it('rate recipe marks constant rates untested and gives unsupported Sidak a visi
   expect(fallback.diagnostics.map(item => item.code)).toContain('gpu-fallback');
 }, 120000);
 
+it('G10 pair-only topology loss invokes the CPU fallback on four adjacent polygons', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const result = await runCatalogOperationAsync(
+    CURATED_RATE_CLUSTER_MAP_BINDING,
+    {
+      casesProperty: 'reported',
+      populationProperty: 'exposed',
+      coordinateSystem: 'planar',
+      permutations: 99
+    },
+    {areas: createRateClusterPairLossDataset()},
+    {device}
+  );
+  expect(result.engine).toBe('cpu-reference');
+  expect(result.fallbackReason).toContain('GPU contiguity candidate overflow');
+  expect(result.tables[0].columns['neighbor_count']).toEqual([1, 2, 2, 1]);
+  expect(result.diagnostics.find(item => item.code === 'gpu-fallback')).toBeDefined();
+}, 120000);
+
 it('rate recipe refuses a dense overflowing GPU topology and reports the CPU fallback', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
@@ -356,7 +377,7 @@ it('rate recipe refuses a dense overflowing GPU topology and reports the CPU fal
     {device}
   );
   expect(result.engine).toBe('cpu-reference');
-  expect(result.fallbackReason).toContain('GPU contiguity overflow');
+  expect(result.fallbackReason).toMatch(/GPU contiguity (candidate )?overflow/);
   expect(result.diagnostics.find(item => item.code === 'gpu-fallback')).toBeDefined();
   expect(result.tables[0].rowCount).toBe(66);
 }, 120000);

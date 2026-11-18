@@ -169,7 +169,7 @@ export class GPUKeplerTimeSelection {
           window: this.importUint32(`${id}-window`, this.windowBuffer, parameters.length),
           additionalPredicates: validity,
           output: {
-            ids: this.importUint32(`${id}-ids`, idsBuffer, this.rowCount),
+            rows: this.importUint32(`${id}-ids`, idsBuffer, this.rowCount),
             outputMask: this.graph.importGPUVector(`${id}-mask`, this.mask),
             status: {
               count: this.importUint32(`${id}-count`, this.countBuffer, 1),

@@ -3,10 +3,69 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {describe, expect, it, vi} from 'vitest';
+import {createRequire} from 'node:module';
 import * as arrow from 'apache-arrow';
-import {prepareResidentPointLabels} from '../../../examples/deck/kepler-compute/src/point-label-admission';
+import {
+  prepareResidentPointLabels,
+  prepareStreamedPointLabels
+} from '../../../examples/deck/kepler-compute/src/point-label-admission';
+import {
+  makePointLabelFormatter,
+  setPointLabelFormatterFactory
+} from '../../../examples/deck/kepler-compute/src/label-format';
+
+const exampleRequire = createRequire(
+  new URL('../../../examples/deck/kepler-compute/package.json', import.meta.url)
+);
+// The utils barrel loads deck.gl 9; the same native formatter's module is deck-free.
+const native = createRequire(exampleRequire.resolve('@kepler.gl/utils'))('./data-utils');
 
 describe('resident point label admission', () => {
+  it.each([
+    'plain',
+    'dictionary'
+  ])('formats pre-epoch %s timestamps consistently in resident and streamed labels', storage => {
+    const timestamps = arrow.makeVector(
+      arrow.makeData({
+        type: new arrow.TimestampNanosecond('UTC'),
+        data: new BigInt64Array([-1n, 0n]),
+        length: 2
+      })
+    );
+    const source = new arrow.Table({
+      label:
+        storage === 'plain'
+          ? timestamps
+          : arrow.makeVector(
+              arrow.makeData({
+                type: new arrow.Dictionary(timestamps.type, new arrow.Int32()),
+                data: new Int32Array([0, 1]),
+                length: 2,
+                dictionary: timestamps
+              })
+            )
+    });
+    setPointLabelFormatterFactory((format, field) => native.getFormatter(format, field));
+    try {
+      const format = makePointLabelFormatter({
+        field: {name: 'label', type: 'timestamp', displayFormat: 'YYYY-MM-DD'}
+      })!;
+      expect(format(-1)).toBe('1969-12-31');
+      expect(format(0)).toBe('1970-01-01');
+      const batches = [{id: 'time', rowCount: 2}];
+      const resident = prepareResidentPointLabels(source, batches, 'label', format).chunks[0];
+      const residentText = [0, 1].map(row =>
+        String.fromCodePoint(
+          ...resident.codePoints.subarray(resident.rowOffsets[row], resident.rowOffsets[row + 1])
+        )
+      );
+      expect.soft(residentText).toEqual(['1969-12-31', '1970-01-01']);
+      const streamed = prepareStreamedPointLabels(source, batches, 'label', format)[0];
+      expect.soft([0, 1].map(row => streamed.getText(row))).toEqual(['1969-12-31', '1970-01-01']);
+    } finally {
+      setPointLabelFormatterFactory(null);
+    }
+  });
   it('preserves empty chunks, null rows, Unicode, and exact integer scalar text', () => {
     const first = new arrow.Table({
       label: arrow.vectorFromArray(['unused', 'Å🙂', null], new arrow.Utf8())

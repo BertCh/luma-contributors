@@ -54,7 +54,7 @@ const EMBEDDING_DEMONSTRATIONS: readonly EmbeddingDemonstration[] = [
     action: 'Rank fixture pixels by similarity',
     presentation: {column: 'score', scale: 'diverging', center: 0},
     reading:
-      'The 16 rows are eight ranked matches for each of two query vectors. query, rank and pixel_id identify the query, zero-based rank and source pixel; score is cosine similarity, not geographic proximity.',
+      'The 16 rows are eight ranked matches for each of two query vectors. query, rank and pixel_row identify the query, zero-based rank and source pixel row; score is cosine similarity, not geographic proximity.',
     next: ['which-groups-or-regions', 'what-changed']
   },
   {

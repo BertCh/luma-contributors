@@ -27,10 +27,12 @@ export function addPointCloudNeighborhoods(
       positions,
       radius: Number(parameters['radius']),
       capacity,
-      indices: indices.view,
-      squaredDistances: squaredDistances.view,
-      counts: counts.view,
-      status: status.view
+      output: {
+        indices: indices.view,
+        squaredDistances: squaredDistances.view,
+        counts: counts.view,
+        status: status.view
+      }
     })
   );
   return {positions, indices, squaredDistances, counts, status, capacity};
@@ -54,11 +56,13 @@ export function addPointCloudFeatures(
       indices: neighborhoods.indices.view,
       counts: neighborhoods.counts.view,
       capacity: neighborhoods.capacity,
-      normals: normals.view,
-      eigenvalues: eigenvalues.view,
-      shapes: shapes.view,
-      covariance: covariance.view,
-      status: status.view
+      output: {
+        normals: normals.view,
+        eigenvalues: eigenvalues.view,
+        shapes: shapes.view,
+        covariance: covariance.view,
+        status: status.view
+      }
     })
   );
   return {neighborhoods, normals, eigenvalues, shapes, covariance, status};

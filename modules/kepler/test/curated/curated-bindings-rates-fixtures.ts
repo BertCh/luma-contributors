@@ -4,6 +4,27 @@
 
 import type {CatalogFeatureCollection} from '../../src/analysis/catalog-geojson';
 
+/** Four adjacent rectangles with 32 shared vertices per vertical side: pair loss with spare CSR capacity. */
+export function createRateClusterPairLossDataset(): CatalogFeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: Array.from({length: 4}, (_, column) => ({
+      id: column,
+      properties: {reported: 10 + column * 10, exposed: 1000},
+      geometry: {
+        type: 'Polygon',
+        coordinates: [
+          [
+            ...Array.from({length: 32}, (_, row) => [column, row / 31]),
+            ...Array.from({length: 32}, (_, row) => [column + 1, (31 - row) / 31]),
+            [column, 0]
+          ]
+        ]
+      }
+    }))
+  };
+}
+
 /** Coincident geometry exceeds GPU topology capacity; all rates remain valid for CPU fallback. */
 export function createRateClusterOverflowDataset(): CatalogFeatureCollection {
   return {

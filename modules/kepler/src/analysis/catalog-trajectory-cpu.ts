@@ -75,7 +75,9 @@ export function computeCatalogSegments(
         startRows: stays.startRows,
         finishRows: stays.finishRows,
         durations: stays.durations,
-        count: stays.count
+        count: stays.count,
+        overflow: stays.overflow,
+        candidateOverflow: stays.candidateOverflow
       }
     },
     {triplegCapacity: trajectory.fixes.length, tripCapacity: trajectory.fixes.length}
@@ -324,13 +326,17 @@ export function runTrajectoryMobility(trajectory: CatalogTrajectory, values: Tra
         startRows: stays.startRows,
         durations: stays.durations,
         locationIds: locations.locationIds,
-        count: stays.count
+        count: stays.count,
+        overflow: stays.overflow,
+        candidateOverflow: stays.candidateOverflow
       },
       triplegs: {
         tracks: segments.triplegIds,
         startRows: segments.triplegStartRows,
         endRows: segments.triplegEndRows,
         count: segments.triplegCount,
+        overflow: segments.triplegOverflow,
+        candidateOverflow: segments.triplegCandidateOverflow,
         staypointFinishRows: stays.finishRows
       }
     },
@@ -354,24 +360,35 @@ export function runTrajectoryMobility(trajectory: CatalogTrajectory, values: Tra
   trajectory.trackIds.forEach((trackId, index) =>
     appendCatalogRow(table, {
       track_id: trackId,
-      radius_of_gyration: result.radiusOfGyration[index],
-      random_entropy: result.randomEntropy[index],
-      uncorrelated_entropy: result.uncorrelatedEntropy[index],
-      real_entropy: result.realEntropy[index],
+      radius_of_gyration: Number.isFinite(result.radiusOfGyration[index])
+        ? result.radiusOfGyration[index]
+        : null,
+      random_entropy: Number.isFinite(result.randomEntropy[index])
+        ? result.randomEntropy[index]
+        : null,
+      uncorrelated_entropy: Number.isFinite(result.uncorrelatedEntropy[index])
+        ? result.uncorrelatedEntropy[index]
+        : null,
+      real_entropy: Number.isFinite(result.realEntropy[index]) ? result.realEntropy[index] : null,
       home_location:
         result.homeLocations[index] === MISSING_IDENTIFIER ? null : result.homeLocations[index],
       work_location:
         result.workLocations[index] === MISSING_IDENTIFIER ? null : result.workLocations[index],
-      tracking_quality: result.trackingQuality[index]
+      tracking_quality: Number.isFinite(result.trackingQuality[index])
+        ? result.trackingQuality[index]
+        : null
     })
   );
   const stayTable = makeStaypointTable(trajectory, stays, locations);
   stayTable.columnTypes['jump_length'] = 'float64';
-  stayTable.columns['jump_length'] = Array.from(result.jumpLengths.subarray(0, stays.count[0]));
+  stayTable.columns['jump_length'] = Array.from(
+    result.jumpLengths.subarray(0, stays.count[0]),
+    value => (Number.isFinite(value) ? value : null)
+  );
   stayTable.columnTypes['waiting_seconds'] = 'float64';
   stayTable.columns['waiting_seconds'] = Array.from(
     result.waitingTimes.subarray(0, stays.count[0]),
-    value => value / 1000
+    value => (Number.isFinite(value) ? value / 1000 : null)
   );
   return makeTrajectoryOutput(trajectory, [table, stayTable]);
 }
@@ -389,7 +406,9 @@ export function runTrajectoryModalSplit(trajectory: CatalogTrajectory, values: T
         tracks: segments.triplegIds,
         startRows: segments.triplegStartRows,
         endRows: segments.triplegEndRows,
-        count: segments.triplegCount
+        count: segments.triplegCount,
+        overflow: segments.triplegOverflow,
+        candidateOverflow: segments.triplegCandidateOverflow
       }
     },
     {
@@ -410,9 +429,10 @@ export function runTrajectoryModalSplit(trajectory: CatalogTrajectory, values: T
         track_id: trackId,
         mode,
         metric,
-        value:
-          result.modalSplit[trackIndex * modeSpeedBreaks.length + mode] /
-          (metric === 'duration' ? 1000 : 1)
+        value: Number.isFinite(result.modalSplit[trackIndex * modeSpeedBreaks.length + mode])
+          ? result.modalSplit[trackIndex * modeSpeedBreaks.length + mode] /
+            (metric === 'duration' ? 1000 : 1)
+          : null
       })
     )
   );

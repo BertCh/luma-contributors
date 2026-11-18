@@ -275,6 +275,7 @@ async function runDirect(device: Device, operationId: string): Promise<DirectRes
       if (operationId === 'space-time-hawkes') {
         const estimates = session.output('estimates', 'float32', 4);
         const probability = session.output('probability', 'float32', 48);
+        const fittedLogLikelihood = session.output('fitted-likelihood', 'float32', 1);
         session.graph.add(
           new GPUSpaceTimeHawkes({
             positions: session.input('positions', EVENT_POSITIONS, 'float32x2'),
@@ -295,7 +296,11 @@ async function runDirect(device: Device, operationId: string): Promise<DirectRes
             ),
             maximumIterations: 3,
             maximumParents: 8,
-            output: {estimates: estimates.view, backgroundProbability: probability.view}
+            output: {
+              estimates: estimates.view,
+              backgroundProbability: probability.view,
+              fittedLogLikelihood: fittedLogLikelihood.view
+            }
           })
         );
         session.run();
@@ -307,7 +312,8 @@ async function runDirect(device: Device, operationId: string): Promise<DirectRes
             backgroundRate: fitted[0],
             branchingRatio: fitted[1],
             decayRate: fitted[2],
-            spatialStandardDeviation: fitted[3]
+            spatialStandardDeviation: fitted[3],
+            fittedLogLikelihood: (await session.readFloat32(fittedLogLikelihood))[0]
           }
         };
       }

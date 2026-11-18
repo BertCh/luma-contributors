@@ -3,7 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {describe, expect, test} from 'vitest';
-import {validateGPUComputationRecord} from '@luma-contributors/analysis/computation-record';
+import {
+  validateGPUComputationRecord,
+  createGPUComputationCaptures,
+  validateGPUComputationSidecars
+} from '@luma-contributors/analysis/computation-record';
 import {
   LensController,
   createDefaultViewRegistry
@@ -439,6 +443,40 @@ describe('workflow preflight', () => {
 });
 
 describe('workflow computation record bridge', () => {
+  test('final1 core:F5 independent runners cannot exchange execution sidecars', async () => {
+    const registry = makeFixtureRegistry();
+    const records = [];
+    for (const timestamp of [1000, 2000]) {
+      const runner = new WorkflowRunner({registry, host: makeFixtureHost(), now: () => timestamp});
+      runner.setDocument(makeFixtureDocument());
+      try {
+        const run = await runner.run();
+        const record = makeWorkflowComputationRecord(run, registry);
+        expect(makeWorkflowComputationRecord(JSON.parse(JSON.stringify(run)), registry)).toEqual(
+          record
+        );
+        const legacy = {...run};
+        delete legacy.executionId;
+        const legacyRecord = makeWorkflowComputationRecord(legacy, registry);
+        expect(legacyRecord.executionId).toBeUndefined();
+        expect(makeWorkflowComputationRecord(JSON.parse(JSON.stringify(legacy)), registry)).toEqual(
+          legacyRecord
+        );
+        records.push(record);
+      } finally {
+        runner.destroy();
+      }
+    }
+    expect(records[0].runId).toBe(records[1].runId);
+    const captures = createGPUComputationCaptures({
+      runId: records[0].runId,
+      executionId: records[0].executionId,
+      snapshots: []
+    });
+    expect(validateGPUComputationSidecars(records[1], {captures}).valid).toBe(false);
+    expect(validateGPUComputationSidecars(records[0], {captures}).valid).toBe(true);
+    expect(records[0].executionId).not.toBe(records[1].executionId);
+  });
   test('opens a real runner record in existing views without inventing GPU timings', async () => {
     const registry = makeFixtureRegistry();
     const runner = new WorkflowRunner({registry, host: makeFixtureHost(), now: () => 1000});
@@ -448,6 +486,8 @@ describe('workflow computation record bridge', () => {
       const record = makeWorkflowComputationRecord(run, registry);
       expect(validateGPUComputationRecord(record)).toMatchObject({valid: true});
       expect(record.runId).toBe(run.runId);
+      expect(record.executionId).toBe(run.executionId);
+      expect(record.executionId).toEqual(expect.any(String));
       expect(record.createdAt).toBe('1970-01-01T00:00:01.000Z');
       expect(record.graphs[0].edges).toEqual([
         {from: 'source', to: 'scale', kind: 'dataflow'},
@@ -476,6 +516,13 @@ describe('workflow computation record bridge', () => {
       }
       runner.setDocument({...makeFixtureDocument(), title: 'Edited later', steps: []});
       expect(makeWorkflowComputationRecord(run, registry)).toEqual(record);
+      expect(makeWorkflowComputationRecord(JSON.parse(JSON.stringify(run)), registry)).toEqual(
+        record
+      );
+      const nextRun = await runner.run();
+      expect(makeWorkflowComputationRecord(nextRun, registry).executionId).not.toBe(
+        record.executionId
+      );
     } finally {
       runner.destroy();
     }

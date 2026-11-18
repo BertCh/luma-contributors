@@ -964,6 +964,39 @@ describe('workflow SQL scalar conversion', () => {
     });
   });
 
+  test.each([
+    'plain',
+    'dictionary'
+  ])('SQL %s timestamps floor pre-epoch fractions before ISO formatting', storage => {
+    const timestamps = arrow.makeVector(
+      arrow.makeData({
+        type: new arrow.TimestampNanosecond('UTC'),
+        data: new BigInt64Array([-1n, 0n]),
+        length: 2
+      })
+    );
+    const time =
+      storage === 'plain'
+        ? timestamps
+        : arrow.makeVector(
+            arrow.makeData({
+              type: new arrow.Dictionary(timestamps.type, new arrow.Int32()),
+              data: new Int32Array([0, 1]),
+              length: 2,
+              dictionary: timestamps
+            })
+          );
+    const result = makeWorkflowDataFromSqlTable(new arrow.Table({time}), {
+      query: 'SELECT time',
+      tables: {},
+      maximumRows: 2
+    });
+    expect(result.table.columns['time']).toEqual([
+      '1969-12-31T23:59:59.999Z',
+      '1970-01-01T00:00:00.000Z'
+    ]);
+  });
+
   test('detects geometry only by an input geometry name with valid non-null values', () => {
     const input = makeFixturePoints(1);
     input.table.geometryColumn = 'shape';

@@ -193,6 +193,7 @@ type TableOutputs = {
   maximums: CatalogGpuOutput<'float32'>;
   count: CatalogGpuOutput<'uint32'>;
   overflow: CatalogGpuOutput<'uint32'>;
+  candidateOverflow: CatalogGpuOutput<'uint32'>;
 };
 
 function makeTableOutputs(
@@ -207,6 +208,7 @@ function makeTableOutputs(
   const maximums = session.output(`${name}-maximums`, 'float32', capacity);
   const count = session.output(`${name}-count`, 'uint32', 1);
   const overflow = session.output(`${name}-overflow`, 'uint32', 1);
+  const candidateOverflow = session.output(`${name}-candidate-overflow`, 'uint32', 1);
   return {
     table: {
       cells: cells.view,
@@ -214,7 +216,11 @@ function makeTableOutputs(
       sums: sums.view,
       minimums: minimums.view,
       maximums: maximums.view,
-      status: {count: count.view, overflow: overflow.view}
+      status: {
+        count: count.view,
+        overflow: overflow.view,
+        candidateOverflow: candidateOverflow.view
+      }
     },
     cells,
     counts,
@@ -222,7 +228,8 @@ function makeTableOutputs(
     minimums,
     maximums,
     count,
-    overflow
+    overflow,
+    candidateOverflow
   };
 }
 
@@ -231,7 +238,14 @@ async function readTableRows(
   outputs: TableOutputs
 ): Promise<DggsCellRow[]> {
   const rowCount = await session.readScalar(outputs.count);
-  // A non-zero overflow flag means the capacity (one slot per input row) was exceeded, which cannot happen.
+  if (
+    (await session.readScalar(outputs.overflow)) ||
+    (await session.readScalar(outputs.candidateOverflow))
+  ) {
+    throw new CatalogGpuUnsupportedError(
+      'Cell table is incomplete; increase the source or destination capacity'
+    );
+  }
   const cellWords = await session.readUint32(outputs.cells, rowCount);
   const counts = await session.readUint32(outputs.counts, rowCount);
   const sumWords = await session.readUint32(outputs.sums, rowCount);
@@ -1011,6 +1025,7 @@ const CELL_COMPARE_BINDING: CatalogOperationBinding = {
         const zScores = session.output('compare-z', 'float32', capacity);
         const count = session.output('compare-count', 'uint32', 1);
         const overflow = session.output('compare-overflow', 'uint32', 1);
+        const candidateOverflow = session.output('compare-candidate-overflow', 'uint32', 1);
         session.graph.add(
           new GPUCellTableCompare({
             id: 'catalog-dggs-compare',
@@ -1023,7 +1038,11 @@ const CELL_COMPARE_BINDING: CatalogOperationBinding = {
               before: beforeValues.view,
               after: afterValues.view,
               zScore: zScores.view,
-              status: {count: count.view, overflow: overflow.view}
+              status: {
+                count: count.view,
+                overflow: overflow.view,
+                candidateOverflow: candidateOverflow.view
+              }
             }
           })
         );
@@ -1036,6 +1055,11 @@ const CELL_COMPARE_BINDING: CatalogOperationBinding = {
         );
         session.run();
         const rowCount = await session.readScalar(count);
+        if ((await session.readScalar(overflow)) || (await session.readScalar(candidateOverflow))) {
+          throw new CatalogGpuUnsupportedError(
+            'Cell comparison is incomplete; increase the source or destination capacity'
+          );
+        }
         const words = await session.readUint32(cells, rowCount);
         const presenceValues = await session.readUint32(presence, rowCount);
         const beforeRead = await session.readFloat32(beforeValues, rowCount);

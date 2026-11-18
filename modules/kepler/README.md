@@ -68,6 +68,13 @@ table and analysis consumers receive the union of polygon-targeted layers, inclu
 Dynamic style domains exclude polygon filters, and each filter histogram excludes only its own
 scalar predicate. The native host supplies these distinct masks explicitly.
 
+`GPUKeplerSpatialSelection` preserves source chunk lengths in its public mask, including empty
+Arrow/WKB batches. Its internal containment and range-selection bindings omit empty chunks together;
+nonempty buffers are borrowed without copying, and global source-row order stays unchanged. Empty
+position chunks may use four-byte placeholder buffers because they are never bound as XY rows.
+Positions and output masks must have packed layouts; interleaved vector layouts and negative
+chunk lengths are rejected rather than normalized when empty chunks are omitted.
+
 `addFilter` and `removeFilter` add or drop one filter slot in place (other masks keep their identity;
 a removed slot is destroyed immediately or after a supplied completion), and `updateControls` sets
 controls for a subset. Allocation failures raise `KeplerAllocationError` (luma `OutOfMemoryError`

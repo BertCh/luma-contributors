@@ -9,6 +9,7 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, test} from 'vitest';
 import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 import {makeResidentCalendarTimeView} from '../../../examples/deck/kepler-compute/src/resident-calendar-time';
+import {normalizeResidentCalendarTimeOnCPU as normalizeOnCPU} from './resident-calendar-time.test-utils';
 
 const INT64_MINIMUM = -(1n << 63n);
 const INT64_MAXIMUM = (1n << 63n) - 1n;
@@ -19,18 +20,6 @@ const NANOSECONDS_PER_UNIT: Record<GPUKeplerTimeUnit, bigint> = {
   microsecond: 1000n,
   nanosecond: 1n
 };
-
-function normalizeOnCPU(value: bigint, unit: GPUKeplerTimeUnit): bigint {
-  // Milliseconds are deliberately borrowed, with clipping left to the calendar consumer.
-  if (unit === 'millisecond') return value;
-  const nanoseconds = value * NANOSECONDS_PER_UNIT[unit];
-  if (
-    nanoseconds < -DATE_LIMIT_MILLISECONDS * 1000000n ||
-    nanoseconds > DATE_LIMIT_MILLISECONDS * 1000000n
-  )
-    return INT64_MAXIMUM;
-  return nanoseconds / 1000000n;
-}
 
 function makeValues(unit: GPUKeplerTimeUnit): bigint[] {
   const values = [
@@ -63,7 +52,15 @@ function makeValues(unit: GPUKeplerTimeUnit): bigint[] {
   const ticksPerSecond = 1000000000n / NANOSECONDS_PER_UNIT[unit];
   const monthStart = (BigInt(Date.parse('2024-03-01T00:00:00Z')) * ticksPerSecond) / 1000n;
   const dateLimit = (DATE_LIMIT_MILLISECONDS * ticksPerSecond) / 1000n;
-  for (const boundary of [monthStart, -monthStart, dateLimit, -dateLimit])
+  const wordBoundary = ((1n << 32n) * ticksPerSecond) / 1000n;
+  for (const boundary of [
+    monthStart,
+    -monthStart,
+    dateLimit,
+    -dateLimit,
+    wordBoundary,
+    -wordBoundary
+  ])
     for (const offset of [-1001n, -1000n, -1n, 0n, 1n, 1000n, 1001n]) {
       const value = boundary + offset;
       if (value >= INT64_MINIMUM && value <= INT64_MAXIMUM) values.push(value);

@@ -4,9 +4,12 @@
 
 import {describe, expect, it, vi} from 'vitest';
 import {GPUKriging} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createNullWebGPUDevice} from '../../../analysis/test/utils/gpu-contributor-test-utils';
 import {prepareCuratedKrigingGpuSamples} from '../../src/curated/bindings/curated-kriging-with-diagnostics-gpu';
 import {CatalogGpuSession} from '../../src/analysis/catalog-gpu-session';
+import * as recipePreparation from '../../../analysis/src/gpu-spatial-analysis/recipes/prepared-recipe';
+import {getCoreDefaultBuffer} from '../../../analysis/src/analysis-core/contracts/network-topology';
 import {
   getCatalogBinding,
   normalizeCatalogParameters,
@@ -556,7 +559,11 @@ describe('curated kriging GPU preparation and engine contract (no hardware execu
         return buffer;
       });
       const dispatch = vi.spyOn(GPUKriging.prototype, 'getCommandNodes');
-      const submission = vi.spyOn(CatalogGpuSession.prototype, 'run').mockImplementation(() => {
+      let submittedSession: CatalogGpuSession | undefined;
+      const submission = vi.spyOn(CatalogGpuSession.prototype, 'run').mockImplementation(function (
+        this: CatalogGpuSession
+      ) {
+        submittedSession = this;
         if (failureStage === 'submission') throw new Error('injected submission failure');
       });
       const readback = vi
@@ -568,7 +575,16 @@ describe('curated kriging GPU preparation and engine contract (no hardware execu
         await expect(binding.runGpu!({device}, {points: getPoints()}, parameters)).rejects.toThrow(
           `injected ${failureStage} failure`
         );
-        expect(dispatch).toHaveBeenCalledOnce();
+        // Preparation expands on a separate graph before the committed contributor expands.
+        // There must still be exactly one expansion on the graph submitted by this session.
+        expect(dispatch).toHaveBeenCalledTimes(2);
+        const [preflightGraph, committedGraph] = dispatch.mock.calls.map(([graph]) => graph);
+        expect(preflightGraph).not.toBe(committedGraph);
+        expect(preflightGraph.device).toBe(device);
+        expect(committedGraph).toBe(submittedSession?.graph);
+        expect(
+          dispatch.mock.calls.filter(([graph]) => graph === submittedSession?.graph)
+        ).toHaveLength(1);
         expect(submission).toHaveBeenCalledOnce();
         expect(destroyChecks.length).toBeGreaterThan(10);
         for (const check of destroyChecks) check();
@@ -582,6 +598,136 @@ describe('curated kriging GPU preparation and engine contract (no hardware execu
       }
     });
   }
+});
+
+it.each([
+  'fitted rain gauges',
+  'stated projected measurements'
+] as const)('prepared kriging preserves the single-declaration uploads and caller plan for %s', async fixture => {
+  const binding = getCatalogBinding(ID)!;
+  const fitted = fixture === 'fitted rain gauges';
+  const points = fitted
+    ? (createKeplerCuratedAnalysisSample('rain-gauges')['points'] as CatalogFeatureCollection)
+    : makePoints(
+        KRIGING_POINTS.x.map(value => value + 500000),
+        KRIGING_POINTS.y.map(value => value + 4000000),
+        index => ({temperature: KRIGING_POINTS.z[index]})
+      );
+  const parameters = normalizeCatalogParameters(
+    binding,
+    fitted
+      ? {coordinateSystem: 'EPSG:4326', cellSize: 250, neighborCount: 16, valueProperty: 'rainfall'}
+      : {...STATED, cellSize: 200, neighborCount: 16, valueProperty: 'temperature'}
+  );
+  async function capturePlan(prepare: boolean) {
+    const device = createNullWebGPUDevice();
+    const uploads = new Map<object, number[]>();
+    const originalInputs = new Map<string, object>();
+    const parameterUploadChecks: (() => void)[] = [];
+    const allocate = device.createBuffer.bind(device);
+    vi.spyOn(device, 'createBuffer').mockImplementation(properties => {
+      const buffer = allocate(properties);
+      if (properties instanceof ArrayBuffer || ArrayBuffer.isView(properties)) return buffer;
+      if (properties.data && properties.id && !originalInputs.has(properties.id))
+        originalInputs.set(properties.id, buffer);
+      if (properties.data && ArrayBuffer.isView(properties.data))
+        uploads.set(
+          buffer,
+          Array.from(
+            new Uint8Array(
+              properties.data.buffer,
+              properties.data.byteOffset,
+              properties.data.byteLength
+            )
+          )
+        );
+      if (properties.id === `${ID}-parameters`) {
+        const write = vi.spyOn(buffer, 'write');
+        parameterUploadChecks.push(() => expect(write).not.toHaveBeenCalled());
+      }
+      return buffer;
+    });
+    if (!prepare)
+      vi.spyOn(recipePreparation, 'addPreparedRecipe').mockImplementation((graph, props, declare) =>
+        declare(graph, props)
+      );
+    const expansion = vi.spyOn(GPUKriging.prototype, 'getCommandNodes');
+    let submittedSession: CatalogGpuSession | undefined;
+    vi.spyOn(CatalogGpuSession.prototype, 'run').mockImplementation(function (
+      this: CatalogGpuSession
+    ) {
+      submittedSession = this;
+      throw new Error('inspect before submission');
+    });
+    function describeView(view: GraphDataView | undefined) {
+      return view
+        ? {
+            id: view.buffer.id,
+            format: view.format,
+            length: view.length,
+            byteOffset: view.byteOffset,
+            byteStride: view.byteStride,
+            rowByteLength: view.rowByteLength
+          }
+        : null;
+    }
+    function describeInput(view: GraphDataView, name: string) {
+      const buffer = getCoreDefaultBuffer(view.buffer.defaultBuffer!);
+      expect(buffer).toBe(originalInputs.get(`${ID}-${name}`));
+      const bytes = uploads.get(buffer);
+      expect(bytes).toBeDefined();
+      return {view: describeView(view), bytes};
+    }
+    try {
+      await expect(binding.runGpu!({device}, {points}, parameters)).rejects.toThrow(
+        'inspect before submission'
+      );
+      const plans = expansion.mock.calls.map(([graph], index) => {
+        const contributor = expansion.mock.contexts[index] as GPUKriging;
+        const props = contributor.props;
+        return {
+          caller: graph === submittedSession?.graph,
+          plan: {
+            id: contributor.id,
+            maximumNeighborCount: contributor.maximumNeighborCount,
+            cellCount: contributor.cellCount,
+            estimatedCommandNodeCount: contributor.estimatedCommandNodeCount,
+            spatialContext: {...contributor.spatialContext},
+            grid: {...props.grid, affine: [...props.grid.affine]},
+            indexGridSize: [...props.indexGridSize],
+            indexBounds: [...props.indexBounds],
+            invocationTileSize: props.invocationTileSize,
+            positions: describeInput(props.positions, 'positions'),
+            values: describeInput(props.values, 'observed'),
+            parameters: describeInput(props.parameters, 'parameters'),
+            mask: describeView(props.mask),
+            output: {
+              values: describeView(props.output.values),
+              variance: describeView(props.output.variance),
+              prediction: describeView(props.output.crossValidationPrediction),
+              predictionVariance: describeView(props.output.crossValidationVariance),
+              invalidCount: describeView(props.output.status?.invalidCount),
+              uncertainCount: describeView(props.output.status?.uncertainCount)
+            }
+          }
+        };
+      });
+      expect(submittedSession).toBeDefined();
+      expect(parameterUploadChecks).toHaveLength(1);
+      for (const check of parameterUploadChecks) check();
+      return plans;
+    } finally {
+      vi.restoreAllMocks();
+      device.destroy();
+    }
+  }
+  const single = await capturePlan(false);
+  const prepared = await capturePlan(true);
+  expect(single).toHaveLength(1);
+  expect(single[0].caller).toBe(true);
+  expect(prepared.map(value => value.caller)).toEqual([false, true]);
+  expect(prepared[0].plan).toStrictEqual(single[0].plan);
+  expect(prepared[1].plan).toStrictEqual(single[0].plan);
 });
 
 describe('review regressions: float32 kriging input conversion', () => {

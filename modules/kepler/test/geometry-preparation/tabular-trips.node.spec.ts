@@ -14,6 +14,70 @@ import {makeKeplerTabularTripGPUVectors} from '../../../../examples/deck/kepler-
 const epoch = 1_700_000_000_000;
 const columns = {tripId: 'id', timestamp: 'time', longitude: 'lon', latitude: 'lat'};
 
+test.each([
+  'plain',
+  'dictionary'
+])('unix-second Arrow %s trips keep every exact millisecond vertex', storage => {
+  const start = Date.UTC(2004, 1, 1);
+  const expected = [start, start + 1, start + 1000];
+  const type = new arrow.TimestampNanosecond('UTC');
+  const timestamps = arrow.makeVector(
+    arrow.makeData({
+      type,
+      data: BigInt64Array.from(expected, value => BigInt(value) * 1_000_000n),
+      length: 3
+    })
+  );
+  const table = new arrow.Table({
+    id: arrow.vectorFromArray(['route', 'route', 'route'], new arrow.Utf8()),
+    time:
+      storage === 'plain'
+        ? timestamps
+        : arrow.makeVector(
+            arrow.makeData({
+              type: new arrow.Dictionary(type, new arrow.Int32()),
+              data: new Int32Array([0, 1, 2]),
+              length: 3,
+              dictionary: timestamps
+            })
+          ),
+    lon: arrow.makeVector(new Float32Array([0, 1, 2])),
+    lat: arrow.makeVector(new Float32Array([0, 1, 2]))
+  });
+  for (const timestampEncoding of ['unix-millisecond', 'unix-second', 'iso8601'] as const) {
+    const prepared = prepareKeplerTabularTripsFromArrow(table, columns, {timestampEncoding});
+    expect([...prepared.batches[0].memberRows]).toEqual([0, 1, 2]);
+    expect([...prepared.batches[0].epochMilliseconds]).toEqual(expected);
+    expect([...prepared.batches[0].timestamps]).toEqual([0, 1, 1000]);
+    expect(prepared.invalidRows).toEqual([]);
+  }
+});
+
+test('Arrow milliseconds stay exact when numeric seconds cannot distinguish adjacent vertices', () => {
+  const start = 9_007_199_254_738_992;
+  const expected = [start, start + 1, start + 1000];
+  expect(start / 1000).toBe((start + 1) / 1000);
+  const table = new arrow.Table({
+    id: arrow.vectorFromArray(['route', 'route', 'route'], new arrow.Utf8()),
+    time: arrow.makeVector(
+      arrow.makeData({
+        type: new arrow.TimestampMillisecond(),
+        data: BigInt64Array.from(expected, BigInt),
+        length: 3
+      })
+    ),
+    lon: arrow.makeVector(new Float32Array([0, 1, 2])),
+    lat: arrow.makeVector(new Float32Array([0, 1, 2]))
+  });
+  const prepared = prepareKeplerTabularTripsFromArrow(table, columns, {
+    timestampEncoding: 'unix-second'
+  });
+  expect([...prepared.batches[0].memberRows]).toEqual([0, 1, 2]);
+  expect([...prepared.batches[0].epochMilliseconds]).toEqual(expected);
+  expect([...prepared.batches[0].timestamps]).toEqual([0, 1, 1000]);
+  expect(prepared.invalidRows).toEqual([]);
+});
+
 function makeBatch(id: string, rows: [unknown, unknown, unknown, unknown][]) {
   return {
     id,
@@ -142,32 +206,55 @@ test('explicit tabular parts group independently across batches without compound
   ).toThrow(/matching lengths/);
 });
 
-test.each([
-  new arrow.TimestampMicrosecond('UTC'),
-  new arrow.TimestampNanosecond('UTC')
-])('typed Arrow trips normalize exact ticks and refuse hidden submillisecond loss: %s', type => {
+test.each(
+  [new arrow.TimestampMicrosecond('UTC'), new arrow.TimestampNanosecond('UTC')].flatMap(type =>
+    ['plain', 'dictionary'].flatMap(storage =>
+      (['unix-millisecond', 'unix-second', 'iso8601'] as const).map(timestampEncoding => ({
+        type,
+        storage,
+        timestampEncoding
+      }))
+    )
+  )
+)('typed Arrow trips normalize exact ticks and refuse hidden submillisecond loss: $type $storage $timestampEncoding', ({
+  type,
+  storage,
+  timestampEncoding
+}) => {
   const scale = type.unit === arrow.TimeUnit.MICROSECOND ? 1000n : 1_000_000n;
-  const makeTable = (offset: bigint) =>
-    new arrow.Table({
+  const makeTable = (offset: bigint) => {
+    const timestamps = arrow.makeVector(
+      arrow.makeData({
+        type,
+        data: new BigInt64Array([BigInt(epoch) * scale + offset, BigInt(epoch + 1) * scale]),
+        length: 2
+      })
+    );
+    return new arrow.Table({
       id: arrow.vectorFromArray(['route', 'route'], new arrow.Utf8()),
-      time: arrow.makeVector(
-        arrow.makeData({
-          type,
-          data: new BigInt64Array([BigInt(epoch) * scale + offset, BigInt(epoch + 1) * scale]),
-          length: 2
-        })
-      ),
+      time:
+        storage === 'plain'
+          ? timestamps
+          : arrow.makeVector(
+              arrow.makeData({
+                type: new arrow.Dictionary(type, new arrow.Int32()),
+                data: new Int32Array([0, 1]),
+                length: 2,
+                dictionary: timestamps
+              })
+            ),
       lon: arrow.makeVector(new Float32Array([0, 1])),
       lat: arrow.makeVector(new Float32Array([0, 1]))
     });
+  };
   const exact = prepareKeplerTabularTripsFromArrow(makeTable(0n), columns, {
-    timestampEncoding: 'unix-millisecond'
+    timestampEncoding
   });
   expect(exact.animationDomainMilliseconds).toEqual([epoch, epoch + 1]);
   expect([...exact.batches[0].timestamps]).toEqual([0, 1]);
   expect(() =>
     prepareKeplerTabularTripsFromArrow(makeTable(1n), columns, {
-      timestampEncoding: 'unix-millisecond'
+      timestampEncoding
     })
   ).toThrow(/precision/);
 });

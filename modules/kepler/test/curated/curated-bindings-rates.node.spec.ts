@@ -21,7 +21,8 @@ import {
 } from '../../src/curated/bindings/curated-rate-cluster-map-binding';
 import {
   compareRateClusterClasses,
-  createRateClusterOverflowDataset
+  createRateClusterOverflowDataset,
+  createRateClusterPairLossDataset
 } from './curated-bindings-rates-fixtures';
 import {computeEmpiricalBayesOracle} from '../../../analysis/test/gpu-spatial-analysis/rate-smoothing/empirical-bayes-oracle';
 import {
@@ -30,6 +31,7 @@ import {
   type RateClusterReadback
 } from '../../src/curated/bindings/curated-rate-cluster-map-gpu';
 import {GPU_EMPIRICAL_BAYES_SUMMARY} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {computeContiguityWeightsOnCPU} from '../../../analysis/src/gpu-spatial-analysis/spatial-weights/cpu-contiguity-weights-operation';
 import type {CatalogFeature, CatalogFeatureCollection} from '../../src/analysis/catalog-geojson';
 import {BENJAMINI_HOCHBERG, RATE_EXACT, RATE_LATTICE} from './curated-bindings-oracle-data';
 import {
@@ -554,10 +556,49 @@ describe('curated-rate-cluster-map GPU preparation and publication contract', ()
       quadrants: new Uint32Array([1, 0, 0, 4]),
       offsets: new Uint32Array([0, 1, 1, 2, 3]),
       weightsOverflow: 0,
+      weightsCandidateOverflow: 0,
       weightsRequiredCount: 3,
       permutationOverflow: 0
     };
   }
+
+  it('G10 refuses candidate-only loss on four densely sampled adjacent polygons', () => {
+    const prepared = prepareGpuRateClusterMap(
+      {areas: createRateClusterPairLossDataset()},
+      {...parameters, casesProperty: 'reported', populationProperty: 'exposed'}
+    );
+    const partial = computeContiguityWeightsOnCPU(prepared.polygons, {
+      criterion: 'queen',
+      capacity: prepared.neighborCapacity,
+      pairCapacity: prepared.neighborCapacity * 4
+    });
+    const complete = computeContiguityWeightsOnCPU(prepared.polygons, {
+      criterion: 'queen',
+      capacity: prepared.neighborCapacity,
+      pairCapacity: 256
+    });
+    expect(Array.from(partial.overflow)).toEqual([0]);
+    expect(Array.from(partial.candidateOverflow)).toEqual([1]);
+    expect(Array.from(partial.requiredCount)).toEqual([2]);
+    expect(
+      Array.from(partial.offsets)
+        .slice(1)
+        .map((value, row) => value - partial.offsets[row])
+    ).toEqual([1, 1, 0, 0]);
+    expect(
+      Array.from(complete.offsets)
+        .slice(1)
+        .map((value, row) => value - complete.offsets[row])
+    ).toEqual([1, 2, 2, 1]);
+    expect(() =>
+      readGpuRateClusterComputation(prepared, {
+        ...createReadback(),
+        offsets: partial.offsets,
+        weightsRequiredCount: partial.requiredCount[0],
+        weightsCandidateOverflow: 1
+      })
+    ).toThrow(/candidate overflow/);
+  });
 
   it('preserves null islands, recipe quadrant names and the rate-moment shrinkage formula', () => {
     const prepared = prepareGpuRateClusterMap({areas}, parameters);
@@ -580,6 +621,7 @@ describe('curated-rate-cluster-map GPU preparation and publication contract', ()
     const prepared = prepareGpuRateClusterMap({areas}, parameters);
     for (const invalid of [
       {weightsOverflow: 1},
+      {weightsCandidateOverflow: 1},
       {weightsRequiredCount: prepared.neighborCapacity + 1},
       {permutationOverflow: 1},
       {localI: new Float32Array(3)},

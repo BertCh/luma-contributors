@@ -165,12 +165,8 @@ export async function runKeplerRasterEmbedding(
     let rowCount = pixelCount;
     let layout: RasterEmbeddingResult['layout'] = 'pixels';
     const contributors: string[] = [];
-    const add = (
-      contributor: GPUCommandNodeProducer | {addToGraph(graph: typeof session.graph): void},
-      name: string
-    ) => {
-      if ('addToGraph' in contributor) contributor.addToGraph(session.graph);
-      else session.graph.add(contributor);
+    const add = (contributor: GPUCommandNodeProducer, name: string) => {
+      session.graph.add(contributor);
       contributors.push(name);
     };
     const vectorColumns = (view: Float32Array, count: number, length: number, prefix: string) =>
@@ -181,10 +177,12 @@ export async function runKeplerRasterEmbedding(
         ])
       );
     let packedVectors: CatalogGpuOutput<'float32'> | undefined;
+    let clusteringStatus: CatalogGpuOutput<'uint32'> | undefined;
     const packedLength = dimensions;
     switch (options.operation) {
       case 'kmeans': {
         const clusterCount = options.clusterCount ?? 2;
+        clusteringStatus = session.output('kmeans-status', 'uint32', 3);
         add(
           new GPURasterEmbeddingKMeans({
             ...common,
@@ -193,7 +191,8 @@ export async function runKeplerRasterEmbedding(
             output: {
               labels: integerOutput('label'),
               centroids: session.output('centroids', 'float32', clusterCount * dimensions).view,
-              counts: session.output('counts', 'uint32', clusterCount).view
+              counts: session.output('counts', 'uint32', clusterCount).view,
+              status: clusteringStatus.view
             }
           }),
           'GPURasterEmbeddingKMeans'
@@ -218,7 +217,7 @@ export async function runKeplerRasterEmbedding(
               queryCount,
               resultCount,
               output: {
-                pixelIds: integerOutput('pixel_id', rowCount),
+                pixelRows: integerOutput('pixel_row', rowCount),
                 scores: floatOutput('score', rowCount),
                 resultCounts: session.output('result-counts', 'uint32', queryCount).view
               }
@@ -508,6 +507,13 @@ export async function runKeplerRasterEmbedding(
       }
     }
     session.run();
+    if (clusteringStatus) {
+      const [iterations, changedLabels, converged] = await session.readUint32(clusteringStatus);
+      if (converged !== 1)
+        throw new Error(
+          `K-means did not converge after ${iterations} iterations (${changedLabels} changed labels); labels were not published.`
+        );
+    }
     const columns: RasterEmbeddingResult['columns'] = {};
     for (const [name, output] of Object.entries(outputs))
       columns[name] =

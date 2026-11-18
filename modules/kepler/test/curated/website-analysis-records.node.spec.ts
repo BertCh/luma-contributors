@@ -43,7 +43,7 @@ describe('website curated workflow records', () => {
     });
     expect(drainage.recordNote).toContain('3 by 3 test grid');
     for (const workflow of WORKFLOWS) {
-      expect(workflow.record.kernels).toBeGreaterThan(0);
+      expect(workflow.record.nodeCount).toBeGreaterThan(0);
       expect(workflow.steps.length).toBeGreaterThan(0);
       expect(workflow.stages.length).toBeGreaterThan(0);
     }

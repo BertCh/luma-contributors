@@ -36,6 +36,7 @@ import type {
 } from '../../src/descriptors/operation-descriptor-types';
 import {
   getKeplerBindingResultPresentations,
+  encodeKeplerResultPresentation,
   getKeplerColorContrastRatio,
   getKeplerColorDifference2000,
   getKeplerColorDistance,
@@ -72,6 +73,48 @@ import type {
 // ---------------------------------------------------------------------------------------------
 
 type ColumnValue = string | number | boolean | null;
+
+it('publishes every nonzero uint32 validity flag with the same valid class as its legend', () => {
+  const table = makeTable('table', {value: [0, 1, 2, 0xffffffff]});
+  const presentation = planKeplerResultPresentation(
+    table,
+    makeOutput({column: 'value', scale: 'class-scheme', classScheme: 'validity-flag'})
+  )!;
+  const legend = presentation.legend.map(entry => ({
+    label: entry.label,
+    color: entry.color,
+    count: entry.count
+  }));
+  const encoded = encodeKeplerResultPresentation(table, {
+    tableId: table.id,
+    presentation,
+    display: {},
+    legend
+  })!;
+  expect(encoded.values).toEqual(['Excluded or invalid', 'Valid', 'Valid', 'Valid']);
+  expect(legend.map(entry => [entry.label, entry.count])).toEqual([
+    ['Valid', 3],
+    ['Excluded or invalid', 1]
+  ]);
+  const significant = planKeplerResultPresentation(
+    table,
+    makeOutput({column: 'value', scale: 'class-scheme', classScheme: 'significance-flag'})
+  )!;
+  expect(significant.classScheme).not.toBe('validity-flag');
+  const significantLegend = significant.legend.map(entry => ({
+    label: entry.label,
+    color: entry.color,
+    count: entry.count
+  }));
+  const significantEncoding = encodeKeplerResultPresentation(table, {
+    tableId: table.id,
+    presentation: significant,
+    display: {},
+    legend: significantLegend
+  })!;
+  expect(new Set(significantEncoding.values).size).toBe(4);
+  expect(significantLegend.map(entry => entry.count)).toEqual([1, 1, 1, 1]);
+});
 
 function makeTable(id: string, columns: Record<string, ColumnValue[]>): CatalogOutputTable {
   const names = Object.keys(columns);

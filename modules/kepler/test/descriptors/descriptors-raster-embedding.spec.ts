@@ -19,7 +19,7 @@ const EXPECTED_TABLES: Readonly<Record<string, {rowCount: number; columns: reado
   },
   'raster-embedding-nearest-pixels': {
     rowCount: 16,
-    columns: ['index', 'pixel_id', 'score', 'query', 'rank']
+    columns: ['index', 'pixel_row', 'score', 'query', 'rank']
   },
   'raster-embedding-knn': {rowCount: 64, columns: ['index', 'label', 'confidence']},
   'raster-embedding-linear-probe': {rowCount: 64, columns: ['index', 'label', 'confidence']},

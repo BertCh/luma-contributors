@@ -16,6 +16,64 @@ import type {ResidentChartSelection} from '../../../examples/deck/kepler-compute
 import type {ResidentTimeChartPlan} from '../../../examples/deck/kepler-compute/src/resident-chart-plan';
 
 test.each([
+  new arrow.TimestampMicrosecond('UTC'),
+  new arrow.TimestampNanosecond('UTC')
+])('resident daily chart floors pre-epoch fractional ticks for %s', async type => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const session = new KeplerComputeSession({device, memoryBudgetBytes: 128 * 1024 * 1024});
+  const time = arrow.makeVector(
+    arrow.makeData({
+      type,
+      data: new BigInt64Array([-1n, 0n, 1n]),
+      length: 3
+    })
+  );
+  const source = new arrow.Table({time});
+  const dataset = session.importArrowDataset({
+    id: 'pre-epoch-fractions',
+    table: source.slice(0, 1).concat(source.slice(1))
+  });
+  const explorer = session.openExplorer(dataset.id, {
+    dimensions: [],
+    workingMemoryBudgetBytes: 8 * 1024 * 1024
+  });
+  let reader: ResidentTimeChartRuntime | undefined;
+  try {
+    reader = new ResidentTimeChartRuntime({
+      session,
+      explorer,
+      workingMemoryBudgetBytes: 8 * 1024 * 1024,
+      plan: {
+        kind: 'time',
+        chartId: 'daily-fractions',
+        datasetId: dataset.id,
+        population: 'all',
+        operation: 'count',
+        timeColumn: 'time',
+        interval: 'day',
+        excludedCpuFilterIds: [],
+        excludedGpuFieldNames: []
+      }
+    });
+    const result = await reader.read();
+    expect(result?.periods).toEqual([
+      {label: '1969-12-31', start: -86_400_000, end: 0},
+      {label: '1970-01-01', start: 0, end: 86_400_000}
+    ]);
+    expect(result?.summaries.map(summary => summary.count)).toEqual([1, 2]);
+  } finally {
+    await reader?.destroy();
+    const fence = device.createFence();
+    try {
+      await session.destroy(fence.signaled);
+    } finally {
+      fence.destroy();
+    }
+  }
+});
+
+test.each([
   'millisecond',
   'second'
 ] as const)('UTC calendar GPU charts retain exact %s time, chunks, selected scopes, periods and series', async unit => {

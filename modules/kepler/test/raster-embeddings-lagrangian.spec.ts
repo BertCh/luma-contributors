@@ -11,6 +11,8 @@ import {
   RASTER_EMBEDDING_OPERATIONS
 } from '../src/analysis/raster-embeddings';
 import {createKeplerEmbeddingDemoOptions} from '../src/analysis/catalog-raster-embeddings-bindings';
+import {GPURasterEmbeddingKMeans} from '@luma-contributors/analysis/raster-analysis';
+import {withCatalogGpuSession} from '../src/analysis/catalog-gpu-session';
 import {
   runKeplerLagrangianDiagnostics,
   type KeplerLagrangianField
@@ -21,6 +23,45 @@ async function getDevice() {
   requireTestDevice(device);
   return device;
 }
+
+test('K-means reports the exhausted 32-round budget and Kepler refuses unfinished labels', async () => {
+  const device = await getDevice();
+  const vectors = Float32Array.from({length: 256}, (_, index) => index);
+  for (let index = 0; index < 8; index++) {
+    const value = vectors[index];
+    vectors[index] = vectors[32 * index];
+    vectors[32 * index] = value;
+  }
+  // Evenly spaced rows now seed centres 0..7. Sequential float32 Lloyd rounds still change
+  // ten labels in round 32; this status must prevent the adapter publishing a finished column.
+  await withCatalogGpuSession(device, 'kmeans-exhausted-budget', async session => {
+    const status = session.output('status', 'uint32', 3);
+    session.graph.add(
+      new GPURasterEmbeddingKMeans({
+        pixelCount: 256,
+        dimensions: 1,
+        clusterCount: 8,
+        maximumIterations: 32,
+        vectors: session.input('vectors', vectors, 'float32'),
+        output: {
+          labels: session.output('labels', 'uint32', 256).view,
+          centroids: session.output('centroids', 'float32', 8).view,
+          counts: session.output('counts', 'uint32', 8).view,
+          status: status.view
+        }
+      })
+    );
+    session.run();
+    expect(await session.readUint32(status)).toEqual(Uint32Array.of(32, 10, 0));
+  });
+  await expect(
+    runKeplerRasterEmbedding(
+      device,
+      {width: 256, height: 1, dimensions: 1, vectors},
+      {operation: 'kmeans', clusterCount: 8}
+    )
+  ).rejects.toThrow(/K-means did not converge after 32 iterations \(10 changed labels\)/);
+});
 
 // Independent oracles: direct cosine and softmax/nearest-class definitions, unit-length overview,
 // and analytic linear strain/translation. No CPU contributor is used as its own oracle.
@@ -62,13 +103,13 @@ test('all embedding UI operations dispatch existing contributors and preserve ma
       }
     if (operation === 'nearest-pixels') {
       const scores = result.columns['score'];
-      const ids = result.columns['pixel_id'];
+      const rows = result.columns['pixel_row'];
       for (let query = 0; query < 2; query++)
         for (let rank = 0; rank < 8; rank++) {
           const index = query * 8 + rank;
-          expect(ids[index]).not.toBe(63);
+          expect(rows[index]).not.toBe(63);
           expect(scores[index]).toBeCloseTo(
-            raster.vectors[ids[index] * 4] * (query === 0 ? 1 : -1),
+            raster.vectors[rows[index] * 4] * (query === 0 ? 1 : -1),
             5
           );
           if (rank > 0) expect(scores[index]).toBeLessThanOrEqual(scores[index - 1]);

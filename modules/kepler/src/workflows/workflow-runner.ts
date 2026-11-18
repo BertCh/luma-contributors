@@ -244,6 +244,7 @@ export class WorkflowRunner {
         this.state.lastRun ?? {
           schemaVersion: 1,
           runId: `${this.currentDocument?.id ?? 'workflow'}-${this.sequence}`,
+          executionId: globalThis.crypto.randomUUID(),
           workflowId: this.currentDocument?.id ?? '',
           startedAt: 0,
           durationMilliseconds: 0,
@@ -271,6 +272,7 @@ export class WorkflowRunner {
       record: {
         schemaVersion: 1,
         runId: `${document?.id ?? 'workflow'}-${++this.sequence}`,
+        executionId: globalThis.crypto.randomUUID(),
         workflowId: document?.id ?? '',
         ...(options.target === undefined ? {} : {target: options.target}),
         startedAt: this.now(),

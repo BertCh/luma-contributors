@@ -58,10 +58,12 @@ export async function runPointCloudRaster(
           ),
           groundClass: 1,
           grid,
-          terrain: terrain.view,
-          surface: surface.view,
-          canopy: canopy.view,
-          coverage: coverage.view
+          output: {
+            terrain: terrain.view,
+            surface: surface.view,
+            canopy: canopy.view,
+            coverage: coverage.view
+          }
         })
       );
       session.graph.add(
@@ -69,15 +71,17 @@ export async function runPointCloudRaster(
           positions,
           classifications,
           grid,
-          minimumSurface: terrain.view,
-          coverage: coverage.view,
           radii: parameters['radii'] as readonly number[],
           initialThreshold: Number(parameters['initialThreshold']),
           slope: Number(parameters['slope']),
           maximumThreshold: Number(parameters['maximumThreshold']),
-          groundMask: mask.view,
-          outputClassifications: outputClassifications.view,
-          status: status.view
+          minimumSurface: terrain.view,
+          coverage: coverage.view,
+          output: {
+            groundMask: mask.view,
+            outputClassifications: outputClassifications.view,
+            status: status.view
+          }
         })
       );
       contributors = ['GPUPointCloudSurfaces', 'GPUPointCloudGround'];
@@ -92,10 +96,12 @@ export async function runPointCloudRaster(
           threshold: Number(parameters['threshold']),
           window: Number(parameters['windowCells']) * grid.cellSize,
           cut: 0,
-          groundSurface: terrain.view,
-          groundMask: mask.view,
-          outputClassifications: outputClassifications.view,
-          status: status.view
+          output: {
+            groundSurface: terrain.view,
+            groundMask: mask.view,
+            outputClassifications: outputClassifications.view,
+            status: status.view
+          }
         })
       );
       contributors = ['GPUPointCloudSMRF'];
@@ -105,10 +111,12 @@ export async function runPointCloudRaster(
           positions,
           classifications,
           grid,
-          terrain: terrain.view,
-          surface: surface.view,
-          canopy: canopy.view,
-          coverage: coverage.view
+          output: {
+            terrain: terrain.view,
+            surface: surface.view,
+            canopy: canopy.view,
+            coverage: coverage.view
+          }
         })
       );
       contributors = ['GPUPointCloudSurfaces'];
@@ -123,8 +131,7 @@ export async function runPointCloudRaster(
             ...(parameters['interpolation'] === 'bilinear'
               ? {interpolation: {method: 'bilinear' as const}}
               : {}),
-            heights: heights.view,
-            status: status.view
+            output: {heights: heights.view, status: status.view}
           })
         );
         contributors.push('GPUPointCloudHeight');

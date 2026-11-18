@@ -37,6 +37,13 @@ const record = await runner.run();
 const table = runner.getState().steps[cells.stepId].result?.outputs['voronoi-cells'].table;
 ```
 
+`makeWorkflowComputationRecord(record, registry)` opens a saved run in the computation views.
+Each runner invocation persists a fresh UUID `executionId`, independent of the runner's local
+`runId` sequence. Conversion and JSON reload preserve that execution ID, so independent runners
+cannot exchange sidecars even if their local run IDs match. Legacy saved runs without an execution
+ID retain its absence and have structural identity only. Durations remain runner wall time and do
+not supply GPU timestamps.
+
 ## Status is derived from content keys
 
 `planWorkflow` gives every runnable step a key: a hash of the operation and its version, the normalised parameters, the engine choice (for GPU-capable operations only), the external revision of a source, and the keys of the steps it reads. `WorkflowRunner` keeps results by key. A step is `done` when it holds a result for its current key and `stale` when it holds one for an older key. Consequences:
