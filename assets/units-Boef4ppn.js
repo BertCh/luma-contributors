@@ -1,0 +1,1 @@
+function e(e,t){let n=e*t;return n>=1e3?`${(n/1e3).toFixed(n>=1e4?0:1)} km`:`${Math.round(n/10)*10} m`}function t(e){let t=Math.round(e*144/60);if(t<60)return`${t} min`;let n=t%60;return n?`${Math.floor(t/60)} h ${n} min`:`${t/60} h`}function n(e,t){let n=e*t/144/.514444;return`${n.toFixed(+(n<10))} kn`}export{t as n,n as r,e as t};

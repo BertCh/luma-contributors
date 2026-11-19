@@ -1,0 +1,1 @@
+import{c as e,u as t}from"./model-CeCyfMN-.js";function n(n,r){let{modules:i,defines:a,shaderAssembler:o=new t,...s}=r,c=o.assembleWGSLShader({platformInfo:e(n),source:r.source,modules:i,defines:a,shaderStage:`compute`,computeEntryPoint:r.entryPoint,scanVertexAttributes:!1});return{...s,source:c.source,entryPoint:c.entryPoints?.compute||r.entryPoint}}export{n as t};

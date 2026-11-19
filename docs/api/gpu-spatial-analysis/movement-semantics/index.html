@@ -1,0 +1,428 @@
+<!DOCTYPE html><html lang="en"><head><meta charSet="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/tokens-DUsD-MQQ.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/base-Btcfj7He.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/components-Bq5SRdyd.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/home-BkA-QKrg.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/docs-CWchvtmE.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/index-Do-eHPVA.css" data-precedence="default"/><title>Movement semantics | Gridlight</title><meta name="description" content="Browse GPU spatial analysis operations by data type, use case and domain, each drawn live with luma.gl."/><link rel="modulepreload" href="/luma-contributors/assets/index-DIfTuwM1.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/rolldown-runtime-XKyaHtl9.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/react-DlmbjZJV.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/matchContext-BZe79Vhs.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/link-D9V6xy_k.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/jsx-runtime-LKYXHABd.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/preload-helper-Ehsq8Wa4.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/topics-BYMS4mpg.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/_-jF9EWkQq.js" fetchPriority="low"/><link rel="preconnect" href="https://fonts.googleapis.com"/><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous"/><script>try{var t=localStorage.getItem('gridlight-theme');if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}</script></head><body><header class="site-header"><div class="site-header__inner"><a class="brand-link" aria-label="Gridlight home" href="/luma-contributors/"><svg width="26" height="26" viewBox="0 0 32 32" role="img" aria-label="Gridlight" fill="none"><rect x="2.5" y="2.5" width="27" height="27" rx="5" stroke="currentColor" stroke-opacity="0.45"></rect><path d="M12 3v26M21 3v26M3 12h26M3 21h26" stroke="currentColor" stroke-opacity="0.22"></path><path d="M3 21c4-1 5-6 9-6s5 5 9 3 4-6 8-6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"></path><rect x="12.8" y="3.8" width="7.4" height="7.4" rx="1.5" fill="currentColor" fill-opacity="0.9"></rect><circle cx="24.5" cy="24.5" r="2.4" fill="var(--color-signal)"></circle></svg><span class="brand-link__text">grid<span style="color:var(--color-accent)">light</span></span></a><nav class="site-nav" aria-label="Main"><a href="/luma-contributors/explore">Explore</a><a href="/luma-contributors/how-it-works"><span class="site-nav__long">How it works</span><span class="site-nav__short">How</span></a><a class="active" href="/luma-contributors/docs" data-status="active" aria-current="page">Reference</a><a class="site-nav__github" href="https://github.com/BertCh/luma-contributors">GitHub</a><button type="button" class="theme-toggle" aria-label="Toggle light and dark theme"><svg class="theme-toggle__sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg><svg class="theme-toggle__moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"></path></svg></button></nav></div></header><!--$--><div class="docs-layout"><aside class="docs-sidebar"><ul><li><details open=""><summary>@luma-contributors/analysis</summary><ul><li><a href="/luma-contributors/docs/api">Analysis modules</a></li><li><a href="/luma-contributors/docs/api/operation-forms-and-cpu-twins">Operation forms and CPU twins</a></li><li><a href="/luma-contributors/docs/api/analysis-catalog">Analysis catalog</a></li><li><a href="/luma-contributors/docs/api/reused-analysis-preparation">Source topology and wide numeric profiling</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis-cross-reference">GPU spatial analysis cross-reference</a></li><li><details open=""><summary>Analysis core</summary><ul><li><a href="/luma-contributors/docs/api/analysis-core/fitting-kernels">Shared fitting kernels</a></li></ul></details></li><li><details open=""><summary>Spatial analysis</summary><ul><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis">GPU Spatial Analysis</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/concepts">GPU Spatial Analysis concepts</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/analysis-experience">Analysis experience vocabulary</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/gpu-analysis-contiguity-statistics">GPUAnalysisContiguityStatistics</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/chunked-spatial-weights-transpose">GPUChunkedSpatialWeightsTranspose</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/geodesic-precision">Geodesic precision (CR01)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/instrumental-variables-covariance">Instrumental-variable robust covariance</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/temporal-context">Temporal context</a></li><li><a class="active" href="/luma-contributors/docs/api/gpu-spatial-analysis/movement-semantics" data-status="active" aria-current="page">Movement semantics</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/home-range-and-recursion-mob07">Home ranges and recursion</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/track-similarity-measures">Track similarity: EDR, ERP, SSPD and bounded search</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-statistics">Space-time weights, lagged and differential local Moran, cross-correlation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-clustering">Space-time clustering</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-density-and-k-function">Space-time kernel density, relative risk, K function and Diggle test</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/change-points-and-expectation-based-scan">Change points and the expectation-based scan</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/geographical-detector-redcap-entropy">Geographical detector, REDCAP, spatial entropy and the contiguity-order correlogram</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/colocation-category-dependence-adaptive-density">Colocation quotient, local category dependence and adaptive-bandwidth density</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/healpix-cells-dggs-json">HEALPix cells and DGGS-JSON zone data</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/scoring-rules">Proper scoring rules</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-hawkes">Space-time Hawkes process (STM-08)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/sinkhorn-divergence">Sinkhorn divergence between spatial distributions (STM-09)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/spatial-frames">Spatial frames</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators">GPU Spatial Analysis operators</a></li><li><details open=""><summary>Operator Families</summary><ul><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-weights">GPU Spatial Analysis: Spatial weights</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-statistics">GPU Spatial Analysis: Spatial statistics</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-dynamics">GPU Spatial Analysis: Distribution dynamics &amp; space-time tests</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-accessibility">GPU Spatial Analysis: Accessibility &amp; change of support</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-joins">GPU Spatial Analysis: Spatial joins</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-validity">GPU Spatial Analysis: Geometry validity &amp; intersections</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-density">GPU Spatial Analysis: Density &amp; interpolation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-cells">GPU Spatial Analysis: Cells (DGGS)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-lines">GPU Spatial Analysis: Lines &amp; trajectories</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-geometry">GPU Spatial Analysis: Geometry utilities</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-regression">GPU Spatial Analysis: Regression</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/recipes">GPU Spatial Analysis: Recipes</a></li></ul></details></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/statistical-expansion">Local variability, point patterns and spatial regression extensions</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/quantile-lisa">GPUQuantileLISA</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/gpu-dorling-cartogram">GPUDorlingCartogram</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/rate-mapping">Rate mapping recipes</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/adaptive-generalized-gwr">Adaptive generalized geographically weighted regression</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/panel-fixed-effects">Spatial panel unit fixed effects</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/losh-residual-permutation">Conditional LOSH residual inference</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/expansion-recipes">Geospatial workflow recipes</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/dasymetric-redistribution">Dasymetric redistribution</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/expansion-lenses">Geospatial expansion computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/coverage-expansion">Geospatial coverage expansion</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/global-coordinates">Global coordinates, spherical geometry and S2 analysis</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/interpolation-expansion">Bounded GPU interpolation and simulation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/vecchia-likelihood">Vecchia likelihood (STM-07)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/gaussian-random-field">Gaussian random fields</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/coverage-statistics">Bounded statistical estimation and validation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/spatial-validation-advanced">Spatial fold designs and nested interpolation validation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/point-process">Point process contributors</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/urban-morphology">Urban morphology recipes</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/landscape-ecology">Landscape ecology recipes</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/urban-ecology-lenses">Urban morphology and landscape ecology computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/geometry-refinement-lenses">Geometry refinement computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/interpolation-lenses">Executable interpolation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/movement-coverage">Trajectory estimation, restriction and search</a></li><li><a href="/luma-contributors/docs/api/gpu-geometry-refinement">GPU geometry refinement</a></li></ul></details></li><li><details open=""><summary>Network</summary><ul><li><a href="/luma-contributors/docs/api/gpu-network">GPU Network</a></li><li><a href="/luma-contributors/docs/api/gpu-network/concepts">GPU Network concepts</a></li><li><a href="/luma-contributors/docs/api/gpu-network/operators">GPU Network operators</a></li><li><a href="/luma-contributors/docs/api/gpu-network/louvain">GPUNetworkLouvain</a></li><li><a href="/luma-contributors/docs/api/gpu-network/alternative-routes">Alternative routes</a></li><li><a href="/luma-contributors/docs/api/gpu-network/k-shortest-paths">K-shortest simple paths</a></li><li><a href="/luma-contributors/docs/api/gpu-network/visibility-graph">Visibility graph and network centrality</a></li><li><a href="/luma-contributors/docs/api/gpu-network/flow-models-mob10">Flow models on origin-destination aggregation</a></li><li><a href="/luma-contributors/docs/api/gpu-network/map-matched-edge-volumes-mob05">Edge volumes of map-matched tracks</a></li><li><a href="/luma-contributors/docs/api/gpu-network/network-time-geography-mob09">Network time geography</a></li><li><a href="/luma-contributors/docs/api/gpu-network/expansion">Network structure, routes and spatial topology extensions</a></li><li><a href="/luma-contributors/docs/api/gpu-network/network-movement-coverage">Bounded network optimization and trajectory analysis</a></li><li><a href="/luma-contributors/docs/api/gpu-network/network-movement-benchmarks">Network and movement measurements</a></li><li><a href="/luma-contributors/docs/api/gpu-network/point-process">Network point processes</a></li></ul></details></li><li><details open=""><summary>Terrain</summary><ul><li><a href="/luma-contributors/docs/api/gpu-terrain">GPU Terrain</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/concepts">GPU Terrain concepts</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/operators">GPU Terrain operators</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/height-above-drainage">Height above drainage over D-infinity flow</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/expansion-lenses">Expansion computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/terrain-processing">Terrain processing</a></li></ul></details></li><li><details open=""><summary>Raster analysis</summary><ul><li><a href="/luma-contributors/docs/api/gpu-raster">Raster analysis</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/operations">Raster analysis operations</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/isolines-tiles">GPUIsolines: seam-safe tiles and vector overlays</a></li><li><details open=""><summary>Operation Families</summary><ul><li><a href="/luma-contributors/docs/api/gpu-raster/operations-analysis">GPURaster analysis contributors</a></li></ul></details></li><li><a href="/luma-contributors/docs/api/gpu-raster/expansion">Raster, terrain and geometry expansion</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/contrast-equalization">Raster contrast equalization</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-embedding-codecs">Embedding raster codecs</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-patches">Raster patch metrics and sieving</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/spectral-filter">Spectral raster filtering</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/fill-nodata">Nodata filling</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/tile-reprojection">GPURasterTileReprojection</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/fractional-zonal-distribution">GPURasterFractionalZonalDistribution</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/fractional-categorical-statistics">GPURasterFractionalCategoricalStatistics</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/focal-pairs">Focal cross-band statistics</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/spectral-indices">Calibrated spectral indices</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/expansion-lenses">Expansion computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-time-series">Raster time series</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-change-monitoring">Raster change monitoring</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-eof-analysis">Raster EOF analysis and lagged correlation</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-embeddings">Embedding rasters</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/lagrangian-diagnostics-mob06">Lagrangian diagnostics (time-varying fields, FTLE, connectivity, residence time)</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/remote-sensing">Bounded remote-sensing contributors</a></li></ul></details></li><li><details open=""><summary>Dataframe analysis</summary><ul><li><a href="/luma-contributors/docs/api/gpu-dataframe-analysis">GPU Dataframe analysis contributors</a></li><li><a href="/luma-contributors/docs/api/dataframe-analysis/coregionalization-fit">GPUCoregionalizationFit</a></li><li><a href="/luma-contributors/docs/api/forest-inference">Forest inference</a></li><li><a href="/luma-contributors/docs/api/variable-standardization">GPUVariableStandardization</a></li></ul></details></li><li><details open=""><summary>Geospatial</summary><ul><li><a href="/luma-contributors/docs/api/geospatial">Geospatial analysis</a></li></ul></details></li><li><details open=""><summary>Point cloud analysis</summary><ul><li><a href="/luma-contributors/docs/api/pointcloud-analysis">Point cloud analysis</a></li></ul></details></li><li><details open=""><summary>Computation records and views</summary><ul><li><a href="/luma-contributors/docs/api/computation-record">Computation record</a></li><li><a href="/luma-contributors/docs/api/computation-views">Computation views authoring guide</a></li></ul></details></li></ul></details></li></ul></aside><article class="docs-content"><h1 id="movement-semantics">Movement semantics</h1>
+<p>Staypoints, locations, triplegs and trips, mobility indicators on staypoints, and trajectory
+cleaning. Everything here reads the shared <a href="/luma-contributors/docs/api/gpu-spatial-analysis/concepts"><code>GPUTrajectoryGeometryPort</code></a> layout:
+<code>positions</code> (<code>float32x2</code>), <code>trackOffsets</code> and <code>timestamps</code> (<code>float32</code> relative or <code>uint32x2</code> Int64
+words, with an optional <a href="/luma-contributors/docs/api/gpu-spatial-analysis/temporal-context"><code>temporalContext</code></a>). Durations and the shared gap
+rule, <code>maximumGap</code>, are in the timestamps' unit: a step is a gap only if it is strictly longer than
+the limit, and 0 or absent means no limit.</p>
+<p>The families follow, in order, trackintel (MIT), scikit-mobility 1.3.1 (BSD) and MovingPandas 0.23
+(BSD-3); fixtures from those packages check them. Parameters are per-frame packed float32
+buffers unless a section says otherwise.</p>
+<p>Out of scope (as the 2026-11 spatiotemporal review concluded): exact
+flocks and convoys, TRACLUS, T-LoCoH, and continuous-time movement model fitting (CTMM, OU/OUF).</p>
+<h2 id="staypoints-locations-and-triplegs">Staypoints, locations and triplegs</h2>
+<p>The contributors compose, each reading the columns the previous one writes:</p>
+<pre class="shiki shiki-themes github-light github-dark" style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;--shiki-light-bg:#fff;--shiki-dark-bg:#24292e" tabindex="0"><code><span class="line"><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">parameterBuffer.</span><span style="--shiki-light:#6F42C1;--shiki-dark:#B392F0">write</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">(</span></span>
+<span class="line"><span style="--shiki-light:#6F42C1;--shiki-dark:#B392F0">  getGPUTrajectoryStaypointsParameterValues</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">({</span></span>
+<span class="line"><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">    distanceThreshold: </span><span style="--shiki-light:#005CC5;--shiki-dark:#79B8FF">100</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">,</span></span>
+<span class="line"><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">    timeThreshold: </span><span style="--shiki-light:#005CC5;--shiki-dark:#79B8FF">300_000</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">,</span></span>
+<span class="line"><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">    maximumGap: </span><span style="--shiki-light:#005CC5;--shiki-dark:#79B8FF">900_000</span></span>
+<span class="line"><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">  })</span></span>
+<span class="line"><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">graph.</span><span style="--shiki-light:#6F42C1;--shiki-dark:#B392F0">add</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">(</span></span>
+<span class="line"><span style="--shiki-light:#D73A49;--shiki-dark:#F97583">  new</span><span style="--shiki-light:#6F42C1;--shiki-dark:#B392F0"> GPUTrajectoryStaypoints</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">({</span></span>
+<span class="line"><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">    spatialContext: {coordinateSpace: </span><span style="--shiki-light:#032F62;--shiki-dark:#9ECBFF">'longitude-latitude'</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">, metric: </span><span style="--shiki-light:#032F62;--shiki-dark:#9ECBFF">'great-circle'</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">},</span></span>
+<span class="line"><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">    positions,</span></span>
+<span class="line"><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">    timestamps,</span></span>
+<span class="line"><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">    trackOffsets,</span></span>
+<span class="line"><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">    parameters: parameterBuffer.</span><span style="--shiki-light:#6F42C1;--shiki-dark:#B392F0">importToGraph</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">(graph),</span></span>
+<span class="line"><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">    output: {ids, status: {count, overflow}, startRows, finishRows, centroids, durations, staypointIds}</span></span>
+<span class="line"><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">  })</span></span>
+<span class="line"><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8">);</span></span></code></pre>
+<h3 id="gputrajectorystaypoints"><code>GPUTrajectoryStaypoints</code></h3>
+<p>Detects staypoints with trackintel's <code>sliding</code> rule (Li et al. 2008) in a bounded number of passes:
+every row searches forward independently for its first break (a gap, or a fix at or beyond
+<code>distanceThreshold</code>), at most <code>maximumSearchRows</code> rows ahead; pointer doubling in
+<code>ceil(log2(rowCount))</code> fixed passes then keeps the rows reachable from each track's first row. That
+reproduces the sequential chain exactly as long as no search hits the cap;
+<code>status.candidateOverflow</code> reports when one did.</p>
+<p><code>output.status.overflow</code> reports final staypoint-table capacity only. A capped search can set
+<code>candidateOverflow</code> while all retained staypoints fit and final overflow stays zero. Both words
+are rewritten each submission, so a frame whose searches fit the bound clears candidate loss.</p>
+<p>Compact candidate-status words on trajectory metrics stops and trajectory segments are outputs,
+too. They must be separate from input <code>trackOffsets</code> and the other output words; publication
+must never alter the trajectory used by the next submission.</p>
+<p>Unlike a per-step speed test, one parked stop stays one stop under GPS jitter: the window restarts
+only when a fix leaves <code>distanceThreshold</code> of its anchor. The cost is <code>N * min(maximumSearchRows, L)</code> distance tests for stays of <code>L</code> rows, so 1 Hz data parked for a long time needs a cap of at least
+that many rows, or thinning first.</p>
+<table>
+<thead>
+<tr>
+<th>Prop</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>parameters</code></td>
+<td>Packed <code>getGPUTrajectoryStaypointsParameterValues</code>: distance, time, gap, include-last</td>
+</tr>
+<tr>
+<td><code>maximumSearchRows</code></td>
+<td>Forward search cap per row, compile-time, default 4096</td>
+</tr>
+<tr>
+<td><code>output.ids</code></td>
+<td>Track of each staypoint, ordered by track then time</td>
+</tr>
+<tr>
+<td><code>output.startRows</code>, <code>output.endRows</code>, <code>output.finishRows</code></td>
+<td>First row, exclusive end row and the row whose time is <code>finished_at</code></td>
+</tr>
+<tr>
+<td><code>output.centroids</code></td>
+<td>Mean of the staypoint's distinct coordinates (trackintel <code>union_all</code>)</td>
+</tr>
+<tr>
+<td><code>output.durations</code></td>
+<td><code>finished_at - started_at</code></td>
+</tr>
+<tr>
+<td><code>output.staypointIds</code></td>
+<td>Per-row <code>staypoint_id</code>, <code>0xffffffff</code> outside staypoints</td>
+</tr>
+</tbody>
+</table>
+<p>{/* lens:GPUTrajectoryStaypoints */}</p>
+<p>{/* parameters: GPUTrajectoryStaypoints generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h4 id="gputrajectorystaypoints-parameters"><code>GPUTrajectoryStaypoints</code> parameters</h4>
+<ul>
+<li>Packer: <code>getGPUTrajectoryStaypointsParameterValues(settings)</code>, writes <code>GPU_TRAJECTORY_STAYPOINTS_PARAMETER_LENGTH</code> (4) <code>float32</code> values.</li>
+</ul>
+<p>Settings of <code>getGPUTrajectoryStaypointsParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>spatialContext</code> (optional)</td>
+<td><code>GPUSpatialContext</code></td>
+<td>Spatial context of the positions, for the short-distance warning only.</td>
+</tr>
+<tr>
+<td><code>distanceThreshold</code></td>
+<td><code>number</code></td>
+<td>Distance at or beyond which a fix leaves the current staypoint (trackintel <code>dist_threshold</code>), in position units, or the context length unit for great-circle. Finite and positive.</td>
+</tr>
+<tr>
+<td><code>timeThreshold</code></td>
+<td><code>number</code></td>
+<td>Smallest staypoint duration (<code>finished - started</code>, trackintel <code>time_threshold</code>) in the timestamps' unit. Finite and non-negative.</td>
+</tr>
+<tr>
+<td><code>maximumGap</code> (optional)</td>
+<td><code>number</code></td>
+<td>Shared gap rule (<code>GPUTrajectoryGeometryPort</code>): a step is a gap only when strictly longer than this limit, in the timestamps' unit; 0 or absent means no limit. A gap restarts the search at the fix after it without emitting a staypoint (trackintel <code>gap_threshold</code>).</td>
+</tr>
+<tr>
+<td><code>includeLast</code> (optional)</td>
+<td><code>boolean</code></td>
+<td>Emit a staypoint for the window still open at the end of a track (trackintel <code>include_last</code>).</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p>
+<h3 id="gputrajectorylocations"><code>GPUTrajectoryLocations</code></h3>
+<p>Staypoint locations per track with trackintel's <code>generate_locations</code> (<code>dbscan</code>, <code>num_samples=1</code>,
+<code>agg_level='user'</code>): the connected components of staypoints of one track within <code>epsilon</code>
+(inclusive), labelled by bounded min-label hooking with path compression (<code>maximumIterations</code>
+rounds, <code>status.converged</code>). Locations are numbered by first visit within a track, tracks in order.
+Dataset-level locations and <code>num_samples > 1</code> are <code>GPUSpatialClustering</code> jobs; the convex-hull
+<code>extent</code> is not produced.</p>
+<p>{/* lens:GPUTrajectoryLocations */}</p>
+<p>{/* parameters: GPUTrajectoryLocations generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h4 id="gputrajectorylocations-parameters"><code>GPUTrajectoryLocations</code> parameters</h4>
+<ul>
+<li>Packer: <code>getGPUTrajectoryLocationsParameterValues(settings)</code>, writes <code>GPU_TRAJECTORY_LOCATIONS_PARAMETER_LENGTH</code> (4) <code>float32</code> values.</li>
+</ul>
+<p>Settings of <code>getGPUTrajectoryLocationsParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>spatialContext</code> (optional)</td>
+<td><code>GPUSpatialContext</code></td>
+<td>Spatial context of the positions, for the short-distance warning only.</td>
+</tr>
+<tr>
+<td><code>epsilon</code></td>
+<td><code>number</code></td>
+<td>Clustering radius (trackintel <code>epsilon</code>, inclusive), in position or context length units.</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p>
+<h3 id="gputrajectorysegments"><code>GPUTrajectorySegments</code></h3>
+<p>Triplegs (<code>between_staypoints</code>) and trips (<code>generate_trips</code>) from the per-row staypoint IDs and the
+staypoint table. A tripleg is a maximal run of rows outside every staypoint, broken at a gap, with
+at least two rows that are not all the same coordinate. A trip aggregates triplegs and non-activity
+staypoints between activities (staypoints strictly longer than <code>activityMinimumDuration</code>), breaks at
+a gap between events, and starts at the last activity of an activity run. Origin and destination
+staypoints are the activities directly around a trip, unknown across a gap or at a track end, as
+<code>origin_staypoint_id</code> and <code>destination_staypoint_id</code> are in trackintel. <code>triplegTripIds</code> is the
+<code>trip_id</code> of each tripleg. The <code>overlap_staypoints</code> method is not implemented.</p>
+<p>Supply available staypoint <code>status.overflow</code> and <code>status.candidateOverflow</code> beside <code>status.count</code>.
+Their loss is propagated into <code>triplegs.status.candidateOverflow</code> and <code>trips.status.candidateOverflow</code>.
+Trips consume only the stored tripleg prefix, so tripleg capacity loss also sets trip candidate
+overflow. Each table's <code>status.overflow</code> still means only that table's final output capacity was
+exceeded. A trip count/required count derived from an incomplete input describes the partial result;
+the candidate flag must be checked before treating it as a complete trip table.
+Trip construction requires a caller-visible <code>trips.status.candidateOverflow</code> destination. Supplying
+either staypoint loss input also requires <code>triplegs.status.candidateOverflow</code>. Both operation forms
+and the direct contributor reject omitted destinations at construction; private scratch never
+substitutes for a public loss diagnostic.</p>
+<p>Pass both tripleg <code>overflow</code> and <code>candidateOverflow</code> to modal split and tracking quality. If either
+supplied flag is nonzero, modal split suppresses every aggregate to NaN and every predicted mode to
+<code>0xffffffff</code>; tracking quality suppresses every track's value to NaN. The flags describe whole-table
+loss, so these consumers cannot identify unaffected tracks. Omitting both flags asserts that the
+input table is complete. Complete empty tracks still produce zero. Website views hide incomplete
+modal bars/classes and label tracking quality unavailable; Kepler exports unavailable numeric values
+as null. Never interpret NaN or the missing-mode sentinel as a count or a speed class.</p>
+<p>The thinning and staypoint CPU twins honor an explicit <code>maximumSearchRows</code>, including the GPU's
+anchor jumps/window splits and candidate-overflow flag. Omitted CPU search budgets remain uncapped.
+Thinning count and candidate-overflow words have separate writers, so adjacent non-overlapping
+scalar subviews of one status allocation are supported.</p>
+<p>{/* lens:GPUTrajectorySegments */}</p>
+<p>{/* parameters: GPUTrajectorySegments generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h4 id="gputrajectorysegments-parameters"><code>GPUTrajectorySegments</code> parameters</h4>
+<ul>
+<li>Packer: <code>getGPUTrajectorySegmentsParameterValues(settings)</code>, writes <code>GPU_TRAJECTORY_SEGMENTS_PARAMETER_LENGTH</code> (4) <code>float32</code> values.</li>
+</ul>
+<p>Settings of <code>getGPUTrajectorySegmentsParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>maximumGap</code> (optional)</td>
+<td><code>number</code></td>
+<td>Shared gap rule (<code>GPUTrajectoryGeometryPort</code>): a step strictly longer than this limit breaks a tripleg and a trip (trackintel <code>gap_threshold</code>); 0 or absent means no limit.</td>
+</tr>
+<tr>
+<td><code>activityMinimumDuration</code></td>
+<td><code>number</code></td>
+<td>A staypoint is an activity when its duration is strictly longer than this, in the timestamps' unit (trackintel <code>create_activity_flag</code>). Finite and non-negative.</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p>
+<h2 id="mobility-indicators">Mobility indicators</h2>
+<h3 id="gpumobilityindicators"><code>GPUMobilityIndicators</code></h3>
+<p>Per-track indicators on the staypoint table (and, for tracking quality, the tripleg table),
+following scikit-mobility 1.3.1 <code>individual</code> measures and trackintel:</p>
+<table>
+<thead>
+<tr>
+<th>Output</th>
+<th>Definition</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>radiusOfGyration</code></td>
+<td>RMS haversine distance of the staypoints from their arithmetic mean position</td>
+</tr>
+<tr>
+<td><code>jumpLengths</code></td>
+<td>Distance between consecutive staypoints (0 for a track's first)</td>
+</tr>
+<tr>
+<td><code>waitingTimes</code></td>
+<td>Difference between consecutive staypoint start times</td>
+</tr>
+<tr>
+<td><code>randomEntropy</code></td>
+<td><code>log2(distinct locations)</code></td>
+</tr>
+<tr>
+<td><code>uncorrelatedEntropy</code></td>
+<td>Shannon entropy in bits of location shares</td>
+</tr>
+<tr>
+<td><code>realEntropy</code></td>
+<td>Lempel-Ziv estimator of the location sequence, <code>n * log2(n) / sum(lambda)</code> as in scikit-mobility</td>
+</tr>
+<tr>
+<td><code>homeLocations</code>, <code>workLocations</code></td>
+<td>Locations with the longest and second longest summed duration (trackintel FREQ, no pre-filter)</td>
+</tr>
+<tr>
+<td><code>trackingQuality</code></td>
+<td>Sum of positive durations over staypoints and triplegs, divided by the extent from first start to last finish (trackintel <code>temporal_tracking_quality</code>, granularity <code>all</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>Location statistics are <code>O(m^2)</code> per track and real entropy <code>O(m^3)</code> in the worst case for <code>m</code>
+staypoints; <code>maximumEntropySequenceRows</code> bounds the last and reports <code>status.candidateOverflow</code>.
+Pass available staypoint <code>status.overflow</code> and <code>status.candidateOverflow</code> alongside <code>status.count</code>,
+including when the table comes directly from <code>GPUTrajectoryStaypoints</code>. Either nonzero input
+suppresses every numeric indicator to NaN and both location outputs to <code>0xffffffff</code>, across all
+tracks and all capacity rows. The optional output <code>status.candidateOverflow</code> is the OR of supplied
+staypoint loss and entropy sequence loss; it resets on each frame, including when real entropy is
+not requested. Suppression remains observable when that optional status destination is omitted.
+The CPU function takes the same loss arrays beside <code>staypoints.count</code>. Omitting both loss inputs
+asserts completeness. Website views hide these indicators and label them unavailable for incomplete
+staypoints; Kepler exports missing numeric and location values as null.</p>
+<p>{/* lens:GPUMobilityIndicators */}</p>
+<h3 id="gpumodalsplit"><code>GPUModalSplit</code></h3>
+<p>Per-(track, mode) accumulation of tripleg count, distance or duration (trackintel
+<code>calculate_modal_split</code>). Modes come from <code>modes</code>, or are predicted from average tripleg speed when
+<code>modeSpeedBreaks</code> is given (trackintel <code>simple-coarse</code>, left-closed classes, for example
+<code>[15 / 3.6, 100 / 3.6, Infinity]</code> in metres per second). The last class has no upper bound, so a
+speed at or above a finite last break stays in the last class. A tripleg with no speed (no time
+between its first and last row, or a non-finite length) gets the missing key <code>0xffffffff</code> in
+<code>output.predictedModes</code> and is left out of the split; the same key in a caller's <code>modes</code> is left
+out too.</p>
+<p>{/* lens:GPUModalSplit */}</p>
+<h2 id="cleaning">Cleaning</h2>
+<h3 id="gputrajectoryoutlierflags"><code>GPUTrajectoryOutlierFlags</code></h3>
+<p>Point-centred speed and acceleration flags. The speed bit flags a fix when both adjacent steps fail,
+so the valid fix after a spike is not. The acceleration bit flags a fix when the step speed rises by
+more than the limit into it and falls by more than the limit after the step out of it (the two
+accelerations on either side of the two fast steps; the one between them is near zero), so a
+sustained jump flags no row. At a track end the missing side is waived. A single pass; two
+consecutive displaced fixes are not caught (the step between them is slow), unlike
+<code>movingpandas.OutlierCleaner</code>, which compares each fix to the last kept one. <code>addTrackQualityRecipe</code> applies the same rule with <code>speedOutlierMode: 'point-centred'</code>;
+its default remains <code>'step'</code>.</p>
+<p>{/* lens:GPUTrajectoryOutlierFlags */}</p>
+<p>{/* parameters: GPUTrajectoryOutlierFlags generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h4 id="gputrajectoryoutlierflags-parameters"><code>GPUTrajectoryOutlierFlags</code> parameters</h4>
+<ul>
+<li>Packer: <code>getGPUTrajectoryOutlierFlagsParameterValues(settings)</code>, writes <code>GPU_TRAJECTORY_OUTLIER_FLAGS_PARAMETER_LENGTH</code> (4) <code>float32</code> values.</li>
+</ul>
+<p>Settings of <code>getGPUTrajectoryOutlierFlagsParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>maximumSpeed</code></td>
+<td><code>number</code></td>
+<td>Speed limit, length unit per timestamp unit. Finite and non-negative; 0 disables the test.</td>
+</tr>
+<tr>
+<td><code>maximumAcceleration</code> (optional)</td>
+<td><code>number</code></td>
+<td>Acceleration limit, length per timestamp unit squared. 0 disables the test.</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p>
+<h3 id="gputrajectoryhampel"><code>GPUTrajectoryHampel</code></h3>
+<p>Hampel filter per track (the <code>hampel</code> package used by PTRAIL): a value is an outlier when
+<code>|value - median| > numberOfSigmas * 1.4826 * MAD</code> over a window centred on it; outliers become the
+window median, and rows within half a window of a track end pass through unchanged. Compile-time
+<code>windowSize</code>, at most 129.</p>
+<p>{/* lens:GPUTrajectoryHampel */}</p>
+<p>{/* parameters: GPUTrajectoryHampel generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h4 id="gputrajectoryhampel-parameters"><code>GPUTrajectoryHampel</code> parameters</h4>
+<ul>
+<li>Packer: <code>getGPUTrajectoryHampelParameterValues(settings)</code>, writes <code>GPU_TRAJECTORY_HAMPEL_PARAMETER_LENGTH</code> (4) <code>float32</code> values.</li>
+</ul>
+<p>Settings of <code>getGPUTrajectoryHampelParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>numberOfSigmas</code></td>
+<td><code>number</code></td>
+<td>Number of scaled median absolute deviations above which a value is an outlier.</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p>
+<h3 id="gputrajectorysplit"><code>GPUTrajectorySplit</code></h3>
+<p>Splits tracks and rewrites offsets: <code>'gap'</code> (MovingPandas <code>ObservationGapSplitter</code>), <code>'stop'</code>
+(maximal runs of rows outside every staypoint, the trackintel tripleg rule: the rows of a staypoint
+are in no segment, unlike the MovingPandas <code>StopSplitter</code>, which keeps the boundary fixes of each
+stop), and <code>'value-change'</code> (MovingPandas <code>ValueChangeSplitter</code>, where each segment but the last
+repeats the first row of the next segment, so <code>rowIds</code> can reference a row twice). Segments need at
+least two rows. The output is <code>segmentOffsets</code>, <code>segmentTracks</code> and <code>rowIds</code>
+with optional copied <code>positions</code> and <code>timestamps</code>, so a split feeds the next contributor without
+readback.</p>
+<p>{/* lens:GPUTrajectorySplit */}</p>
+<p>{/* parameters: GPUTrajectorySplit generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h4 id="gputrajectorysplit-parameters"><code>GPUTrajectorySplit</code> parameters</h4>
+<ul>
+<li>Packer: <code>getGPUTrajectorySplitParameterValues(settings)</code>, writes <code>GPU_TRAJECTORY_SPLIT_PARAMETER_LENGTH</code> (4) <code>float32</code> values.</li>
+</ul>
+<p>Settings of <code>getGPUTrajectorySplitParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>maximumGap</code></td>
+<td><code>number</code></td>
+<td>Mode <code>'gap'</code>: the shared gap rule; a step strictly longer than this splits. 0 means no limit.</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p>
+<h3 id="gputrajectorythinning"><code>GPUTrajectoryThinning</code></h3>
+<p>Minimum-distance and minimum-time generalization (<code>MinDistanceGeneralizer</code>,
+<code>MinTimeDeltaGeneralizer</code>): the first and last row of a track are kept, and each kept row is followed
+by the first later row at or beyond the tolerance. As with staypoints, the sequential rule is a
+bounded forward search (<code>maximumSearchRows</code>, <code>status.candidateOverflow</code>) plus pointer doubling.</p>
+<p>{/* lens:GPUTrajectoryThinning */}</p>
+<p>{/* parameters: GPUTrajectoryThinning generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h4 id="gputrajectorythinning-parameters"><code>GPUTrajectoryThinning</code> parameters</h4>
+<ul>
+<li>Packer: <code>getGPUTrajectoryThinningParameterValues(settings)</code>, writes <code>GPU_TRAJECTORY_THINNING_PARAMETER_LENGTH</code> (4) <code>float32</code> values.</li>
+</ul>
+<p>Settings of <code>getGPUTrajectoryThinningParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tolerance</code></td>
+<td><code>number</code></td>
+<td>Minimum distance (context length unit) or time (timestamps' unit) between consecutive kept rows.</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p>
+<h3 id="gputrajectorytrackrelativetimes"><code>GPUTrajectoryTrackRelativeTimes</code></h3>
+<p>Int64 word timestamps to float32 ticks after each track's first row, exact while the track spans
+fewer than 2^24 ticks. Use its output as the float32 time column of the time-aware simplification
+(<code>GPULineSimplification</code>, <code>metric: 'time-ratio'</code>) to run TD-TR on word timestamps, and of any other
+float32 trajectory path.</p>
+<p>{/* lens:GPUTrajectoryTrackRelativeTimes */}</p></article></div><script>(function(a,f){let l;try{l=JSON.parse(sessionStorage.getItem(a)||"{}")}catch{return}const n=l?.[f||history.state?.__TSR_key];let c=!1;for(const t in n){const e=n[t],o=e?.scrollX,s=e?.scrollY;if(Number.isFinite(o)&&Number.isFinite(s)){if(t==="window")scrollTo(o,s),c=!0;else if(t)try{const r=document.querySelector(t);r&&(r.scrollLeft=o,r.scrollTop=s)}catch{}}}if(c)return;const i=location.hash.slice(1);if(i){const t=history.state?.__hashScrollIntoViewOptions??!0;if(t){const e=document.getElementById(i);e&&e.scrollIntoView(t)}return}scrollTo(0,0)})("tsr-scroll-restoration-v1_3");document.currentScript.remove()</script><!--/$--><footer class="site-footer"><div class="site-footer__inner"><span>Gridlight · GPU geospatial analysis on luma.gl. Code licensed under MIT.</span><nav class="site-footer__links" aria-label="Footer"><a href="/luma-contributors/explore">Explore</a><a href="/luma-contributors/how-it-works">How it works</a><a href="/luma-contributors/demo-data">Demo data</a><a class="active" href="/luma-contributors/docs" data-status="active" aria-current="page">Reference</a><a href="https://github.com/BertCh/luma-contributors">GitHub</a><a href="https://luma.gl">luma.gl</a></nav></div></footer><script data-tsr-stream-part="">(self.$R=self.$R||{})["tsr"]=[];self.$_TSR={h(){this.hydrated=!0,this.c()},e(){this.streamEnded=!0,this.c()},c(){this.hydrated&&this.streamEnded&&(delete self.$_TSR,delete self.$R.tsr)},p(e){this.initialized?e():this.buffer.push(e)},buffer:[]}</script><script data-tsr-stream-part="">$_TSR.router=($R=>$R[0]={manifest:$R[1]={routes:$R[2]={__root__:$R[3]={preloads:$R[4]=["/luma-contributors/assets/index-DIfTuwM1.js","/luma-contributors/assets/rolldown-runtime-XKyaHtl9.js","/luma-contributors/assets/react-DlmbjZJV.js","/luma-contributors/assets/matchContext-BZe79Vhs.js","/luma-contributors/assets/link-D9V6xy_k.js","/luma-contributors/assets/jsx-runtime-LKYXHABd.js","/luma-contributors/assets/preload-helper-Ehsq8Wa4.js","/luma-contributors/assets/topics-BYMS4mpg.js"],scripts:$R[5]=[$R[6]={attrs:$R[7]={type:"module",async:!0,src:"/luma-contributors/assets/index-DIfTuwM1.js"}}],css:$R[8]=["/luma-contributors/assets/index-Do-eHPVA.css"]},"/docs/$":$R[9]={preloads:$R[10]=["/luma-contributors/assets/_-jF9EWkQq.js"]}}},matches:$R[11]=[$R[12]={i:"__root__#",u:1795048386354,s:"success",ssr:!0},$R[13]={i:"#docs#$#docs#api#gpu-spatial-analysis#movement-semantics",u:1795048386355,s:"success",l:$R[14]={slug:"api/gpu-spatial-analysis/movement-semantics",title:"Movement semantics",html:"\x3Ch1 id=\"movement-semantics\">Movement semantics\x3C/h1>\n\x3Cp>Staypoints, locations, triplegs and trips, mobility indicators on staypoints, and trajectory\ncleaning. Everything here reads the shared \x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/concepts\">\x3Ccode>GPUTrajectoryGeometryPort\x3C/code>\x3C/a> layout:\n\x3Ccode>positions\x3C/code> (\x3Ccode>float32x2\x3C/code>), \x3Ccode>trackOffsets\x3C/code> and \x3Ccode>timestamps\x3C/code> (\x3Ccode>float32\x3C/code> relative or \x3Ccode>uint32x2\x3C/code> Int64\nwords, with an optional \x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/temporal-context\">\x3Ccode>temporalContext\x3C/code>\x3C/a>). Durations and the shared gap\nrule, \x3Ccode>maximumGap\x3C/code>, are in the timestamps' unit: a step is a gap only if it is strictly longer than\nthe limit, and 0 or absent means no limit.\x3C/p>\n\x3Cp>The families follow, in order, trackintel (MIT), scikit-mobility 1.3.1 (BSD) and MovingPandas 0.23\n(BSD-3); fixtures from those packages check them. Parameters are per-frame packed float32\nbuffers unless a section says otherwise.\x3C/p>\n\x3Cp>Out of scope (as the 2026-11 spatiotemporal review concluded): exact\nflocks and convoys, TRACLUS, T-LoCoH, and continuous-time movement model fitting (CTMM, OU/OUF).\x3C/p>\n\x3Ch2 id=\"staypoints-locations-and-triplegs\">Staypoints, locations and triplegs\x3C/h2>\n\x3Cp>The contributors compose, each reading the columns the previous one writes:\x3C/p>\n\x3Cpre class=\"shiki shiki-themes github-light github-dark\" style=\"--shiki-light:#24292e;--shiki-dark:#e1e4e8;--shiki-light-bg:#fff;--shiki-dark-bg:#24292e\" tabindex=\"0\">\x3Ccode>\x3Cspan class=\"line\">\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">parameterBuffer.\x3C/span>\x3Cspan style=\"--shiki-light:#6F42C1;--shiki-dark:#B392F0\">write\x3C/span>\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">(\x3C/span>\x3C/span>\n\x3Cspan class=\"line\">\x3Cspan style=\"--shiki-light:#6F42C1;--shiki-dark:#B392F0\">  getGPUTrajectoryStaypointsParameterValues\x3C/span>\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">({\x3C/span>\x3C/span>\n\x3Cspan class=\"line\">\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">    distanceThreshold: \x3C/span>\x3Cspan style=\"--shiki-light:#005CC5;--shiki-dark:#79B8FF\">100\x3C/span>\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">,\x3C/span>\x3C/span>\n\x3Cspan class=\"line\">\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">    timeThreshold: \x3C/span>\x3Cspan style=\"--shiki-light:#005CC5;--shiki-dark:#79B8FF\">300_000\x3C/span>\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">,\x3C/span>\x3C/span>\n\x3Cspan class=\"line\">\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">    maximumGap: \x3C/span>\x3Cspan style=\"--shiki-light:#005CC5;--shiki-dark:#79B8FF\">900_000\x3C/span>\x3C/span>\n\x3Cspan class=\"line\">\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">  })\x3C/span>\x3C/span>\n\x3Cspan class=\"line\">\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">);\x3C/span>\x3C/span>\n\x3Cspan class=\"line\">\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">graph.\x3C/span>\x3Cspan style=\"--shiki-light:#6F42C1;--shiki-dark:#B392F0\">add\x3C/span>\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">(\x3C/span>\x3C/span>\n\x3Cspan class=\"line\">\x3Cspan style=\"--shiki-light:#D73A49;--shiki-dark:#F97583\">  new\x3C/span>\x3Cspan style=\"--shiki-light:#6F42C1;--shiki-dark:#B392F0\"> GPUTrajectoryStaypoints\x3C/span>\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">({\x3C/span>\x3C/span>\n\x3Cspan class=\"line\">\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">    spatialContext: {coordinateSpace: \x3C/span>\x3Cspan style=\"--shiki-light:#032F62;--shiki-dark:#9ECBFF\">'longitude-latitude'\x3C/span>\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">, metric: \x3C/span>\x3Cspan style=\"--shiki-light:#032F62;--shiki-dark:#9ECBFF\">'great-circle'\x3C/span>\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">},\x3C/span>\x3C/span>\n\x3Cspan class=\"line\">\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">    positions,\x3C/span>\x3C/span>\n\x3Cspan class=\"line\">\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">    timestamps,\x3C/span>\x3C/span>\n\x3Cspan class=\"line\">\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">    trackOffsets,\x3C/span>\x3C/span>\n\x3Cspan class=\"line\">\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">    parameters: parameterBuffer.\x3C/span>\x3Cspan style=\"--shiki-light:#6F42C1;--shiki-dark:#B392F0\">importToGraph\x3C/span>\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">(graph),\x3C/span>\x3C/span>\n\x3Cspan class=\"line\">\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">    output: {ids, status: {count, overflow}, startRows, finishRows, centroids, durations, staypointIds}\x3C/span>\x3C/span>\n\x3Cspan class=\"line\">\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">  })\x3C/span>\x3C/span>\n\x3Cspan class=\"line\">\x3Cspan style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">);\x3C/span>\x3C/span>\x3C/code>\x3C/pre>\n\x3Ch3 id=\"gputrajectorystaypoints\">\x3Ccode>GPUTrajectoryStaypoints\x3C/code>\x3C/h3>\n\x3Cp>Detects staypoints with trackintel's \x3Ccode>sliding\x3C/code> rule (Li et al. 2008) in a bounded number of passes:\nevery row searches forward independently for its first break (a gap, or a fix at or beyond\n\x3Ccode>distanceThreshold\x3C/code>), at most \x3Ccode>maximumSearchRows\x3C/code> rows ahead; pointer doubling in\n\x3Ccode>ceil(log2(rowCount))\x3C/code> fixed passes then keeps the rows reachable from each track's first row. That\nreproduces the sequential chain exactly as long as no search hits the cap;\n\x3Ccode>status.candidateOverflow\x3C/code> reports when one did.\x3C/p>\n\x3Cp>\x3Ccode>output.status.overflow\x3C/code> reports final staypoint-table capacity only. A capped search can set\n\x3Ccode>candidateOverflow\x3C/code> while all retained staypoints fit and final overflow stays zero. Both words\nare rewritten each submission, so a frame whose searches fit the bound clears candidate loss.\x3C/p>\n\x3Cp>Compact candidate-status words on trajectory metrics stops and trajectory segments are outputs,\ntoo. They must be separate from input \x3Ccode>trackOffsets\x3C/code> and the other output words; publication\nmust never alter the trajectory used by the next submission.\x3C/p>\n\x3Cp>Unlike a per-step speed test, one parked stop stays one stop under GPS jitter: the window restarts\nonly when a fix leaves \x3Ccode>distanceThreshold\x3C/code> of its anchor. The cost is \x3Ccode>N * min(maximumSearchRows, L)\x3C/code> distance tests for stays of \x3Ccode>L\x3C/code> rows, so 1 Hz data parked for a long time needs a cap of at least\nthat many rows, or thinning first.\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Prop\x3C/th>\n\x3Cth>Meaning\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>parameters\x3C/code>\x3C/td>\n\x3Ctd>Packed \x3Ccode>getGPUTrajectoryStaypointsParameterValues\x3C/code>: distance, time, gap, include-last\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>maximumSearchRows\x3C/code>\x3C/td>\n\x3Ctd>Forward search cap per row, compile-time, default 4096\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>output.ids\x3C/code>\x3C/td>\n\x3Ctd>Track of each staypoint, ordered by track then time\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>output.startRows\x3C/code>, \x3Ccode>output.endRows\x3C/code>, \x3Ccode>output.finishRows\x3C/code>\x3C/td>\n\x3Ctd>First row, exclusive end row and the row whose time is \x3Ccode>finished_at\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>output.centroids\x3C/code>\x3C/td>\n\x3Ctd>Mean of the staypoint's distinct coordinates (trackintel \x3Ccode>union_all\x3C/code>)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>output.durations\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>finished_at - started_at\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>output.staypointIds\x3C/code>\x3C/td>\n\x3Ctd>Per-row \x3Ccode>staypoint_id\x3C/code>, \x3Ccode>0xffffffff\x3C/code> outside staypoints\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* lens:GPUTrajectoryStaypoints */}\x3C/p>\n\x3Cp>{/* parameters: GPUTrajectoryStaypoints generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch4 id=\"gputrajectorystaypoints-parameters\">\x3Ccode>GPUTrajectoryStaypoints\x3C/code> parameters\x3C/h4>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPUTrajectoryStaypointsParameterValues(settings)\x3C/code>, writes \x3Ccode>GPU_TRAJECTORY_STAYPOINTS_PARAMETER_LENGTH\x3C/code> (4) \x3Ccode>float32\x3C/code> values.\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPUTrajectoryStaypointsParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>spatialContext\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialContext\x3C/code>\x3C/td>\n\x3Ctd>Spatial context of the positions, for the short-distance warning only.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>distanceThreshold\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Distance at or beyond which a fix leaves the current staypoint (trackintel \x3Ccode>dist_threshold\x3C/code>), in position units, or the context length unit for great-circle. Finite and positive.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>timeThreshold\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Smallest staypoint duration (\x3Ccode>finished - started\x3C/code>, trackintel \x3Ccode>time_threshold\x3C/code>) in the timestamps' unit. Finite and non-negative.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>maximumGap\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Shared gap rule (\x3Ccode>GPUTrajectoryGeometryPort\x3C/code>): a step is a gap only when strictly longer than this limit, in the timestamps' unit; 0 or absent means no limit. A gap restarts the search at the fix after it without emitting a staypoint (trackintel \x3Ccode>gap_threshold\x3C/code>).\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>includeLast\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>boolean\x3C/code>\x3C/td>\n\x3Ctd>Emit a staypoint for the window still open at the end of a track (trackintel \x3Ccode>include_last\x3C/code>).\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>\n\x3Ch3 id=\"gputrajectorylocations\">\x3Ccode>GPUTrajectoryLocations\x3C/code>\x3C/h3>\n\x3Cp>Staypoint locations per track with trackintel's \x3Ccode>generate_locations\x3C/code> (\x3Ccode>dbscan\x3C/code>, \x3Ccode>num_samples=1\x3C/code>,\n\x3Ccode>agg_level='user'\x3C/code>): the connected components of staypoints of one track within \x3Ccode>epsilon\x3C/code>\n(inclusive), labelled by bounded min-label hooking with path compression (\x3Ccode>maximumIterations\x3C/code>\nrounds, \x3Ccode>status.converged\x3C/code>). Locations are numbered by first visit within a track, tracks in order.\nDataset-level locations and \x3Ccode>num_samples > 1\x3C/code> are \x3Ccode>GPUSpatialClustering\x3C/code> jobs; the convex-hull\n\x3Ccode>extent\x3C/code> is not produced.\x3C/p>\n\x3Cp>{/* lens:GPUTrajectoryLocations */}\x3C/p>\n\x3Cp>{/* parameters: GPUTrajectoryLocations generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch4 id=\"gputrajectorylocations-parameters\">\x3Ccode>GPUTrajectoryLocations\x3C/code> parameters\x3C/h4>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPUTrajectoryLocationsParameterValues(settings)\x3C/code>, writes \x3Ccode>GPU_TRAJECTORY_LOCATIONS_PARAMETER_LENGTH\x3C/code> (4) \x3Ccode>float32\x3C/code> values.\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPUTrajectoryLocationsParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>spatialContext\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialContext\x3C/code>\x3C/td>\n\x3Ctd>Spatial context of the positions, for the short-distance warning only.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>epsilon\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Clustering radius (trackintel \x3Ccode>epsilon\x3C/code>, inclusive), in position or context length units.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>\n\x3Ch3 id=\"gputrajectorysegments\">\x3Ccode>GPUTrajectorySegments\x3C/code>\x3C/h3>\n\x3Cp>Triplegs (\x3Ccode>between_staypoints\x3C/code>) and trips (\x3Ccode>generate_trips\x3C/code>) from the per-row staypoint IDs and the\nstaypoint table. A tripleg is a maximal run of rows outside every staypoint, broken at a gap, with\nat least two rows that are not all the same coordinate. A trip aggregates triplegs and non-activity\nstaypoints between activities (staypoints strictly longer than \x3Ccode>activityMinimumDuration\x3C/code>), breaks at\na gap between events, and starts at the last activity of an activity run. Origin and destination\nstaypoints are the activities directly around a trip, unknown across a gap or at a track end, as\n\x3Ccode>origin_staypoint_id\x3C/code> and \x3Ccode>destination_staypoint_id\x3C/code> are in trackintel. \x3Ccode>triplegTripIds\x3C/code> is the\n\x3Ccode>trip_id\x3C/code> of each tripleg. The \x3Ccode>overlap_staypoints\x3C/code> method is not implemented.\x3C/p>\n\x3Cp>Supply available staypoint \x3Ccode>status.overflow\x3C/code> and \x3Ccode>status.candidateOverflow\x3C/code> beside \x3Ccode>status.count\x3C/code>.\nTheir loss is propagated into \x3Ccode>triplegs.status.candidateOverflow\x3C/code> and \x3Ccode>trips.status.candidateOverflow\x3C/code>.\nTrips consume only the stored tripleg prefix, so tripleg capacity loss also sets trip candidate\noverflow. Each table's \x3Ccode>status.overflow\x3C/code> still means only that table's final output capacity was\nexceeded. A trip count/required count derived from an incomplete input describes the partial result;\nthe candidate flag must be checked before treating it as a complete trip table.\nTrip construction requires a caller-visible \x3Ccode>trips.status.candidateOverflow\x3C/code> destination. Supplying\neither staypoint loss input also requires \x3Ccode>triplegs.status.candidateOverflow\x3C/code>. Both operation forms\nand the direct contributor reject omitted destinations at construction; private scratch never\nsubstitutes for a public loss diagnostic.\x3C/p>\n\x3Cp>Pass both tripleg \x3Ccode>overflow\x3C/code> and \x3Ccode>candidateOverflow\x3C/code> to modal split and tracking quality. If either\nsupplied flag is nonzero, modal split suppresses every aggregate to NaN and every predicted mode to\n\x3Ccode>0xffffffff\x3C/code>; tracking quality suppresses every track's value to NaN. The flags describe whole-table\nloss, so these consumers cannot identify unaffected tracks. Omitting both flags asserts that the\ninput table is complete. Complete empty tracks still produce zero. Website views hide incomplete\nmodal bars/classes and label tracking quality unavailable; Kepler exports unavailable numeric values\nas null. Never interpret NaN or the missing-mode sentinel as a count or a speed class.\x3C/p>\n\x3Cp>The thinning and staypoint CPU twins honor an explicit \x3Ccode>maximumSearchRows\x3C/code>, including the GPU's\nanchor jumps/window splits and candidate-overflow flag. Omitted CPU search budgets remain uncapped.\nThinning count and candidate-overflow words have separate writers, so adjacent non-overlapping\nscalar subviews of one status allocation are supported.\x3C/p>\n\x3Cp>{/* lens:GPUTrajectorySegments */}\x3C/p>\n\x3Cp>{/* parameters: GPUTrajectorySegments generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch4 id=\"gputrajectorysegments-parameters\">\x3Ccode>GPUTrajectorySegments\x3C/code> parameters\x3C/h4>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPUTrajectorySegmentsParameterValues(settings)\x3C/code>, writes \x3Ccode>GPU_TRAJECTORY_SEGMENTS_PARAMETER_LENGTH\x3C/code> (4) \x3Ccode>float32\x3C/code> values.\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPUTrajectorySegmentsParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>maximumGap\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Shared gap rule (\x3Ccode>GPUTrajectoryGeometryPort\x3C/code>): a step strictly longer than this limit breaks a tripleg and a trip (trackintel \x3Ccode>gap_threshold\x3C/code>); 0 or absent means no limit.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>activityMinimumDuration\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>A staypoint is an activity when its duration is strictly longer than this, in the timestamps' unit (trackintel \x3Ccode>create_activity_flag\x3C/code>). Finite and non-negative.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>\n\x3Ch2 id=\"mobility-indicators\">Mobility indicators\x3C/h2>\n\x3Ch3 id=\"gpumobilityindicators\">\x3Ccode>GPUMobilityIndicators\x3C/code>\x3C/h3>\n\x3Cp>Per-track indicators on the staypoint table (and, for tracking quality, the tripleg table),\nfollowing scikit-mobility 1.3.1 \x3Ccode>individual\x3C/code> measures and trackintel:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Output\x3C/th>\n\x3Cth>Definition\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>radiusOfGyration\x3C/code>\x3C/td>\n\x3Ctd>RMS haversine distance of the staypoints from their arithmetic mean position\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>jumpLengths\x3C/code>\x3C/td>\n\x3Ctd>Distance between consecutive staypoints (0 for a track's first)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>waitingTimes\x3C/code>\x3C/td>\n\x3Ctd>Difference between consecutive staypoint start times\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>randomEntropy\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>log2(distinct locations)\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>uncorrelatedEntropy\x3C/code>\x3C/td>\n\x3Ctd>Shannon entropy in bits of location shares\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>realEntropy\x3C/code>\x3C/td>\n\x3Ctd>Lempel-Ziv estimator of the location sequence, \x3Ccode>n * log2(n) / sum(lambda)\x3C/code> as in scikit-mobility\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>homeLocations\x3C/code>, \x3Ccode>workLocations\x3C/code>\x3C/td>\n\x3Ctd>Locations with the longest and second longest summed duration (trackintel FREQ, no pre-filter)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>trackingQuality\x3C/code>\x3C/td>\n\x3Ctd>Sum of positive durations over staypoints and triplegs, divided by the extent from first start to last finish (trackintel \x3Ccode>temporal_tracking_quality\x3C/code>, granularity \x3Ccode>all\x3C/code>)\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>Location statistics are \x3Ccode>O(m^2)\x3C/code> per track and real entropy \x3Ccode>O(m^3)\x3C/code> in the worst case for \x3Ccode>m\x3C/code>\nstaypoints; \x3Ccode>maximumEntropySequenceRows\x3C/code> bounds the last and reports \x3Ccode>status.candidateOverflow\x3C/code>.\nPass available staypoint \x3Ccode>status.overflow\x3C/code> and \x3Ccode>status.candidateOverflow\x3C/code> alongside \x3Ccode>status.count\x3C/code>,\nincluding when the table comes directly from \x3Ccode>GPUTrajectoryStaypoints\x3C/code>. Either nonzero input\nsuppresses every numeric indicator to NaN and both location outputs to \x3Ccode>0xffffffff\x3C/code>, across all\ntracks and all capacity rows. The optional output \x3Ccode>status.candidateOverflow\x3C/code> is the OR of supplied\nstaypoint loss and entropy sequence loss; it resets on each frame, including when real entropy is\nnot requested. Suppression remains observable when that optional status destination is omitted.\nThe CPU function takes the same loss arrays beside \x3Ccode>staypoints.count\x3C/code>. Omitting both loss inputs\nasserts completeness. Website views hide these indicators and label them unavailable for incomplete\nstaypoints; Kepler exports missing numeric and location values as null.\x3C/p>\n\x3Cp>{/* lens:GPUMobilityIndicators */}\x3C/p>\n\x3Ch3 id=\"gpumodalsplit\">\x3Ccode>GPUModalSplit\x3C/code>\x3C/h3>\n\x3Cp>Per-(track, mode) accumulation of tripleg count, distance or duration (trackintel\n\x3Ccode>calculate_modal_split\x3C/code>). Modes come from \x3Ccode>modes\x3C/code>, or are predicted from average tripleg speed when\n\x3Ccode>modeSpeedBreaks\x3C/code> is given (trackintel \x3Ccode>simple-coarse\x3C/code>, left-closed classes, for example\n\x3Ccode>[15 / 3.6, 100 / 3.6, Infinity]\x3C/code> in metres per second). The last class has no upper bound, so a\nspeed at or above a finite last break stays in the last class. A tripleg with no speed (no time\nbetween its first and last row, or a non-finite length) gets the missing key \x3Ccode>0xffffffff\x3C/code> in\n\x3Ccode>output.predictedModes\x3C/code> and is left out of the split; the same key in a caller's \x3Ccode>modes\x3C/code> is left\nout too.\x3C/p>\n\x3Cp>{/* lens:GPUModalSplit */}\x3C/p>\n\x3Ch2 id=\"cleaning\">Cleaning\x3C/h2>\n\x3Ch3 id=\"gputrajectoryoutlierflags\">\x3Ccode>GPUTrajectoryOutlierFlags\x3C/code>\x3C/h3>\n\x3Cp>Point-centred speed and acceleration flags. The speed bit flags a fix when both adjacent steps fail,\nso the valid fix after a spike is not. The acceleration bit flags a fix when the step speed rises by\nmore than the limit into it and falls by more than the limit after the step out of it (the two\naccelerations on either side of the two fast steps; the one between them is near zero), so a\nsustained jump flags no row. At a track end the missing side is waived. A single pass; two\nconsecutive displaced fixes are not caught (the step between them is slow), unlike\n\x3Ccode>movingpandas.OutlierCleaner\x3C/code>, which compares each fix to the last kept one. \x3Ccode>addTrackQualityRecipe\x3C/code> applies the same rule with \x3Ccode>speedOutlierMode: 'point-centred'\x3C/code>;\nits default remains \x3Ccode>'step'\x3C/code>.\x3C/p>\n\x3Cp>{/* lens:GPUTrajectoryOutlierFlags */}\x3C/p>\n\x3Cp>{/* parameters: GPUTrajectoryOutlierFlags generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch4 id=\"gputrajectoryoutlierflags-parameters\">\x3Ccode>GPUTrajectoryOutlierFlags\x3C/code> parameters\x3C/h4>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPUTrajectoryOutlierFlagsParameterValues(settings)\x3C/code>, writes \x3Ccode>GPU_TRAJECTORY_OUTLIER_FLAGS_PARAMETER_LENGTH\x3C/code> (4) \x3Ccode>float32\x3C/code> values.\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPUTrajectoryOutlierFlagsParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>maximumSpeed\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Speed limit, length unit per timestamp unit. Finite and non-negative; 0 disables the test.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>maximumAcceleration\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Acceleration limit, length per timestamp unit squared. 0 disables the test.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>\n\x3Ch3 id=\"gputrajectoryhampel\">\x3Ccode>GPUTrajectoryHampel\x3C/code>\x3C/h3>\n\x3Cp>Hampel filter per track (the \x3Ccode>hampel\x3C/code> package used by PTRAIL): a value is an outlier when\n\x3Ccode>|value - median| > numberOfSigmas * 1.4826 * MAD\x3C/code> over a window centred on it; outliers become the\nwindow median, and rows within half a window of a track end pass through unchanged. Compile-time\n\x3Ccode>windowSize\x3C/code>, at most 129.\x3C/p>\n\x3Cp>{/* lens:GPUTrajectoryHampel */}\x3C/p>\n\x3Cp>{/* parameters: GPUTrajectoryHampel generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch4 id=\"gputrajectoryhampel-parameters\">\x3Ccode>GPUTrajectoryHampel\x3C/code> parameters\x3C/h4>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPUTrajectoryHampelParameterValues(settings)\x3C/code>, writes \x3Ccode>GPU_TRAJECTORY_HAMPEL_PARAMETER_LENGTH\x3C/code> (4) \x3Ccode>float32\x3C/code> values.\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPUTrajectoryHampelParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>numberOfSigmas\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Number of scaled median absolute deviations above which a value is an outlier.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>\n\x3Ch3 id=\"gputrajectorysplit\">\x3Ccode>GPUTrajectorySplit\x3C/code>\x3C/h3>\n\x3Cp>Splits tracks and rewrites offsets: \x3Ccode>'gap'\x3C/code> (MovingPandas \x3Ccode>ObservationGapSplitter\x3C/code>), \x3Ccode>'stop'\x3C/code>\n(maximal runs of rows outside every staypoint, the trackintel tripleg rule: the rows of a staypoint\nare in no segment, unlike the MovingPandas \x3Ccode>StopSplitter\x3C/code>, which keeps the boundary fixes of each\nstop), and \x3Ccode>'value-change'\x3C/code> (MovingPandas \x3Ccode>ValueChangeSplitter\x3C/code>, where each segment but the last\nrepeats the first row of the next segment, so \x3Ccode>rowIds\x3C/code> can reference a row twice). Segments need at\nleast two rows. The output is \x3Ccode>segmentOffsets\x3C/code>, \x3Ccode>segmentTracks\x3C/code> and \x3Ccode>rowIds\x3C/code>\nwith optional copied \x3Ccode>positions\x3C/code> and \x3Ccode>timestamps\x3C/code>, so a split feeds the next contributor without\nreadback.\x3C/p>\n\x3Cp>{/* lens:GPUTrajectorySplit */}\x3C/p>\n\x3Cp>{/* parameters: GPUTrajectorySplit generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch4 id=\"gputrajectorysplit-parameters\">\x3Ccode>GPUTrajectorySplit\x3C/code> parameters\x3C/h4>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPUTrajectorySplitParameterValues(settings)\x3C/code>, writes \x3Ccode>GPU_TRAJECTORY_SPLIT_PARAMETER_LENGTH\x3C/code> (4) \x3Ccode>float32\x3C/code> values.\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPUTrajectorySplitParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>maximumGap\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Mode \x3Ccode>'gap'\x3C/code>: the shared gap rule; a step strictly longer than this splits. 0 means no limit.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>\n\x3Ch3 id=\"gputrajectorythinning\">\x3Ccode>GPUTrajectoryThinning\x3C/code>\x3C/h3>\n\x3Cp>Minimum-distance and minimum-time generalization (\x3Ccode>MinDistanceGeneralizer\x3C/code>,\n\x3Ccode>MinTimeDeltaGeneralizer\x3C/code>): the first and last row of a track are kept, and each kept row is followed\nby the first later row at or beyond the tolerance. As with staypoints, the sequential rule is a\nbounded forward search (\x3Ccode>maximumSearchRows\x3C/code>, \x3Ccode>status.candidateOverflow\x3C/code>) plus pointer doubling.\x3C/p>\n\x3Cp>{/* lens:GPUTrajectoryThinning */}\x3C/p>\n\x3Cp>{/* parameters: GPUTrajectoryThinning generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch4 id=\"gputrajectorythinning-parameters\">\x3Ccode>GPUTrajectoryThinning\x3C/code> parameters\x3C/h4>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPUTrajectoryThinningParameterValues(settings)\x3C/code>, writes \x3Ccode>GPU_TRAJECTORY_THINNING_PARAMETER_LENGTH\x3C/code> (4) \x3Ccode>float32\x3C/code> values.\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPUTrajectoryThinningParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>tolerance\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Minimum distance (context length unit) or time (timestamps' unit) between consecutive kept rows.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>\n\x3Ch3 id=\"gputrajectorytrackrelativetimes\">\x3Ccode>GPUTrajectoryTrackRelativeTimes\x3C/code>\x3C/h3>\n\x3Cp>Int64 word timestamps to float32 ticks after each track's first row, exact while the track spans\nfewer than 2^24 ticks. Use its output as the float32 time column of the time-aware simplification\n(\x3Ccode>GPULineSimplification\x3C/code>, \x3Ccode>metric: 'time-ratio'\x3C/code>) to run TD-TR on word timestamps, and of any other\nfloat32 trajectory path.\x3C/p>\n\x3Cp>{/* lens:GPUTrajectoryTrackRelativeTimes */}\x3C/p>"},ssr:!0}]})($R["tsr"])</script><script data-tsr-stream-part="">$_TSR.e();{let s=document.currentScript,p;while((p=s.previousElementSibling)&&p.hasAttribute('data-tsr-stream-part'))p.remove();s.remove()}</script><script type="module" async="" src="/luma-contributors/assets/index-DIfTuwM1.js"></script><script>document.currentScript.remove();/*$tsr-stream-boundary*/</script></body></html>

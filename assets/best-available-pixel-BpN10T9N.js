@@ -1,0 +1,41 @@
+import{a as e,i as t,n,t as r}from"./raster-time-series-chunks-FYvfnBw_.js";import{T as i,f as a,g as o,p as s}from"./gpu-contributor-utils-BIwLQON5.js";import{a as c,t as l}from"./raster-kernel-utils-DcIN7G5I.js";import{t as u}from"./define-run-B-brkCe4.js";import{a as d,c as f}from"./pointer-overlay-Qh8qflcA.js";import{a as p,i as m,n as h,t as g}from"./panel-lHgDcAzn.js";import{vi as _}from"./entry-preview-D70TdSbK.js";import{n as v,r as y,t as b}from"./acquisitions-09WTvSFT.js";var x=365.2425;function S(e,t=new Float32Array(9)){let n=`getGPURasterBestAvailablePixelParameterValues`;return o(n,`targetDayOfYear`,e.targetDayOfYear,0,366),o(n,`dayOfYearSigma`,e.dayOfYearSigma,Number.MIN_VALUE),o(n,`dayOfYearWeight`,e.dayOfYearWeight,0),o(n,`targetYear`,e.targetYear),o(n,`maximumYearDistance`,e.maximumYearDistance,Number.MIN_VALUE),o(n,`yearWeight`,e.yearWeight,0),o(n,`minimumCloudDistance`,e.minimumCloudDistance,0),o(n,`maximumCloudDistance`,e.maximumCloudDistance,e.minimumCloudDistance+Number.MIN_VALUE),o(n,`cloudWeight`,e.cloudWeight,0),t.set([e.targetDayOfYear,e.dayOfYearSigma,e.dayOfYearWeight,e.targetYear,e.maximumYearDistance,e.yearWeight,e.minimumCloudDistance,e.maximumCloudDistance,e.cloudWeight]),t}var C=class{props;id;estimatedCommandNodeCount;chunkProps;constructor(t){this.props=t;let r=t.id??`raster-best-available-pixel`;this.id=r,a(r,`cellCount`,t.cellCount),a(r,`sliceCount`,t.sliceCount,1,256),a(r,`bandCount`,t.bandCount,0,16);let o=t.cellCount*t.sliceCount;a(r,`cellCount times sliceCount`,o),i(r,t.bandCount===0==(t.values===void 0)&&t.bandCount===0==(t.output.composite===void 0),`values and output.composite are required exactly when bandCount is above zero`),i(r,(!t.values||t.values.length>=o*t.bandCount)&&(!t.mask||t.mask.length>=o)&&(!t.cloudDistance||t.cloudDistance.length>=o),`values must hold cellCount times sliceCount times bandCount entries; mask and cloudDistance cellCount times sliceCount`),i(r,t.sliceAttributes.length>=2*t.sliceCount,`sliceAttributes must hold two entries per slice`),i(r,t.parameters.length>=9,`parameters must hold 9 entries`),i(r,t.output.bestSlice.length>=t.cellCount&&t.output.bestScore.length>=t.cellCount&&(!t.output.composite||t.output.composite.length>=t.cellCount*t.bandCount),`output.bestSlice and bestScore must hold one entry per cell and composite cellCount times bandCount`),this.chunkProps=n(r,t,{values:t.sliceCount*t.bandCount,mask:t.sliceCount,cloudDistance:t.sliceCount,"output.bestSlice":1,"output.bestScore":1,"output.composite":t.bandCount}),this.estimatedCommandNodeCount=this.chunkProps.length*1,s(r,this.estimatedCommandNodeCount),e(r,this.getInputs(),this.getOutputs())}getInputs(){let{values:e,mask:t,cloudDistance:n,sliceAttributes:r,parameters:i}=this.props;return[r,i,...e?[e]:[],...t?[t]:[],...n?[n]:[]]}getOutputs(){let{bestSlice:e,bestScore:t,composite:n}=this.props.output;return[e,t,...n?[n]:[]]}getCommandNodes(e){return t(e,this.id,[...this.getInputs(),...this.getOutputs()]),this.chunkProps.flatMap((t,n)=>this.getChunkCommandNodes(e,{...t,id:`${this.id}-chunk-${n}`}))}getChunkCommandNodes(e,t){let n=t.id,{sliceCount:i,bandCount:a,values:o,mask:s,cloudDistance:u,sliceAttributes:d,parameters:f,output:p}=t;return[r(e,{id:n,operation:`GPURasterBestAvailablePixel`,invocationCount:t.cellCount,workgroupSize:64,bindings:[...o?[c(`values`,o)]:[],...s?[c(`mask`,s)]:[],...u?[c(`cloudDistance`,u)]:[],c(`sliceAttributes`,d),c(`parameters`,f),c(`bestSlice`,p.bestSlice,!0),c(`bestScore`,p.bestScore,!0),...p.composite?[c(`composite`,p.composite,!0)]:[]],declarations:`${l}
+fn isObservationValid(cell: u32, slice: u32) -> bool {
+  let source = cell * ${i}u + slice;
+  ${s?`if (mask[maskOffset + source] == 0u) { return false; }`:``}
+  ${o?`for (var band = 0u; band < ${a}u; band++) {
+    if (!finite(values[valuesOffset + source * ${a}u + band])) { return false; }
+  }`:``}
+  return true;
+}`,body:`let targetDay = parameters[parametersOffset];
+let daySigma = parameters[parametersOffset + 1u];
+let dayWeight = parameters[parametersOffset + 2u];
+let targetYear = parameters[parametersOffset + 3u];
+let maximumYearDistance = parameters[parametersOffset + 4u];
+let yearWeight = parameters[parametersOffset + 5u];
+let minimumCloud = parameters[parametersOffset + 6u];
+let maximumCloud = parameters[parametersOffset + 7u];
+let cloudWeight = parameters[parametersOffset + 8u];
+var winner = 0xffffffffu;
+var winnerScore = 0.0;
+for (var slice = 0u; slice < ${i}u; slice++) {
+  if (!isObservationValid(index, slice)) { continue; }
+  let day = sliceAttributes[sliceAttributesOffset + 2u * slice];
+  let year = sliceAttributes[sliceAttributesOffset + 2u * slice + 1u];
+  var dayDistance = abs(day - targetDay);
+  dayDistance = min(dayDistance, ${x} - dayDistance);
+  let dayScore = exp(-0.5 * (dayDistance / daySigma) * (dayDistance / daySigma));
+  let yearScore = max(0.0, 1.0 - abs(year - targetYear) / maximumYearDistance);
+  var cloudScore = 0.0;
+  ${u?`let distance = cloudDistance[cloudDistanceOffset + index * ${i}u + slice];
+  if (distance >= maximumCloud) { cloudScore = 1.0; }
+  else if (distance > minimumCloud) { cloudScore = (distance - minimumCloud) / (maximumCloud - minimumCloud); }`:``}
+  let score = dayWeight * dayScore + yearWeight * yearScore + cloudWeight * cloudScore;
+  if (winner == 0xffffffffu || score > winnerScore) { winner = slice; winnerScore = score; }
+}
+bestSlice[bestSliceOffset + index] = winner;
+bestScore[bestScoreOffset + index] = select(winnerScore, missing(), winner == 0xffffffffu);
+${p.composite?`for (var band = 0u; band < ${a}u; band++) {
+  var component = missing();
+  if (winner != 0xffffffffu) { component = values[valuesOffset + (index * ${i}u + winner) * ${a}u + band]; }
+  composite[compositeOffset + index * ${a}u + band] = component;
+}`:``}`})]}},w=4294967295,T=[.05,.07,.55,.27],E=[.03,.03,.57,.3],D=u({parameters:_,caption:`Sixteen dated scenes in (cloud distance on the CPU); the best scene per cell out.`,createInputs:({aspect:e,world:t})=>({...v(e,24),panel:g(t,[E])}),build(e,t){let{cellCount:n,sliceCount:r}=t,i=e.upload(`observations`,`float32`,t.observations),a=e.upload(`validity`,`uint32`,t.validity),o=e.upload(`cloud-distance`,`float32`,t.cloudDistance),s=e.upload(`slice-attributes`,`float32`,y()),c=e.allocate(`parameters`,`float32`,9),l=e.allocate(`best-slice`,`uint32`,n),u=e.allocate(`best-score`,`float32`,n),d=e.allocate(`composite`,`float32`,n);return e.graph.add(new C({cellCount:n,sliceCount:r,bandCount:1,values:i.view,mask:a.view,cloudDistance:o.view,sliceAttributes:s.view,parameters:c.view,output:{bestSlice:l.view,bestScore:u.view,composite:d.view}})),{outputs:{bestSlice:l,bestScore:u,composite:d,panel:p(e,t.panel)},update:e=>c.write(S({targetDayOfYear:e.targetDayOfYear,dayOfYearSigma:e.dayOfYearSigma,dayOfYearWeight:.5,targetYear:e.targetYear,maximumYearDistance:8,yearWeight:.05,minimumCloudDistance:1,maximumCloudDistance:6,cloudWeight:e.cloudWeight}))}},async afterRun({inputs:e,outputs:t,upload:n}){let r=await t.bestSlice.buffer.readAsync(),i=new Uint32Array(r.buffer,r.byteOffset,e.cellCount),a=new Float32Array(e.sliceCount);for(let e of i)e!==w&&a[e]++;let o=Float32Array.from(i,e=>e===w?NaN:e);return{counts:n(`counts`,`float32`,a),scene:n(`scene`,`float32`,o)}},interaction:d(_,{kind:`pad`,hint:`target year and cloud weight`,x:`targetYear`,y:`cloudWeight`,decorate:(e,t,{outputs:n,peek:r})=>{let i=r(n.bestSlice),a=new Map;for(let e of i??[])a.set(e,(a.get(e)??0)+1);let[o]=[...a].filter(([e])=>e!==w).sort((e,t)=>t[1]-e[1]);return{readout:`target ${f(e.targetYear,1)} | cloudWeight ${f(e.cloudWeight,2)} | ${a.size-+!!a.has(w)} scenes used${o?` | most: ${b[o[0]]}`:``}`}}}),draw:({inputs:e,outputs:t,extra:n,theme:r,values:i})=>[i.shown===1?{layer:`raster`,values:t.composite,columns:e.columns,rows:e.rows,ramp:`sequential`,range:[-.1,.9]}:{layer:`raster`,values:n.scene,columns:e.columns,rows:e.rows,ramp:`sequential`,range:[0,e.sliceCount-1]},...h(t.panel,r),{layer:`chart`,kind:`bars`,values:n.counts,range:[0,e.cellCount*.6],rectangle:T,color:m(r.categories[0])}]});export{D as default};

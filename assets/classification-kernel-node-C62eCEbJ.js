@@ -1,0 +1,17 @@
+import{Q as e}from"./dist-BusamGlx.js";import{c as t,o as n,t as r}from"./kernel-C3tfQOn4.js";import{f as i}from"./wgsl-kernel-nodes-DagJklH2.js";import{r as a}from"./gpu-command-graph-BdzdmV6u.js";import{t as o}from"./gpu-dispatch-utils-CbRzFAgT.js";import{i as s,t as c}from"./graph-chunk-groups-BB8ACpQO.js";import{a as l}from"./graph-chunk-dispatch-zBt8k2-o.js";import{T as u}from"./gpu-contributor-utils-BIwLQON5.js";var d=256;function f(f,p){if(!p.workgroupCollective)return c(f,p);let m=p.workgroupSize??d;s(f,p.id,p.bindings.length,m),l(f,p.id,Object.fromEntries(p.bindings.map(e=>[e.name,e.view]))),u(p.id,p.invocationCount%m===0,`collective invocationCount must hold complete workgroups`);let h=o(p.operation,p.invocationCount,m,f.device.limits.maxComputeWorkgroupsPerDimension),g=new Uint32Array(64);g.set([0,p.invocationCount,p.invocationCount,0]);for(let[e,n]of p.bindings.entries())g[4+e]=t(n.view);g.set(p.parameterValues??[],36);let _=`${p.bindings.map((e,t)=>`@group(0) @binding(${t}) var<storage, ${e.access}> ${e.name}: array<${e.type}>;\nvar<private> ${e.name}Offset: u32;`).join(`
+`)}
+struct ClassificationWorkgroupParameters { words: array<vec4<u32>, 16> }
+@group(0) @binding(${p.bindings.length}) var<uniform> classificationParameters: ClassificationWorkgroupParameters;
+fn getChunkParameter(word: u32) -> u32 { return classificationParameters.words[word / 4u][word % 4u]; }
+${p.declarations??``}
+@compute @workgroup_size(${m})
+fn main(@builtin(workgroup_id) workgroupId: vec3<u32>, @builtin(num_workgroups) workgroupCount: vec3<u32>, @builtin(local_invocation_index) localInvocationIndex: u32) {
+  let workgroupIndex = (workgroupId.z * workgroupCount.y + workgroupId.y) * workgroupCount.x + workgroupId.x;
+  if (workgroupIndex >= getChunkParameter(1u) / ${m}u) { return; }
+  let index = workgroupIndex * ${m}u + localInvocationIndex;
+  ${p.bindings.map((e,t)=>`${e.name}Offset = getChunkParameter(${4+t}u);`).join(`
+`)}
+  ${p.bindings.map(e=>`_ = &${e.name};`).join(`
+`)}
+  ${p.body}
+}`;return i(f,{id:p.id,operation:p.operation,variant:p.variant,source:_,body:p.body,declarations:p.declarations,entryPoint:`main`,workgroupSize:[m,1,1],workgroups:[h.x,h.y,h.z],invocationCount:p.invocationCount,constants:{},bindings:p.bindings,textures:[],indirect:p.condition?.source===`gpu`&&p.condition.mode===`indirect`}),a({id:p.id,condition:p.condition,resources:[...p.bindings.map(e=>({buffer:e.view,usage:e.access===`read`?`storage-read`:`storage-read-write`})),...p.extraResources??[]],workload:{operation:p.operation,...p.variant?{variant:p.variant}:{},commandCount:1,maximumInvocationCount:p.invocationCount,maximumWorkgroupCount:h.x*h.y*h.z,readByteLength:p.bindings.filter(e=>e.access===`read`).reduce((e,t)=>e+t.view.length*t.view.rowByteLength,0),writeByteLength:p.bindings.filter(e=>e.access!==`read`).reduce((e,t)=>e+t.view.length*t.view.rowByteLength,0)},compile:({device:t})=>{let i=t.createBuffer({id:`${p.id}-parameters`,data:g,usage:e.UNIFORM|e.COPY_DST}),a;try{a=new r(t,{id:p.id,source:_,shaderLayout:{bindings:[...p.bindings.map((e,t)=>({name:e.name,location:t,group:0,type:e.access===`read`?`read-only-storage`:`storage`})),{name:`classificationParameters`,location:p.bindings.length,group:0,type:`uniform`}]}})}catch(e){throw i.destroy(),e}return{encode:({computePass:e,getBuffer:t})=>a.dispatch(e,{bindings:Object.fromEntries([...p.bindings.map(e=>[e.name,n(e.view,t)]),[`classificationParameters`,{buffer:i,offset:0,size:g.byteLength}]]),...h}),destroy:()=>{a.destroy(),i.destroy()}}}})}export{f as t};

@@ -1,0 +1,1 @@
+import{t as e}from"./jsx-runtime-LKYXHABd.js";var t=e();function n({tone:e=`neutral`,active:t=!1,className:n=``}){return[`chip`,e===`neutral`?``:`chip--${e}`,t?`chip--active`:``,n].filter(Boolean).join(` `)}function r({children:e,icon:r,...i}){return(0,t.jsxs)(`span`,{className:n(i),children:[r,e]})}export{n,r as t};

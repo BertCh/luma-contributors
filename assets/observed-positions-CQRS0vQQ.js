@@ -1,0 +1,1 @@
+import{t as e}from"./fit-local-map-Bh8eeDQt.js";function t(t,n){let r=t.reduce((e,[,t])=>e+t,0)/t.length,i=Math.cos(r*Math.PI/180),a=t.map(([e,t])=>[e*i,t]),o=e(a,n);return Float32Array.from(a.flatMap(([e,t])=>o(e,t)))}export{t};

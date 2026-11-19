@@ -1,0 +1,1067 @@
+<!DOCTYPE html><html lang="en"><head><meta charSet="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/tokens-DUsD-MQQ.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/base-Btcfj7He.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/components-Bq5SRdyd.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/home-BkA-QKrg.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/docs-CWchvtmE.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/index-Do-eHPVA.css" data-precedence="default"/><title>GPU Spatial Analysis | Gridlight</title><meta name="description" content="Browse GPU spatial analysis operations by data type, use case and domain, each drawn live with luma.gl."/><link rel="modulepreload" href="/luma-contributors/assets/index-DIfTuwM1.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/rolldown-runtime-XKyaHtl9.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/react-DlmbjZJV.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/matchContext-BZe79Vhs.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/link-D9V6xy_k.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/jsx-runtime-LKYXHABd.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/preload-helper-Ehsq8Wa4.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/topics-BYMS4mpg.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/_-jF9EWkQq.js" fetchPriority="low"/><link rel="preconnect" href="https://fonts.googleapis.com"/><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous"/><script>try{var t=localStorage.getItem('gridlight-theme');if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}</script></head><body><header class="site-header"><div class="site-header__inner"><a class="brand-link" aria-label="Gridlight home" href="/luma-contributors/"><svg width="26" height="26" viewBox="0 0 32 32" role="img" aria-label="Gridlight" fill="none"><rect x="2.5" y="2.5" width="27" height="27" rx="5" stroke="currentColor" stroke-opacity="0.45"></rect><path d="M12 3v26M21 3v26M3 12h26M3 21h26" stroke="currentColor" stroke-opacity="0.22"></path><path d="M3 21c4-1 5-6 9-6s5 5 9 3 4-6 8-6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"></path><rect x="12.8" y="3.8" width="7.4" height="7.4" rx="1.5" fill="currentColor" fill-opacity="0.9"></rect><circle cx="24.5" cy="24.5" r="2.4" fill="var(--color-signal)"></circle></svg><span class="brand-link__text">grid<span style="color:var(--color-accent)">light</span></span></a><nav class="site-nav" aria-label="Main"><a href="/luma-contributors/explore">Explore</a><a href="/luma-contributors/how-it-works"><span class="site-nav__long">How it works</span><span class="site-nav__short">How</span></a><a class="active" href="/luma-contributors/docs" data-status="active" aria-current="page">Reference</a><a class="site-nav__github" href="https://github.com/BertCh/luma-contributors">GitHub</a><button type="button" class="theme-toggle" aria-label="Toggle light and dark theme"><svg class="theme-toggle__sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg><svg class="theme-toggle__moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"></path></svg></button></nav></div></header><!--$--><div class="docs-layout"><aside class="docs-sidebar"><ul><li><details open=""><summary>@luma-contributors/analysis</summary><ul><li><a href="/luma-contributors/docs/api">Analysis modules</a></li><li><a href="/luma-contributors/docs/api/operation-forms-and-cpu-twins">Operation forms and CPU twins</a></li><li><a href="/luma-contributors/docs/api/analysis-catalog">Analysis catalog</a></li><li><a href="/luma-contributors/docs/api/reused-analysis-preparation">Source topology and wide numeric profiling</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis-cross-reference">GPU spatial analysis cross-reference</a></li><li><details open=""><summary>Analysis core</summary><ul><li><a href="/luma-contributors/docs/api/analysis-core/fitting-kernels">Shared fitting kernels</a></li></ul></details></li><li><details open=""><summary>Spatial analysis</summary><ul><li><a class="active" href="/luma-contributors/docs/api/gpu-spatial-analysis" data-status="active" aria-current="page">GPU Spatial Analysis</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/concepts">GPU Spatial Analysis concepts</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/analysis-experience">Analysis experience vocabulary</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/gpu-analysis-contiguity-statistics">GPUAnalysisContiguityStatistics</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/chunked-spatial-weights-transpose">GPUChunkedSpatialWeightsTranspose</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/geodesic-precision">Geodesic precision (CR01)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/instrumental-variables-covariance">Instrumental-variable robust covariance</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/temporal-context">Temporal context</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/movement-semantics">Movement semantics</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/home-range-and-recursion-mob07">Home ranges and recursion</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/track-similarity-measures">Track similarity: EDR, ERP, SSPD and bounded search</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-statistics">Space-time weights, lagged and differential local Moran, cross-correlation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-clustering">Space-time clustering</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-density-and-k-function">Space-time kernel density, relative risk, K function and Diggle test</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/change-points-and-expectation-based-scan">Change points and the expectation-based scan</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/geographical-detector-redcap-entropy">Geographical detector, REDCAP, spatial entropy and the contiguity-order correlogram</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/colocation-category-dependence-adaptive-density">Colocation quotient, local category dependence and adaptive-bandwidth density</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/healpix-cells-dggs-json">HEALPix cells and DGGS-JSON zone data</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/scoring-rules">Proper scoring rules</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-hawkes">Space-time Hawkes process (STM-08)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/sinkhorn-divergence">Sinkhorn divergence between spatial distributions (STM-09)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/spatial-frames">Spatial frames</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators">GPU Spatial Analysis operators</a></li><li><details open=""><summary>Operator Families</summary><ul><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-weights">GPU Spatial Analysis: Spatial weights</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-statistics">GPU Spatial Analysis: Spatial statistics</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-dynamics">GPU Spatial Analysis: Distribution dynamics &amp; space-time tests</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-accessibility">GPU Spatial Analysis: Accessibility &amp; change of support</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-joins">GPU Spatial Analysis: Spatial joins</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-validity">GPU Spatial Analysis: Geometry validity &amp; intersections</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-density">GPU Spatial Analysis: Density &amp; interpolation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-cells">GPU Spatial Analysis: Cells (DGGS)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-lines">GPU Spatial Analysis: Lines &amp; trajectories</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-geometry">GPU Spatial Analysis: Geometry utilities</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-regression">GPU Spatial Analysis: Regression</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/recipes">GPU Spatial Analysis: Recipes</a></li></ul></details></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/statistical-expansion">Local variability, point patterns and spatial regression extensions</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/quantile-lisa">GPUQuantileLISA</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/gpu-dorling-cartogram">GPUDorlingCartogram</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/rate-mapping">Rate mapping recipes</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/adaptive-generalized-gwr">Adaptive generalized geographically weighted regression</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/panel-fixed-effects">Spatial panel unit fixed effects</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/losh-residual-permutation">Conditional LOSH residual inference</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/expansion-recipes">Geospatial workflow recipes</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/dasymetric-redistribution">Dasymetric redistribution</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/expansion-lenses">Geospatial expansion computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/coverage-expansion">Geospatial coverage expansion</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/global-coordinates">Global coordinates, spherical geometry and S2 analysis</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/interpolation-expansion">Bounded GPU interpolation and simulation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/vecchia-likelihood">Vecchia likelihood (STM-07)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/gaussian-random-field">Gaussian random fields</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/coverage-statistics">Bounded statistical estimation and validation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/spatial-validation-advanced">Spatial fold designs and nested interpolation validation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/point-process">Point process contributors</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/urban-morphology">Urban morphology recipes</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/landscape-ecology">Landscape ecology recipes</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/urban-ecology-lenses">Urban morphology and landscape ecology computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/geometry-refinement-lenses">Geometry refinement computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/interpolation-lenses">Executable interpolation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/movement-coverage">Trajectory estimation, restriction and search</a></li><li><a href="/luma-contributors/docs/api/gpu-geometry-refinement">GPU geometry refinement</a></li></ul></details></li><li><details open=""><summary>Network</summary><ul><li><a href="/luma-contributors/docs/api/gpu-network">GPU Network</a></li><li><a href="/luma-contributors/docs/api/gpu-network/concepts">GPU Network concepts</a></li><li><a href="/luma-contributors/docs/api/gpu-network/operators">GPU Network operators</a></li><li><a href="/luma-contributors/docs/api/gpu-network/louvain">GPUNetworkLouvain</a></li><li><a href="/luma-contributors/docs/api/gpu-network/alternative-routes">Alternative routes</a></li><li><a href="/luma-contributors/docs/api/gpu-network/k-shortest-paths">K-shortest simple paths</a></li><li><a href="/luma-contributors/docs/api/gpu-network/visibility-graph">Visibility graph and network centrality</a></li><li><a href="/luma-contributors/docs/api/gpu-network/flow-models-mob10">Flow models on origin-destination aggregation</a></li><li><a href="/luma-contributors/docs/api/gpu-network/map-matched-edge-volumes-mob05">Edge volumes of map-matched tracks</a></li><li><a href="/luma-contributors/docs/api/gpu-network/network-time-geography-mob09">Network time geography</a></li><li><a href="/luma-contributors/docs/api/gpu-network/expansion">Network structure, routes and spatial topology extensions</a></li><li><a href="/luma-contributors/docs/api/gpu-network/network-movement-coverage">Bounded network optimization and trajectory analysis</a></li><li><a href="/luma-contributors/docs/api/gpu-network/network-movement-benchmarks">Network and movement measurements</a></li><li><a href="/luma-contributors/docs/api/gpu-network/point-process">Network point processes</a></li></ul></details></li><li><details open=""><summary>Terrain</summary><ul><li><a href="/luma-contributors/docs/api/gpu-terrain">GPU Terrain</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/concepts">GPU Terrain concepts</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/operators">GPU Terrain operators</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/height-above-drainage">Height above drainage over D-infinity flow</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/expansion-lenses">Expansion computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/terrain-processing">Terrain processing</a></li></ul></details></li><li><details open=""><summary>Raster analysis</summary><ul><li><a href="/luma-contributors/docs/api/gpu-raster">Raster analysis</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/operations">Raster analysis operations</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/isolines-tiles">GPUIsolines: seam-safe tiles and vector overlays</a></li><li><details open=""><summary>Operation Families</summary><ul><li><a href="/luma-contributors/docs/api/gpu-raster/operations-analysis">GPURaster analysis contributors</a></li></ul></details></li><li><a href="/luma-contributors/docs/api/gpu-raster/expansion">Raster, terrain and geometry expansion</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/contrast-equalization">Raster contrast equalization</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-embedding-codecs">Embedding raster codecs</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-patches">Raster patch metrics and sieving</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/spectral-filter">Spectral raster filtering</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/fill-nodata">Nodata filling</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/tile-reprojection">GPURasterTileReprojection</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/fractional-zonal-distribution">GPURasterFractionalZonalDistribution</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/fractional-categorical-statistics">GPURasterFractionalCategoricalStatistics</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/focal-pairs">Focal cross-band statistics</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/spectral-indices">Calibrated spectral indices</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/expansion-lenses">Expansion computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-time-series">Raster time series</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-change-monitoring">Raster change monitoring</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-eof-analysis">Raster EOF analysis and lagged correlation</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-embeddings">Embedding rasters</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/lagrangian-diagnostics-mob06">Lagrangian diagnostics (time-varying fields, FTLE, connectivity, residence time)</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/remote-sensing">Bounded remote-sensing contributors</a></li></ul></details></li><li><details open=""><summary>Dataframe analysis</summary><ul><li><a href="/luma-contributors/docs/api/gpu-dataframe-analysis">GPU Dataframe analysis contributors</a></li><li><a href="/luma-contributors/docs/api/dataframe-analysis/coregionalization-fit">GPUCoregionalizationFit</a></li><li><a href="/luma-contributors/docs/api/forest-inference">Forest inference</a></li><li><a href="/luma-contributors/docs/api/variable-standardization">GPUVariableStandardization</a></li></ul></details></li><li><details open=""><summary>Geospatial</summary><ul><li><a href="/luma-contributors/docs/api/geospatial">Geospatial analysis</a></li></ul></details></li><li><details open=""><summary>Point cloud analysis</summary><ul><li><a href="/luma-contributors/docs/api/pointcloud-analysis">Point cloud analysis</a></li></ul></details></li><li><details open=""><summary>Computation records and views</summary><ul><li><a href="/luma-contributors/docs/api/computation-record">Computation record</a></li><li><a href="/luma-contributors/docs/api/computation-views">Computation views authoring guide</a></li></ul></details></li></ul></details></li></ul></aside><article class="docs-content"><h1 id="gpu-spatial-analysis">GPU Spatial Analysis</h1>
+<p>:::caution Experimental
+<code>@luma-contributors/analysis/gpu-spatial-analysis</code> is an experimental entry point. APIs may change between
+releases without a deprecation period.
+:::</p>
+<p>The <code>@luma-contributors/analysis/gpu-spatial-analysis</code> entry point is the analysis layer above luma.gl's
+GPU spatial primitives. It does not reimplement them. It composes the
+<a href="/luma-contributors/docs/api/geospatial">geospatial kernels</a> (projection, distances,
+point-in-polygon, <code>GPUGridIndex</code>, <code>GPUPointSpatialQuery</code>) and the GPU Core primitives (sort, scan,
+compaction, hash and grid indexes, <code>GPUBVH</code>, segmented reductions) into higher-level workflows:
+spatial weights and their algebra, statistics computed on those weights, predicate and nearest
+joins, geometry validity, density, discrete global grid cells, line and trajectory geometry,
+regression, change of support, distribution dynamics, accessibility, and prebuilt recipes. New WGSL
+is written only where no primitive fits.</p>
+<p>Reach for the geospatial kernels when you need one primitive (a distance, a containment test, one
+indexed query per frame). Reach for this entry point when the question is about every row at once,
+or about statistics over the neighborhood structure.</p>
+<p>For <a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-statistics#gpuglobalspatialstatistics">global Moran</a>,
+<a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-statistics#gpuhotspotanalysis-and-gpulocalmoran">local Moran and hot-spot analysis</a>,
+pass a neighbor search's <code>outputWeights</code> directly to the statistic. It carries completeness status
+with the CSR buffers. Final-capacity or candidate-capacity loss suppresses inference; the statistic's
+optional <code>output.status.overflow</code> and <code>candidateOverflow</code> forward the producer's flags separately.
+Overflow is final-slot loss; candidateOverflow is intermediate loss, including contiguity pair scratch.
+Chunk-local loss flags are rejected by these statistics; use aggregate status on the outer port.</p>
+<p>See <a href="/luma-contributors/docs/api/gpu-spatial-analysis/expansion-lenses">expansion computation lenses</a> for executable examples of the new contributors and recipes. These cards expose actual command graphs and status outputs on explicit illustrative inputs.</p>
+<h2 id="overview">Overview</h2>
+<p>Each contributor is an algorithm or workflow that declares
+resources and command nodes into a caller-owned <code>GPUCommandGraph</code> through <code>getCommandNodes(graph)</code>
+(<code>GPUCommandNodeProducer</code>), and is added with <code>graph.add(contributor)</code>. They are composed from GPU
+Core primitives (<code>GPUVisibilityWorkflow</code>, <code>GPUBVH</code>, <code>GPUGridBinning</code>, <code>GPUHistogram</code>, <code>GPUReduction</code>,
+<code>GPUAncestorProjection</code>, and others) and the raster operators; new WGSL is written only where no
+primitive fits.</p>
+<h2 id="quick-start">Quick start</h2>
+<p>Run the complete <a href="/luma-contributors/docs/api/operation-forms-and-cpu-twins#point-density-from-device-to-readback">point-density walkthrough</a>.
+It creates its own device and five positions, then reads <code>[2, 0, 1, 1]</code> from a 2 × 2 grid and
+releases every resource. Use that program as the shared execution scaffold for the other families.</p>
+<p>Point density's domain-specific ports are:</p>
+<table>
+<thead>
+<tr>
+<th>Port</th>
+<th>Format and rows</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>positions</code></td>
+<td><code>float32x2</code>, one row per point</td>
+<td>Planar XY positions; nonfinite and out-of-bounds points are excluded.</td>
+</tr>
+<tr>
+<td><code>bounds</code></td>
+<td><code>float32</code>, 4 rows</td>
+<td><code>[minimumX, minimumY, maximumX, maximumY]</code>; buffer contents can change each submission.</td>
+</tr>
+<tr>
+<td><code>output.values</code></td>
+<td><code>float32</code>, columns × rows</td>
+<td>Per-cell statistic, X varying fastest; <code>'count'</code> is the default.</td>
+</tr>
+<tr>
+<td><code>output.status.overflow</code></td>
+<td>optional <code>uint32</code>, 1 row</td>
+<td>Grid mode writes 0; hexagon mode writes 1 if an in-bounds point missed the lattice.</td>
+</tr>
+</tbody>
+</table>
+<p>The walkthrough requests count values only. Other statistics, weights, smoothing, extent,
+histogram and texture outputs are described in the <a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-density">density reference</a>.</p>
+<p>Read <a href="/luma-contributors/docs/api/gpu-spatial-analysis/concepts">GPU Spatial Analysis concepts</a> for the ontology, shared ports, conventions,
+coordinate precision and the compile, encode and submit pattern. The operator pages group the
+contributors by task; the <a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators">operators index</a> lists them all.</p>
+<table>
+<thead>
+<tr>
+<th>Section</th>
+<th>Contributors</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-weights">Spatial weights</a></td>
+<td><code>GPUNeighborSearch</code>, <code>GPUContiguityWeights</code>, <code>GPULatticeWeights</code>, <code>GPUSpatialWeightsTransform</code>, <code>GPUSpatialWeightsAlgebra</code>, <code>GPUSpatialWeightsSummary</code>, <code>GPUSpatialWeightsTranspose</code>, <code>GPUSpatialWeightsValidation</code>, <code>GPUSpatialLag</code>, <code>GPUMapColoring</code></td>
+</tr>
+<tr>
+<td><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-statistics">Spatial statistics</a></td>
+<td><code>GPUGlobalSpatialStatistics</code>, <code>GPUMultipleTestingAdjustment</code>, <code>GPUAssuncaoReisStandardization</code>, <code>GPUHotSpotAnalysis</code>, <code>GPULocalMoran</code>, <code>GPULocalGeary</code>, <code>GPUSpatialPearson</code>, <code>GPUGammaStatistic</code>, <code>GPURoseStatistic</code>, <code>GPULocalPermutationTest</code>, <code>GPUGlobalPermutationTest</code>, <code>GPUNeighborhoodSummary</code>, <code>GPUEmpiricalBayesRates</code>, <code>GPUSpatialEmpiricalBayesRates</code>, <code>GPUSpatialClustering</code>, <code>GPUHierarchicalDensityClustering</code>, <code>GPUSpatialKMeans</code>, <code>GPUSpatialWeightsMinimumSpanningTree</code>, <code>GPUSkaterRegions</code>, <code>GPUAZPRegions</code>, <code>GPUMaxPRegions</code>, <code>GPUWardRegions</code>, <code>GPULocationAllocation</code>, <code>GPURegionPartitionEvaluation</code>, <code>GPUGroupGeometry</code>, <code>GPUGroupConvexHull</code>, <code>GPUEmergingHotSpots</code>, <code>GPUGeographicDistribution</code>, <code>GPURegionStatistics</code>, <code>GPUZonalStatistics</code>, <code>GPUFocalStatistics</code>, <code>GPUSimilarLocations</code></td>
+</tr>
+<tr>
+<td><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-dynamics">Distribution dynamics and space-time tests</a></td>
+<td><code>GPUClassAssignment</code>, <code>GPUClassificationFit</code>, <code>GPUTransitionMatrix</code>, <code>GPUSpatialMarkov</code>, <code>GPULISAMarkov</code>, <code>GPUTransitionDiagnostics</code>, <code>GPUKnoxTest</code>, <code>GPUMantelTest</code>, <code>GPUSpatialScanStatistic</code></td>
+</tr>
+<tr>
+<td><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-statistics">Space-time statistics</a></td>
+<td><code>GPUSpatialWeightsAlgebra</code> operation <code>'spaceTime'</code>, <code>GPUSpaceTimeLocalMoran</code>, <code>GPUSpaceTimeCrossCorrelation</code></td>
+</tr>
+<tr>
+<td><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-clustering">Space-time clustering</a></td>
+<td>ST-DBSCAN and ST-OPTICS through <code>times</code> on <code>GPUSpatialClustering</code> and <code>GPUOPTICS</code></td>
+</tr>
+<tr>
+<td><a href="/luma-contributors/docs/api/gpu-spatial-analysis/movement-semantics">Movement semantics</a></td>
+<td><code>GPUTrajectoryStaypoints</code>, <code>GPUTrajectoryLocations</code>, <code>GPUTrajectorySegments</code>, <code>GPUMobilityIndicators</code>, <code>GPUModalSplit</code>, <code>GPUTrajectoryOutlierFlags</code>, <code>GPUTrajectoryHampel</code>, <code>GPUTrajectorySplit</code>, <code>GPUTrajectoryThinning</code>, <code>GPUTrajectoryTrackRelativeTimes</code></td>
+</tr>
+<tr>
+<td><a href="/luma-contributors/docs/api/gpu-spatial-analysis/track-similarity-measures">Track similarity measures</a></td>
+<td>EDR, ERP, SSPD and bounded search on <code>GPUTrackSimilarity</code> and <code>GPUTrackSimilaritySearch</code></td>
+</tr>
+<tr>
+<td><a href="/luma-contributors/docs/api/gpu-spatial-analysis/scoring-rules">Proper scoring rules</a></td>
+<td><code>GPUEnsembleScores</code>, <code>GPUGaussianPredictiveScores</code></td>
+</tr>
+<tr>
+<td><a href="/luma-contributors/docs/api/gpu-spatial-analysis/temporal-context">Temporal context</a></td>
+<td><code>GPUTemporalContext</code> and the contributors that accept one</td>
+</tr>
+<tr>
+<td><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-accessibility">Accessibility and change of support</a></td>
+<td><code>GPUCatchmentAccessibility</code>, <code>GPUHuffTradeAreas</code>, <code>GPUArealInterpolation</code>, <code>GPUPycnophylactic</code>, <code>GPUSegregation</code></td>
+</tr>
+<tr>
+<td><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-joins">Spatial joins</a></td>
+<td><code>GPUSpatialPredicateJoin</code>, <code>GPUSpatialJoinPrepared</code>, <code>GPUSpatialJoinCandidates</code>, <code>GPUPointInPolygonJoin</code>, <code>GPUNearestFeatureJoin</code>, <code>GPUNearestFeatureWeights</code>, <code>GPUBufferSelection</code></td>
+</tr>
+<tr>
+<td><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-validity">Geometry validity and topology</a></td>
+<td><code>GPUSegmentIntersection</code>, <code>GPUGeometryValidity</code>, <code>GPULineNoding</code>, <code>GPUPolygonize</code>, <code>GPUMakeValid</code>, <code>GPUPolygonOverlay</code>, <code>GPUBufferSurface</code></td>
+</tr>
+<tr>
+<td><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-density">Density &#x26; interpolation</a></td>
+<td><code>GPUPointDensity</code>, <code>GPUKernelDensity</code>, <code>GPUInverseDistanceWeighting</code>, <code>GPUKriging</code>, <code>GPUDotDensity</code>, <code>GPURandomPointsInPolygon</code></td>
+</tr>
+<tr>
+<td><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-cells">Cells (DGGS)</a></td>
+<td><code>GPUCellAggregation</code>, <code>GPUCellRollup</code>, <code>GPUCellPyramid</code>, <code>GPUCellLevelSelection</code>, <code>GPUPointToCell</code>, <code>GPUCellGeometry</code>, <code>GPUCellTopology</code>, <code>GPUCellCompaction</code>, <code>GPUCellCover</code>, <code>GPUCellSetOutline</code>, <code>GPUSegmentRingAssembly</code>, <code>GPUCellTableCompare</code></td>
+</tr>
+<tr>
+<td><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-lines">Lines &#x26; trajectories</a></td>
+<td><code>GPULineSegmentize</code>, <code>GPUGreatCircleArcs</code>, <code>GPULineSmooth</code>, <code>GPULineChunk</code>, <code>GPULineSplit</code>, <code>GPULineMerge</code>, <code>GPUGeometryMeasures</code>, <code>GPUGeodesicPairs</code>, <code>GPUGeodesicDestination</code>, <code>GPULocalFrameProjection</code>, <code>GPULinearReferencing</code>, <code>GPULineLocate</code>, <code>GPULineSimplification</code>, <code>GPUCoverageSimplification</code>, <code>GPUTrajectoryMetrics</code>, <code>GPUTrajectoryPlayhead</code>, <code>GPUTrajectoryResample</code>, <code>GPUZoneEvents</code>, <code>GPUTrajectoryEncounters</code>, <code>GPUTrajectoryClosestApproach</code>, <code>addClockEncounters</code>, <code>GPUTrackSimilarity</code></td>
+</tr>
+<tr>
+<td><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-geometry">Geometry utilities and tessellation</a></td>
+<td><code>GPUOutlineGeometry</code>, <code>GPULabelPoint</code>, <code>GPUShapeDescriptors</code>, <code>GPULineDensity</code>, <code>GPULineLengthPerPolygon</code>, <code>GPUGridGenerator</code>, <code>GPUShapeGenerator</code>, <code>GPUHilbertKeys</code>, <code>GPURectangleClip</code>, <code>GPUDelaunayTessellation</code>, <code>GPUVoronoiDiagram</code></td>
+</tr>
+<tr>
+<td><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-regression">Regression</a></td>
+<td><code>GPUOrdinaryLeastSquares</code>, <code>GPUSpatialRegressionDiagnostics</code>, <code>GPUSpatialTwoStageLeastSquares</code>, <code>GPUSpatialErrorGM</code>, <code>GPUSpatialLagMaximumLikelihood</code>, <code>GPUSpatialErrorMaximumLikelihood</code>, <code>GPUSpatialWeightsTraces</code>, <code>GPUSpatialLagImpacts</code>, <code>GPUGeographicallyWeightedRegression</code>, <code>GPUGeographicallyWeightedRegressionNonstationarityTest</code></td>
+</tr>
+<tr>
+<td><a href="/luma-contributors/docs/api/gpu-spatial-analysis/recipes">Recipes</a></td>
+<td><code>addHotSpotAnalysisRecipe</code> and eleven more prebuilt chains</td>
+</tr>
+<tr>
+<td><a href="#cross-reference">Cross-reference</a></td>
+<td>turf, PostGIS, GeoPandas, PySAL, QGIS and ArcGIS tools mapped to contributors</td>
+</tr>
+</tbody>
+</table>
+<p>Contributors for networks, rasters and dataframe columns live in their own entries:
+<a href="/luma-contributors/docs/api/gpu-network">GPU Network</a>,
+<a href="https://luma.gl/docs/api-reference/experimental/gpu-raster/operations-regions-contours">GPU Raster</a> and
+<a href="https://luma.gl/docs/api-reference/experimental/gpu-dataframe-analysis">GPU Dataframe</a>.</p>
+<h2 id="catalog">Catalog</h2>
+<p>One figure per contributor, each drawn from a recorded GPU run on real data; click through to its card.</p>
+<p>::lens-catalog{entry=gpu-spatial-analysis}</p>
+<h2 id="cross-reference">Cross-reference</h2>
+<p>See the <a href="/luma-contributors/docs/api/gpu-spatial-analysis-cross-reference">task-organized cross-reference</a>.</p>
+<p>Contributors live in <code>@luma-contributors/analysis/gpu-spatial-analysis</code> unless the entry says
+<code>(network)</code>, <code>(raster)</code> or <code>(dataframe)</code>, meaning <code>gpu-network</code>, <code>gpu-raster</code> and <code>gpu-dataframe</code>.
+Recipes are the <code>add...Recipe</code> builder functions. "Not built" rows point at the library to use
+instead (see the GPU Core maintainer roadmap). Every contributor runs on the GPU with
+bounded outputs and does not read back; the CPU libraries return unbounded geometry.</p>
+<h3 id="turf">turf</h3>
+<table>
+<thead>
+<tr>
+<th>turf</th>
+<th>luma.gl</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>area</code>, <code>length</code>, <code>centroid</code>, <code>bbox</code>, <code>center</code></td>
+<td><code>GPUGeometryMeasures</code> (area, length or perimeter, centroid, bounds per feature and per group)</td>
+</tr>
+<tr>
+<td><code>centerOfMass</code></td>
+<td><code>GPUGeometryMeasures</code> centroid; <code>GPUGroupGeometry</code> for weighted centers of label groups</td>
+</tr>
+<tr>
+<td><code>pointOnFeature</code></td>
+<td><code>GPULabelPoint</code> (pole of inaccessibility)</td>
+</tr>
+<tr>
+<td><code>distance</code>, <code>bearing</code>, <code>midpoint</code>, <code>rhumbDistance</code>, <code>rhumbBearing</code></td>
+<td><code>GPUGeodesicPairs</code> (<code>model: 'rhumb'</code> for the rhumb forms)</td>
+</tr>
+<tr>
+<td><code>destination</code>, <code>rhumbDestination</code></td>
+<td><code>GPUGeodesicDestination</code></td>
+</tr>
+<tr>
+<td><code>greatCircle</code></td>
+<td><code>GPUGreatCircleArcs</code></td>
+</tr>
+<tr>
+<td><code>along</code>, <code>lineSliceAlong</code></td>
+<td><code>GPULineLocate</code></td>
+</tr>
+<tr>
+<td><code>lineChunk</code>, <code>lineSegment</code></td>
+<td><code>GPULineChunk</code>, <code>GPULineSegmentize</code></td>
+</tr>
+<tr>
+<td><code>nearestPointOnLine</code></td>
+<td><code>GPULinearReferencing</code></td>
+</tr>
+<tr>
+<td><code>nearestPoint</code></td>
+<td><code>GPUNearestFeatureJoin</code>; <code>GPUNeighborSearch</code> (knn)</td>
+</tr>
+<tr>
+<td><code>pointsWithinPolygon</code>, <code>tag</code></td>
+<td><code>GPUPointInPolygonJoin</code>; <code>GPUZonalStatistics</code> for counts and sums</td>
+</tr>
+<tr>
+<td><code>collect</code></td>
+<td><code>GPUZonalStatistics</code>, <code>GPUGroupStatistics</code> (dataframe)</td>
+</tr>
+<tr>
+<td><code>buffer</code></td>
+<td><code>GPUBufferSurface</code> for bounded repaired polygon topology; <code>GPUOutlineGeometry</code> for render-only geometry; <code>GPUBufferSelection</code> for "within distance" selection</td>
+</tr>
+<tr>
+<td><code>simplify</code></td>
+<td><code>GPULineSimplification</code>; <code>GPUCoverageSimplification</code> when neighbors must stay gap-free</td>
+</tr>
+<tr>
+<td><code>polygonSmooth</code>, <code>bezierSpline</code></td>
+<td><code>GPULineSmooth</code> (Chaikin)</td>
+</tr>
+<tr>
+<td><code>bboxClip</code></td>
+<td><code>GPURectangleClip</code></td>
+</tr>
+<tr>
+<td><code>kinks</code>, <code>booleanValid</code></td>
+<td><code>GPUGeometryValidity</code>; <code>GPUSegmentIntersection</code> for the crossing points</td>
+</tr>
+<tr>
+<td><code>lineIntersect</code></td>
+<td><code>GPUSegmentIntersection</code></td>
+</tr>
+<tr>
+<td><code>squareGrid</code>, <code>hexGrid</code>, <code>triangleGrid</code>, <code>pointGrid</code></td>
+<td><code>GPUGridGenerator</code></td>
+</tr>
+<tr>
+<td><code>interpolate</code>, <code>idw</code></td>
+<td><code>GPUInverseDistanceWeighting</code>; <code>GPUVariogram</code> to choose a model</td>
+</tr>
+<tr>
+<td><code>isolines</code>, <code>isobands</code></td>
+<td><code>GPUIsolines</code>, <code>GPUIsobands</code> (raster)</td>
+</tr>
+<tr>
+<td><code>convex</code></td>
+<td><code>GPUGroupConvexHull</code>; recipe <code>addClusterAndOutlineRecipe</code></td>
+</tr>
+<tr>
+<td><code>clustersDbscan</code></td>
+<td><code>GPUSpatialClustering</code></td>
+</tr>
+<tr>
+<td><code>clustersKmeans</code></td>
+<td><code>GPUSpatialKMeans</code></td>
+</tr>
+<tr>
+<td><code>randomPoint</code> inside polygons, <code>sample</code></td>
+<td><code>GPURandomPointsInPolygon</code>, <code>GPUDotDensity</code></td>
+</tr>
+<tr>
+<td><code>hexbin</code>-style counting, <code>pointsWithinPolygon</code> + count</td>
+<td><code>GPUPointDensity</code>; <code>GPUCellAggregation</code> for H3 or Quadbin cells</td>
+</tr>
+<tr>
+<td><code>standardDeviationalEllipse</code>, <code>centralMean</code>, <code>medianCenter</code> (turf-extra)</td>
+<td><code>GPUGeographicDistribution</code>, <code>GPUGroupGeometry</code></td>
+</tr>
+<tr>
+<td><code>union</code>, <code>intersect</code>, <code>difference</code>, <code>dissolve</code>, <code>voronoi</code>, <code>tin</code>, <code>concave</code></td>
+<td><code>GPUPolygonOverlay</code> for bounded Boolean overlay/dissolve; <code>GPUDelaunayTessellation</code> and <code>GPUVoronoiDiagram</code> for vector tessellation. Concave construction remains out of scope; coverage-only union is <code>GPUCoverageDissolve</code> and raster Voronoi is <code>GPUDistanceField</code></td>
+</tr>
+<tr>
+<td><code>polygonize</code></td>
+<td><code>GPUPolygonize</code> for arbitrary finite planar linework; <code>GPULineNoding</code> exposes the atomic noded substrate and provenance; <code>GPUSegmentRingAssembly</code> remains the lower-level directed-boundary primitive</td>
+</tr>
+</tbody>
+</table>
+<h3 id="postgis">PostGIS</h3>
+<table>
+<thead>
+<tr>
+<th>PostGIS</th>
+<th>luma.gl</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ST_Area</code>, <code>ST_Length</code>, <code>ST_Perimeter</code>, <code>ST_Centroid</code></td>
+<td><code>GPUGeometryMeasures</code></td>
+</tr>
+<tr>
+<td><code>ST_PointOnSurface</code>, <code>ST_MaximumInscribedCircle</code></td>
+<td><code>GPULabelPoint</code></td>
+</tr>
+<tr>
+<td><code>ST_Distance(geography)</code>, <code>ST_Azimuth</code></td>
+<td><code>GPUGeodesicPairs</code></td>
+</tr>
+<tr>
+<td><code>ST_Project</code></td>
+<td><code>GPUGeodesicDestination</code></td>
+</tr>
+<tr>
+<td><code>ST_DWithin</code></td>
+<td><code>GPUNeighborSearch</code> (radius), <code>GPUBufferSelection</code>, <code>GPUSpatialPredicateJoin</code> with a distance</td>
+</tr>
+<tr>
+<td><code>ST_Within</code>, <code>ST_Contains</code>, <code>ST_Intersects</code>, <code>ST_Covers</code>, <code>ST_Touches</code> joins</td>
+<td><code>GPUPointInPolygonJoin</code> (points), <code>GPUSpatialPredicateJoin</code> (features); <code>GPUSpatialJoinCandidates</code> for the bounding-box stage alone</td>
+</tr>
+<tr>
+<td><code>ST_Distance</code> KNN (<code>&#x3C;-></code>)</td>
+<td><code>GPUNeighborSearch</code> (knn), <code>GPUNearestFeatureJoin</code></td>
+</tr>
+<tr>
+<td><code>ST_ClusterDBSCAN</code></td>
+<td><code>GPUSpatialClustering</code></td>
+</tr>
+<tr>
+<td><code>ST_ClusterKMeans</code></td>
+<td><code>GPUSpatialKMeans</code></td>
+</tr>
+<tr>
+<td><code>ST_ConvexHull</code> per group</td>
+<td><code>GPUGroupConvexHull</code></td>
+</tr>
+<tr>
+<td><code>ST_Segmentize</code></td>
+<td><code>GPULineSegmentize</code></td>
+</tr>
+<tr>
+<td><code>ST_Simplify</code>, <code>ST_SimplifyVW</code></td>
+<td><code>GPULineSimplification</code> (<code>method: 'visvalingam'</code> is approximate)</td>
+</tr>
+<tr>
+<td><code>ST_CoverageSimplify</code></td>
+<td><code>GPUCoverageSimplification</code></td>
+</tr>
+<tr>
+<td><code>ST_IsValid</code>, <code>ST_IsValidDetail</code></td>
+<td><code>GPUGeometryValidity</code> (polygons, lines, points)</td>
+</tr>
+<tr>
+<td><code>ST_IsSimple</code>, <code>ST_IsRing</code>, <code>ST_IsClosed</code>, <code>ST_NPoints</code>, <code>ST_NumInteriorRings</code>, <code>ST_NumGeometries</code></td>
+<td><code>GPUGeometryPredicates</code></td>
+</tr>
+<tr>
+<td><code>ST_MinimumClearance</code>, <code>ST_MinimumClearanceLine</code></td>
+<td><code>GPUMinimumClearance</code></td>
+</tr>
+<tr>
+<td><code>ST_MinimumBoundingCircle</code>, <code>ST_OrientedEnvelope</code>, <code>ST_LongestLine</code>, <code>ST_MaxDistance</code></td>
+<td><code>GPUMinimumBounds</code></td>
+</tr>
+<tr>
+<td><code>ST_Affine</code>, <code>ST_Translate</code>, <code>ST_Scale</code>, <code>ST_Rotate</code>, <code>ST_Reverse</code>, <code>ST_ForcePolygonCW</code>, <code>ST_RemoveRepeatedPoints</code>, <code>ST_SnapToGrid</code></td>
+<td><code>GPUAffineTransform</code>, <code>GPUGeometryOrientation</code>, <code>GPUGeometryCleanup</code></td>
+</tr>
+<tr>
+<td><code>ST_OffsetCurve</code>, <code>ST_Snap</code></td>
+<td><code>GPUOffsetCurve</code> (no loop removal), <code>GPUVertexSnap</code> (vertex to vertex)</td>
+</tr>
+<tr>
+<td><code>ST_TriangulatePolygon</code></td>
+<td><code>GPUPolygonTriangulation</code> (earcut, not constrained Delaunay)</td>
+</tr>
+<tr>
+<td><code>ST_CoverageUnion</code>, <code>ST_CoverageInvalidEdges</code>, <code>ST_CoverageIsValid</code></td>
+<td><code>GPUCoverageDissolve</code>, <code>GPUCoverageValidity</code></td>
+</tr>
+<tr>
+<td><code>ST_LocalOutlierFactor</code> (Sedona)</td>
+<td><code>GPULocalOutlierFactor</code></td>
+</tr>
+<tr>
+<td><code>ST_ClipByBox2D</code></td>
+<td><code>GPURectangleClip</code></td>
+</tr>
+<tr>
+<td><code>ST_LineInterpolatePoint</code>, <code>ST_LocateAlong</code></td>
+<td><code>GPULineLocate</code></td>
+</tr>
+<tr>
+<td><code>ST_LineLocatePoint</code>, <code>ST_ClosestPoint</code> on lines</td>
+<td><code>GPULinearReferencing</code></td>
+</tr>
+<tr>
+<td><code>ST_SquareGrid</code>, <code>ST_HexagonGrid</code></td>
+<td><code>GPUGridGenerator</code></td>
+</tr>
+<tr>
+<td><code>ST_HausdorffDistance</code>, <code>ST_FrechetDistance</code></td>
+<td><code>GPUTrackSimilarity</code></td>
+</tr>
+<tr>
+<td><code>ST_Length(ST_Intersection(line, cell))</code> summed per cell</td>
+<td><code>GPULineDensity</code></td>
+</tr>
+<tr>
+<td><code>ST_Buffer</code></td>
+<td><code>GPUBufferSurface</code> for repaired polygon output; <code>GPUOutlineGeometry</code> for render-only geometry</td>
+</tr>
+<tr>
+<td><code>ST_Intersection</code>, <code>ST_Union</code>, <code>ST_Difference</code>, <code>ST_SymDifference</code>, general <code>ST_Dissolve</code></td>
+<td><code>GPUPolygonOverlay</code> with explicit arrangement and output capacities</td>
+</tr>
+<tr>
+<td><code>ST_DelaunayTriangles</code>, <code>ST_VoronoiLines</code></td>
+<td><code>GPUDelaunayTessellation</code>, then <code>GPUVoronoiDiagram</code> with dynamic clip bounds</td>
+</tr>
+<tr>
+<td><code>ST_MakeValid</code></td>
+<td><code>GPUMakeValid</code> rebuilds planar polygon boundaries from their noded bounded faces and reports collapsed/unused edges</td>
+</tr>
+<tr>
+<td><code>ST_Polygonize</code>, <code>ST_BuildArea</code>, <code>ST_MakePolygon</code> (from boundary segments or closed lines)</td>
+<td><code>GPUPolygonize</code>; <code>GPULineNoding</code> and <code>GPUSegmentRingAssembly</code> expose the independently measurable noding and face-extraction stages</td>
+</tr>
+<tr>
+<td><code>ST_Clip</code>, <code>ST_MapAlgebra</code>, <code>ST_Reclass</code> (raster)</td>
+<td><code>GPURasterBandMath</code>, <code>GPURasterReclassify</code>, <code>GPURasterConditional</code> (raster)</td>
+</tr>
+<tr>
+<td><code>ST_Slope</code>, <code>ST_Aspect</code>, <code>ST_Hillshade</code></td>
+<td><code>GPURasterGradient</code>, <code>GPURasterGradientMagnitude</code>, <code>GPURasterSobel</code> (raster)</td>
+</tr>
+<tr>
+<td><code>ST_Contour</code>, <code>ST_DumpAsPolygons</code> on thresholds</td>
+<td><code>GPUIsolines</code>, <code>GPUIsobands</code>, <code>GPURasterContours</code> (raster)</td>
+</tr>
+<tr>
+<td><code>ST_ValueCount</code>, <code>ST_Histogram</code></td>
+<td><code>GPURasterHistogram</code>, <code>GPURasterStatistics</code> (raster)</td>
+</tr>
+<tr>
+<td><code>ST_SummaryStats</code> per polygon (zonal)</td>
+<td><code>GPURasterZonalStatistics</code> (raster)</td>
+</tr>
+<tr>
+<td><code>ST_AsRaster</code></td>
+<td><code>GPUPolygonRasterization</code> (raster)</td>
+</tr>
+<tr>
+<td><code>pgRouting</code> <code>pgr_dijkstraCost</code>, <code>pgr_drivingDistance</code></td>
+<td><code>GPUNetworkReachability</code>, <code>GPUNetworkCostMatrix</code>, <code>GPUNetworkIsochrones</code> (network, <code>cellOutline.rings</code> for isochrone polygons); recipe <code>addDriveTimeCatchmentRecipe</code> (<code>isochroneRings</code>, demand join)</td>
+</tr>
+<tr>
+<td><code>pgr_withPointsDD</code> (points on edges)</td>
+<td><code>GPUNetworkSnapping</code> (network)</td>
+</tr>
+<tr>
+<td><code>pgr_connectedComponents</code>, <code>pgr_pagerank</code>, <code>pgr_degree</code></td>
+<td><code>GPUNetworkAnalyticsColumns</code>, <code>GPUNetworkStatistics</code> (network)</td>
+</tr>
+<tr>
+<td><code>h3_lat_lng_to_cell</code>, <code>h3_cell_to_boundary</code>, <code>h3_grid_disk</code>, <code>h3_polygon_to_cells</code></td>
+<td><code>GPUPointToCell</code>, <code>GPUCellGeometry</code>, <code>GPUCellTopology</code>, <code>GPUCellCover</code></td>
+</tr>
+<tr>
+<td><code>h3_cells_to_multi_polygon_wkb</code>, h3-js <code>cellsToMultiPolygon</code></td>
+<td><code>GPUCellSetOutline</code> with <code>rings</code> (<code>GPUSegmentRingAssembly</code>): closed shells and holes of an H3 or Quadbin cell set on the GPU, with <code>ringShells</code> and polygon layout</td>
+</tr>
+<tr>
+<td><code>h3</code> roll-up <code>GROUP BY h3_cell_to_parent</code></td>
+<td><code>GPUCellAggregation</code>, <code>GPUCellRollup</code>, <code>GPUCellPyramid</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="geopandas-and-shapely">GeoPandas and Shapely</h3>
+<table>
+<thead>
+<tr>
+<th>GeoPandas / Shapely</th>
+<th>luma.gl</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GeoSeries.area</code>, <code>.length</code>, <code>.centroid</code>, <code>.bounds</code></td>
+<td><code>GPUGeometryMeasures</code></td>
+</tr>
+<tr>
+<td><code>GeoSeries.representative_point()</code></td>
+<td><code>GPULabelPoint</code></td>
+</tr>
+<tr>
+<td><code>GeoSeries.distance</code>, <code>pyproj.Geod.inv</code> / <code>.fwd</code></td>
+<td><code>GPUGeodesicPairs</code>, <code>GPUGeodesicDestination</code></td>
+</tr>
+<tr>
+<td><code>GeoDataFrame.sjoin</code></td>
+<td><code>GPUSpatialPredicateJoin</code>, <code>GPUPointInPolygonJoin</code></td>
+</tr>
+<tr>
+<td><code>GeoDataFrame.sjoin_nearest</code></td>
+<td><code>GPUNearestFeatureJoin</code></td>
+</tr>
+<tr>
+<td><code>sjoin</code> then <code>groupby(...).agg</code></td>
+<td>recipe <code>addPointsInPolygonsChoroplethRecipe</code>; <code>GPUZonalStatistics</code>; <code>GPUGroupStatistics</code> (dataframe)</td>
+</tr>
+<tr>
+<td><code>GeoSeries.convex_hull</code> per <code>groupby</code></td>
+<td><code>GPUGroupConvexHull</code>; recipe <code>addClusterAndOutlineRecipe</code></td>
+</tr>
+<tr>
+<td><code>GeoSeries.simplify</code>, <code>shapely.simplify_coverage</code></td>
+<td><code>GPULineSimplification</code>, <code>GPUCoverageSimplification</code></td>
+</tr>
+<tr>
+<td><code>GeoSeries.is_valid</code>, <code>shapely.explain_validity</code></td>
+<td><code>GPUGeometryValidity</code></td>
+</tr>
+<tr>
+<td><code>shapely.segmentize</code></td>
+<td><code>GPULineSegmentize</code></td>
+</tr>
+<tr>
+<td><code>shapely.clip_by_rect</code>, <code>GeoDataFrame.clip</code> (rectangle)</td>
+<td><code>GPURectangleClip</code></td>
+</tr>
+<tr>
+<td><code>shapely.line_interpolate_point</code>, <code>.project</code></td>
+<td><code>GPULineLocate</code>, <code>GPULinearReferencing</code></td>
+</tr>
+<tr>
+<td><code>shapely.hausdorff_distance</code>, <code>.frechet_distance</code> (with <code>densify</code>)</td>
+<td><code>GPUTrackSimilarity</code></td>
+</tr>
+<tr>
+<td><code>shapely.set_precision</code> (pointwise), <code>remove_repeated_points</code>, <code>reverse</code>, <code>orient_polygons</code>, <code>affinity.*</code></td>
+<td><code>GPUGeometryCleanup</code>, <code>GPUGeometryOrientation</code>, <code>GPUAffineTransform</code></td>
+</tr>
+<tr>
+<td><code>GeoSeries.buffer</code> (as geometry)</td>
+<td><code>GPUBufferSurface</code> (planar; line and polygon joins/caps plus repair)</td>
+</tr>
+<tr>
+<td><code>shapely.offset_curve</code>, <code>snap</code></td>
+<td><code>GPUOffsetCurve</code>, <code>GPUVertexSnap</code> (partial, see their sections)</td>
+</tr>
+<tr>
+<td><code>shapely.minimum_rotated_rectangle</code>, <code>oriented_envelope</code>, <code>minimum_bounding_circle</code>, <code>minimum_bounding_radius</code></td>
+<td><code>GPUMinimumBounds</code></td>
+</tr>
+<tr>
+<td><code>shapely.minimum_clearance</code>, <code>minimum_clearance_line</code></td>
+<td><code>GPUMinimumClearance</code></td>
+</tr>
+<tr>
+<td><code>shapely.is_simple</code>, <code>is_ring</code>, <code>is_closed</code>, <code>is_ccw</code>, <code>get_num_points</code>, <code>extract_unique_points</code>, <code>equals_exact</code></td>
+<td><code>GPUGeometryPredicates</code></td>
+</tr>
+<tr>
+<td><code>GeoSeries.dissolve(method='coverage')</code>, <code>shapely.coverage_union_all</code>, <code>coverage_is_valid</code>, <code>coverage_invalid_edges</code></td>
+<td><code>GPUCoverageDissolve</code>, <code>GPUCoverageValidity</code></td>
+</tr>
+<tr>
+<td><code>geopandas.clip(lines, polygon)</code>, <code>shapely.shared_paths</code></td>
+<td><code>GPULineClipByPolygon</code>, <code>GPUSharedPaths</code></td>
+</tr>
+<tr>
+<td><code>sjoin</code> merge, <code>sjoin_nearest(distance_col)</code>, <code>explode</code>, <code>get_parts</code>, <code>.cx</code></td>
+<td><code>GPUPairGather</code>, <code>GPUOffsetExpansion</code>, <code>GPUBoundsFilter</code></td>
+</tr>
+<tr>
+<td><code>GeoSeries.make_grid</code>, <code>sample_points</code> (lines)</td>
+<td><code>GPUGridGenerator</code> (<code>hexOrientation</code>, <code>extent</code>), <code>GPURandomPointsOnLine</code></td>
+</tr>
+<tr>
+<td><code>overlay</code>, <code>dissolve</code>, <code>unary_union</code></td>
+<td><code>GPUPolygonOverlay</code>; coverage-only dissolve remains <code>GPUCoverageDissolve</code></td>
+</tr>
+<tr>
+<td><code>voronoi_polygons</code>, <code>delaunay_triangles</code>, <code>make_valid</code></td>
+<td><code>GPUVoronoiDiagram</code>, <code>GPUDelaunayTessellation</code>, <code>GPUMakeValid</code></td>
+</tr>
+<tr>
+<td><code>concave_hull</code></td>
+<td>Not built; a definition and parameter contract remain evidence-gated</td>
+</tr>
+<tr>
+<td><code>shapely.polygonize</code>, <code>polygonize_full</code></td>
+<td><code>GPULineNoding</code> plus <code>GPUPolygonize</code>; diagnostics distinguish rings, open chains, cut edges, dangles, unused edges, and degenerates</td>
+</tr>
+<tr>
+<td><code>shapely.minimum_bounding_circle</code>, <code>oriented_envelope</code></td>
+<td><code>GPUShapeDescriptors</code> (elongation, orientation); <code>GPUGroupGeometry</code> (bounds, ellipse)</td>
+</tr>
+<tr>
+<td><code>tobler.area_interpolate</code></td>
+<td><code>GPUArealInterpolation</code>; recipe <code>addChangeOfSupportRecipe</code></td>
+</tr>
+<tr>
+<td><code>tobler.pycno</code></td>
+<td><code>GPUPycnophylactic</code></td>
+</tr>
+<tr>
+<td><code>rasterstats.zonal_stats</code></td>
+<td><code>GPURasterZonalStatistics</code> (raster); recipe <code>addStraightLineCatchmentsRecipe</code></td>
+</tr>
+<tr>
+<td><code>rasterio.features.rasterize</code></td>
+<td><code>GPUPolygonRasterization</code> (raster)</td>
+</tr>
+<tr>
+<td><code>momepy</code> compactness (<code>circular_compactness</code>, <code>convexity</code>, <code>elongation</code>, <code>orientation</code>)</td>
+<td><code>GPUShapeDescriptors</code></td>
+</tr>
+<tr>
+<td><code>momepy.describe_agg</code>, <code>libpysal.weights.lag_categorical</code></td>
+<td><code>GPUNeighborhoodSummary</code></td>
+</tr>
+<tr>
+<td><code>mapclassify.classify</code> (<code>Quantiles</code>, <code>EqualInterval</code>, <code>FisherJenks</code>, <code>HeadTailBreaks</code>, <code>BoxPlot</code>, <code>StdMean</code>, <code>MaximumBreaks</code>, <code>UserDefined</code>)</td>
+<td><code>GPUClassBreaks</code> (dataframe); <code>GPUClassAssignment</code>; <code>GPUColorScale</code> (dataframe)</td>
+</tr>
+<tr>
+<td><code>mapclassify</code> bivariate / <code>geoplot</code> choropleth</td>
+<td><code>GPUBivariateClassification</code> (dataframe)</td>
+</tr>
+<tr>
+<td><code>sklearn.cluster.DBSCAN</code>, <code>KMeans</code> on coordinates</td>
+<td><code>GPUSpatialClustering</code>, <code>GPUSpatialKMeans</code></td>
+</tr>
+<tr>
+<td><code>movingpandas</code> stop detection, trajectory stats</td>
+<td><code>GPUTrajectoryMetrics</code>; <code>GPUZoneEvents</code> for zone entry/exit; recipe <code>addFleetDwellRecipe</code></td>
+</tr>
+<tr>
+<td><code>movingpandas</code> interpolation / resample</td>
+<td><code>GPUTrajectoryPlayhead</code>, <code>GPUTrajectoryResample</code></td>
+</tr>
+<tr>
+<td><code>gstat</code> / <code>scikit-gstat</code> <code>Variogram</code></td>
+<td><code>GPUVariogram</code> (dataframe)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="pysal">PySAL</h3>
+<table>
+<thead>
+<tr>
+<th>PySAL</th>
+<th>luma.gl</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>libpysal.weights.Queen</code>, <code>Rook</code></td>
+<td><code>GPUContiguityWeights</code></td>
+</tr>
+<tr>
+<td><code>libpysal.weights.lat2W</code></td>
+<td><code>GPULatticeWeights</code></td>
+</tr>
+<tr>
+<td><code>KNN</code>, <code>DistanceBand</code>, <code>Kernel</code>, <code>Kernel(fixed=False)</code></td>
+<td><code>GPUNeighborSearch</code> (knn, radius, kernel weights); <code>GPUSpatialWeightsTransform</code> (kernel)</td>
+</tr>
+<tr>
+<td><code>W.transform = 'R'</code> / <code>'B'</code>, symmetrize</td>
+<td><code>GPUSpatialWeightsTransform</code></td>
+</tr>
+<tr>
+<td><code>weights.set_operations</code> (<code>w_union</code>, <code>w_intersection</code>), <code>higher_order</code>, <code>w_subset</code>, <code>block_weights</code></td>
+<td><code>GPUSpatialWeightsAlgebra</code></td>
+</tr>
+<tr>
+<td><code>W.s0</code>, <code>.s1</code>, <code>.s2</code>, <code>.cardinalities</code>, <code>.islands</code>, <code>.asymmetry()</code></td>
+<td><code>GPUSpatialWeightsSummary</code></td>
+</tr>
+<tr>
+<td><code>lag_spatial</code></td>
+<td><code>GPUSpatialLag</code></td>
+</tr>
+<tr>
+<td><code>esda.Moran</code>, <code>Geary</code>, <code>G</code> (General G), <code>Moran_BV</code>, <code>Join_Counts</code></td>
+<td><code>GPUGlobalSpatialStatistics</code></td>
+</tr>
+<tr>
+<td><code>esda.Moran</code> <code>.p_sim</code>, <code>.z_sim</code></td>
+<td><code>GPUGlobalPermutationTest</code></td>
+</tr>
+<tr>
+<td><code>esda.Moran_Local</code></td>
+<td><code>GPULocalMoran</code>; <code>GPULocalPermutationTest</code> for <code>p_sim</code></td>
+</tr>
+<tr>
+<td><code>esda.G_Local</code> (Gi, Gi*)</td>
+<td><code>GPUHotSpotAnalysis</code>; <code>GPULocalPermutationTest</code> (<code>'localG'</code>, <code>'localGStar'</code>); recipe <code>addHotSpotAnalysisRecipe</code></td>
+</tr>
+<tr>
+<td><code>smoothing.Empirical_Bayes</code></td>
+<td><code>GPUEmpiricalBayesRates</code> (<code>clampPriorVariance: false</code> for exact parity); recipe <code>addRateClusterMapRecipe</code></td>
+</tr>
+<tr>
+<td><code>esda.Moran_Rate</code>, <code>Moran_Local_Rate</code>, <code>assuncao_rate</code></td>
+<td><code>GPUAssuncaoReisStandardization</code> followed by <code>GPUGlobalSpatialStatistics</code> or <code>GPULocalMoran</code></td>
+</tr>
+<tr>
+<td><code>esda.fdr</code>, <code>statsmodels.multipletests</code></td>
+<td><code>GPUMultipleTestingAdjustment</code>; <code>multipleTesting</code> option of <code>GPUHotSpotAnalysis</code>, <code>GPULocalMoran</code>, <code>GPULocalPermutationTest</code></td>
+</tr>
+<tr>
+<td><code>pointpats.PointPattern</code>, <code>ripley.k_test</code>, <code>f_test</code>, <code>g_test</code>, <code>j_test</code></td>
+<td><code>GPUPointPatternIndices</code>, <code>GPURipley</code>, <code>GPURipleyDistanceFunctions</code> (dataframe)</td>
+</tr>
+<tr>
+<td><code>pointpats.Knox</code>, <code>Mantel</code></td>
+<td><code>GPUKnoxTest</code>, <code>GPUMantelTest</code> (<code>distanceTransform</code> and <code>timeTransform</code> options for the <code>mantel</code> transforms)</td>
+</tr>
+<tr>
+<td><code>esda.Moran</code> correlogram (<code>spatial_correlogram</code>)</td>
+<td><code>GPUSpatialCorrelogram</code> (dataframe)</td>
+</tr>
+<tr>
+<td><code>esda.Spatial_Pearson</code>, <code>Spatial_Pearson_Local</code> (Lee's L)</td>
+<td><code>GPUGlobalPermutationTest</code> (<code>'leesL'</code>), <code>GPULocalPermutationTest</code> (<code>'localLeeL'</code>)</td>
+</tr>
+<tr>
+<td><code>esda.Local_Geary</code>, <code>Gamma</code></td>
+<td><code>GPULocalGeary</code>, <code>GPUGammaStatistic</code>; shared permutation adapters use <code>GPUGlobalPermutationTest</code> or <code>GPULocalPermutationTest</code></td>
+</tr>
+<tr>
+<td><code>spreg.OLS</code></td>
+<td><code>GPUOrdinaryLeastSquares</code></td>
+</tr>
+<tr>
+<td><code>spreg.diagnostics_sp.LMtests</code>, <code>MoranRes</code></td>
+<td><code>GPUSpatialRegressionDiagnostics</code>; recipe <code>addSpatialRegressionRecipe</code></td>
+</tr>
+<tr>
+<td><code>spreg.GM_Lag</code></td>
+<td><code>GPUSpatialTwoStageLeastSquares</code></td>
+</tr>
+<tr>
+<td><code>spreg.ML_Lag</code>, <code>ML_Error</code> (<code>method='full'</code>), <code>spat_impacts</code></td>
+<td><code>GPUSpatialLagMaximumLikelihood</code>, <code>GPUSpatialErrorMaximumLikelihood</code>; impacts <code>GPUSpatialLagImpacts</code> over <code>GPUSpatialWeightsTraces</code></td>
+</tr>
+<tr>
+<td><code>spreg</code> panel, SUR, regimes, probit</td>
+<td>Use <code>GPUSpatialPanelRegression</code> for pooled/unit-effects spatial-lag panels, <code>GPUSpatialRegimeRegression</code> for fully varying regime OLS, and <code>spreg</code> when SUR or probit inference is required</td>
+</tr>
+<tr>
+<td><code>mgwr.GWR</code>, <code>mgwr.MGWR</code></td>
+<td><code>GPUGeographicallyWeightedRegression</code>; <code>GPUMultiscaleGeographicallyWeightedRegression</code> with bounded backfitting, LOO/AICc bandwidth selection and bandwidth-conditioned inference</td>
+</tr>
+<tr>
+<td><code>giddy.Markov</code>, <code>LISA_Markov</code>, <code>Spatial_Markov</code></td>
+<td><code>GPUTransitionMatrix</code>, <code>GPULISAMarkov</code>, <code>GPUSpatialMarkov</code></td>
+</tr>
+<tr>
+<td><code>giddy.directional</code>, <code>Rose</code></td>
+<td><code>GPURoseStatistic</code> with explicit directional or axial circular semantics</td>
+</tr>
+<tr>
+<td><code>segregation</code> aspatial and spatial indices</td>
+<td><code>GPUSegregation</code></td>
+</tr>
+<tr>
+<td><code>inequality.gini.Gini</code>, <code>theil.Theil</code>, <code>Gini_Spatial</code></td>
+<td><code>GPUInequality</code> (dataframe)</td>
+</tr>
+<tr>
+<td><code>esda.shape</code> (<code>isoperimetric_quotient</code>, <code>convex_hull_ratio</code>)</td>
+<td><code>GPUShapeDescriptors</code></td>
+</tr>
+<tr>
+<td><code>spopt.region.AZP</code>, <code>MaxPHeuristic</code>, <code>Skater</code>, <code>Ward</code></td>
+<td><code>GPUAZPRegions</code> (greedy steepest-descent AZP), <code>GPUMaxPRegions</code> (randomized multi-start greedy construction with optional AZP refinement), <code>GPUSkaterRegions</code>, <code>GPUWardRegions</code> (bounded adjacent Ward linkage)</td>
+</tr>
+<tr>
+<td><code>spopt.locate.PMedian</code>, <code>MCLP</code>, <code>LSCP</code></td>
+<td><code>GPULocationAllocation</code> provides bounded greedy p-median, maximum-coverage, and set-covering selection (plus a swap improvement phase) over <code>GPUNetworkCostMatrix</code> or another dense cost matrix; use <code>spopt</code> when an integer-programming optimum or richer constraints are required</td>
+</tr>
+<tr>
+<td><code>access.Access.two_step_fca</code>, <code>weighted_catchment</code>, <code>Huff</code></td>
+<td><code>GPUCatchmentAccessibility</code>, <code>GPUHuffTradeAreas</code>, <code>GPUNetworkAccessibility</code> (network)</td>
+</tr>
+<tr>
+<td><code>spaghetti</code>, <code>pandana</code> network distance and accessibility</td>
+<td><code>GPUNetworkReachability</code>, <code>GPUNetworkCostMatrix</code>, <code>GPUNetworkAccessibility</code> (network)</td>
+</tr>
+<tr>
+<td><code>PySAL</code> hot spot workflow (Gi* + FDR + map)</td>
+<td>recipe <code>addHotSpotAnalysisRecipe</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="qgis">QGIS</h3>
+<table>
+<thead>
+<tr>
+<th>QGIS tool</th>
+<th>luma.gl</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Create grid (rectangle, hexagon)</td>
+<td><code>GPUGridGenerator</code></td>
+</tr>
+<tr>
+<td>Heatmap (kernel density)</td>
+<td><code>GPUPointDensity</code></td>
+</tr>
+<tr>
+<td>Count points in polygon, Zonal statistics (vector)</td>
+<td><code>GPUZonalStatistics</code>; recipe <code>addPointsInPolygonsChoroplethRecipe</code></td>
+</tr>
+<tr>
+<td>Join attributes by location, Join attributes by location (summary)</td>
+<td><code>GPUSpatialPredicateJoin</code>, <code>GPUPointInPolygonJoin</code>, <code>GPUZonalStatistics</code></td>
+</tr>
+<tr>
+<td>Join attributes by nearest</td>
+<td><code>GPUNearestFeatureJoin</code></td>
+</tr>
+<tr>
+<td>Extract by location, Select by location</td>
+<td><code>GPUSpatialPredicateJoin</code>, <code>GPUBufferSelection</code>, <code>GPURegionMask</code></td>
+</tr>
+<tr>
+<td>Zonal statistics (raster)</td>
+<td><code>GPURasterZonalStatistics</code> (raster)</td>
+</tr>
+<tr>
+<td>Rasterize (vector to raster)</td>
+<td><code>GPUPolygonRasterization</code> (raster)</td>
+</tr>
+<tr>
+<td>Raster calculator</td>
+<td><code>GPURasterBandMath</code>, <code>GPURasterArithmetic</code> (raster)</td>
+</tr>
+<tr>
+<td>Reclassify by table / layer</td>
+<td><code>GPURasterReclassify</code> (raster)</td>
+</tr>
+<tr>
+<td>Slope, Aspect, Hillshade, TRI</td>
+<td><code>GPURasterGradient</code>, <code>GPURasterSobel</code>, <code>GPURasterScharr</code> (raster)</td>
+</tr>
+<tr>
+<td>Contour, Contour polygons</td>
+<td><code>GPUIsolines</code>, <code>GPUIsobands</code> (raster)</td>
+</tr>
+<tr>
+<td>Sieve, Fill / clump</td>
+<td><code>GPURasterSieve</code>, <code>GPURasterConnectedComponents</code> (raster)</td>
+</tr>
+<tr>
+<td>Proximity (raster distance), Voronoi (raster)</td>
+<td><code>GPUDistanceField</code> (raster); recipe <code>addStraightLineCatchmentsRecipe</code></td>
+</tr>
+<tr>
+<td>Cost distance / Least-cost path</td>
+<td><code>GPUCostDistance</code>, <code>GPUCostDistancePath</code> (raster)</td>
+</tr>
+<tr>
+<td>IDW interpolation</td>
+<td><code>GPUInverseDistanceWeighting</code></td>
+</tr>
+<tr>
+<td>Service area (from point), Service area (from layer)</td>
+<td><code>GPUNetworkReachability</code>, <code>GPUNetworkIsochrones</code> (network, ring polygons through <code>cellOutline.rings</code>); recipe <code>addDriveTimeCatchmentRecipe</code></td>
+</tr>
+<tr>
+<td>Polygonize / Fix geometries</td>
+<td><code>GPULineNoding</code>, <code>GPUPolygonize</code>, and <code>GPUMakeValid</code>; <code>GPUSegmentRingAssembly</code> remains the lower-level already-noded primitive</td>
+</tr>
+<tr>
+<td>Shortest path (point to point / layer)</td>
+<td><code>GPUNetworkReachability</code> with <code>GPUNetworkPathExtraction</code> (network)</td>
+</tr>
+<tr>
+<td>Distance matrix</td>
+<td><code>GPUNeighborSearch</code>; <code>GPUNetworkCostMatrix</code> for network cost</td>
+</tr>
+<tr>
+<td>Nearest neighbour analysis</td>
+<td><code>GPUPointPatternIndices</code> (dataframe)</td>
+</tr>
+<tr>
+<td>Random points in polygons</td>
+<td><code>GPURandomPointsInPolygon</code>, <code>GPUDotDensity</code></td>
+</tr>
+<tr>
+<td>Pole of inaccessibility</td>
+<td><code>GPULabelPoint</code></td>
+</tr>
+<tr>
+<td>Polygon centroids, Centroids</td>
+<td><code>GPUGeometryMeasures</code></td>
+</tr>
+<tr>
+<td>Mean coordinate(s), Standard deviational ellipse (Processing / plugin)</td>
+<td><code>GPUGeographicDistribution</code>, <code>GPUGroupGeometry</code></td>
+</tr>
+<tr>
+<td>Convex hull, Minimum bounding geometry</td>
+<td><code>GPUGroupConvexHull</code>, <code>GPUGroupGeometry</code></td>
+</tr>
+<tr>
+<td>Simplify, Smooth, Densify by interval</td>
+<td><code>GPULineSimplification</code>, <code>GPULineSmooth</code>, <code>GPULineSegmentize</code></td>
+</tr>
+<tr>
+<td>Clip by extent</td>
+<td><code>GPURectangleClip</code></td>
+</tr>
+<tr>
+<td>Line intersections</td>
+<td><code>GPUSegmentIntersection</code></td>
+</tr>
+<tr>
+<td>Check validity</td>
+<td><code>GPUGeometryValidity</code></td>
+</tr>
+<tr>
+<td>Line density, Sum line lengths</td>
+<td><code>GPULineDensity</code></td>
+</tr>
+<tr>
+<td>DBSCAN clustering, K-means clustering</td>
+<td><code>GPUSpatialClustering</code>, <code>GPUSpatialKMeans</code></td>
+</tr>
+<tr>
+<td>Cluster-and-outline workflow (cluster, hull, area)</td>
+<td>recipe <code>addClusterAndOutlineRecipe</code></td>
+</tr>
+<tr>
+<td>Moran's I, Getis-Ord Gi*, LISA (SAGA, GeoDa plugin)</td>
+<td><code>GPUGlobalSpatialStatistics</code>, <code>GPUHotSpotAnalysis</code>, <code>GPULocalMoran</code></td>
+</tr>
+<tr>
+<td>Graduated symbology modes (Quantile, Natural Breaks, Pretty, Std Dev, Equal)</td>
+<td><code>GPUClassBreaks</code>, <code>GPUColorScale</code> (dataframe)</td>
+</tr>
+<tr>
+<td>Dissolve, Union, Intersection, Difference, Buffer (geometry), Delaunay, Voronoi (vector), Fix geometries</td>
+<td><code>GPUPolygonOverlay</code>, <code>GPUBufferSurface</code>, <code>GPUDelaunayTessellation</code>, <code>GPUVoronoiDiagram</code>, and <code>GPUMakeValid</code>; spatial-index and virtual-raster ownership remain in their dedicated packages</td>
+</tr>
+<tr>
+<td>Model Designer / Processing graphical model</td>
+<td>Recipes, or compose contributors in one <code>GPUCommandGraph</code></td>
+</tr>
+<tr>
+<td>ArcGIS Hot Spot Analysis (Getis-Ord Gi*), Emerging Hot Spot Analysis</td>
+<td><code>GPUHotSpotAnalysis</code>, <code>GPUEmergingHotSpots</code>; recipes <code>addHotSpotAnalysisRecipe</code>, <code>addSpaceTimeHotSpotsRecipe</code></td>
+</tr>
+<tr>
+<td>ArcGIS Spatial Autocorrelation, Incremental Spatial Autocorrelation</td>
+<td><code>GPUGlobalSpatialStatistics</code>, <code>GPUSpatialCorrelogram</code> (dataframe)</td>
+</tr>
+<tr>
+<td>ArcGIS Directional Distribution, Mean Center, Median Center</td>
+<td><code>GPUGeographicDistribution</code></td>
+</tr>
+<tr>
+<td>ArcGIS Generate Network Spatial Weights, Generate Spatial Weights Matrix</td>
+<td><code>GPUContiguityWeights</code>, <code>GPUNeighborSearch</code>, <code>GPUNetworkCostMatrix</code></td>
+</tr>
+<tr>
+<td>ArcGIS Geographically Weighted Regression, Ordinary Least Squares</td>
+<td><code>GPUGeographicallyWeightedRegression</code>, <code>GPUOrdinaryLeastSquares</code></td>
+</tr>
+<tr>
+<td>ArcGIS Calculate Composite Index</td>
+<td><code>GPUCompositeScore</code> (dataframe)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="defaults-that-break-a-quick-parity-check">Defaults that break a quick parity check</h2>
+<p>These defaults differ from the reference library or a common expectation. Each is documented where the operator is described.</p>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Default here</th>
+<th>Reference behaviour</th>
+<th>For parity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Islands (rows with no neighbor)</td>
+<td><code>islands: 'exclude'</code> removes them from <code>n</code> and the moments (<code>GPU_DEFAULT_ISLAND_POLICY</code>)</td>
+<td>esda keeps islands in <code>n</code> and the moments</td>
+<td><code>islands: 'keep'</code></td>
+</tr>
+<tr>
+<td>Two-sided permutation p-value</td>
+<td><code>alternative: 'two-sided'</code> reports <code>min(2 (min(g, l) + 1), P + 1) / (P + 1)</code></td>
+<td>esda's undirected test is percentile based and differs under ties; its legacy default <code>'directed'</code> is anti-conservative</td>
+<td><code>'folded'</code> matches esda's undirected test; <code>'greater'</code> and <code>'lesser'</code> match esda's one-sided tests</td>
+</tr>
+<tr>
+<td>k-means coordinates</td>
+<td><code>GPUSpatialKMeans</code> sums raw float32 coordinates (<code>centerCoordinates</code> defaults to <code>false</code>)</td>
+<td>Raw float32 sums lose precision for coordinates far from the origin</td>
+<td><code>centerCoordinates: true</code> for coordinates far from the origin</td>
+</tr>
+<tr>
+<td>KDE edge correction</td>
+<td><code>'uniform'</code> divides each cell by the kernel mass inside the window</td>
+<td>Uncorrected estimate, or spatstat <code>diggle = TRUE</code></td>
+<td><code>'none'</code> or <code>'diggle'</code></td>
+</tr>
+<tr>
+<td>Line density</td>
+<td><code>GPULineDensity</code> writes line length per grid cell (<code>lengths</code>); <code>densities</code> (length per area) is optional</td>
+<td>A density raster, or per-polygon length (<code>GPULineLengthPerPolygon</code>)</td>
+<td>Read <code>lengths</code>, or divide by cell area</td>
+</tr>
+</tbody>
+</table>
+<h2 id="see-also">See also</h2>
+<ul>
+<li>
+<p><a href="/luma-contributors/docs/api/geospatial">Geospatial kernels</a> for the projection, distance, point-in-polygon, grid-index and point-query primitives these contributors compose</p>
+</li>
+<li>
+<p><a href="https://luma.gl/docs/api-reference/experimental/gpu-core/gpu-command-graph">GPUCommandGraph</a></p>
+</li>
+<li>
+<p><a href="/luma-contributors/docs/api/gpu-network">GPU Network</a> and <a href="/luma-contributors/docs/api/gpu-terrain">GPU Terrain</a> for the network and elevation analysis contributors</p>
+</li>
+<li>
+<p><a href="https://luma.gl/docs/api-reference/experimental/gpu-dataframe-analysis">GPU Dataframe analysis contributors</a> for the column statistics, joins, and time filters the spatial contributors consume</p>
+</li>
+<li>
+<p><a href="https://luma.gl/docs/api-reference/experimental/gpu-core/gpu-grid-index">GPUGridIndex</a></p>
+</li>
+<li>
+<p><a href="/luma-contributors/docs/api/gpu-spatial-analysis/adaptive-generalized-gwr">Adaptive generalized GWR</a></p>
+</li>
+<li>
+<p><a href="/luma-contributors/docs/api/gpu-spatial-analysis/panel-fixed-effects">Unit fixed effects</a></p>
+</li>
+<li>
+<p><a href="/luma-contributors/docs/api/gpu-spatial-analysis/losh-residual-permutation">LOSH residual permutation</a></p>
+</li>
+</ul></article></div><script>(function(a,f){let l;try{l=JSON.parse(sessionStorage.getItem(a)||"{}")}catch{return}const n=l?.[f||history.state?.__TSR_key];let c=!1;for(const t in n){const e=n[t],o=e?.scrollX,s=e?.scrollY;if(Number.isFinite(o)&&Number.isFinite(s)){if(t==="window")scrollTo(o,s),c=!0;else if(t)try{const r=document.querySelector(t);r&&(r.scrollLeft=o,r.scrollTop=s)}catch{}}}if(c)return;const i=location.hash.slice(1);if(i){const t=history.state?.__hashScrollIntoViewOptions??!0;if(t){const e=document.getElementById(i);e&&e.scrollIntoView(t)}return}scrollTo(0,0)})("tsr-scroll-restoration-v1_3");document.currentScript.remove()</script><!--/$--><footer class="site-footer"><div class="site-footer__inner"><span>Gridlight · GPU geospatial analysis on luma.gl. Code licensed under MIT.</span><nav class="site-footer__links" aria-label="Footer"><a href="/luma-contributors/explore">Explore</a><a href="/luma-contributors/how-it-works">How it works</a><a href="/luma-contributors/demo-data">Demo data</a><a class="active" href="/luma-contributors/docs" data-status="active" aria-current="page">Reference</a><a href="https://github.com/BertCh/luma-contributors">GitHub</a><a href="https://luma.gl">luma.gl</a></nav></div></footer><script data-tsr-stream-part="">(self.$R=self.$R||{})["tsr"]=[];self.$_TSR={h(){this.hydrated=!0,this.c()},e(){this.streamEnded=!0,this.c()},c(){this.hydrated&&this.streamEnded&&(delete self.$_TSR,delete self.$R.tsr)},p(e){this.initialized?e():this.buffer.push(e)},buffer:[]}</script><script data-tsr-stream-part="">$_TSR.router=($R=>$R[0]={manifest:$R[1]={routes:$R[2]={__root__:$R[3]={preloads:$R[4]=["/luma-contributors/assets/index-DIfTuwM1.js","/luma-contributors/assets/rolldown-runtime-XKyaHtl9.js","/luma-contributors/assets/react-DlmbjZJV.js","/luma-contributors/assets/matchContext-BZe79Vhs.js","/luma-contributors/assets/link-D9V6xy_k.js","/luma-contributors/assets/jsx-runtime-LKYXHABd.js","/luma-contributors/assets/preload-helper-Ehsq8Wa4.js","/luma-contributors/assets/topics-BYMS4mpg.js"],scripts:$R[5]=[$R[6]={attrs:$R[7]={type:"module",async:!0,src:"/luma-contributors/assets/index-DIfTuwM1.js"}}],css:$R[8]=["/luma-contributors/assets/index-Do-eHPVA.css"]},"/docs/$":$R[9]={preloads:$R[10]=["/luma-contributors/assets/_-jF9EWkQq.js"]}}},matches:$R[11]=[$R[12]={i:"__root__#",u:1795048386271,s:"success",ssr:!0},$R[13]={i:"#docs#$#docs#api#gpu-spatial-analysis",u:1795048386271,s:"success",l:$R[14]={slug:"api/gpu-spatial-analysis",title:"GPU Spatial Analysis",html:"\x3Ch1 id=\"gpu-spatial-analysis\">GPU Spatial Analysis\x3C/h1>\n\x3Cp>:::caution Experimental\n\x3Ccode>@luma-contributors/analysis/gpu-spatial-analysis\x3C/code> is an experimental entry point. APIs may change between\nreleases without a deprecation period.\n:::\x3C/p>\n\x3Cp>The \x3Ccode>@luma-contributors/analysis/gpu-spatial-analysis\x3C/code> entry point is the analysis layer above luma.gl's\nGPU spatial primitives. It does not reimplement them. It composes the\n\x3Ca href=\"/luma-contributors/docs/api/geospatial\">geospatial kernels\x3C/a> (projection, distances,\npoint-in-polygon, \x3Ccode>GPUGridIndex\x3C/code>, \x3Ccode>GPUPointSpatialQuery\x3C/code>) and the GPU Core primitives (sort, scan,\ncompaction, hash and grid indexes, \x3Ccode>GPUBVH\x3C/code>, segmented reductions) into higher-level workflows:\nspatial weights and their algebra, statistics computed on those weights, predicate and nearest\njoins, geometry validity, density, discrete global grid cells, line and trajectory geometry,\nregression, change of support, distribution dynamics, accessibility, and prebuilt recipes. New WGSL\nis written only where no primitive fits.\x3C/p>\n\x3Cp>Reach for the geospatial kernels when you need one primitive (a distance, a containment test, one\nindexed query per frame). Reach for this entry point when the question is about every row at once,\nor about statistics over the neighborhood structure.\x3C/p>\n\x3Cp>For \x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/operators-statistics#gpuglobalspatialstatistics\">global Moran\x3C/a>,\n\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/operators-statistics#gpuhotspotanalysis-and-gpulocalmoran\">local Moran and hot-spot analysis\x3C/a>,\npass a neighbor search's \x3Ccode>outputWeights\x3C/code> directly to the statistic. It carries completeness status\nwith the CSR buffers. Final-capacity or candidate-capacity loss suppresses inference; the statistic's\noptional \x3Ccode>output.status.overflow\x3C/code> and \x3Ccode>candidateOverflow\x3C/code> forward the producer's flags separately.\nOverflow is final-slot loss; candidateOverflow is intermediate loss, including contiguity pair scratch.\nChunk-local loss flags are rejected by these statistics; use aggregate status on the outer port.\x3C/p>\n\x3Cp>See \x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/expansion-lenses\">expansion computation lenses\x3C/a> for executable examples of the new contributors and recipes. These cards expose actual command graphs and status outputs on explicit illustrative inputs.\x3C/p>\n\x3Ch2 id=\"overview\">Overview\x3C/h2>\n\x3Cp>Each contributor is an algorithm or workflow that declares\nresources and command nodes into a caller-owned \x3Ccode>GPUCommandGraph\x3C/code> through \x3Ccode>getCommandNodes(graph)\x3C/code>\n(\x3Ccode>GPUCommandNodeProducer\x3C/code>), and is added with \x3Ccode>graph.add(contributor)\x3C/code>. They are composed from GPU\nCore primitives (\x3Ccode>GPUVisibilityWorkflow\x3C/code>, \x3Ccode>GPUBVH\x3C/code>, \x3Ccode>GPUGridBinning\x3C/code>, \x3Ccode>GPUHistogram\x3C/code>, \x3Ccode>GPUReduction\x3C/code>,\n\x3Ccode>GPUAncestorProjection\x3C/code>, and others) and the raster operators; new WGSL is written only where no\nprimitive fits.\x3C/p>\n\x3Ch2 id=\"quick-start\">Quick start\x3C/h2>\n\x3Cp>Run the complete \x3Ca href=\"/luma-contributors/docs/api/operation-forms-and-cpu-twins#point-density-from-device-to-readback\">point-density walkthrough\x3C/a>.\nIt creates its own device and five positions, then reads \x3Ccode>[2, 0, 1, 1]\x3C/code> from a 2 × 2 grid and\nreleases every resource. Use that program as the shared execution scaffold for the other families.\x3C/p>\n\x3Cp>Point density's domain-specific ports are:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Port\x3C/th>\n\x3Cth>Format and rows\x3C/th>\n\x3Cth>Meaning\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>positions\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>float32x2\x3C/code>, one row per point\x3C/td>\n\x3Ctd>Planar XY positions; nonfinite and out-of-bounds points are excluded.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>bounds\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>float32\x3C/code>, 4 rows\x3C/td>\n\x3Ctd>\x3Ccode>[minimumX, minimumY, maximumX, maximumY]\x3C/code>; buffer contents can change each submission.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>output.values\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>float32\x3C/code>, columns × rows\x3C/td>\n\x3Ctd>Per-cell statistic, X varying fastest; \x3Ccode>'count'\x3C/code> is the default.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>output.status.overflow\x3C/code>\x3C/td>\n\x3Ctd>optional \x3Ccode>uint32\x3C/code>, 1 row\x3C/td>\n\x3Ctd>Grid mode writes 0; hexagon mode writes 1 if an in-bounds point missed the lattice.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>The walkthrough requests count values only. Other statistics, weights, smoothing, extent,\nhistogram and texture outputs are described in the \x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/operators-density\">density reference\x3C/a>.\x3C/p>\n\x3Cp>Read \x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/concepts\">GPU Spatial Analysis concepts\x3C/a> for the ontology, shared ports, conventions,\ncoordinate precision and the compile, encode and submit pattern. The operator pages group the\ncontributors by task; the \x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/operators\">operators index\x3C/a> lists them all.\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Section\x3C/th>\n\x3Cth>Contributors\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/operators-weights\">Spatial weights\x3C/a>\x3C/td>\n\x3Ctd>\x3Ccode>GPUNeighborSearch\x3C/code>, \x3Ccode>GPUContiguityWeights\x3C/code>, \x3Ccode>GPULatticeWeights\x3C/code>, \x3Ccode>GPUSpatialWeightsTransform\x3C/code>, \x3Ccode>GPUSpatialWeightsAlgebra\x3C/code>, \x3Ccode>GPUSpatialWeightsSummary\x3C/code>, \x3Ccode>GPUSpatialWeightsTranspose\x3C/code>, \x3Ccode>GPUSpatialWeightsValidation\x3C/code>, \x3Ccode>GPUSpatialLag\x3C/code>, \x3Ccode>GPUMapColoring\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/operators-statistics\">Spatial statistics\x3C/a>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGlobalSpatialStatistics\x3C/code>, \x3Ccode>GPUMultipleTestingAdjustment\x3C/code>, \x3Ccode>GPUAssuncaoReisStandardization\x3C/code>, \x3Ccode>GPUHotSpotAnalysis\x3C/code>, \x3Ccode>GPULocalMoran\x3C/code>, \x3Ccode>GPULocalGeary\x3C/code>, \x3Ccode>GPUSpatialPearson\x3C/code>, \x3Ccode>GPUGammaStatistic\x3C/code>, \x3Ccode>GPURoseStatistic\x3C/code>, \x3Ccode>GPULocalPermutationTest\x3C/code>, \x3Ccode>GPUGlobalPermutationTest\x3C/code>, \x3Ccode>GPUNeighborhoodSummary\x3C/code>, \x3Ccode>GPUEmpiricalBayesRates\x3C/code>, \x3Ccode>GPUSpatialEmpiricalBayesRates\x3C/code>, \x3Ccode>GPUSpatialClustering\x3C/code>, \x3Ccode>GPUHierarchicalDensityClustering\x3C/code>, \x3Ccode>GPUSpatialKMeans\x3C/code>, \x3Ccode>GPUSpatialWeightsMinimumSpanningTree\x3C/code>, \x3Ccode>GPUSkaterRegions\x3C/code>, \x3Ccode>GPUAZPRegions\x3C/code>, \x3Ccode>GPUMaxPRegions\x3C/code>, \x3Ccode>GPUWardRegions\x3C/code>, \x3Ccode>GPULocationAllocation\x3C/code>, \x3Ccode>GPURegionPartitionEvaluation\x3C/code>, \x3Ccode>GPUGroupGeometry\x3C/code>, \x3Ccode>GPUGroupConvexHull\x3C/code>, \x3Ccode>GPUEmergingHotSpots\x3C/code>, \x3Ccode>GPUGeographicDistribution\x3C/code>, \x3Ccode>GPURegionStatistics\x3C/code>, \x3Ccode>GPUZonalStatistics\x3C/code>, \x3Ccode>GPUFocalStatistics\x3C/code>, \x3Ccode>GPUSimilarLocations\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/operators-dynamics\">Distribution dynamics and space-time tests\x3C/a>\x3C/td>\n\x3Ctd>\x3Ccode>GPUClassAssignment\x3C/code>, \x3Ccode>GPUClassificationFit\x3C/code>, \x3Ccode>GPUTransitionMatrix\x3C/code>, \x3Ccode>GPUSpatialMarkov\x3C/code>, \x3Ccode>GPULISAMarkov\x3C/code>, \x3Ccode>GPUTransitionDiagnostics\x3C/code>, \x3Ccode>GPUKnoxTest\x3C/code>, \x3Ccode>GPUMantelTest\x3C/code>, \x3Ccode>GPUSpatialScanStatistic\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/space-time-statistics\">Space-time statistics\x3C/a>\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialWeightsAlgebra\x3C/code> operation \x3Ccode>'spaceTime'\x3C/code>, \x3Ccode>GPUSpaceTimeLocalMoran\x3C/code>, \x3Ccode>GPUSpaceTimeCrossCorrelation\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/space-time-clustering\">Space-time clustering\x3C/a>\x3C/td>\n\x3Ctd>ST-DBSCAN and ST-OPTICS through \x3Ccode>times\x3C/code> on \x3Ccode>GPUSpatialClustering\x3C/code> and \x3Ccode>GPUOPTICS\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/movement-semantics\">Movement semantics\x3C/a>\x3C/td>\n\x3Ctd>\x3Ccode>GPUTrajectoryStaypoints\x3C/code>, \x3Ccode>GPUTrajectoryLocations\x3C/code>, \x3Ccode>GPUTrajectorySegments\x3C/code>, \x3Ccode>GPUMobilityIndicators\x3C/code>, \x3Ccode>GPUModalSplit\x3C/code>, \x3Ccode>GPUTrajectoryOutlierFlags\x3C/code>, \x3Ccode>GPUTrajectoryHampel\x3C/code>, \x3Ccode>GPUTrajectorySplit\x3C/code>, \x3Ccode>GPUTrajectoryThinning\x3C/code>, \x3Ccode>GPUTrajectoryTrackRelativeTimes\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/track-similarity-measures\">Track similarity measures\x3C/a>\x3C/td>\n\x3Ctd>EDR, ERP, SSPD and bounded search on \x3Ccode>GPUTrackSimilarity\x3C/code> and \x3Ccode>GPUTrackSimilaritySearch\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/scoring-rules\">Proper scoring rules\x3C/a>\x3C/td>\n\x3Ctd>\x3Ccode>GPUEnsembleScores\x3C/code>, \x3Ccode>GPUGaussianPredictiveScores\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/temporal-context\">Temporal context\x3C/a>\x3C/td>\n\x3Ctd>\x3Ccode>GPUTemporalContext\x3C/code> and the contributors that accept one\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/operators-accessibility\">Accessibility and change of support\x3C/a>\x3C/td>\n\x3Ctd>\x3Ccode>GPUCatchmentAccessibility\x3C/code>, \x3Ccode>GPUHuffTradeAreas\x3C/code>, \x3Ccode>GPUArealInterpolation\x3C/code>, \x3Ccode>GPUPycnophylactic\x3C/code>, \x3Ccode>GPUSegregation\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/operators-joins\">Spatial joins\x3C/a>\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialPredicateJoin\x3C/code>, \x3Ccode>GPUSpatialJoinPrepared\x3C/code>, \x3Ccode>GPUSpatialJoinCandidates\x3C/code>, \x3Ccode>GPUPointInPolygonJoin\x3C/code>, \x3Ccode>GPUNearestFeatureJoin\x3C/code>, \x3Ccode>GPUNearestFeatureWeights\x3C/code>, \x3Ccode>GPUBufferSelection\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/operators-validity\">Geometry validity and topology\x3C/a>\x3C/td>\n\x3Ctd>\x3Ccode>GPUSegmentIntersection\x3C/code>, \x3Ccode>GPUGeometryValidity\x3C/code>, \x3Ccode>GPULineNoding\x3C/code>, \x3Ccode>GPUPolygonize\x3C/code>, \x3Ccode>GPUMakeValid\x3C/code>, \x3Ccode>GPUPolygonOverlay\x3C/code>, \x3Ccode>GPUBufferSurface\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/operators-density\">Density &#x26; interpolation\x3C/a>\x3C/td>\n\x3Ctd>\x3Ccode>GPUPointDensity\x3C/code>, \x3Ccode>GPUKernelDensity\x3C/code>, \x3Ccode>GPUInverseDistanceWeighting\x3C/code>, \x3Ccode>GPUKriging\x3C/code>, \x3Ccode>GPUDotDensity\x3C/code>, \x3Ccode>GPURandomPointsInPolygon\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/operators-cells\">Cells (DGGS)\x3C/a>\x3C/td>\n\x3Ctd>\x3Ccode>GPUCellAggregation\x3C/code>, \x3Ccode>GPUCellRollup\x3C/code>, \x3Ccode>GPUCellPyramid\x3C/code>, \x3Ccode>GPUCellLevelSelection\x3C/code>, \x3Ccode>GPUPointToCell\x3C/code>, \x3Ccode>GPUCellGeometry\x3C/code>, \x3Ccode>GPUCellTopology\x3C/code>, \x3Ccode>GPUCellCompaction\x3C/code>, \x3Ccode>GPUCellCover\x3C/code>, \x3Ccode>GPUCellSetOutline\x3C/code>, \x3Ccode>GPUSegmentRingAssembly\x3C/code>, \x3Ccode>GPUCellTableCompare\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/operators-lines\">Lines &#x26; trajectories\x3C/a>\x3C/td>\n\x3Ctd>\x3Ccode>GPULineSegmentize\x3C/code>, \x3Ccode>GPUGreatCircleArcs\x3C/code>, \x3Ccode>GPULineSmooth\x3C/code>, \x3Ccode>GPULineChunk\x3C/code>, \x3Ccode>GPULineSplit\x3C/code>, \x3Ccode>GPULineMerge\x3C/code>, \x3Ccode>GPUGeometryMeasures\x3C/code>, \x3Ccode>GPUGeodesicPairs\x3C/code>, \x3Ccode>GPUGeodesicDestination\x3C/code>, \x3Ccode>GPULocalFrameProjection\x3C/code>, \x3Ccode>GPULinearReferencing\x3C/code>, \x3Ccode>GPULineLocate\x3C/code>, \x3Ccode>GPULineSimplification\x3C/code>, \x3Ccode>GPUCoverageSimplification\x3C/code>, \x3Ccode>GPUTrajectoryMetrics\x3C/code>, \x3Ccode>GPUTrajectoryPlayhead\x3C/code>, \x3Ccode>GPUTrajectoryResample\x3C/code>, \x3Ccode>GPUZoneEvents\x3C/code>, \x3Ccode>GPUTrajectoryEncounters\x3C/code>, \x3Ccode>GPUTrajectoryClosestApproach\x3C/code>, \x3Ccode>addClockEncounters\x3C/code>, \x3Ccode>GPUTrackSimilarity\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/operators-geometry\">Geometry utilities and tessellation\x3C/a>\x3C/td>\n\x3Ctd>\x3Ccode>GPUOutlineGeometry\x3C/code>, \x3Ccode>GPULabelPoint\x3C/code>, \x3Ccode>GPUShapeDescriptors\x3C/code>, \x3Ccode>GPULineDensity\x3C/code>, \x3Ccode>GPULineLengthPerPolygon\x3C/code>, \x3Ccode>GPUGridGenerator\x3C/code>, \x3Ccode>GPUShapeGenerator\x3C/code>, \x3Ccode>GPUHilbertKeys\x3C/code>, \x3Ccode>GPURectangleClip\x3C/code>, \x3Ccode>GPUDelaunayTessellation\x3C/code>, \x3Ccode>GPUVoronoiDiagram\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/operators-regression\">Regression\x3C/a>\x3C/td>\n\x3Ctd>\x3Ccode>GPUOrdinaryLeastSquares\x3C/code>, \x3Ccode>GPUSpatialRegressionDiagnostics\x3C/code>, \x3Ccode>GPUSpatialTwoStageLeastSquares\x3C/code>, \x3Ccode>GPUSpatialErrorGM\x3C/code>, \x3Ccode>GPUSpatialLagMaximumLikelihood\x3C/code>, \x3Ccode>GPUSpatialErrorMaximumLikelihood\x3C/code>, \x3Ccode>GPUSpatialWeightsTraces\x3C/code>, \x3Ccode>GPUSpatialLagImpacts\x3C/code>, \x3Ccode>GPUGeographicallyWeightedRegression\x3C/code>, \x3Ccode>GPUGeographicallyWeightedRegressionNonstationarityTest\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/recipes\">Recipes\x3C/a>\x3C/td>\n\x3Ctd>\x3Ccode>addHotSpotAnalysisRecipe\x3C/code> and eleven more prebuilt chains\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ca href=\"#cross-reference\">Cross-reference\x3C/a>\x3C/td>\n\x3Ctd>turf, PostGIS, GeoPandas, PySAL, QGIS and ArcGIS tools mapped to contributors\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>Contributors for networks, rasters and dataframe columns live in their own entries:\n\x3Ca href=\"/luma-contributors/docs/api/gpu-network\">GPU Network\x3C/a>,\n\x3Ca href=\"https://luma.gl/docs/api-reference/experimental/gpu-raster/operations-regions-contours\">GPU Raster\x3C/a> and\n\x3Ca href=\"https://luma.gl/docs/api-reference/experimental/gpu-dataframe-analysis\">GPU Dataframe\x3C/a>.\x3C/p>\n\x3Ch2 id=\"catalog\">Catalog\x3C/h2>\n\x3Cp>One figure per contributor, each drawn from a recorded GPU run on real data; click through to its card.\x3C/p>\n\x3Cp>::lens-catalog{entry=gpu-spatial-analysis}\x3C/p>\n\x3Ch2 id=\"cross-reference\">Cross-reference\x3C/h2>\n\x3Cp>See the \x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis-cross-reference\">task-organized cross-reference\x3C/a>.\x3C/p>\n\x3Cp>Contributors live in \x3Ccode>@luma-contributors/analysis/gpu-spatial-analysis\x3C/code> unless the entry says\n\x3Ccode>(network)\x3C/code>, \x3Ccode>(raster)\x3C/code> or \x3Ccode>(dataframe)\x3C/code>, meaning \x3Ccode>gpu-network\x3C/code>, \x3Ccode>gpu-raster\x3C/code> and \x3Ccode>gpu-dataframe\x3C/code>.\nRecipes are the \x3Ccode>add...Recipe\x3C/code> builder functions. \"Not built\" rows point at the library to use\ninstead (see the GPU Core maintainer roadmap). Every contributor runs on the GPU with\nbounded outputs and does not read back; the CPU libraries return unbounded geometry.\x3C/p>\n\x3Ch3 id=\"turf\">turf\x3C/h3>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>turf\x3C/th>\n\x3Cth>luma.gl\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>area\x3C/code>, \x3Ccode>length\x3C/code>, \x3Ccode>centroid\x3C/code>, \x3Ccode>bbox\x3C/code>, \x3Ccode>center\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeometryMeasures\x3C/code> (area, length or perimeter, centroid, bounds per feature and per group)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>centerOfMass\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeometryMeasures\x3C/code> centroid; \x3Ccode>GPUGroupGeometry\x3C/code> for weighted centers of label groups\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>pointOnFeature\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPULabelPoint\x3C/code> (pole of inaccessibility)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>distance\x3C/code>, \x3Ccode>bearing\x3C/code>, \x3Ccode>midpoint\x3C/code>, \x3Ccode>rhumbDistance\x3C/code>, \x3Ccode>rhumbBearing\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeodesicPairs\x3C/code> (\x3Ccode>model: 'rhumb'\x3C/code> for the rhumb forms)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>destination\x3C/code>, \x3Ccode>rhumbDestination\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeodesicDestination\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>greatCircle\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGreatCircleArcs\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>along\x3C/code>, \x3Ccode>lineSliceAlong\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPULineLocate\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>lineChunk\x3C/code>, \x3Ccode>lineSegment\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPULineChunk\x3C/code>, \x3Ccode>GPULineSegmentize\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>nearestPointOnLine\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPULinearReferencing\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>nearestPoint\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUNearestFeatureJoin\x3C/code>; \x3Ccode>GPUNeighborSearch\x3C/code> (knn)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>pointsWithinPolygon\x3C/code>, \x3Ccode>tag\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUPointInPolygonJoin\x3C/code>; \x3Ccode>GPUZonalStatistics\x3C/code> for counts and sums\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>collect\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUZonalStatistics\x3C/code>, \x3Ccode>GPUGroupStatistics\x3C/code> (dataframe)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>buffer\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUBufferSurface\x3C/code> for bounded repaired polygon topology; \x3Ccode>GPUOutlineGeometry\x3C/code> for render-only geometry; \x3Ccode>GPUBufferSelection\x3C/code> for \"within distance\" selection\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>simplify\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPULineSimplification\x3C/code>; \x3Ccode>GPUCoverageSimplification\x3C/code> when neighbors must stay gap-free\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>polygonSmooth\x3C/code>, \x3Ccode>bezierSpline\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPULineSmooth\x3C/code> (Chaikin)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>bboxClip\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPURectangleClip\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>kinks\x3C/code>, \x3Ccode>booleanValid\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeometryValidity\x3C/code>; \x3Ccode>GPUSegmentIntersection\x3C/code> for the crossing points\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>lineIntersect\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUSegmentIntersection\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>squareGrid\x3C/code>, \x3Ccode>hexGrid\x3C/code>, \x3Ccode>triangleGrid\x3C/code>, \x3Ccode>pointGrid\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGridGenerator\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>interpolate\x3C/code>, \x3Ccode>idw\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUInverseDistanceWeighting\x3C/code>; \x3Ccode>GPUVariogram\x3C/code> to choose a model\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>isolines\x3C/code>, \x3Ccode>isobands\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUIsolines\x3C/code>, \x3Ccode>GPUIsobands\x3C/code> (raster)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>convex\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGroupConvexHull\x3C/code>; recipe \x3Ccode>addClusterAndOutlineRecipe\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>clustersDbscan\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialClustering\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>clustersKmeans\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialKMeans\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>randomPoint\x3C/code> inside polygons, \x3Ccode>sample\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPURandomPointsInPolygon\x3C/code>, \x3Ccode>GPUDotDensity\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>hexbin\x3C/code>-style counting, \x3Ccode>pointsWithinPolygon\x3C/code> + count\x3C/td>\n\x3Ctd>\x3Ccode>GPUPointDensity\x3C/code>; \x3Ccode>GPUCellAggregation\x3C/code> for H3 or Quadbin cells\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>standardDeviationalEllipse\x3C/code>, \x3Ccode>centralMean\x3C/code>, \x3Ccode>medianCenter\x3C/code> (turf-extra)\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeographicDistribution\x3C/code>, \x3Ccode>GPUGroupGeometry\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>union\x3C/code>, \x3Ccode>intersect\x3C/code>, \x3Ccode>difference\x3C/code>, \x3Ccode>dissolve\x3C/code>, \x3Ccode>voronoi\x3C/code>, \x3Ccode>tin\x3C/code>, \x3Ccode>concave\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUPolygonOverlay\x3C/code> for bounded Boolean overlay/dissolve; \x3Ccode>GPUDelaunayTessellation\x3C/code> and \x3Ccode>GPUVoronoiDiagram\x3C/code> for vector tessellation. Concave construction remains out of scope; coverage-only union is \x3Ccode>GPUCoverageDissolve\x3C/code> and raster Voronoi is \x3Ccode>GPUDistanceField\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>polygonize\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUPolygonize\x3C/code> for arbitrary finite planar linework; \x3Ccode>GPULineNoding\x3C/code> exposes the atomic noded substrate and provenance; \x3Ccode>GPUSegmentRingAssembly\x3C/code> remains the lower-level directed-boundary primitive\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Ch3 id=\"postgis\">PostGIS\x3C/h3>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>PostGIS\x3C/th>\n\x3Cth>luma.gl\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_Area\x3C/code>, \x3Ccode>ST_Length\x3C/code>, \x3Ccode>ST_Perimeter\x3C/code>, \x3Ccode>ST_Centroid\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeometryMeasures\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_PointOnSurface\x3C/code>, \x3Ccode>ST_MaximumInscribedCircle\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPULabelPoint\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_Distance(geography)\x3C/code>, \x3Ccode>ST_Azimuth\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeodesicPairs\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_Project\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeodesicDestination\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_DWithin\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUNeighborSearch\x3C/code> (radius), \x3Ccode>GPUBufferSelection\x3C/code>, \x3Ccode>GPUSpatialPredicateJoin\x3C/code> with a distance\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_Within\x3C/code>, \x3Ccode>ST_Contains\x3C/code>, \x3Ccode>ST_Intersects\x3C/code>, \x3Ccode>ST_Covers\x3C/code>, \x3Ccode>ST_Touches\x3C/code> joins\x3C/td>\n\x3Ctd>\x3Ccode>GPUPointInPolygonJoin\x3C/code> (points), \x3Ccode>GPUSpatialPredicateJoin\x3C/code> (features); \x3Ccode>GPUSpatialJoinCandidates\x3C/code> for the bounding-box stage alone\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_Distance\x3C/code> KNN (\x3Ccode>&#x3C;->\x3C/code>)\x3C/td>\n\x3Ctd>\x3Ccode>GPUNeighborSearch\x3C/code> (knn), \x3Ccode>GPUNearestFeatureJoin\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_ClusterDBSCAN\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialClustering\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_ClusterKMeans\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialKMeans\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_ConvexHull\x3C/code> per group\x3C/td>\n\x3Ctd>\x3Ccode>GPUGroupConvexHull\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_Segmentize\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPULineSegmentize\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_Simplify\x3C/code>, \x3Ccode>ST_SimplifyVW\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPULineSimplification\x3C/code> (\x3Ccode>method: 'visvalingam'\x3C/code> is approximate)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_CoverageSimplify\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUCoverageSimplification\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_IsValid\x3C/code>, \x3Ccode>ST_IsValidDetail\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeometryValidity\x3C/code> (polygons, lines, points)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_IsSimple\x3C/code>, \x3Ccode>ST_IsRing\x3C/code>, \x3Ccode>ST_IsClosed\x3C/code>, \x3Ccode>ST_NPoints\x3C/code>, \x3Ccode>ST_NumInteriorRings\x3C/code>, \x3Ccode>ST_NumGeometries\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeometryPredicates\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_MinimumClearance\x3C/code>, \x3Ccode>ST_MinimumClearanceLine\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUMinimumClearance\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_MinimumBoundingCircle\x3C/code>, \x3Ccode>ST_OrientedEnvelope\x3C/code>, \x3Ccode>ST_LongestLine\x3C/code>, \x3Ccode>ST_MaxDistance\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUMinimumBounds\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_Affine\x3C/code>, \x3Ccode>ST_Translate\x3C/code>, \x3Ccode>ST_Scale\x3C/code>, \x3Ccode>ST_Rotate\x3C/code>, \x3Ccode>ST_Reverse\x3C/code>, \x3Ccode>ST_ForcePolygonCW\x3C/code>, \x3Ccode>ST_RemoveRepeatedPoints\x3C/code>, \x3Ccode>ST_SnapToGrid\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUAffineTransform\x3C/code>, \x3Ccode>GPUGeometryOrientation\x3C/code>, \x3Ccode>GPUGeometryCleanup\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_OffsetCurve\x3C/code>, \x3Ccode>ST_Snap\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUOffsetCurve\x3C/code> (no loop removal), \x3Ccode>GPUVertexSnap\x3C/code> (vertex to vertex)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_TriangulatePolygon\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUPolygonTriangulation\x3C/code> (earcut, not constrained Delaunay)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_CoverageUnion\x3C/code>, \x3Ccode>ST_CoverageInvalidEdges\x3C/code>, \x3Ccode>ST_CoverageIsValid\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUCoverageDissolve\x3C/code>, \x3Ccode>GPUCoverageValidity\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_LocalOutlierFactor\x3C/code> (Sedona)\x3C/td>\n\x3Ctd>\x3Ccode>GPULocalOutlierFactor\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_ClipByBox2D\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPURectangleClip\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_LineInterpolatePoint\x3C/code>, \x3Ccode>ST_LocateAlong\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPULineLocate\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_LineLocatePoint\x3C/code>, \x3Ccode>ST_ClosestPoint\x3C/code> on lines\x3C/td>\n\x3Ctd>\x3Ccode>GPULinearReferencing\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_SquareGrid\x3C/code>, \x3Ccode>ST_HexagonGrid\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGridGenerator\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_HausdorffDistance\x3C/code>, \x3Ccode>ST_FrechetDistance\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUTrackSimilarity\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_Length(ST_Intersection(line, cell))\x3C/code> summed per cell\x3C/td>\n\x3Ctd>\x3Ccode>GPULineDensity\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_Buffer\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUBufferSurface\x3C/code> for repaired polygon output; \x3Ccode>GPUOutlineGeometry\x3C/code> for render-only geometry\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_Intersection\x3C/code>, \x3Ccode>ST_Union\x3C/code>, \x3Ccode>ST_Difference\x3C/code>, \x3Ccode>ST_SymDifference\x3C/code>, general \x3Ccode>ST_Dissolve\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUPolygonOverlay\x3C/code> with explicit arrangement and output capacities\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_DelaunayTriangles\x3C/code>, \x3Ccode>ST_VoronoiLines\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUDelaunayTessellation\x3C/code>, then \x3Ccode>GPUVoronoiDiagram\x3C/code> with dynamic clip bounds\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_MakeValid\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUMakeValid\x3C/code> rebuilds planar polygon boundaries from their noded bounded faces and reports collapsed/unused edges\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_Polygonize\x3C/code>, \x3Ccode>ST_BuildArea\x3C/code>, \x3Ccode>ST_MakePolygon\x3C/code> (from boundary segments or closed lines)\x3C/td>\n\x3Ctd>\x3Ccode>GPUPolygonize\x3C/code>; \x3Ccode>GPULineNoding\x3C/code> and \x3Ccode>GPUSegmentRingAssembly\x3C/code> expose the independently measurable noding and face-extraction stages\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_Clip\x3C/code>, \x3Ccode>ST_MapAlgebra\x3C/code>, \x3Ccode>ST_Reclass\x3C/code> (raster)\x3C/td>\n\x3Ctd>\x3Ccode>GPURasterBandMath\x3C/code>, \x3Ccode>GPURasterReclassify\x3C/code>, \x3Ccode>GPURasterConditional\x3C/code> (raster)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_Slope\x3C/code>, \x3Ccode>ST_Aspect\x3C/code>, \x3Ccode>ST_Hillshade\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPURasterGradient\x3C/code>, \x3Ccode>GPURasterGradientMagnitude\x3C/code>, \x3Ccode>GPURasterSobel\x3C/code> (raster)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_Contour\x3C/code>, \x3Ccode>ST_DumpAsPolygons\x3C/code> on thresholds\x3C/td>\n\x3Ctd>\x3Ccode>GPUIsolines\x3C/code>, \x3Ccode>GPUIsobands\x3C/code>, \x3Ccode>GPURasterContours\x3C/code> (raster)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_ValueCount\x3C/code>, \x3Ccode>ST_Histogram\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPURasterHistogram\x3C/code>, \x3Ccode>GPURasterStatistics\x3C/code> (raster)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_SummaryStats\x3C/code> per polygon (zonal)\x3C/td>\n\x3Ctd>\x3Ccode>GPURasterZonalStatistics\x3C/code> (raster)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>ST_AsRaster\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUPolygonRasterization\x3C/code> (raster)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>pgRouting\x3C/code> \x3Ccode>pgr_dijkstraCost\x3C/code>, \x3Ccode>pgr_drivingDistance\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUNetworkReachability\x3C/code>, \x3Ccode>GPUNetworkCostMatrix\x3C/code>, \x3Ccode>GPUNetworkIsochrones\x3C/code> (network, \x3Ccode>cellOutline.rings\x3C/code> for isochrone polygons); recipe \x3Ccode>addDriveTimeCatchmentRecipe\x3C/code> (\x3Ccode>isochroneRings\x3C/code>, demand join)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>pgr_withPointsDD\x3C/code> (points on edges)\x3C/td>\n\x3Ctd>\x3Ccode>GPUNetworkSnapping\x3C/code> (network)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>pgr_connectedComponents\x3C/code>, \x3Ccode>pgr_pagerank\x3C/code>, \x3Ccode>pgr_degree\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUNetworkAnalyticsColumns\x3C/code>, \x3Ccode>GPUNetworkStatistics\x3C/code> (network)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>h3_lat_lng_to_cell\x3C/code>, \x3Ccode>h3_cell_to_boundary\x3C/code>, \x3Ccode>h3_grid_disk\x3C/code>, \x3Ccode>h3_polygon_to_cells\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUPointToCell\x3C/code>, \x3Ccode>GPUCellGeometry\x3C/code>, \x3Ccode>GPUCellTopology\x3C/code>, \x3Ccode>GPUCellCover\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>h3_cells_to_multi_polygon_wkb\x3C/code>, h3-js \x3Ccode>cellsToMultiPolygon\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUCellSetOutline\x3C/code> with \x3Ccode>rings\x3C/code> (\x3Ccode>GPUSegmentRingAssembly\x3C/code>): closed shells and holes of an H3 or Quadbin cell set on the GPU, with \x3Ccode>ringShells\x3C/code> and polygon layout\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>h3\x3C/code> roll-up \x3Ccode>GROUP BY h3_cell_to_parent\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUCellAggregation\x3C/code>, \x3Ccode>GPUCellRollup\x3C/code>, \x3Ccode>GPUCellPyramid\x3C/code>\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Ch3 id=\"geopandas-and-shapely\">GeoPandas and Shapely\x3C/h3>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>GeoPandas / Shapely\x3C/th>\n\x3Cth>luma.gl\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GeoSeries.area\x3C/code>, \x3Ccode>.length\x3C/code>, \x3Ccode>.centroid\x3C/code>, \x3Ccode>.bounds\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeometryMeasures\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GeoSeries.representative_point()\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPULabelPoint\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GeoSeries.distance\x3C/code>, \x3Ccode>pyproj.Geod.inv\x3C/code> / \x3Ccode>.fwd\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeodesicPairs\x3C/code>, \x3Ccode>GPUGeodesicDestination\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GeoDataFrame.sjoin\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialPredicateJoin\x3C/code>, \x3Ccode>GPUPointInPolygonJoin\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GeoDataFrame.sjoin_nearest\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUNearestFeatureJoin\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>sjoin\x3C/code> then \x3Ccode>groupby(...).agg\x3C/code>\x3C/td>\n\x3Ctd>recipe \x3Ccode>addPointsInPolygonsChoroplethRecipe\x3C/code>; \x3Ccode>GPUZonalStatistics\x3C/code>; \x3Ccode>GPUGroupStatistics\x3C/code> (dataframe)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GeoSeries.convex_hull\x3C/code> per \x3Ccode>groupby\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGroupConvexHull\x3C/code>; recipe \x3Ccode>addClusterAndOutlineRecipe\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GeoSeries.simplify\x3C/code>, \x3Ccode>shapely.simplify_coverage\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPULineSimplification\x3C/code>, \x3Ccode>GPUCoverageSimplification\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GeoSeries.is_valid\x3C/code>, \x3Ccode>shapely.explain_validity\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeometryValidity\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>shapely.segmentize\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPULineSegmentize\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>shapely.clip_by_rect\x3C/code>, \x3Ccode>GeoDataFrame.clip\x3C/code> (rectangle)\x3C/td>\n\x3Ctd>\x3Ccode>GPURectangleClip\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>shapely.line_interpolate_point\x3C/code>, \x3Ccode>.project\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPULineLocate\x3C/code>, \x3Ccode>GPULinearReferencing\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>shapely.hausdorff_distance\x3C/code>, \x3Ccode>.frechet_distance\x3C/code> (with \x3Ccode>densify\x3C/code>)\x3C/td>\n\x3Ctd>\x3Ccode>GPUTrackSimilarity\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>shapely.set_precision\x3C/code> (pointwise), \x3Ccode>remove_repeated_points\x3C/code>, \x3Ccode>reverse\x3C/code>, \x3Ccode>orient_polygons\x3C/code>, \x3Ccode>affinity.*\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeometryCleanup\x3C/code>, \x3Ccode>GPUGeometryOrientation\x3C/code>, \x3Ccode>GPUAffineTransform\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GeoSeries.buffer\x3C/code> (as geometry)\x3C/td>\n\x3Ctd>\x3Ccode>GPUBufferSurface\x3C/code> (planar; line and polygon joins/caps plus repair)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>shapely.offset_curve\x3C/code>, \x3Ccode>snap\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUOffsetCurve\x3C/code>, \x3Ccode>GPUVertexSnap\x3C/code> (partial, see their sections)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>shapely.minimum_rotated_rectangle\x3C/code>, \x3Ccode>oriented_envelope\x3C/code>, \x3Ccode>minimum_bounding_circle\x3C/code>, \x3Ccode>minimum_bounding_radius\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUMinimumBounds\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>shapely.minimum_clearance\x3C/code>, \x3Ccode>minimum_clearance_line\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUMinimumClearance\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>shapely.is_simple\x3C/code>, \x3Ccode>is_ring\x3C/code>, \x3Ccode>is_closed\x3C/code>, \x3Ccode>is_ccw\x3C/code>, \x3Ccode>get_num_points\x3C/code>, \x3Ccode>extract_unique_points\x3C/code>, \x3Ccode>equals_exact\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeometryPredicates\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GeoSeries.dissolve(method='coverage')\x3C/code>, \x3Ccode>shapely.coverage_union_all\x3C/code>, \x3Ccode>coverage_is_valid\x3C/code>, \x3Ccode>coverage_invalid_edges\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUCoverageDissolve\x3C/code>, \x3Ccode>GPUCoverageValidity\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>geopandas.clip(lines, polygon)\x3C/code>, \x3Ccode>shapely.shared_paths\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPULineClipByPolygon\x3C/code>, \x3Ccode>GPUSharedPaths\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>sjoin\x3C/code> merge, \x3Ccode>sjoin_nearest(distance_col)\x3C/code>, \x3Ccode>explode\x3C/code>, \x3Ccode>get_parts\x3C/code>, \x3Ccode>.cx\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUPairGather\x3C/code>, \x3Ccode>GPUOffsetExpansion\x3C/code>, \x3Ccode>GPUBoundsFilter\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GeoSeries.make_grid\x3C/code>, \x3Ccode>sample_points\x3C/code> (lines)\x3C/td>\n\x3Ctd>\x3Ccode>GPUGridGenerator\x3C/code> (\x3Ccode>hexOrientation\x3C/code>, \x3Ccode>extent\x3C/code>), \x3Ccode>GPURandomPointsOnLine\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>overlay\x3C/code>, \x3Ccode>dissolve\x3C/code>, \x3Ccode>unary_union\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUPolygonOverlay\x3C/code>; coverage-only dissolve remains \x3Ccode>GPUCoverageDissolve\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>voronoi_polygons\x3C/code>, \x3Ccode>delaunay_triangles\x3C/code>, \x3Ccode>make_valid\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUVoronoiDiagram\x3C/code>, \x3Ccode>GPUDelaunayTessellation\x3C/code>, \x3Ccode>GPUMakeValid\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>concave_hull\x3C/code>\x3C/td>\n\x3Ctd>Not built; a definition and parameter contract remain evidence-gated\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>shapely.polygonize\x3C/code>, \x3Ccode>polygonize_full\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPULineNoding\x3C/code> plus \x3Ccode>GPUPolygonize\x3C/code>; diagnostics distinguish rings, open chains, cut edges, dangles, unused edges, and degenerates\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>shapely.minimum_bounding_circle\x3C/code>, \x3Ccode>oriented_envelope\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUShapeDescriptors\x3C/code> (elongation, orientation); \x3Ccode>GPUGroupGeometry\x3C/code> (bounds, ellipse)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>tobler.area_interpolate\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUArealInterpolation\x3C/code>; recipe \x3Ccode>addChangeOfSupportRecipe\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>tobler.pycno\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUPycnophylactic\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>rasterstats.zonal_stats\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPURasterZonalStatistics\x3C/code> (raster); recipe \x3Ccode>addStraightLineCatchmentsRecipe\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>rasterio.features.rasterize\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUPolygonRasterization\x3C/code> (raster)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>momepy\x3C/code> compactness (\x3Ccode>circular_compactness\x3C/code>, \x3Ccode>convexity\x3C/code>, \x3Ccode>elongation\x3C/code>, \x3Ccode>orientation\x3C/code>)\x3C/td>\n\x3Ctd>\x3Ccode>GPUShapeDescriptors\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>momepy.describe_agg\x3C/code>, \x3Ccode>libpysal.weights.lag_categorical\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUNeighborhoodSummary\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>mapclassify.classify\x3C/code> (\x3Ccode>Quantiles\x3C/code>, \x3Ccode>EqualInterval\x3C/code>, \x3Ccode>FisherJenks\x3C/code>, \x3Ccode>HeadTailBreaks\x3C/code>, \x3Ccode>BoxPlot\x3C/code>, \x3Ccode>StdMean\x3C/code>, \x3Ccode>MaximumBreaks\x3C/code>, \x3Ccode>UserDefined\x3C/code>)\x3C/td>\n\x3Ctd>\x3Ccode>GPUClassBreaks\x3C/code> (dataframe); \x3Ccode>GPUClassAssignment\x3C/code>; \x3Ccode>GPUColorScale\x3C/code> (dataframe)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>mapclassify\x3C/code> bivariate / \x3Ccode>geoplot\x3C/code> choropleth\x3C/td>\n\x3Ctd>\x3Ccode>GPUBivariateClassification\x3C/code> (dataframe)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>sklearn.cluster.DBSCAN\x3C/code>, \x3Ccode>KMeans\x3C/code> on coordinates\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialClustering\x3C/code>, \x3Ccode>GPUSpatialKMeans\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>movingpandas\x3C/code> stop detection, trajectory stats\x3C/td>\n\x3Ctd>\x3Ccode>GPUTrajectoryMetrics\x3C/code>; \x3Ccode>GPUZoneEvents\x3C/code> for zone entry/exit; recipe \x3Ccode>addFleetDwellRecipe\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>movingpandas\x3C/code> interpolation / resample\x3C/td>\n\x3Ctd>\x3Ccode>GPUTrajectoryPlayhead\x3C/code>, \x3Ccode>GPUTrajectoryResample\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>gstat\x3C/code> / \x3Ccode>scikit-gstat\x3C/code> \x3Ccode>Variogram\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUVariogram\x3C/code> (dataframe)\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Ch3 id=\"pysal\">PySAL\x3C/h3>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>PySAL\x3C/th>\n\x3Cth>luma.gl\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>libpysal.weights.Queen\x3C/code>, \x3Ccode>Rook\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUContiguityWeights\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>libpysal.weights.lat2W\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPULatticeWeights\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>KNN\x3C/code>, \x3Ccode>DistanceBand\x3C/code>, \x3Ccode>Kernel\x3C/code>, \x3Ccode>Kernel(fixed=False)\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUNeighborSearch\x3C/code> (knn, radius, kernel weights); \x3Ccode>GPUSpatialWeightsTransform\x3C/code> (kernel)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>W.transform = 'R'\x3C/code> / \x3Ccode>'B'\x3C/code>, symmetrize\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialWeightsTransform\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>weights.set_operations\x3C/code> (\x3Ccode>w_union\x3C/code>, \x3Ccode>w_intersection\x3C/code>), \x3Ccode>higher_order\x3C/code>, \x3Ccode>w_subset\x3C/code>, \x3Ccode>block_weights\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialWeightsAlgebra\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>W.s0\x3C/code>, \x3Ccode>.s1\x3C/code>, \x3Ccode>.s2\x3C/code>, \x3Ccode>.cardinalities\x3C/code>, \x3Ccode>.islands\x3C/code>, \x3Ccode>.asymmetry()\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialWeightsSummary\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>lag_spatial\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialLag\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>esda.Moran\x3C/code>, \x3Ccode>Geary\x3C/code>, \x3Ccode>G\x3C/code> (General G), \x3Ccode>Moran_BV\x3C/code>, \x3Ccode>Join_Counts\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGlobalSpatialStatistics\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>esda.Moran\x3C/code> \x3Ccode>.p_sim\x3C/code>, \x3Ccode>.z_sim\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGlobalPermutationTest\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>esda.Moran_Local\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPULocalMoran\x3C/code>; \x3Ccode>GPULocalPermutationTest\x3C/code> for \x3Ccode>p_sim\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>esda.G_Local\x3C/code> (Gi, Gi*)\x3C/td>\n\x3Ctd>\x3Ccode>GPUHotSpotAnalysis\x3C/code>; \x3Ccode>GPULocalPermutationTest\x3C/code> (\x3Ccode>'localG'\x3C/code>, \x3Ccode>'localGStar'\x3C/code>); recipe \x3Ccode>addHotSpotAnalysisRecipe\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>smoothing.Empirical_Bayes\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUEmpiricalBayesRates\x3C/code> (\x3Ccode>clampPriorVariance: false\x3C/code> for exact parity); recipe \x3Ccode>addRateClusterMapRecipe\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>esda.Moran_Rate\x3C/code>, \x3Ccode>Moran_Local_Rate\x3C/code>, \x3Ccode>assuncao_rate\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUAssuncaoReisStandardization\x3C/code> followed by \x3Ccode>GPUGlobalSpatialStatistics\x3C/code> or \x3Ccode>GPULocalMoran\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>esda.fdr\x3C/code>, \x3Ccode>statsmodels.multipletests\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUMultipleTestingAdjustment\x3C/code>; \x3Ccode>multipleTesting\x3C/code> option of \x3Ccode>GPUHotSpotAnalysis\x3C/code>, \x3Ccode>GPULocalMoran\x3C/code>, \x3Ccode>GPULocalPermutationTest\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>pointpats.PointPattern\x3C/code>, \x3Ccode>ripley.k_test\x3C/code>, \x3Ccode>f_test\x3C/code>, \x3Ccode>g_test\x3C/code>, \x3Ccode>j_test\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUPointPatternIndices\x3C/code>, \x3Ccode>GPURipley\x3C/code>, \x3Ccode>GPURipleyDistanceFunctions\x3C/code> (dataframe)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>pointpats.Knox\x3C/code>, \x3Ccode>Mantel\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUKnoxTest\x3C/code>, \x3Ccode>GPUMantelTest\x3C/code> (\x3Ccode>distanceTransform\x3C/code> and \x3Ccode>timeTransform\x3C/code> options for the \x3Ccode>mantel\x3C/code> transforms)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>esda.Moran\x3C/code> correlogram (\x3Ccode>spatial_correlogram\x3C/code>)\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialCorrelogram\x3C/code> (dataframe)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>esda.Spatial_Pearson\x3C/code>, \x3Ccode>Spatial_Pearson_Local\x3C/code> (Lee's L)\x3C/td>\n\x3Ctd>\x3Ccode>GPUGlobalPermutationTest\x3C/code> (\x3Ccode>'leesL'\x3C/code>), \x3Ccode>GPULocalPermutationTest\x3C/code> (\x3Ccode>'localLeeL'\x3C/code>)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>esda.Local_Geary\x3C/code>, \x3Ccode>Gamma\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPULocalGeary\x3C/code>, \x3Ccode>GPUGammaStatistic\x3C/code>; shared permutation adapters use \x3Ccode>GPUGlobalPermutationTest\x3C/code> or \x3Ccode>GPULocalPermutationTest\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>spreg.OLS\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUOrdinaryLeastSquares\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>spreg.diagnostics_sp.LMtests\x3C/code>, \x3Ccode>MoranRes\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialRegressionDiagnostics\x3C/code>; recipe \x3Ccode>addSpatialRegressionRecipe\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>spreg.GM_Lag\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialTwoStageLeastSquares\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>spreg.ML_Lag\x3C/code>, \x3Ccode>ML_Error\x3C/code> (\x3Ccode>method='full'\x3C/code>), \x3Ccode>spat_impacts\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialLagMaximumLikelihood\x3C/code>, \x3Ccode>GPUSpatialErrorMaximumLikelihood\x3C/code>; impacts \x3Ccode>GPUSpatialLagImpacts\x3C/code> over \x3Ccode>GPUSpatialWeightsTraces\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>spreg\x3C/code> panel, SUR, regimes, probit\x3C/td>\n\x3Ctd>Use \x3Ccode>GPUSpatialPanelRegression\x3C/code> for pooled/unit-effects spatial-lag panels, \x3Ccode>GPUSpatialRegimeRegression\x3C/code> for fully varying regime OLS, and \x3Ccode>spreg\x3C/code> when SUR or probit inference is required\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>mgwr.GWR\x3C/code>, \x3Ccode>mgwr.MGWR\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeographicallyWeightedRegression\x3C/code>; \x3Ccode>GPUMultiscaleGeographicallyWeightedRegression\x3C/code> with bounded backfitting, LOO/AICc bandwidth selection and bandwidth-conditioned inference\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>giddy.Markov\x3C/code>, \x3Ccode>LISA_Markov\x3C/code>, \x3Ccode>Spatial_Markov\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUTransitionMatrix\x3C/code>, \x3Ccode>GPULISAMarkov\x3C/code>, \x3Ccode>GPUSpatialMarkov\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>giddy.directional\x3C/code>, \x3Ccode>Rose\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPURoseStatistic\x3C/code> with explicit directional or axial circular semantics\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>segregation\x3C/code> aspatial and spatial indices\x3C/td>\n\x3Ctd>\x3Ccode>GPUSegregation\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>inequality.gini.Gini\x3C/code>, \x3Ccode>theil.Theil\x3C/code>, \x3Ccode>Gini_Spatial\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUInequality\x3C/code> (dataframe)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>esda.shape\x3C/code> (\x3Ccode>isoperimetric_quotient\x3C/code>, \x3Ccode>convex_hull_ratio\x3C/code>)\x3C/td>\n\x3Ctd>\x3Ccode>GPUShapeDescriptors\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>spopt.region.AZP\x3C/code>, \x3Ccode>MaxPHeuristic\x3C/code>, \x3Ccode>Skater\x3C/code>, \x3Ccode>Ward\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUAZPRegions\x3C/code> (greedy steepest-descent AZP), \x3Ccode>GPUMaxPRegions\x3C/code> (randomized multi-start greedy construction with optional AZP refinement), \x3Ccode>GPUSkaterRegions\x3C/code>, \x3Ccode>GPUWardRegions\x3C/code> (bounded adjacent Ward linkage)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>spopt.locate.PMedian\x3C/code>, \x3Ccode>MCLP\x3C/code>, \x3Ccode>LSCP\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPULocationAllocation\x3C/code> provides bounded greedy p-median, maximum-coverage, and set-covering selection (plus a swap improvement phase) over \x3Ccode>GPUNetworkCostMatrix\x3C/code> or another dense cost matrix; use \x3Ccode>spopt\x3C/code> when an integer-programming optimum or richer constraints are required\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>access.Access.two_step_fca\x3C/code>, \x3Ccode>weighted_catchment\x3C/code>, \x3Ccode>Huff\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>GPUCatchmentAccessibility\x3C/code>, \x3Ccode>GPUHuffTradeAreas\x3C/code>, \x3Ccode>GPUNetworkAccessibility\x3C/code> (network)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>spaghetti\x3C/code>, \x3Ccode>pandana\x3C/code> network distance and accessibility\x3C/td>\n\x3Ctd>\x3Ccode>GPUNetworkReachability\x3C/code>, \x3Ccode>GPUNetworkCostMatrix\x3C/code>, \x3Ccode>GPUNetworkAccessibility\x3C/code> (network)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>PySAL\x3C/code> hot spot workflow (Gi* + FDR + map)\x3C/td>\n\x3Ctd>recipe \x3Ccode>addHotSpotAnalysisRecipe\x3C/code>\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Ch3 id=\"qgis\">QGIS\x3C/h3>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>QGIS tool\x3C/th>\n\x3Cth>luma.gl\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>Create grid (rectangle, hexagon)\x3C/td>\n\x3Ctd>\x3Ccode>GPUGridGenerator\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Heatmap (kernel density)\x3C/td>\n\x3Ctd>\x3Ccode>GPUPointDensity\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Count points in polygon, Zonal statistics (vector)\x3C/td>\n\x3Ctd>\x3Ccode>GPUZonalStatistics\x3C/code>; recipe \x3Ccode>addPointsInPolygonsChoroplethRecipe\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Join attributes by location, Join attributes by location (summary)\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialPredicateJoin\x3C/code>, \x3Ccode>GPUPointInPolygonJoin\x3C/code>, \x3Ccode>GPUZonalStatistics\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Join attributes by nearest\x3C/td>\n\x3Ctd>\x3Ccode>GPUNearestFeatureJoin\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Extract by location, Select by location\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialPredicateJoin\x3C/code>, \x3Ccode>GPUBufferSelection\x3C/code>, \x3Ccode>GPURegionMask\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Zonal statistics (raster)\x3C/td>\n\x3Ctd>\x3Ccode>GPURasterZonalStatistics\x3C/code> (raster)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Rasterize (vector to raster)\x3C/td>\n\x3Ctd>\x3Ccode>GPUPolygonRasterization\x3C/code> (raster)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Raster calculator\x3C/td>\n\x3Ctd>\x3Ccode>GPURasterBandMath\x3C/code>, \x3Ccode>GPURasterArithmetic\x3C/code> (raster)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Reclassify by table / layer\x3C/td>\n\x3Ctd>\x3Ccode>GPURasterReclassify\x3C/code> (raster)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Slope, Aspect, Hillshade, TRI\x3C/td>\n\x3Ctd>\x3Ccode>GPURasterGradient\x3C/code>, \x3Ccode>GPURasterSobel\x3C/code>, \x3Ccode>GPURasterScharr\x3C/code> (raster)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Contour, Contour polygons\x3C/td>\n\x3Ctd>\x3Ccode>GPUIsolines\x3C/code>, \x3Ccode>GPUIsobands\x3C/code> (raster)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Sieve, Fill / clump\x3C/td>\n\x3Ctd>\x3Ccode>GPURasterSieve\x3C/code>, \x3Ccode>GPURasterConnectedComponents\x3C/code> (raster)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Proximity (raster distance), Voronoi (raster)\x3C/td>\n\x3Ctd>\x3Ccode>GPUDistanceField\x3C/code> (raster); recipe \x3Ccode>addStraightLineCatchmentsRecipe\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Cost distance / Least-cost path\x3C/td>\n\x3Ctd>\x3Ccode>GPUCostDistance\x3C/code>, \x3Ccode>GPUCostDistancePath\x3C/code> (raster)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>IDW interpolation\x3C/td>\n\x3Ctd>\x3Ccode>GPUInverseDistanceWeighting\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Service area (from point), Service area (from layer)\x3C/td>\n\x3Ctd>\x3Ccode>GPUNetworkReachability\x3C/code>, \x3Ccode>GPUNetworkIsochrones\x3C/code> (network, ring polygons through \x3Ccode>cellOutline.rings\x3C/code>); recipe \x3Ccode>addDriveTimeCatchmentRecipe\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Polygonize / Fix geometries\x3C/td>\n\x3Ctd>\x3Ccode>GPULineNoding\x3C/code>, \x3Ccode>GPUPolygonize\x3C/code>, and \x3Ccode>GPUMakeValid\x3C/code>; \x3Ccode>GPUSegmentRingAssembly\x3C/code> remains the lower-level already-noded primitive\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Shortest path (point to point / layer)\x3C/td>\n\x3Ctd>\x3Ccode>GPUNetworkReachability\x3C/code> with \x3Ccode>GPUNetworkPathExtraction\x3C/code> (network)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Distance matrix\x3C/td>\n\x3Ctd>\x3Ccode>GPUNeighborSearch\x3C/code>; \x3Ccode>GPUNetworkCostMatrix\x3C/code> for network cost\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Nearest neighbour analysis\x3C/td>\n\x3Ctd>\x3Ccode>GPUPointPatternIndices\x3C/code> (dataframe)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Random points in polygons\x3C/td>\n\x3Ctd>\x3Ccode>GPURandomPointsInPolygon\x3C/code>, \x3Ccode>GPUDotDensity\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Pole of inaccessibility\x3C/td>\n\x3Ctd>\x3Ccode>GPULabelPoint\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Polygon centroids, Centroids\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeometryMeasures\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Mean coordinate(s), Standard deviational ellipse (Processing / plugin)\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeographicDistribution\x3C/code>, \x3Ccode>GPUGroupGeometry\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Convex hull, Minimum bounding geometry\x3C/td>\n\x3Ctd>\x3Ccode>GPUGroupConvexHull\x3C/code>, \x3Ccode>GPUGroupGeometry\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Simplify, Smooth, Densify by interval\x3C/td>\n\x3Ctd>\x3Ccode>GPULineSimplification\x3C/code>, \x3Ccode>GPULineSmooth\x3C/code>, \x3Ccode>GPULineSegmentize\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Clip by extent\x3C/td>\n\x3Ctd>\x3Ccode>GPURectangleClip\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Line intersections\x3C/td>\n\x3Ctd>\x3Ccode>GPUSegmentIntersection\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Check validity\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeometryValidity\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Line density, Sum line lengths\x3C/td>\n\x3Ctd>\x3Ccode>GPULineDensity\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>DBSCAN clustering, K-means clustering\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialClustering\x3C/code>, \x3Ccode>GPUSpatialKMeans\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Cluster-and-outline workflow (cluster, hull, area)\x3C/td>\n\x3Ctd>recipe \x3Ccode>addClusterAndOutlineRecipe\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Moran's I, Getis-Ord Gi*, LISA (SAGA, GeoDa plugin)\x3C/td>\n\x3Ctd>\x3Ccode>GPUGlobalSpatialStatistics\x3C/code>, \x3Ccode>GPUHotSpotAnalysis\x3C/code>, \x3Ccode>GPULocalMoran\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Graduated symbology modes (Quantile, Natural Breaks, Pretty, Std Dev, Equal)\x3C/td>\n\x3Ctd>\x3Ccode>GPUClassBreaks\x3C/code>, \x3Ccode>GPUColorScale\x3C/code> (dataframe)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Dissolve, Union, Intersection, Difference, Buffer (geometry), Delaunay, Voronoi (vector), Fix geometries\x3C/td>\n\x3Ctd>\x3Ccode>GPUPolygonOverlay\x3C/code>, \x3Ccode>GPUBufferSurface\x3C/code>, \x3Ccode>GPUDelaunayTessellation\x3C/code>, \x3Ccode>GPUVoronoiDiagram\x3C/code>, and \x3Ccode>GPUMakeValid\x3C/code>; spatial-index and virtual-raster ownership remain in their dedicated packages\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Model Designer / Processing graphical model\x3C/td>\n\x3Ctd>Recipes, or compose contributors in one \x3Ccode>GPUCommandGraph\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>ArcGIS Hot Spot Analysis (Getis-Ord Gi*), Emerging Hot Spot Analysis\x3C/td>\n\x3Ctd>\x3Ccode>GPUHotSpotAnalysis\x3C/code>, \x3Ccode>GPUEmergingHotSpots\x3C/code>; recipes \x3Ccode>addHotSpotAnalysisRecipe\x3C/code>, \x3Ccode>addSpaceTimeHotSpotsRecipe\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>ArcGIS Spatial Autocorrelation, Incremental Spatial Autocorrelation\x3C/td>\n\x3Ctd>\x3Ccode>GPUGlobalSpatialStatistics\x3C/code>, \x3Ccode>GPUSpatialCorrelogram\x3C/code> (dataframe)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>ArcGIS Directional Distribution, Mean Center, Median Center\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeographicDistribution\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>ArcGIS Generate Network Spatial Weights, Generate Spatial Weights Matrix\x3C/td>\n\x3Ctd>\x3Ccode>GPUContiguityWeights\x3C/code>, \x3Ccode>GPUNeighborSearch\x3C/code>, \x3Ccode>GPUNetworkCostMatrix\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>ArcGIS Geographically Weighted Regression, Ordinary Least Squares\x3C/td>\n\x3Ctd>\x3Ccode>GPUGeographicallyWeightedRegression\x3C/code>, \x3Ccode>GPUOrdinaryLeastSquares\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>ArcGIS Calculate Composite Index\x3C/td>\n\x3Ctd>\x3Ccode>GPUCompositeScore\x3C/code> (dataframe)\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Ch2 id=\"defaults-that-break-a-quick-parity-check\">Defaults that break a quick parity check\x3C/h2>\n\x3Cp>These defaults differ from the reference library or a common expectation. Each is documented where the operator is described.\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Area\x3C/th>\n\x3Cth>Default here\x3C/th>\n\x3Cth>Reference behaviour\x3C/th>\n\x3Cth>For parity\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>Islands (rows with no neighbor)\x3C/td>\n\x3Ctd>\x3Ccode>islands: 'exclude'\x3C/code> removes them from \x3Ccode>n\x3C/code> and the moments (\x3Ccode>GPU_DEFAULT_ISLAND_POLICY\x3C/code>)\x3C/td>\n\x3Ctd>esda keeps islands in \x3Ccode>n\x3C/code> and the moments\x3C/td>\n\x3Ctd>\x3Ccode>islands: 'keep'\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Two-sided permutation p-value\x3C/td>\n\x3Ctd>\x3Ccode>alternative: 'two-sided'\x3C/code> reports \x3Ccode>min(2 (min(g, l) + 1), P + 1) / (P + 1)\x3C/code>\x3C/td>\n\x3Ctd>esda's undirected test is percentile based and differs under ties; its legacy default \x3Ccode>'directed'\x3C/code> is anti-conservative\x3C/td>\n\x3Ctd>\x3Ccode>'folded'\x3C/code> matches esda's undirected test; \x3Ccode>'greater'\x3C/code> and \x3Ccode>'lesser'\x3C/code> match esda's one-sided tests\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>k-means coordinates\x3C/td>\n\x3Ctd>\x3Ccode>GPUSpatialKMeans\x3C/code> sums raw float32 coordinates (\x3Ccode>centerCoordinates\x3C/code> defaults to \x3Ccode>false\x3C/code>)\x3C/td>\n\x3Ctd>Raw float32 sums lose precision for coordinates far from the origin\x3C/td>\n\x3Ctd>\x3Ccode>centerCoordinates: true\x3C/code> for coordinates far from the origin\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>KDE edge correction\x3C/td>\n\x3Ctd>\x3Ccode>'uniform'\x3C/code> divides each cell by the kernel mass inside the window\x3C/td>\n\x3Ctd>Uncorrected estimate, or spatstat \x3Ccode>diggle = TRUE\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>'none'\x3C/code> or \x3Ccode>'diggle'\x3C/code>\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Line density\x3C/td>\n\x3Ctd>\x3Ccode>GPULineDensity\x3C/code> writes line length per grid cell (\x3Ccode>lengths\x3C/code>); \x3Ccode>densities\x3C/code> (length per area) is optional\x3C/td>\n\x3Ctd>A density raster, or per-polygon length (\x3Ccode>GPULineLengthPerPolygon\x3C/code>)\x3C/td>\n\x3Ctd>Read \x3Ccode>lengths\x3C/code>, or divide by cell area\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Ch2 id=\"see-also\">See also\x3C/h2>\n\x3Cul>\n\x3Cli>\n\x3Cp>\x3Ca href=\"/luma-contributors/docs/api/geospatial\">Geospatial kernels\x3C/a> for the projection, distance, point-in-polygon, grid-index and point-query primitives these contributors compose\x3C/p>\n\x3C/li>\n\x3Cli>\n\x3Cp>\x3Ca href=\"https://luma.gl/docs/api-reference/experimental/gpu-core/gpu-command-graph\">GPUCommandGraph\x3C/a>\x3C/p>\n\x3C/li>\n\x3Cli>\n\x3Cp>\x3Ca href=\"/luma-contributors/docs/api/gpu-network\">GPU Network\x3C/a> and \x3Ca href=\"/luma-contributors/docs/api/gpu-terrain\">GPU Terrain\x3C/a> for the network and elevation analysis contributors\x3C/p>\n\x3C/li>\n\x3Cli>\n\x3Cp>\x3Ca href=\"https://luma.gl/docs/api-reference/experimental/gpu-dataframe-analysis\">GPU Dataframe analysis contributors\x3C/a> for the column statistics, joins, and time filters the spatial contributors consume\x3C/p>\n\x3C/li>\n\x3Cli>\n\x3Cp>\x3Ca href=\"https://luma.gl/docs/api-reference/experimental/gpu-core/gpu-grid-index\">GPUGridIndex\x3C/a>\x3C/p>\n\x3C/li>\n\x3Cli>\n\x3Cp>\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/adaptive-generalized-gwr\">Adaptive generalized GWR\x3C/a>\x3C/p>\n\x3C/li>\n\x3Cli>\n\x3Cp>\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/panel-fixed-effects\">Unit fixed effects\x3C/a>\x3C/p>\n\x3C/li>\n\x3Cli>\n\x3Cp>\x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/losh-residual-permutation\">LOSH residual permutation\x3C/a>\x3C/p>\n\x3C/li>\n\x3C/ul>"},ssr:!0}]})($R["tsr"])</script><script data-tsr-stream-part="">$_TSR.e();{let s=document.currentScript,p;while((p=s.previousElementSibling)&&p.hasAttribute('data-tsr-stream-part'))p.remove();s.remove()}</script><script type="module" async="" src="/luma-contributors/assets/index-DIfTuwM1.js"></script><script>document.currentScript.remove();/*$tsr-stream-boundary*/</script></body></html>

@@ -1,0 +1,5 @@
+import{o as e}from"./wgsl-kernel-nodes-DagJklH2.js";var t=class{id;props;constructor(e){this.id=e.id,this.props=e}getCommandNodes(t){let{props:n}=this;return[e(t,{id:n.id,operation:`PixelToWorld`,bindings:[{name:`input`,view:n.input,type:`f32`,access:`read`},{name:`output`,view:n.output,type:`f32`,access:`read_write`}],invocationCount:n.pairCount,declarations:`const SCALE = vec2<f32>(${n.world.width/n.columns}, ${-n.world.height/n.rows});
+const OFFSET = vec2<f32>(${(n.pixelOffset??0)*n.world.width/n.columns}, ${n.world.height-(n.pixelOffset??0)*n.world.height/n.rows});`,body:`let pair = vec2<f32>(input[inputOffset + 2u * index], input[inputOffset + 2u * index + 1u]);
+  let world = pair * SCALE + OFFSET;
+  output[outputOffset + 2u * index] = world.x;
+  output[outputOffset + 2u * index + 1u] = world.y;`})]}};function n(e,n,r,i,a,o=0){let s=r.length*(r.format===`float32x2`?2:4),c=e.allocate(n,r.format,r.length),l=t=>e.graph.createDataView(t.view.buffer,{format:`float32`,length:s});return e.graph.add(new t({id:`${n}-kernel`,input:l(r),output:l(c),pairCount:s/2,columns:i.columns,rows:i.rows,world:a,pixelOffset:o})),c}export{n as t};

@@ -1,0 +1,1 @@
+import{t as e}from"./land-cover-B1Nqbb4T.js";import{t}from"./quads-eO3GV5YZ.js";function n(n,r,i=16,a=9){let o=t(n,r,i,a),s=Float32Array.from({length:o.count},(t,n)=>e(o.centers[n*2]/r.width,o.centers[n*2+1]/r.height));return{...o,values:s}}export{n as t};

@@ -1,0 +1,30 @@
+import{r as e}from"./terrain-binding-preflight-laSEObQE.js";import{r as t}from"./kernel-C3tfQOn4.js";import{c as n,o as r}from"./wgsl-kernel-nodes-DagJklH2.js";import{x as i}from"./gpu-contributor-utils-BIwLQON5.js";import{c as a,h as o,l as s,n as c,o as l,r as u,u as d}from"./raster-band-utils-BcTxc8_Y.js";import{n as f,u as p}from"./terrain-illumination-utils-CoEB4UZd.js";import{r as m}from"./relief-visualization-utils-dChhYQn1.js";import{t as h}from"./define-run-B-brkCe4.js";import{a as g,d as _,i as v,l as y,m as b,o as x}from"./terrain-Cc9dW1uq.js";import{W as S}from"./entry-preview-D70TdSbK.js";var C=8192;function w(e={},t=new Float32Array(4)){l(`getGPULocalDominanceParameterValues`,t,4);let n=e.observerHeight??1.7,r=e.verticalExaggeration??1;if(!Number.isFinite(n)||!Number.isFinite(r))throw Error(`Local dominance settings must be finite`);if(n<=0)throw Error(`Local dominance observerHeight must be positive`);return t.fill(0,0,4),t[0]=n,t[1]=r,t}function T(e={}){let t=e.minimumRadius??10,n=e.maximumRadius??20,r=e.radiusIncrement??1,i=e.angularResolution??15;for(let[e,a]of[[`minimumRadius`,t],[`maximumRadius`,n],[`radiusIncrement`,r],[`angularResolution`,i]])if(!Number.isSafeInteger(a)||a<1)throw Error(`Local dominance ${e} must be an integer of at least 1`);if(t>n)throw Error(`Local dominance minimumRadius must not exceed maximumRadius`);if(i>359)throw Error(`Local dominance angularResolution must be at most 359`);let a=Math.trunc((n-t)/r+1),o=Math.trunc(359/i+1),s=a*o;if(s>8192)throw Error(`Local dominance needs ${s} sample offsets, above the limit ${C}`);let c=new Int32Array(s),l=new Int32Array(s),u=new Float64Array(s),d=new Float64Array(s),f=0;for(let e=0;e<o;e++){let n=i*e*Math.PI/180;for(let i=0;i<a;i++){let o=t+r*i,s=e*a+i;c[s]=m(Math.sin(n)*o),l[s]=m(Math.cos(n)*o),u[s]=o,d[s]=2*o+r,f+=1/o*(2*o+r)}}return{count:s,rowShifts:c,columnShifts:l,distances:u,distanceFactors:d,normalization:f,distanceCount:a,angleCount:o}}var E=class{id;props;shifts;requiredHalo;constructor(e){this.id=e.id??`local-dominance`,this.props=e;let{id:t}=this,{output:n}=e,r=d(t,e.grid);if(this.shifts=T(e),this.requiredHalo=e.maximumRadius??20,!n.dominance&&!n.outputValidity)throw Error(`${t} requires at least one output`);p(t,`output.dominance`,n.dominance,`float32`,r),p(t,`output.outputValidity`,n.outputValidity,`uint32`,r),o(t,e.parameters,4),s(t,[n.dominance,n.outputValidity],[...c(e.elevation),e.parameters])}getCommandNodes(o){e(o,this.id,this.props,{"canonical elevation":4*this.props.grid.width*this.props.grid.height});let{id:s,props:c,shifts:l}=this,{output:d}=c,{width:p,height:m}=c.grid;a(s,o,c.elevation,[]),i(s,o,[c.parameters,d.dominance,d.outputValidity]);let h=p*m,g=u(o,s,c.elevation,c.grid,!0),_=g.band.storage.values,v=g.band.validity,y=d.dominance??t(o,`${s}-dominance`,`float32`,h),b=[{name:`values`,view:_,type:`f32`,access:`read`},{name:`validity`,view:v,type:`u32`,access:`read`},{name:`settings`,view:c.parameters,type:`f32`,access:`read`},{name:`dominance`,view:y,type:`f32`,access:`read_write`}],x=Array.from(l.rowShifts,(e,t)=>`vec2<i32>(${e}, ${l.columnShifts[t]})`).join(`, `),S=Array.from(l.distanceFactors,(e,t)=>n(e/l.distances[t])).join(`, `);return[...g.nodes,r(o,{id:`${s}-sample`,operation:`GPULocalDominance`,variant:`sample`,bindings:d.outputValidity?[...b,{name:`validityValues`,view:d.outputValidity,type:`u32`,access:`read_write`}]:b,invocationCount:h,declarations:`${f}
+const WIDTH: u32 = ${p}u;
+const HEIGHT: u32 = ${m}u;
+const SHIFT_COUNT: u32 = ${l.count}u;
+const NORMALIZATION: f32 = ${n(l.normalization)};
+const SHIFTS = array<vec2<i32>, ${l.count}>(${x});
+const FACTORS = array<f32, ${l.count}>(${S});`,body:`let isValid = validity[validityOffset + index] != 0u;
+  var value = getQuietNaN(index);
+  if (isValid) {
+    let observerHeight = settings[settingsOffset];
+    let verticalExaggeration = settings[settingsOffset + 1u];
+    let center = values[valuesOffset + index];
+    let column = i32(index % WIDTH);
+    let row = i32(index / WIDTH);
+    var sum = 0.0;
+    for (var shift = 0u; shift < SHIFT_COUNT; shift++) {
+      let offset = SHIFTS[shift];
+      let sampleRow = clamp(row - offset.x, 0, i32(HEIGHT) - 1);
+      let sampleColumn = clamp(column - offset.y, 0, i32(WIDTH) - 1);
+      let sampleIndex = u32(sampleRow) * WIDTH + u32(sampleColumn);
+      // Canonical values carry NaN for invalid samples, so rise is NaN and fails the comparison.
+      let rise = verticalExaggeration * (center - values[valuesOffset + sampleIndex]) + observerHeight;
+      if (rise > 0.0) {
+        sum += rise * FACTORS[shift];
+      }
+    }
+    value = sum / (observerHeight * NORMALIZATION);
+  }
+  dominance[dominanceOffset + index] = value;
+  ${d.outputValidity?`validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);`:``}`})]}},D=h({parameters:S,rebuildOn:[`minimumRadius`,`maximumRadius`],caption:`Elevation in; the local dominance of every cell over its surroundings out.`,createInputs:({world:e})=>v(e),build(e,t,n){let{grid:r,band:i,elevation:a,cellCount:o}=b(e,t),s=e.allocate(`parameters`,`float32`,4),c=e.allocate(`result`,`float32`,o);return e.graph.add(new E({grid:r,elevation:i,parameters:s.view,minimumRadius:n.minimumRadius,maximumRadius:n.maximumRadius,radiusIncrement:2,angularResolution:20,output:{dominance:c.view}})),{outputs:{elevation:a,result:c},update:e=>s.write(w({observerHeight:e.observerHeight}))}},interaction:{kind:`probe`,hint:`hover a cell`,rest:[.5,.5],resolve(e,{inputs:t,outputs:n,values:r,world:i,peek:a}){let[o,s]=y(t,i,e.x,e.y),c=_(t,i),l=a(n.result),u=[e.x,e.y];return{glyphs:[{shape:`ring`,at:u,radius:r.minimumRadius*c,dashed:!0},{shape:`ring`,at:u,radius:r.maximumRadius*c},{shape:`dot`,at:u}],readout:`${l?`dominance ${l[s*t.columns+o].toFixed(2)} · `:``}ring ${r.minimumRadius}-${r.maximumRadius} cells`}}},draw:({inputs:e,outputs:t})=>[g(e,t.elevation),x(e,t.result,{range:[0,30],smoothing:!0})]});export{D as default};

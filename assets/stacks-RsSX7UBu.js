@@ -1,0 +1,1 @@
+import{t as e}from"./ndvi-37bSHUSy.js";function t(t,n,r){let i=Math.max(8,Math.round(r*n)),a=i*r,o=Array.from({length:12},(e,t)=>t),s=e(i,r,o),c=Float32Array.from(s,()=>t());return{columns:i,rows:r,cellCount:a,sliceCount:o.length,observations:s,clouds:c}}export{t};

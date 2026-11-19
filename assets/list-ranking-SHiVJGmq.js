@@ -1,0 +1,6 @@
+import{o as e}from"./wgsl-kernel-nodes-DagJklH2.js";var t=4294967295;function n(e){return Math.max(1,Math.ceil(Math.log2(Math.max(e,2))))}function r(n,r,i){let a=i%2,o=1-a,s=[{name:`pointerIn`,view:r.pointers[a],type:`u32`,access:`read`},{name:`pointerOut`,view:r.pointers[o],type:`u32`,access:`read_write`}],c=``,l=``,u=``;for(let e of r.values){s.push({name:`${e.name}In`,view:e.views[a],type:`u32`,access:`read`},{name:`${e.name}Out`,view:e.views[o],type:`u32`,access:`read_write`});let t=`${e.name}In[${e.name}InOffset`;c+=`\n  var ${e.name} = ${t} + index];`;let n=`${t} + previous]`;l+=e.rule===`add`?`\n    ${e.name} += ${n};`:e.rule===`minimum`?`\n    ${e.name} = min(${e.name}, ${n});`:`\n    ${e.name} = ${n};`,u+=`\n  ${e.name}Out[${e.name}OutOffset + index] = ${e.name};`}return e(n,{id:`${r.id}-${i}`,operation:r.operation,variant:r.variant,bindings:s,invocationCount:r.length,declarations:`const LIST_NONE: u32 = ${t}u;`,body:`let previous = pointerIn[pointerInOffset + index];${c}
+  var nextPrevious = previous;
+  if (previous != LIST_NONE) {${l}
+    nextPrevious = pointerIn[pointerInOffset + previous];
+  }
+  pointerOut[pointerOutOffset + index] = nextPrevious;${u}`})}function i(e,t){let i=t.rounds??n(t.length),a=[];for(let n=0;n<i;n++)a.push(r(e,t,n));return{nodes:a,rounds:i,finalIndex:i%2}}export{r as n,n as r,i as t};

@@ -1,0 +1,1 @@
+import{n as e}from"./triangulation-Nv4HznK-.js";import{os as t}from"./entry-preview-D70TdSbK.js";var n=e({parameters:t,constrained:!0,caption:`Edge flips turn the ear-clipped slivers into well-shaped triangles.`});export{n as default};

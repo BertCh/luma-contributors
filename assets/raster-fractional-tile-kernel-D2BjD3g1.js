@@ -1,0 +1,16 @@
+import{c as e,o as t,t as n}from"./kernel-C3tfQOn4.js";import{O as r,S as i,T as a,v as o}from"./gpu-contributor-utils-BIwLQON5.js";import{o as s,r as c}from"./gpu-command-graph-BdzdmV6u.js";import{t as l}from"./gpu-dispatch-utils-CbRzFAgT.js";import{i as u}from"./graph-chunk-dispatch-zBt8k2-o.js";var d=256;function f(r,i){let a=l(i.operation,Math.max(i.invocationCount,1),d,r.device.limits.maxComputeWorkgroupsPerDimension),o=`${i.bindings.map((t,n)=>`const ${t.name}Offset:u32=${e(t.view)}u;
+@group(0) @binding(${n}) var<storage,${t.access}> ${t.name}:array<${t.type}>;`).join(`
+`)}
+${i.declarations??``}
+${i.workgroupCount?`var<workgroup> analysisDispatchWorkgroups: u32;`:``}
+@compute @workgroup_size(${d})
+fn main(@builtin(workgroup_id) workgroupId:vec3<u32>,@builtin(num_workgroups) workgroupCount:vec3<u32>,@builtin(local_invocation_index) localInvocationIndex:u32){
+${i.bindings.map(e=>`_ = &${e.name};`).join(`
+`)}
+let workgroupIndex=(workgroupId.z*workgroupCount.y+workgroupId.y)*workgroupCount.x+workgroupId.x;
+let index=workgroupIndex*${d}u+localInvocationIndex;
+${i.workgroupCount?`if(localInvocationIndex==0u){analysisDispatchWorkgroups=${i.workgroupCount};}
+let dispatchWorkgroups=workgroupUniformLoad(&analysisDispatchWorkgroups);
+if(workgroupIndex>=dispatchWorkgroups){return;}`:`if(index>=${i.rowCount}){return;}`}
+${i.body}
+}`;return c({id:i.id,resources:i.bindings.map(e=>({buffer:e.view,usage:e.access===`read`?`storage-read`:`storage-read-write`})),workload:{operation:i.operation,commandCount:1,maximumInvocationCount:i.invocationCount,maximumWorkgroupCount:a.x*a.y*a.z},compile:({device:e})=>{let r=new n(e,{id:i.id,source:o,shaderLayout:{bindings:i.bindings.map((e,t)=>({name:e.name,type:e.access===`read`?`read-only-storage`:`storage`,group:0,location:t}))}});return{encode:({computePass:e,getBuffer:n})=>r.dispatch(e,{bindings:Object.fromEntries(i.bindings.map(e=>[e.name,t(e.view,n)])),x:a.x,y:a.y,z:a.z}),destroy:()=>r.destroy()}}})}function p(e,t,n,i){let o=e=>e.buffer.defaultBuffer?r(e.buffer.defaultBuffer):e.buffer,c=(t,n)=>a(e,o(t)!==o(n),`read-only and writable storage bindings must not share a physical buffer in one dispatch`),l={};for(let[e,n]of Object.entries(t))if(n instanceof s)l[`output.${e}`]=n;else if(e===`status`)for(let[e,t]of Object.entries(n??{}))t instanceof s&&(l[`output.status.${e}`]=t);if(i){let t=Object.entries(l);for(let[r,[i,s]]of t.entries())for(let[c,l]of[...t.slice(r+1),...n.flatMap((e,t)=>e?[[`input.${t}`,e]]:[])]){if(o(s)!==o(l)||s.length===0||l.length===0)continue;let t=s.byteOffset+(s.length-1)*s.byteStride+s.rowByteLength,n=l.byteOffset+(l.length-1)*l.byteStride+l.rowByteLength;a(e,t<=l.byteOffset||n<=s.byteOffset,`${i} and ${c} logical byte ranges must not overlap`)}let r=new Set(Object.values(l));for(let t of i){let n=`writes`in t?[...t.writes,...t.reads??[]]:t,i=`writes`in t?new Set(t.writes):r,a=n.filter(e=>!!e);for(let[t,n]of a.entries())if(i.has(n))for(let[r,o]of a.entries())t!==r&&(i.has(o)||c(n,o),u(e,{[`binding.${t}`]:n,[`binding.${r}`]:o}))}}else{u(e,l);for(let[t,r]of n.entries())if(r){for(let e of Object.values(l))c(e,r);u(e,{...l,[`input.${t}`]:r})}}}function m(e,t,n,r,a,s=r){o(e,t,n,r,a),i(t,`${n} buffer byteLength (device.limits.maxBufferSize)`,Math.max(s,4),e.limits.maxBufferSize)}export{m as n,p as r,f as t};

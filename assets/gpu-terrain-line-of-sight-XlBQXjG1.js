@@ -1,0 +1,35 @@
+import{n as e,r as t}from"./terrain-binding-preflight-laSEObQE.js";import{n,t as r}from"./vertical-datum-BTN03tZP.js";import{r as i}from"./kernel-C3tfQOn4.js";import{o as a}from"./wgsl-kernel-nodes-DagJklH2.js";import{E as o,x as s}from"./gpu-contributor-utils-BIwLQON5.js";import{a as c,n as l,r as u}from"./gpu-raster-extrema-pyramid-BYXR99nY.js";import{c as d,d as f,h as p,l as m,n as h,o as g,r as _,u as v}from"./raster-band-utils-BcTxc8_Y.js";import{r as y,u as b}from"./raster-grid-VB0AM_GY.js";import{n as x,t as S}from"./terrain-sight-line-QKhP0RJG.js";function C(e,t,n=new Float32Array(12)){g(`getGPUTerrainLineOfSightParameterValues`,n,12);let{cellSize:r,northEdge:i,southEdge:a}=y(t);if(!r.every(e=>Number.isFinite(e)&&e>0))throw Error(`getGPUTerrainLineOfSightParameterValues grid cell size must be finite and positive`);let o=[e.toleranceMeters??0,e.tolerancePerKilometer??0,e.targetIgnoreDistance??0,e.targetIgnoreFraction??0];if(!o.every(e=>Number.isFinite(e)&&e>=0))throw Error(`getGPUTerrainLineOfSightParameterValues tolerance values must be finite and non-negative`);return n.set([e.observerHeight??1.7,e.targetHeight??0,e.maximumDistance??0,r[0],r[1],e.curvatureCoefficient??0,...o,i,a]),n}function w(e,t,n,r,a,o,s){if(n!==`pyramid`||!r)return{nodes:[]};if(s)return{nodes:[],binding:{name:`pyramid`,view:s.combined,type:`f32`,access:`read`}};let c=i(e,`${t}-pyramid`,`float32`,2*r.length);return{nodes:l(e,{id:`${t}-pyramid`,layout:r,values:a,validity:o,combined:c}),binding:{name:`pyramid`,view:c,type:`f32`,access:`read`}}}function T(e,t,n,r){if(t!==void 0&&t!==`march`&&t!==`pyramid`)throw Error(`${e} traversal must be 'march' or 'pyramid'`);if(r){if(t!==`pyramid`)throw Error(`${e} pyramid requires traversal 'pyramid'`);return c(e,r,n)}return t===`pyramid`?u(n,{firstBlockSize:4,footprint:`bilinear`}):void 0}var E=class{id;props;pyramidLayout;constructor(e){this.id=e.id??`terrain-line-of-sight`,this.props=e;let{id:t}=this;if(e.heightReference!==void 0&&e.heightReference!==`ground`&&e.heightReference!==`absolute`)throw Error(`${t} heightReference must be 'ground' or 'absolute'`);if(e.observerVerticalDatum!==void 0&&e.heightReference!==`absolute`)throw Error(`${t} observerVerticalDatum needs heightReference absolute`);r(t,e.observerVerticalDatum,n(e.elevation,e.elevationVerticalDatum));let{output:i}=e;v(t,e.grid),b(t,e.cellSizeMode),f(t,e.grid,e.cellSizeMode),o(e.pairs,[`float32x4`],`${t} pairs`);let a=e.pairs.length;if(e.pairHeights&&(o(e.pairHeights,[`float32x2`],`${t} pairHeights`),e.pairHeights.length!==a))throw Error(`${t} pairHeights must contain one row per pair`);if(o(i.visibility,[`uint32`],`${t} output.visibility`),i.visibility.length!==a)throw Error(`${t} output.visibility must contain one value per pair`);if(i.clearance&&(o(i.clearance,[`float32`],`${t} output.clearance`),i.clearance.length!==a))throw Error(`${t} output.clearance must contain one value per pair`);p(t,e.parameters,12),this.pyramidLayout=T(t,e.traversal,e.grid,e.pyramid),m(t,[i.visibility,i.clearance],[...h(e.elevation),e.parameters,e.pairs,...e.pairHeights?[e.pairHeights]:[]])}getCommandNodes(n){t(n,this.id,this.props,{"canonical elevation":4*this.props.grid.width*this.props.grid.height,"pyramid fused parameters":e(this.props.pyramid?void 0:this.pyramidLayout),pyramid:this.pyramidLayout&&!this.props.pyramid?8*this.pyramidLayout.length:0});let{id:r,props:i,pyramidLayout:o}=this,{output:c}=i,{width:l,height:u}=i.grid,f=i.cellSizeMode??`uniform`,p=f===`uniform`?``:S(f);d(r,n,i.elevation,[]),s(r,n,[i.pyramid?.combined,i.parameters,i.pairs,i.pairHeights,c.visibility,c.clearance]);let m=_(n,r,i.elevation,i.grid,!0),h=m.band.storage.values,g=m.band.validity,v=[...m.nodes],y=w(n,r,i.traversal,o,h,g,i.pyramid);v.push(...y.nodes);let b=[{name:`elevationValues`,view:h,type:`f32`,access:`read`},{name:`elevationValidity`,view:g,type:`u32`,access:`read`},...y.binding?[y.binding]:[],{name:`settings`,view:i.parameters,type:`f32`,access:`read`},{name:`pairs`,view:i.pairs,type:`f32`,access:`read`},...i.pairHeights?[{name:`pairHeights`,view:i.pairHeights,type:`f32`,access:`read`}]:[],{name:`visibilityValues`,view:c.visibility,type:`u32`,access:`read_write`},...c.clearance?[{name:`clearanceValues`,view:c.clearance,type:`f32`,access:`read_write`}]:[]];return v.push(a(n,{id:`${r}-line-of-sight`,operation:`GPUTerrainLineOfSight`,variant:`${i.traversal===`pyramid`?`pyramid`:`march`}${f===`uniform`?``:`-${f}`}${i.heightReference===`absolute`?`-absolute`:``}`,bindings:b,invocationCount:i.pairs.length,declarations:`${x({width:l,height:u,traversal:i.traversal??`march`,layout:o,clearance:!!c.clearance})}${p}
+fn isInsideGrid(position: vec2<f32>) -> bool {
+  return isFiniteValue(position.x) && isFiniteValue(position.y) &&
+    position.x >= 0.0 && position.y >= 0.0 &&
+    position.x <= f32(WIDTH - 1u) && position.y <= f32(HEIGHT - 1u);
+}`,body:`let pairBase = pairsOffset + 4u * index;
+  let observer = vec2<f32>(pairs[pairBase], pairs[pairBase + 1u]);
+  let targetPosition = vec2<f32>(pairs[pairBase + 2u], pairs[pairBase + 3u]);
+  ${i.pairHeights?`let observerHeight = pairHeights[pairHeightsOffset + 2u * index];
+  let targetHeight = pairHeights[pairHeightsOffset + 2u * index + 1u];`:`let observerHeight = settings[settingsOffset];
+  let targetHeight = settings[settingsOffset + 1u];`}
+  let maxDistance = settings[settingsOffset + 2u];
+  let cellSize = ${f===`uniform`?`vec2<f32>(settings[settingsOffset + 3u], settings[settingsOffset + 4u])`:`getRayGroundCell(vec2<f32>(settings[settingsOffset + 3u], settings[settingsOffset + 4u]), settings[settingsOffset + 10u], settings[settingsOffset + 11u], 0.5 * (observer.y + targetPosition.y) + 0.5)`};
+  let curvature = settings[settingsOffset + 5u];
+  let tolerance = vec4<f32>(
+    settings[settingsOffset + 6u], settings[settingsOffset + 7u],
+    settings[settingsOffset + 8u], settings[settingsOffset + 9u]);
+  let observerInside = isInsideGrid(observer);
+  let targetInside = isInsideGrid(targetPosition);
+${i.heightReference===`absolute`?``:`  let observerSample = sampleElevation(select(vec2<f32>(0.0), observer, observerInside));
+`}  let targetSample = sampleElevation(select(vec2<f32>(0.0), targetPosition, targetInside));
+  var code = NO_DATA;
+  // A runtime-dependent bit pattern: WGSL rejects constant-evaluated NaN.
+  var clearance = bitcast<f32>(0x7fc00000u | (index & 0u));
+  if (observerInside && targetInside && ${i.heightReference===`absolute`?``:`observerSample.y != 0.0 && `}targetSample.y != 0.0) {
+    let result = traceSightLine(
+      observer, targetPosition, ${i.heightReference===`absolute`?`observerHeight`:`observerSample.x + observerHeight`}, targetSample.x + targetHeight,
+      cellSize, curvature, maxDistance, tolerance);
+    code = result.code;
+    if (result.code != OUT_OF_RANGE) {
+      clearance = result.clearance;
+    }
+  }
+  visibilityValues[visibilityValuesOffset + index] = code;${c.clearance?`
+  clearanceValues[clearanceValuesOffset + index] = clearance;`:``}`})),v}};export{T as i,C as n,w as r,E as t};

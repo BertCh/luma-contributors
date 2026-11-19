@@ -1,0 +1,1 @@
+function e(e){return e.buffer.slice(e.byteOffset,e.byteOffset+e.byteLength)}async function t(t){return new Float32Array(e(await t.buffer.readAsync()))}async function n(t){return new Uint32Array(e(await t.buffer.readAsync()))}export{n,t};

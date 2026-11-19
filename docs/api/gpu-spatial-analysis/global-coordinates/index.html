@@ -1,0 +1,616 @@
+<!DOCTYPE html><html lang="en"><head><meta charSet="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/tokens-DUsD-MQQ.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/base-Btcfj7He.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/components-Bq5SRdyd.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/home-BkA-QKrg.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/docs-CWchvtmE.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/index-Do-eHPVA.css" data-precedence="default"/><title>Global coordinates, spherical geometry and S2 analysis | Gridlight</title><meta name="description" content="Browse GPU spatial analysis operations by data type, use case and domain, each drawn live with luma.gl."/><link rel="modulepreload" href="/luma-contributors/assets/index-DIfTuwM1.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/rolldown-runtime-XKyaHtl9.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/react-DlmbjZJV.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/matchContext-BZe79Vhs.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/link-D9V6xy_k.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/jsx-runtime-LKYXHABd.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/preload-helper-Ehsq8Wa4.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/topics-BYMS4mpg.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/_-jF9EWkQq.js" fetchPriority="low"/><link rel="preconnect" href="https://fonts.googleapis.com"/><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous"/><script>try{var t=localStorage.getItem('gridlight-theme');if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}</script></head><body><header class="site-header"><div class="site-header__inner"><a class="brand-link" aria-label="Gridlight home" href="/luma-contributors/"><svg width="26" height="26" viewBox="0 0 32 32" role="img" aria-label="Gridlight" fill="none"><rect x="2.5" y="2.5" width="27" height="27" rx="5" stroke="currentColor" stroke-opacity="0.45"></rect><path d="M12 3v26M21 3v26M3 12h26M3 21h26" stroke="currentColor" stroke-opacity="0.22"></path><path d="M3 21c4-1 5-6 9-6s5 5 9 3 4-6 8-6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"></path><rect x="12.8" y="3.8" width="7.4" height="7.4" rx="1.5" fill="currentColor" fill-opacity="0.9"></rect><circle cx="24.5" cy="24.5" r="2.4" fill="var(--color-signal)"></circle></svg><span class="brand-link__text">grid<span style="color:var(--color-accent)">light</span></span></a><nav class="site-nav" aria-label="Main"><a href="/luma-contributors/explore">Explore</a><a href="/luma-contributors/how-it-works"><span class="site-nav__long">How it works</span><span class="site-nav__short">How</span></a><a class="active" href="/luma-contributors/docs" data-status="active" aria-current="page">Reference</a><a class="site-nav__github" href="https://github.com/BertCh/luma-contributors">GitHub</a><button type="button" class="theme-toggle" aria-label="Toggle light and dark theme"><svg class="theme-toggle__sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg><svg class="theme-toggle__moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"></path></svg></button></nav></div></header><!--$--><div class="docs-layout"><aside class="docs-sidebar"><ul><li><details open=""><summary>@luma-contributors/analysis</summary><ul><li><a href="/luma-contributors/docs/api">Analysis modules</a></li><li><a href="/luma-contributors/docs/api/operation-forms-and-cpu-twins">Operation forms and CPU twins</a></li><li><a href="/luma-contributors/docs/api/analysis-catalog">Analysis catalog</a></li><li><a href="/luma-contributors/docs/api/reused-analysis-preparation">Source topology and wide numeric profiling</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis-cross-reference">GPU spatial analysis cross-reference</a></li><li><details open=""><summary>Analysis core</summary><ul><li><a href="/luma-contributors/docs/api/analysis-core/fitting-kernels">Shared fitting kernels</a></li></ul></details></li><li><details open=""><summary>Spatial analysis</summary><ul><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis">GPU Spatial Analysis</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/concepts">GPU Spatial Analysis concepts</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/analysis-experience">Analysis experience vocabulary</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/gpu-analysis-contiguity-statistics">GPUAnalysisContiguityStatistics</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/chunked-spatial-weights-transpose">GPUChunkedSpatialWeightsTranspose</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/geodesic-precision">Geodesic precision (CR01)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/instrumental-variables-covariance">Instrumental-variable robust covariance</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/temporal-context">Temporal context</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/movement-semantics">Movement semantics</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/home-range-and-recursion-mob07">Home ranges and recursion</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/track-similarity-measures">Track similarity: EDR, ERP, SSPD and bounded search</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-statistics">Space-time weights, lagged and differential local Moran, cross-correlation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-clustering">Space-time clustering</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-density-and-k-function">Space-time kernel density, relative risk, K function and Diggle test</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/change-points-and-expectation-based-scan">Change points and the expectation-based scan</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/geographical-detector-redcap-entropy">Geographical detector, REDCAP, spatial entropy and the contiguity-order correlogram</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/colocation-category-dependence-adaptive-density">Colocation quotient, local category dependence and adaptive-bandwidth density</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/healpix-cells-dggs-json">HEALPix cells and DGGS-JSON zone data</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/scoring-rules">Proper scoring rules</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-hawkes">Space-time Hawkes process (STM-08)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/sinkhorn-divergence">Sinkhorn divergence between spatial distributions (STM-09)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/spatial-frames">Spatial frames</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators">GPU Spatial Analysis operators</a></li><li><details open=""><summary>Operator Families</summary><ul><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-weights">GPU Spatial Analysis: Spatial weights</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-statistics">GPU Spatial Analysis: Spatial statistics</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-dynamics">GPU Spatial Analysis: Distribution dynamics &amp; space-time tests</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-accessibility">GPU Spatial Analysis: Accessibility &amp; change of support</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-joins">GPU Spatial Analysis: Spatial joins</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-validity">GPU Spatial Analysis: Geometry validity &amp; intersections</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-density">GPU Spatial Analysis: Density &amp; interpolation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-cells">GPU Spatial Analysis: Cells (DGGS)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-lines">GPU Spatial Analysis: Lines &amp; trajectories</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-geometry">GPU Spatial Analysis: Geometry utilities</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-regression">GPU Spatial Analysis: Regression</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/recipes">GPU Spatial Analysis: Recipes</a></li></ul></details></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/statistical-expansion">Local variability, point patterns and spatial regression extensions</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/quantile-lisa">GPUQuantileLISA</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/gpu-dorling-cartogram">GPUDorlingCartogram</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/rate-mapping">Rate mapping recipes</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/adaptive-generalized-gwr">Adaptive generalized geographically weighted regression</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/panel-fixed-effects">Spatial panel unit fixed effects</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/losh-residual-permutation">Conditional LOSH residual inference</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/expansion-recipes">Geospatial workflow recipes</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/dasymetric-redistribution">Dasymetric redistribution</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/expansion-lenses">Geospatial expansion computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/coverage-expansion">Geospatial coverage expansion</a></li><li><a class="active" href="/luma-contributors/docs/api/gpu-spatial-analysis/global-coordinates" data-status="active" aria-current="page">Global coordinates, spherical geometry and S2 analysis</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/interpolation-expansion">Bounded GPU interpolation and simulation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/vecchia-likelihood">Vecchia likelihood (STM-07)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/gaussian-random-field">Gaussian random fields</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/coverage-statistics">Bounded statistical estimation and validation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/spatial-validation-advanced">Spatial fold designs and nested interpolation validation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/point-process">Point process contributors</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/urban-morphology">Urban morphology recipes</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/landscape-ecology">Landscape ecology recipes</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/urban-ecology-lenses">Urban morphology and landscape ecology computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/geometry-refinement-lenses">Geometry refinement computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/interpolation-lenses">Executable interpolation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/movement-coverage">Trajectory estimation, restriction and search</a></li><li><a href="/luma-contributors/docs/api/gpu-geometry-refinement">GPU geometry refinement</a></li></ul></details></li><li><details open=""><summary>Network</summary><ul><li><a href="/luma-contributors/docs/api/gpu-network">GPU Network</a></li><li><a href="/luma-contributors/docs/api/gpu-network/concepts">GPU Network concepts</a></li><li><a href="/luma-contributors/docs/api/gpu-network/operators">GPU Network operators</a></li><li><a href="/luma-contributors/docs/api/gpu-network/louvain">GPUNetworkLouvain</a></li><li><a href="/luma-contributors/docs/api/gpu-network/alternative-routes">Alternative routes</a></li><li><a href="/luma-contributors/docs/api/gpu-network/k-shortest-paths">K-shortest simple paths</a></li><li><a href="/luma-contributors/docs/api/gpu-network/visibility-graph">Visibility graph and network centrality</a></li><li><a href="/luma-contributors/docs/api/gpu-network/flow-models-mob10">Flow models on origin-destination aggregation</a></li><li><a href="/luma-contributors/docs/api/gpu-network/map-matched-edge-volumes-mob05">Edge volumes of map-matched tracks</a></li><li><a href="/luma-contributors/docs/api/gpu-network/network-time-geography-mob09">Network time geography</a></li><li><a href="/luma-contributors/docs/api/gpu-network/expansion">Network structure, routes and spatial topology extensions</a></li><li><a href="/luma-contributors/docs/api/gpu-network/network-movement-coverage">Bounded network optimization and trajectory analysis</a></li><li><a href="/luma-contributors/docs/api/gpu-network/network-movement-benchmarks">Network and movement measurements</a></li><li><a href="/luma-contributors/docs/api/gpu-network/point-process">Network point processes</a></li></ul></details></li><li><details open=""><summary>Terrain</summary><ul><li><a href="/luma-contributors/docs/api/gpu-terrain">GPU Terrain</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/concepts">GPU Terrain concepts</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/operators">GPU Terrain operators</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/height-above-drainage">Height above drainage over D-infinity flow</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/expansion-lenses">Expansion computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/terrain-processing">Terrain processing</a></li></ul></details></li><li><details open=""><summary>Raster analysis</summary><ul><li><a href="/luma-contributors/docs/api/gpu-raster">Raster analysis</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/operations">Raster analysis operations</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/isolines-tiles">GPUIsolines: seam-safe tiles and vector overlays</a></li><li><details open=""><summary>Operation Families</summary><ul><li><a href="/luma-contributors/docs/api/gpu-raster/operations-analysis">GPURaster analysis contributors</a></li></ul></details></li><li><a href="/luma-contributors/docs/api/gpu-raster/expansion">Raster, terrain and geometry expansion</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/contrast-equalization">Raster contrast equalization</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-embedding-codecs">Embedding raster codecs</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-patches">Raster patch metrics and sieving</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/spectral-filter">Spectral raster filtering</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/fill-nodata">Nodata filling</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/tile-reprojection">GPURasterTileReprojection</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/fractional-zonal-distribution">GPURasterFractionalZonalDistribution</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/fractional-categorical-statistics">GPURasterFractionalCategoricalStatistics</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/focal-pairs">Focal cross-band statistics</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/spectral-indices">Calibrated spectral indices</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/expansion-lenses">Expansion computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-time-series">Raster time series</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-change-monitoring">Raster change monitoring</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-eof-analysis">Raster EOF analysis and lagged correlation</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-embeddings">Embedding rasters</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/lagrangian-diagnostics-mob06">Lagrangian diagnostics (time-varying fields, FTLE, connectivity, residence time)</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/remote-sensing">Bounded remote-sensing contributors</a></li></ul></details></li><li><details open=""><summary>Dataframe analysis</summary><ul><li><a href="/luma-contributors/docs/api/gpu-dataframe-analysis">GPU Dataframe analysis contributors</a></li><li><a href="/luma-contributors/docs/api/dataframe-analysis/coregionalization-fit">GPUCoregionalizationFit</a></li><li><a href="/luma-contributors/docs/api/forest-inference">Forest inference</a></li><li><a href="/luma-contributors/docs/api/variable-standardization">GPUVariableStandardization</a></li></ul></details></li><li><details open=""><summary>Geospatial</summary><ul><li><a href="/luma-contributors/docs/api/geospatial">Geospatial analysis</a></li></ul></details></li><li><details open=""><summary>Point cloud analysis</summary><ul><li><a href="/luma-contributors/docs/api/pointcloud-analysis">Point cloud analysis</a></li></ul></details></li><li><details open=""><summary>Computation records and views</summary><ul><li><a href="/luma-contributors/docs/api/computation-record">Computation record</a></li><li><a href="/luma-contributors/docs/api/computation-views">Computation views authoring guide</a></li></ul></details></li></ul></details></li></ul></aside><article class="docs-content"><h1 id="global-coordinates-spherical-geometry-and-s2-analysis">Global coordinates, spherical geometry and S2 analysis</h1>
+<p>These graph contributors cover bounded portions of CR01–CR05. Inputs and outputs remain GPU
+views. They declare compute nodes and never submit, read back, download grids, or call a CPU GIS
+engine. Use a separate contributor for each source batch; the kernels do not merge chunks or own
+caller buffers. All output views must be disjoint from inputs and each other. Storage usage stays
+within eight bindings per compute stage.</p>
+<table>
+<thead>
+<tr>
+<th>Roadmap</th>
+<th>Delivered API and scope</th>
+<th>Remaining scope</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CR01</td>
+<td>Existing <code>GPUGeometryMeasures</code> now offers safeguarded inverse solving, adaptive edge integration and explicit invalid/exhaustion reporting on serial/cooperative paths.</td>
+<td>f32 numerical envelopes are tested, not certified; singular or unresolved inverse roots and pole-winding polygon areas remain explicitly invalid.</td>
+</tr>
+<tr>
+<td>CR02</td>
+<td>Prepared regular grids, priority/bounds/nodata, inverse residual validation and optional high/low coordinate words match direct PROJ fixtures.</td>
+<td>Grid files, acquisition, CRS databases and epoch/subgrid selection remain caller preparation, as scoped by the original backlog.</td>
+</tr>
+<tr>
+<td>CR03</td>
+<td>Signed vertical/combined corrections, explicit units/reference names and split height residuals; direct PROJ vertical fixture.</td>
+<td>Named geoid/epoch acquisition and full PROJ pipeline construction are external preparation.</td>
+</tr>
+<tr>
+<td>CR04</td>
+<td>Nonconvex containment with holes, chart and intrinsic global Boolean overlay, complement semantics, open/closed predicates, pole/antimeridian fixtures and assembled rings.</td>
+<td>f32 tolerance bands replace exact adaptive predicates; intrinsic overlay reports unresolved separation/junctions and bounds work to 128 input vertices / 1024 output vertices.</td>
+</tr>
+<tr>
+<td>CR05</td>
+<td>Exact hierarchy/neighbors and stable measures through level 30, adaptive polygon covers through level 15, uniform cap covers and geometric cross-family overlap weights for prepared convex boundaries.</td>
+<td>Cover guarantees are tolerance-aware; automatic cross-family broad-phase/boundary acquisition and optimized CPU timing comparisons remain separate integration/performance work.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="prepared-datum-grids">Prepared datum grids</h2>
+<p><code>GPUDatumGridTransform</code> takes <code>float32x3</code> positions: longitude and latitude in degrees, then
+height in the declared unit. Grid samples are <code>(longitude shift degrees, latitude shift degrees, height shift meters)</code>. Signed height samples always mean <strong>target minus source</strong> height. A geoid
+undulation grid must therefore be sign-adjusted by its preparation adapter when converting
+ellipsoidal to orthometric height. Both vertical reference names are mandatory for vertical or
+combined operations. The names describe provenance; the contributor does not resolve a CRS.</p>
+<p>Each grid supplies dimensions, sample offset, origin and nonzero spacing; negative spacing is
+allowed. Coordinates use a continuous longitude branch and there is no implicit antimeridian wrap.
+Grid bounds are inclusive with a <code>1e-5</code> grid-coordinate numerical margin, clamped to the outer edge. The last grid row/column uses the final interpolation cell. All four
+corners must be valid and finite, even when a corner has interpolation weight zero. The first
+covering grid wins. Nodata in it fails instead of silently falling through to a lower-priority grid.
+An empty grid list returns no-coverage for every finite input.</p>
+<p>Forward horizontal transforms add interpolated shifts. Inverse horizontal transforms solve
+<code>target = source + shift(source)</code> with at most <code>maximumIterations</code> fixed-point steps and verify the
+final residual. The inverse always takes at least one step before testing the residual (the first residual is the shift itself). Default tolerance is <code>5e-9</code> degrees (about 0.56 mm; never less than four f32 spacings of the shift) and the iteration cap is 16. A combined inverse
+samples vertical correction at the recovered source longitude/latitude. Inverse lookup starts at
+the target: if that location is outside every grid, it returns no coverage, even if a shifted source
+might exist. This matches the target-seeded direct PROJ <code>hgridshift</code> fixtures, including the case where a forward-shifted edge point cannot be inversely looked up. Priority discontinuities can also choose a different inverse grid; inverse is not promised to recover the original source across such a discontinuity. No extrapolation or identity fallback occurs.</p>
+<p>Status is 0 success, 1 invalid/nonfinite result or latitude outside ±90°, 2 no coverage, 4 nodata,
+and 8 inverse exhaustion. Failed rows contain NaNs. Optional paired <code>positionsLow</code> input/output
+views represent longitude, latitude and height as the sum of high and low f32 words. The returned
+high words stay equal to the input high words; the returned low words carry displacement, and are
+not a normalized double-double representation. Grid origins are split before local interpolation.
+This preserves tested sub-ulp datum shifts without claiming general float64 arithmetic. With no
+low views, small shifts at large coordinates can still round away. Samples remain f32, and inverse
+tolerance is a residual stopping test, not a certified geodetic accuracy bound. See the <a href="https://proj.org/en/stable/operations/transformations/hgridshift.html">PROJ horizontal grid semantics</a>
+and <a href="https://proj.org/en/stable/operations/transformations/vgridshift.html">vertical grid semantics</a>
+for the broader reference contracts; this prepared-grid interface does not implement every option.</p>
+<h2 id="convex-spherical-geometry-and-overlap-weights">Convex spherical geometry and overlap weights</h2>
+<p>Provide normalized xyz directions and counterclockwise minor great-circle edges. Every polygon
+must contain 3–32 distinct vertices, exclude a repeated closing vertex, and lie strictly inside an
+open hemisphere. The vertex-mean direction must lie strictly inside every oriented edge halfspace.
+Degenerate, antipodal-edge, clockwise or unsupported nonconvex inputs report invalidity. Input xyz
+squared lengths must differ from one by no more than <code>1e-4</code>. Default predicate tolerance is <code>1e-6</code>.
+The tolerance is an f32 angular band, not exact arithmetic.</p>
+<p>Containment uses a query-to-polygon index column. <code>boundary: 'closed'</code> includes the tolerance band;
+<code>'open'</code> excludes it. <code>complement: true</code> reverses interior/exterior while retaining the chosen
+boundary policy. Status 2 exposes boundary classification, and status 1 invalidity takes precedence
+and must not be interpreted as a meaningful false predicate.</p>
+<p>Intersection uses paired polygon-offset columns. It collects contained vertices and true
+minor-arc crossings, deduplicates within four times tolerance, and orders the resulting boundary.
+Closed-boundary contacts may have one or two vertices. Outputs have a caller-selected stride of
+1–64 and <code>(written, required)</code> counts. Status 1 means invalid input, 2 capacity exhaustion, and 4
+numerical uncertainty; status bits may combine. Uncertain/invalid rows write zero vertices.
+Capacity-limited output is incomplete and must not be consumed as a polygon.</p>
+<p>Optional <code>output.measures</code> supplies <code>(intersection steradians, source fraction, target fraction, union steradians)</code>. These fractions are geometric overlap weights for <strong>already prepared</strong> convex
+source/target cell boundaries, irrespective of cell family. They are not a relabeling of H3/S2 keys
+or centroid-containment approximation. Failed or capacity-limited rows have NaN measures. No
+cross-family candidate generation, H3 boundary acquisition or global conservative-remapping
+recipe is implied.</p>
+<h2 id="s2-identity-measurement-and-covers">S2 identity, measurement and covers</h2>
+<p>Cell keys are always exact little-endian <code>(low, high)</code> u32 pairs. <code>GPUS2CellHierarchy</code> supports
+parents at a requested level, immediate children in Hilbert order, inclusive leaf-ID ranges, and
+four edge neighbors ordered left/right/down/up in the input face coordinate system. Integer cube
+face transitions work through level 30, including corners, poles and mixed-level rows. Invalid
+keys report status 1; asking a leaf for children or a coarser cell for a descendant parent reports
+status 2. All corresponding output keys are zero.</p>
+<p><code>GPUS2CellMeasures</code> returns area in steradians and perimeter in radians. Multiply by a chosen
+sphere's squared radius or radius explicitly for physical units. Levels 0–30 use analytic quadratic-UV increments to compute triangle determinants and edge
+cross products without subtracting rounded fine-cell vertices. The exact integer key is decoded
+before this local computation. This improves area/perimeter precision; it does not improve the
+absolute xyz precision of arbitrary boundary vertices or polygon-cover predicates.</p>
+<p><code>GPUS2CapCovering</code> accepts unit xyz cap centers and angular radii in <code>[0, pi]</code>. It enumerates all
+<code>6 * 4^level</code> cells, with level restricted to 0–8, in ascending key order. Exterior covers select
+cells whose closest spherical point is within the cap plus a default <code>1e-5</code>-radian safety margin.
+Interior covers require every point to be within the cap minus that margin, using antipodal closest
+distance for the farthest point. Consequently an interior cover of a radius-pi cap conservatively
+excludes cells containing the antipodal center. Capacity truncation reports status 2 and the full
+required count; such output is not a complete cover. Invalid caps report status 1. This uniform
+algorithm is appropriate for modest cap batches; it is not S2's adaptive priority coverer.</p>
+<p><code>refinement: 'level-synchronous'</code> removes the level 8 ceiling. Instead of one invocation per cap
+scanning the whole sphere, it starts from the six face cells and runs <code>level + 1</code> rounds. Each
+round launches one invocation per frontier cell and per cap, drops cells that cannot contain a
+selected descendant (a child is never closer to the cap than its parent), splits the others in
+four, and a scan numbers the survivors, so every cap's cells stay in ascending key order with no
+sort. The cells, counts and status equal the uniform enumeration's (exterior and interior, any
+capacity) and <code>level</code> may reach 15. Each cap holds at most <code>frontierCapacity</code> cells per round
+(default <code>8 * capacity + 64</code>, at least <code>capacity</code>): a round holds the four children of every kept
+parent, and a kept parent can have no selected child, so the frontier can reach about four times
+the final cell count. The default holds a cover that exceeds <code>capacity</code> by a factor of about two,
+so the caller still gets status 2 and the required count. A cap that outgrows the frontier reports
+status bit 4, writes no cells and reports counts <code>(0, 0)</code>: a truncated frontier cannot know the
+size of the full cover, so no required count is available; raise <code>frontierCapacity</code> (or
+<code>capacity</code>) and run again. A zero-radius cap on a face center covers the four cells that touch
+it in both enumerations. The rounds are not gated on the live frontier length (the published
+<code>GPUScan</code> has no GPU-written dispatch size), and <code>estimatedCommandNodeCount</code> is exact for both the
+cap and the polygon level-synchronous coverings. The default remains <code>refinement: 'uniform'</code>, the reference tier.</p>
+<h2 id="safeguarded-ellipsoidal-measurements">Safeguarded ellipsoidal measurements</h2>
+<p>Set <code>ellipsoidalInverse: 'safeguarded'</code> on the existing <code>GPUGeometryMeasures</code>. Ordinary converged
+Vincenty rows keep their fast path. Failed rows scan 32 auxiliary-longitude intervals near the
+geographic separation and bisect sign-changing residual brackets for up to 32 iterations. A root
+must have residual at most <code>7e-7</code> radians; the shortest accepted positive-distance solution wins.
+A singular/discontinuous or unbracketed root remains invalid. This is an independently implemented
+safeguard, not the full Karney inverse algorithm. The default remains <code>'vincenty'</code>.</p>
+<p><code>geodesicAreaTolerance</code> requests per-edge successive-refinement quadrature error estimation in
+squared output units. <code>geodesicAreaMaximumSegments</code> is a power of two from 2 through 256 (default
+256). Sampling doubles until <code>abs(fine-coarse)/15</code> meets the requested estimate; exhaustion or
+nonfinite results invalidates the feature and increments <code>invalidCount</code>. This estimates quadrature
+convergence, not all f32, inverse/direct-series or input-quantization error. Default omitted tolerance
+retains the prior bounded-sampling behavior. Pole-winding polygon areas still report invalidity;
+the spherical operators below handle spherical polar regions explicitly.</p>
+<p>Direct <code>geographiclib==2.1</code> fixtures cover 128 near-antipodal and 128 global line pairs (exact f32
+input coordinates), on serial and cooperative paths. Valid results must be within 10 meters; fewer
+than eight of the 256 may be explicitly unresolved. Twelve holed polygons near high latitudes,
+the equator and antimeridian compare adaptive area with <code>Geodesic.WGS84.Polygon</code>: absolute error
+below <code>max(2e6 square meters, 3e-6 * reference area)</code>. An intentionally impossible <code>1e-20</code> tolerance
+with a two-segment cap must invalidate all twelve. These are measured acceptance envelopes, not
+user-requested tolerance guarantees.</p>
+<h2 id="spatial-context-limits-and-status-codes">Spatial context, limits and status codes</h2>
+<p>The five spherical classes and the two S2 coverings read unit direction vectors. Each takes an
+optional <code>spatialContext</code>, resolved with <code>resolveGPUSpatialContext</code> and exposed as
+<code>.spatialContext</code>. The accepted space is <code>longitude-latitude</code>, the space whose positions these
+vectors embed on the sphere, with great-circle edges and the <code>none</code> or <code>great-circle</code> metric.
+Omitted, it defaults to <code>GPU_SPHERICAL_DEFAULT_SPATIAL_CONTEXT</code>. A planar context throws
+<code>&#x3C;id> does not support planar coordinates</code>, and a longitude-latitude context with linear edges
+throws <code>&#x3C;id> needs great-circle edges</code>. The context declares meaning only: the vectors are never
+converted, and <code>GPULonLatPolygonPreparation</code> remains the way from degrees to unit vectors.</p>
+<p>Validation messages name the contributor, the prop and the accepted range, for example
+<code>spherical-arc-overlay left plus right positions must be at most 128</code>. The limits are named
+exports with their reasons:</p>
+<table>
+<thead>
+<tr>
+<th>Constant</th>
+<th>Value</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_INPUT_VERTICES</code></td>
+<td>128</td>
+<td>O(n^3) arrangement in one invocation with private scratch</td>
+</tr>
+<tr>
+<td><code>GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_OUTPUT_VERTICES</code></td>
+<td>1024</td>
+<td>seven floats of scratch per output vertex</td>
+</tr>
+<tr>
+<td><code>GPU_SPHERICAL_CONVEX_MINIMUM_VERTICES</code>, <code>GPU_SPHERICAL_CONVEX_MAXIMUM_VERTICES</code></td>
+<td>3, 32</td>
+<td>convex polygons live in fixed private arrays</td>
+</tr>
+<tr>
+<td><code>GPU_SPHERICAL_CONVEX_INTERSECTION_MAXIMUM_CAPACITY</code></td>
+<td>64</td>
+<td>a clip has at most the sum of two 32-vertex polygons</td>
+</tr>
+<tr>
+<td><code>GPU_SPHERICAL_MINIMUM_TOLERANCE</code>, <code>GPU_SPHERICAL_MAXIMUM_TOLERANCE</code></td>
+<td>1e-7, 1e-2</td>
+<td>below f32 noise, and the meaning of a boundary band</td>
+</tr>
+<tr>
+<td><code>GPU_SPHERICAL_MAXIMUM_ARRANGEMENT_TOLERANCE</code></td>
+<td>1e-3</td>
+<td>arc overlay and S2 polygon covering</td>
+</tr>
+<tr>
+<td><code>GPU_SPHERICAL_OVERLAY_MINIMUM_COSINE</code></td>
+<td>1e-3</td>
+<td>gnomonic chart scale near the horizon</td>
+</tr>
+<tr>
+<td><code>GPU_S2_POLYGON_COVERING_MAXIMUM_LEVEL</code></td>
+<td>15</td>
+<td>f32 vertex resolution</td>
+</tr>
+<tr>
+<td><code>GPU_S2_POLYGON_COVERING_MAXIMUM_VISITED_CELLS</code></td>
+<td>1,048,576</td>
+<td>frontier buffers fit one 128 MiB binding</td>
+</tr>
+<tr>
+<td><code>GPU_S2_CAP_COVERING_MAXIMUM_UNIFORM_LEVEL</code></td>
+<td>8</td>
+<td><code>6 * 4^level</code> cells scanned per cap invocation</td>
+</tr>
+<tr>
+<td><code>GPU_S2_CAP_COVERING_MAXIMUM_REFINED_LEVEL</code></td>
+<td>15</td>
+<td>f32 vertex resolution</td>
+</tr>
+<tr>
+<td><code>GPU_CELL_TOPOLOGY_MAXIMUM_RADIUS</code></td>
+<td>8</td>
+<td><code>GPUCellTopology</code> disk and ring <code>k</code> (H3 disk of 217 cells, Quadbin 289)</td>
+</tr>
+</tbody>
+</table>
+<p>Status words are documented on each output type and exported as constants, with the values
+unchanged: <code>GPU_SPHERICAL_CONVEX_CONTAINS_STATUS_*</code>, <code>GPU_SPHERICAL_POLYGON_CONTAINS_STATUS_*</code>,
+<code>GPU_SPHERICAL_CONVEX_INTERSECTION_STATUS_*</code>, <code>GPU_SPHERICAL_ARC_OVERLAY_STATUS_*</code>,
+<code>GPU_SPHERICAL_POLYGON_OVERLAY_COMPLEMENT_*</code>, <code>GPU_S2_POLYGON_COVERING_STATUS_*</code>,
+<code>GPU_S2_CAP_COVERING_STATUS_*</code>, <code>GPU_S2_CELL_HIERARCHY_STATUS_*</code> and <code>GPU_S2_CELL_MEASURES_STATUS_*</code>.</p>
+<h2 id="general-spherical-topology">General spherical topology</h2>
+<p><code>GPUSphericalPolygonContains</code> accepts nonconvex simple CCW shell/hole rings and a query-to-polygon
+index. The first ring is the shell and subsequent rings are holes. Rings must be disjoint, holes
+properly nested, and minor arcs nondegenerate. Boundary policy and status 0/1/2 follow the convex
+predicate. Each ring must lie in the open hemisphere defined by <code>hemisphereCenter</code>, or its
+normalized vertex mean when omitted. Supplying a pole avoids sensitivity to uneven vertex
+sampling. The operator checks ring self-crossings; cross-ring nesting is a prepared-input contract.
+Direct S2 checks include 1,032 normal/complement classifications on concave and holed rings rotated
+across the pole and antimeridian.</p>
+<p><code>GPUSphericalPolygonOverlay</code> maps caller-prepared polygon/multipolygon boundaries into a common
+gnomonic hemisphere, runs the existing GPU snap-rounded arrangement, then lifts assembled rings
+onto the sphere. All four Boolean operations and left/right complements are supported. Every
+vertex must meet <code>dot(chartCenter, vertex) >= minimumCosine</code> (default <code>.01</code>, minimum <code>.001</code>).
+<code>vertexTolerance</code> is in chart coordinates. Complement output is a GPU word: 1 means the sphere
+minus the assembled region. Boundary provenance endpoints remain in chart coordinates. Counts,
+required counts, overflow and candidate overflow retain the planar arrangement contract. Projection
+or capacity failures cannot be interpreted as an empty successful region. The direct S2 oracle
+checks nonconvex/holed Boolean ring counts and areas to <code>3e-5</code> steradians.</p>
+<p><code>GPUSphericalArcOverlay</code> handles boundaries that cannot share a hemisphere. It nodes great-circle
+arcs intrinsically, classifies adjacent faces by crossing parity, retains oriented boundary pieces,
+and assembles rings using the left-turn rule at junctions. Both operands supply the known membership
+of one common <code>referencePoint</code>, separated from all boundaries; reversing that membership represents
+the complement. Nested rings use parity, and an empty boundary with inside reference represents
+the full sphere. The reference membership is caller-prepared semantic data, not inferred from ring
+orientation. Simple disjoint boundary rings are checked for self/cross-ring intersections; touching
+rings within one operand are rejected. Output rings are open xyz rings with interior on the left.</p>
+<p>Intrinsic overlay accepts at most 128 total input vertices and 3–1024 output vertex capacity.
+Tolerance ranges from <code>1e-7</code> to <code>1e-3</code> radians, default <code>1e-6</code>. Seven deterministic two-arc parity
+paths avoid reference rays through vertices. Adjacent-side probes start at 16 times tolerance and
+shrink according to boundary separation; inadequate separation and unresolved junctions fail
+explicitly. Counts are <code>(written vertices, written rings, required segments, reference membership)</code>.
+Status bits are 1 invalid input/reference/topology, 2 capacity and 4 numerical uncertainty. Failed
+results have zero written geometry; required segments are only a lower bound on early failure.
+Segment storage is an explicit graph transient, not a large shader-private array. Twelve direct
+S2 Boolean cases cover globally distributed zigzag boundaries and complements, with area error
+below <code>2e-5</code> steradians and exact ring counts. This is tolerance-based topology, not exact S2 parity.</p>
+<h2 id="adaptive-polygon-covers">Adaptive polygon covers</h2>
+<p><code>GPUS2PolygonCovering</code> traverses the six S2 roots using a bounded depth-first stack. It emits whole
+contained cells early and subdivides boundary cells through <code>maximumLevel</code> (0–15), subject to
+<code>minimumLevel</code>. Interior mode emits only contained cells; exterior mode includes intersecting
+terminal cells. Inputs use the same prepared shell/hole hemisphere contract and optional pole as
+the nonconvex predicate, with explicit complement. Self-crossing rings and nonadjacent touches
+are rejected before traversal, producing invalid status, zero counts and zero output keys.
+Cross-ring nesting remains a prepared-input contract. This is mixed-level geometric coverage, not
+H3 centroid containment or S2's priority-queue <code>max_cells</code> minimization policy.</p>
+<p><code>maximumVisitedCells</code> defaults to 65,536 and may range from 6 to 1,048,576. Status bits are 1 invalid
+input, 2 output capacity and 4 traversal exhaustion. Counts are <code>(written, required so far)</code>;
+when exhausted they do not claim the complete requirement. <code>visitedCount</code> exposes traversal work.</p>
+<p>The default <code>refinement: 'serial'</code> runs the ring check and the depth-first walk in one invocation,
+which is exact but cannot use the GPU's width. <code>refinement: 'level-synchronous'</code> distributes both.
+Ring validation becomes one invocation per ring (shape, unit vertices, hemisphere center) and one
+per edge (zero length, hemisphere, crossings and touches against the ring's later edges). The
+traversal then runs <code>maximumLevel + 1</code> rounds over one ordered frontier list: each round
+classifies every cell of the round's level in parallel (drop, keep, or split into four children),
+a scan numbers the survivors and a write builds the next list, so the cover is already in
+ascending cell-ID order and needs no sort. For every input that completes, the cells, counts,
+status bits 1 and 2 and <code>visitedCount</code> equal the serial traversal's, which the recorded fixtures
+check on more than 100 cases. The difference is exhaustion: the serial traversal stops after
+exactly <code>maximumVisitedCells</code> pops and keeps the cells emitted so far, while the level-synchronous
+traversal fails the whole round, writes no cells and reports counts <code>(0, 0)</code> with status bit 4
+(<code>visitedCount</code> is capped at <code>maximumVisitedCells</code>). <code>maximumVisitedCells</code> also sizes the two
+ping-pong frontier buffers (8 bytes per cell). The serial traversal stays the default because its
+partial results are pinned.
+The direct <code>s2geometry==0.14.0</code> oracle enumerates all 6,144 level-5 cells for each of two concave/holed
+regions: emitted interior cells are S2-contained, exterior covers include every S2 <code>MayIntersect</code> cell,
+and summed interior/exterior cell areas bracket the region area. This is the precise tested
+cover guarantee on these two exhaustive fixtures; it does not certify every possible thin or
+near-degenerate boundary. Capacity and visit-budget failures are separately exercised.</p>
+<p>The additional reproducible generators are <code>difficult-geodesics.py</code>, <code>geodesic-area-adaptive.py</code>,
+<code>datum-horizontal.py</code>, <code>spherical-polygon-contains.py</code>, <code>spherical-polygon-overlay.py</code>,
+<code>spherical-arc-overlay.py</code> and <code>s2-polygon-covering.py</code> under <code>modules/analysis/test/oracles/</code>.
+They pin GeographicLib 2.1, pyproj 3.7.2 / PROJ 9.5.1 and S2Geometry 0.14.0. Horizontal PROJ
+fixtures write prioritized CTable2 grids and decode their actual f32-radian samples; split outputs
+must agree within <code>1e-9</code> degrees, including priority discontinuities and inclusive bounds.</p>
+<h2 id="evidence-and-limits">Evidence and limits</h2>
+<p><code>modules/analysis/test/oracles/global-coordinates.py</code> pins <code>s2sphere==0.2.5</code> and
+<code>geographiclib==2.1</code>, <code>pyproj==3.7.2</code> and <code>shapely==2.1.2</code>. The committed JSON records direct upstream calls and a clearly labeled composed overlap oracle. PROJ samples a generated local GTX vertical grid. For spherical crossings, Shapely computes topology in a gnomonic plane (great circles become lines) and GeographicLib independently measures the lifted intersection on a unit sphere. S2 neighbor checks
+include every cell at levels 0–2 and sampled levels 15/30, including face seams and poles. The tests
+compare measured area/perimeter with S2 values and check six-face area sums against <code>4*pi</code>.
+Additional independent tests cover affine-grid interpolation/inversion, first-grid priority, signed
+height units, nodata, nonfinite arithmetic, inverse exhaustion, known octant area, overlap fractions,
+open/closed/complement boundaries, capacity limits and unsupported near-antipodal geodesics.
+Node tests parse generated WGSL, audit reserved symbols and check binding counts. GPU tests are
+in <code>modules/analysis/test/gpu-spatial-analysis/global-coordinates/global-coordinates.spec.ts</code>.</p>
+<p>These fixtures establish the tested numerical cases, not complete S2/PROJ/GeographicLib parity.
+The bounded observations below add same-device timing and explicit-buffer evidence. Cross-device accuracy, driver memory peaks and representative geographic distributions remain unmeasured.</p>
+<h2 id="numerical-limits-established-by-the-committed-tests">Numerical limits established by the committed tests</h2>
+<p>The tested limits below are acceptance thresholds, not certified worst-case error bounds or
+promises for every supported input:</p>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Tested threshold and scope</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S2 hierarchy/neighbors</td>
+<td>Exact u32 words: all 126 cells at levels 0–2, plus 20 sampled cells each at levels 15 and 30 (166 oracle rows total).</td>
+</tr>
+<tr>
+<td>S2 area/perimeter</td>
+<td>Relative error below <code>2e-5</code> across all 166 direct S2 oracle cells, including 20 level-15 and 20 level-30 samples.</td>
+</tr>
+<tr>
+<td>Ellipsoidal line distance</td>
+<td>Absolute error below 5 meters on the three pinned regular, polar and antimeridian pairs. The pinned near-antipodal pair reports invalidity in serial/cooperative modes. This is not an antipodal accuracy envelope.</td>
+</tr>
+<tr>
+<td>Spherical overlap</td>
+<td>Eight-vertex crossing topology agrees with the gnomonic oracle; area and normalized overlap fractions use five-decimal-place assertions.</td>
+</tr>
+<tr>
+<td>Datum grids</td>
+<td>Affine bilinear forward values use five-decimal-place assertions; inverse coordinates use four and recovered height uses three. Nodata, out-of-coverage, exhausted iterations, nonfinite arithmetic and pole-crossing invalidity are checked separately.</td>
+</tr>
+</tbody>
+</table>
+<p>Spherical polygon predicate tolerance can be set from <code>1e-7</code> to <code>1e-2</code> (default <code>1e-6</code>), and
+intersection deduplication uses four times this tolerance. Polygons whose center-to-edge separation
+is at or below tolerance are rejected as unsupported/degenerate; this avoids pretending that f32
+can distinguish arbitrarily thin regions. The cap-cover margin ranges from <code>1e-6</code> to <code>1e-2</code>
+radians (default <code>1e-5</code>). It deliberately expands exterior covers and shrinks interior covers.</p>
+<h2 id="opt-in-bounded-performance-observation">Opt-in bounded performance observation</h2>
+<p>The benchmark spec is
+<code>modules/analysis/test/gpu-spatial-analysis/global-coordinates/global-coordinates-benchmark.spec.ts</code>.
+Run <code>yarn test-benchmarks modules/analysis/test/gpu-spatial-analysis/global-coordinates/global-coordinates-benchmark.spec.ts</code>.
+The launcher selects benchmark files and enables their workload flags. Set optional
+<code>VITE_BENCHMARK_REVISION</code> / <code>VITE_BENCHMARK_SOURCE_STATE</code> metadata to identify the tested tree.</p>
+<p>Eight deterministic workloads compare small and larger batches: 166/16,384 S2 neighbor rows
+cycling through the exact-key corpus, 256/16,384 datum positions, 1/32 level-4 spherical caps
+(1,536 candidate cells per cap), and 1/256 four-vertex convex overlap pairs. These are repeated
+reference shapes, not geographic distribution or scalability benchmarks. Each workload changes
+resident inputs after the repeated measurements and validates the changed output.</p>
+<p>JSON records separate buffer allocation/setup, upload, synchronous graph compilation, first
+encode/submit/completion, five warm repeated runs, update upload and three updated runs. Readback
+and reference checks are timed separately. GPU timestamps are reported only when available.
+Memory reports explicit input/output bytes and graph transient allocation; driver peak memory
+is unavailable. The device is shared and pipeline caches are not cleared, so first execution is
+not guaranteed to be a cold-driver measurement. No throughput advantage or latency threshold is
+asserted. Observed timings must identify the device/browser and source state; no performance
+result is implied merely by adding this opt-in spec.</p>
+<h2 id="recorded-bounded-observations">Recorded bounded observations</h2>
+<p>An Apple WebGPU adapter (<code>metal-3</code>, non-fallback, chip model unspecified) running Headless Chrome151
+completed all eight benchmark workloads on October 23, 2026 at 9:07 PM EDT.
+The raw phase samples and metadata
+retain upload, readback, validation, first/repeated/updated execution and allocation measurements.</p>
+<p><strong>Provenance limitation:</strong> the runner recorded <code>sourceRevision: null</code> and <code>sourceState: null</code>.
+The source was a shared dirty working tree. These are local observations, not a frozen release
+benchmark. Device caches were shared; compilation can be deferred into first execution, and no
+cold-driver guarantee applies. Timestamp queries were supported but no GPU timestamp durations
+were recorded, so every execution number below includes CPU encoding, submission and queue wait.</p>
+<table>
+<thead>
+<tr>
+<th>Workload</th>
+<th align="right">Host compile ms</th>
+<th align="right">First execution ms</th>
+<th align="right">Warm median ms (5 runs)</th>
+<th align="right">Updated median ms (3 runs)</th>
+<th align="right">Explicit input + output bytes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>s2-neighbors-166</code></td>
+<td align="right">2.9</td>
+<td align="right">18.6</td>
+<td align="right">0.5</td>
+<td align="right">0.8</td>
+<td align="right">7,304</td>
+</tr>
+<tr>
+<td><code>s2-neighbors-16384</code></td>
+<td align="right">0.2</td>
+<td align="right">5.2</td>
+<td align="right">0.8</td>
+<td align="right">1.4</td>
+<td align="right">720,896</td>
+</tr>
+<tr>
+<td><code>datum-grid-256</code></td>
+<td align="right">0.3</td>
+<td align="right">3.5</td>
+<td align="right">0.5</td>
+<td align="right">0.6</td>
+<td align="right">7,232</td>
+</tr>
+<tr>
+<td><code>datum-grid-16384</code></td>
+<td align="right">0.2</td>
+<td align="right">2.8</td>
+<td align="right">0.6</td>
+<td align="right">0.3</td>
+<td align="right">458,816</td>
+</tr>
+<tr>
+<td><code>s2-cap-cover-1</code></td>
+<td align="right">0.6</td>
+<td align="right">102.5</td>
+<td align="right">9.1</td>
+<td align="right">7.5</td>
+<td align="right">12,316</td>
+</tr>
+<tr>
+<td><code>s2-cap-cover-32</code></td>
+<td align="right">0.2</td>
+<td align="right">49.4</td>
+<td align="right">7.1</td>
+<td align="right">7.0</td>
+<td align="right">394,112</td>
+</tr>
+<tr>
+<td><code>spherical-overlap-1</code></td>
+<td align="right">0.1</td>
+<td align="right">104.6</td>
+<td align="right">0.4</td>
+<td align="right">0.9</td>
+<td align="right">332</td>
+</tr>
+<tr>
+<td><code>spherical-overlap-256</code></td>
+<td align="right">0.2</td>
+<td align="right">110.6</td>
+<td align="right">0.5</td>
+<td align="right">0.5</td>
+<td align="right">82,952</td>
+</tr>
+</tbody>
+</table>
+<p>All initial, repeated and updated outputs passed their pinned/analytic reference checks. Each
+case reported zero graph-owned transient allocation; this excludes shader-private temporary
+storage and driver allocation. The input/output byte totals include output capacity, including
+unused padded slots. Sub-millisecond differences and the cap batch ordering should not be read
+as scaling trends from these single shared-device runs. There is no optimized CPU timing baseline.</p>
+<p>The level-4 cap oracle exposed a real cancellation defect during benchmark development: subtractive
+projection onto a nearly perpendicular great-circle plane could leave an f32 residue that
+normalized to the query direction. The corrected double-cross projection is now guarded by a
+regular GPU regression against the pinned exact cell list. The successful records above come from
+the corrected implementation; the earlier failed run is not represented as successful evidence.</p>
+<h2 id="executable-unit-sphere-examples">Executable unit-sphere examples</h2>
+<p>These lazy examples execute actual GPU graphs on synthetic analytic inputs and capture the input views, result views and status flags. They are not benchmark runs or observed geographic datasets.</p>
+<h3 id="gpus2cellhierarchy"><code>GPUS2CellHierarchy</code></h3>
+<p>Exact children of the six S2 root faces.</p>
+<p>{/* lens:GPUS2CellHierarchy */}</p>
+<p>::lens{scenario=gpu-spatial-analysis.s2-cell-hierarchy rung=result caption="Inspect captured input, result and status rows."}</p>
+<p>::lens{scenario=gpu-spatial-analysis.s2-cell-hierarchy rung=graph caption="Inspect the executed GPU command graph."}</p>
+<h3 id="gpus2cellmeasures"><code>GPUS2CellMeasures</code></h3>
+<p>Unit-sphere area and perimeter of S2 cells at levels 0–30. This compatibility API retains
+steradians/radians and its per-row status (0 valid, 1 invalid with NaN measures). It shares the
+stable local-increment arithmetic of <a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-cells#gpucellgridpath-and-gpucellmeasures"><code>GPUCellMeasures</code></a>.
+Use <code>GPUCellMeasures</code> with <code>family: 's2'</code> for meters/kilometers, ordered edges and the common
+H3/S2/Quadbin interface; invalid rows there are zero. Both APIs accept the compile-time
+<code>precision: 'fp64'</code> option for published double-single projection and local-increment arithmetic;
+the default is <code>'float32'</code>. Output formats and the unit-sphere API's invalid statuses stay the same.</p>
+<p>{/* lens:GPUS2CellMeasures */}</p>
+<p>::lens{scenario=gpu-spatial-analysis.s2-cell-measures rung=result caption="Inspect captured input, result and status rows."}</p>
+<p>::lens{scenario=gpu-spatial-analysis.s2-cell-measures rung=graph caption="Inspect the executed GPU command graph."}</p>
+<h3 id="gpus2capcovering"><code>GPUS2CapCovering</code></h3>
+<p>Exterior root-face covering of a small north-pole cap.</p>
+<p>{/* lens:GPUS2CapCovering */}</p>
+<p>::lens{scenario=gpu-spatial-analysis.s2-cap-covering rung=result caption="Inspect captured input, result and status rows."}</p>
+<p>::lens{scenario=gpu-spatial-analysis.s2-cap-covering rung=graph caption="Inspect the executed GPU command graph."}</p>
+<h3 id="gpusphericalconvexcontains"><code>GPUSphericalConvexContains</code></h3>
+<p>Interior, exterior and closed-boundary queries on an octant.</p>
+<p>{/* lens:GPUSphericalConvexContains */}</p>
+<p>::lens{scenario=gpu-spatial-analysis.spherical-convex-contains rung=result caption="Inspect captured input, result and status rows."}</p>
+<p>::lens{scenario=gpu-spatial-analysis.spherical-convex-contains rung=graph caption="Inspect the executed GPU command graph."}</p>
+<h3 id="gpusphericalconvexintersection"><code>GPUSphericalConvexIntersection</code></h3>
+<p>Identical octants with intersection area and overlap fractions.</p>
+<p>{/* lens:GPUSphericalConvexIntersection */}</p>
+<p>::lens{scenario=gpu-spatial-analysis.spherical-convex-intersection rung=result caption="Inspect captured input, result and status rows."}</p>
+<p>::lens{scenario=gpu-spatial-analysis.spherical-convex-intersection rung=graph caption="Inspect the executed GPU command graph."}</p>
+<h3 id="gpus2polygoncovering"><code>GPUS2PolygonCovering</code></h3>
+<p>{/* lens:GPUS2PolygonCovering */}</p>
+<p>::lens{scenario=gpu-spatial-analysis.s2-polygon-covering rung=result caption="Inspect captured geometry, counts and failure flags."}</p>
+<p>::lens{scenario=gpu-spatial-analysis.s2-polygon-covering rung=graph caption="Inspect the executed GPU stages."}</p>
+<h3 id="gpusphericalpolygoncontains"><code>GPUSphericalPolygonContains</code></h3>
+<p>{/* lens:GPUSphericalPolygonContains */}</p>
+<p>::lens{scenario=gpu-spatial-analysis.spherical-polygon-contains rung=result caption="Inspect captured geometry, counts and failure flags."}</p>
+<p>::lens{scenario=gpu-spatial-analysis.spherical-polygon-contains rung=graph caption="Inspect the executed GPU stages."}</p>
+<h3 id="gpusphericalpolygonoverlay"><code>GPUSphericalPolygonOverlay</code></h3>
+<p>{/* lens:GPUSphericalPolygonOverlay */}</p>
+<p>::lens{scenario=gpu-spatial-analysis.spherical-polygon-overlay rung=result caption="Inspect captured geometry, counts and failure flags."}</p>
+<p>::lens{scenario=gpu-spatial-analysis.spherical-polygon-overlay rung=graph caption="Inspect the executed GPU stages."}</p>
+<h3 id="gpusphericalarcoverlay"><code>GPUSphericalArcOverlay</code></h3>
+<p>{/* lens:GPUSphericalArcOverlay */}</p>
+<p>::lens{scenario=gpu-spatial-analysis.spherical-arc-overlay rung=result caption="Inspect captured geometry, counts and failure flags."}</p>
+<p>::lens{scenario=gpu-spatial-analysis.spherical-arc-overlay rung=graph caption="Inspect the executed GPU stages."}</p>
+<h2 id="expanded-mode-scaling-observations">Expanded-mode scaling observations</h2>
+<p>The expanded harness completed fourteen workloads on the same Apple <code>metal-3</code> adapter and
+Headless Chrome 151 at 10:42 PM EDT on October 23, 2026. The complete phase records
+include the original eight cases and six added cases below. Source state is explicitly
+<code>shared-dirty-tree</code>; revision is null, so this is not a frozen-source benchmark. These are CPU
+encode/submit/queue-completion measurements, with upload, validation and readback reported
+separately. Five warm executions and three updated executions share caches and device state.
+No optimized CPU baseline, speedup claim, cross-device result or driver peak measurement exists.</p>
+<table>
+<thead>
+<tr>
+<th>Workload</th>
+<th align="right">Host compile ms</th>
+<th align="right">First execution ms</th>
+<th align="right">Warm median ms</th>
+<th align="right">Updated median ms</th>
+<th align="right">Explicit input + output bytes</th>
+<th align="right">Graph transient bytes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>s2-stable-measures-166</code></td>
+<td align="right">0.3</td>
+<td align="right">36.7</td>
+<td align="right">0.2</td>
+<td align="right">0.2</td>
+<td align="right">3,320</td>
+<td align="right">0</td>
+</tr>
+<tr>
+<td><code>s2-stable-measures-16384</code></td>
+<td align="right">0.1</td>
+<td align="right">29.4</td>
+<td align="right">0.4</td>
+<td align="right">1.1</td>
+<td align="right">327,680</td>
+<td align="right">0</td>
+</tr>
+<tr>
+<td><code>s2-adaptive-cover-level4</code></td>
+<td align="right">0.2</td>
+<td align="right">178.1</td>
+<td align="right">73.3</td>
+<td align="right">69.0</td>
+<td align="right">81,980</td>
+<td align="right">0</td>
+</tr>
+<tr>
+<td><code>s2-adaptive-cover-level6</code></td>
+<td align="right">0.4</td>
+<td align="right">372.7</td>
+<td align="right">309.1</td>
+<td align="right">302.9</td>
+<td align="right">81,980</td>
+<td align="right">0</td>
+</tr>
+<tr>
+<td><code>spherical-intrinsic-overlay-8</code></td>
+<td align="right">0.5</td>
+<td align="right">232.9</td>
+<td align="right">3.2</td>
+<td align="right">3.3</td>
+<td align="right">3,464</td>
+<td align="right">7,184</td>
+</tr>
+<tr>
+<td><code>spherical-intrinsic-overlay-32</code></td>
+<td align="right">0.2</td>
+<td align="right">241.7</td>
+<td align="right">22.2</td>
+<td align="right">22.1</td>
+<td align="right">3,752</td>
+<td align="right">7,184</td>
+</tr>
+</tbody>
+</table>
+<p>Measure batches repeat the 166 direct-S2 oracle cells, including level 30, then reverse resident
+key order. Adaptive covers rotate a spherical octant and include a downstream measure stage for
+all 4,096 capacity slots; checks require complete counts, sub-enumeration traversal work and an
+exterior area at least the octant area. Intrinsic overlays compare the same globally distributed
+S2-reference intersection with 8 versus 32 input vertices, then rotate both operands. Additional
+vertices sample the original minor arcs, so the region and oracle area remain unchanged.</p>
+<p>These observations show the cost of the bounded traversal and intrinsic arrangement as resolution
+or vertex count increases; they do not establish large-region scalability. In particular the
+level-6 cover costs about 309 ms in this fixture and the 32-vertex arrangement about 22 ms. Output
+capacity bytes include unused slots, and graph transient bytes exclude shader-private and driver
+allocation. Every initial, repeated and updated result passed its numerical checks.</p></article></div><script>(function(a,f){let l;try{l=JSON.parse(sessionStorage.getItem(a)||"{}")}catch{return}const n=l?.[f||history.state?.__TSR_key];let c=!1;for(const t in n){const e=n[t],o=e?.scrollX,s=e?.scrollY;if(Number.isFinite(o)&&Number.isFinite(s)){if(t==="window")scrollTo(o,s),c=!0;else if(t)try{const r=document.querySelector(t);r&&(r.scrollLeft=o,r.scrollTop=s)}catch{}}}if(c)return;const i=location.hash.slice(1);if(i){const t=history.state?.__hashScrollIntoViewOptions??!0;if(t){const e=document.getElementById(i);e&&e.scrollIntoView(t)}return}scrollTo(0,0)})("tsr-scroll-restoration-v1_3");document.currentScript.remove()</script><!--/$--><footer class="site-footer"><div class="site-footer__inner"><span>Gridlight · GPU geospatial analysis on luma.gl. Code licensed under MIT.</span><nav class="site-footer__links" aria-label="Footer"><a href="/luma-contributors/explore">Explore</a><a href="/luma-contributors/how-it-works">How it works</a><a href="/luma-contributors/demo-data">Demo data</a><a class="active" href="/luma-contributors/docs" data-status="active" aria-current="page">Reference</a><a href="https://github.com/BertCh/luma-contributors">GitHub</a><a href="https://luma.gl">luma.gl</a></nav></div></footer><script data-tsr-stream-part="">(self.$R=self.$R||{})["tsr"]=[];self.$_TSR={h(){this.hydrated=!0,this.c()},e(){this.streamEnded=!0,this.c()},c(){this.hydrated&&this.streamEnded&&(delete self.$_TSR,delete self.$R.tsr)},p(e){this.initialized?e():this.buffer.push(e)},buffer:[]}</script><script data-tsr-stream-part="">$_TSR.router=($R=>$R[0]={manifest:$R[1]={routes:$R[2]={__root__:$R[3]={preloads:$R[4]=["/luma-contributors/assets/index-DIfTuwM1.js","/luma-contributors/assets/rolldown-runtime-XKyaHtl9.js","/luma-contributors/assets/react-DlmbjZJV.js","/luma-contributors/assets/matchContext-BZe79Vhs.js","/luma-contributors/assets/link-D9V6xy_k.js","/luma-contributors/assets/jsx-runtime-LKYXHABd.js","/luma-contributors/assets/preload-helper-Ehsq8Wa4.js","/luma-contributors/assets/topics-BYMS4mpg.js"],scripts:$R[5]=[$R[6]={attrs:$R[7]={type:"module",async:!0,src:"/luma-contributors/assets/index-DIfTuwM1.js"}}],css:$R[8]=["/luma-contributors/assets/index-Do-eHPVA.css"]},"/docs/$":$R[9]={preloads:$R[10]=["/luma-contributors/assets/_-jF9EWkQq.js"]}}},matches:$R[11]=[$R[12]={i:"__root__#",u:1795048386320,s:"success",ssr:!0},$R[13]={i:"#docs#$#docs#api#gpu-spatial-analysis#global-coordinates",u:1795048386321,s:"success",l:$R[14]={slug:"api/gpu-spatial-analysis/global-coordinates",title:"Global coordinates, spherical geometry and S2 analysis",html:"\x3Ch1 id=\"global-coordinates-spherical-geometry-and-s2-analysis\">Global coordinates, spherical geometry and S2 analysis\x3C/h1>\n\x3Cp>These graph contributors cover bounded portions of CR01–CR05. Inputs and outputs remain GPU\nviews. They declare compute nodes and never submit, read back, download grids, or call a CPU GIS\nengine. Use a separate contributor for each source batch; the kernels do not merge chunks or own\ncaller buffers. All output views must be disjoint from inputs and each other. Storage usage stays\nwithin eight bindings per compute stage.\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Roadmap\x3C/th>\n\x3Cth>Delivered API and scope\x3C/th>\n\x3Cth>Remaining scope\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>CR01\x3C/td>\n\x3Ctd>Existing \x3Ccode>GPUGeometryMeasures\x3C/code> now offers safeguarded inverse solving, adaptive edge integration and explicit invalid/exhaustion reporting on serial/cooperative paths.\x3C/td>\n\x3Ctd>f32 numerical envelopes are tested, not certified; singular or unresolved inverse roots and pole-winding polygon areas remain explicitly invalid.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>CR02\x3C/td>\n\x3Ctd>Prepared regular grids, priority/bounds/nodata, inverse residual validation and optional high/low coordinate words match direct PROJ fixtures.\x3C/td>\n\x3Ctd>Grid files, acquisition, CRS databases and epoch/subgrid selection remain caller preparation, as scoped by the original backlog.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>CR03\x3C/td>\n\x3Ctd>Signed vertical/combined corrections, explicit units/reference names and split height residuals; direct PROJ vertical fixture.\x3C/td>\n\x3Ctd>Named geoid/epoch acquisition and full PROJ pipeline construction are external preparation.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>CR04\x3C/td>\n\x3Ctd>Nonconvex containment with holes, chart and intrinsic global Boolean overlay, complement semantics, open/closed predicates, pole/antimeridian fixtures and assembled rings.\x3C/td>\n\x3Ctd>f32 tolerance bands replace exact adaptive predicates; intrinsic overlay reports unresolved separation/junctions and bounds work to 128 input vertices / 1024 output vertices.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>CR05\x3C/td>\n\x3Ctd>Exact hierarchy/neighbors and stable measures through level 30, adaptive polygon covers through level 15, uniform cap covers and geometric cross-family overlap weights for prepared convex boundaries.\x3C/td>\n\x3Ctd>Cover guarantees are tolerance-aware; automatic cross-family broad-phase/boundary acquisition and optimized CPU timing comparisons remain separate integration/performance work.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Ch2 id=\"prepared-datum-grids\">Prepared datum grids\x3C/h2>\n\x3Cp>\x3Ccode>GPUDatumGridTransform\x3C/code> takes \x3Ccode>float32x3\x3C/code> positions: longitude and latitude in degrees, then\nheight in the declared unit. Grid samples are \x3Ccode>(longitude shift degrees, latitude shift degrees, height shift meters)\x3C/code>. Signed height samples always mean \x3Cstrong>target minus source\x3C/strong> height. A geoid\nundulation grid must therefore be sign-adjusted by its preparation adapter when converting\nellipsoidal to orthometric height. Both vertical reference names are mandatory for vertical or\ncombined operations. The names describe provenance; the contributor does not resolve a CRS.\x3C/p>\n\x3Cp>Each grid supplies dimensions, sample offset, origin and nonzero spacing; negative spacing is\nallowed. Coordinates use a continuous longitude branch and there is no implicit antimeridian wrap.\nGrid bounds are inclusive with a \x3Ccode>1e-5\x3C/code> grid-coordinate numerical margin, clamped to the outer edge. The last grid row/column uses the final interpolation cell. All four\ncorners must be valid and finite, even when a corner has interpolation weight zero. The first\ncovering grid wins. Nodata in it fails instead of silently falling through to a lower-priority grid.\nAn empty grid list returns no-coverage for every finite input.\x3C/p>\n\x3Cp>Forward horizontal transforms add interpolated shifts. Inverse horizontal transforms solve\n\x3Ccode>target = source + shift(source)\x3C/code> with at most \x3Ccode>maximumIterations\x3C/code> fixed-point steps and verify the\nfinal residual. The inverse always takes at least one step before testing the residual (the first residual is the shift itself). Default tolerance is \x3Ccode>5e-9\x3C/code> degrees (about 0.56 mm; never less than four f32 spacings of the shift) and the iteration cap is 16. A combined inverse\nsamples vertical correction at the recovered source longitude/latitude. Inverse lookup starts at\nthe target: if that location is outside every grid, it returns no coverage, even if a shifted source\nmight exist. This matches the target-seeded direct PROJ \x3Ccode>hgridshift\x3C/code> fixtures, including the case where a forward-shifted edge point cannot be inversely looked up. Priority discontinuities can also choose a different inverse grid; inverse is not promised to recover the original source across such a discontinuity. No extrapolation or identity fallback occurs.\x3C/p>\n\x3Cp>Status is 0 success, 1 invalid/nonfinite result or latitude outside ±90°, 2 no coverage, 4 nodata,\nand 8 inverse exhaustion. Failed rows contain NaNs. Optional paired \x3Ccode>positionsLow\x3C/code> input/output\nviews represent longitude, latitude and height as the sum of high and low f32 words. The returned\nhigh words stay equal to the input high words; the returned low words carry displacement, and are\nnot a normalized double-double representation. Grid origins are split before local interpolation.\nThis preserves tested sub-ulp datum shifts without claiming general float64 arithmetic. With no\nlow views, small shifts at large coordinates can still round away. Samples remain f32, and inverse\ntolerance is a residual stopping test, not a certified geodetic accuracy bound. See the \x3Ca href=\"https://proj.org/en/stable/operations/transformations/hgridshift.html\">PROJ horizontal grid semantics\x3C/a>\nand \x3Ca href=\"https://proj.org/en/stable/operations/transformations/vgridshift.html\">vertical grid semantics\x3C/a>\nfor the broader reference contracts; this prepared-grid interface does not implement every option.\x3C/p>\n\x3Ch2 id=\"convex-spherical-geometry-and-overlap-weights\">Convex spherical geometry and overlap weights\x3C/h2>\n\x3Cp>Provide normalized xyz directions and counterclockwise minor great-circle edges. Every polygon\nmust contain 3–32 distinct vertices, exclude a repeated closing vertex, and lie strictly inside an\nopen hemisphere. The vertex-mean direction must lie strictly inside every oriented edge halfspace.\nDegenerate, antipodal-edge, clockwise or unsupported nonconvex inputs report invalidity. Input xyz\nsquared lengths must differ from one by no more than \x3Ccode>1e-4\x3C/code>. Default predicate tolerance is \x3Ccode>1e-6\x3C/code>.\nThe tolerance is an f32 angular band, not exact arithmetic.\x3C/p>\n\x3Cp>Containment uses a query-to-polygon index column. \x3Ccode>boundary: 'closed'\x3C/code> includes the tolerance band;\n\x3Ccode>'open'\x3C/code> excludes it. \x3Ccode>complement: true\x3C/code> reverses interior/exterior while retaining the chosen\nboundary policy. Status 2 exposes boundary classification, and status 1 invalidity takes precedence\nand must not be interpreted as a meaningful false predicate.\x3C/p>\n\x3Cp>Intersection uses paired polygon-offset columns. It collects contained vertices and true\nminor-arc crossings, deduplicates within four times tolerance, and orders the resulting boundary.\nClosed-boundary contacts may have one or two vertices. Outputs have a caller-selected stride of\n1–64 and \x3Ccode>(written, required)\x3C/code> counts. Status 1 means invalid input, 2 capacity exhaustion, and 4\nnumerical uncertainty; status bits may combine. Uncertain/invalid rows write zero vertices.\nCapacity-limited output is incomplete and must not be consumed as a polygon.\x3C/p>\n\x3Cp>Optional \x3Ccode>output.measures\x3C/code> supplies \x3Ccode>(intersection steradians, source fraction, target fraction, union steradians)\x3C/code>. These fractions are geometric overlap weights for \x3Cstrong>already prepared\x3C/strong> convex\nsource/target cell boundaries, irrespective of cell family. They are not a relabeling of H3/S2 keys\nor centroid-containment approximation. Failed or capacity-limited rows have NaN measures. No\ncross-family candidate generation, H3 boundary acquisition or global conservative-remapping\nrecipe is implied.\x3C/p>\n\x3Ch2 id=\"s2-identity-measurement-and-covers\">S2 identity, measurement and covers\x3C/h2>\n\x3Cp>Cell keys are always exact little-endian \x3Ccode>(low, high)\x3C/code> u32 pairs. \x3Ccode>GPUS2CellHierarchy\x3C/code> supports\nparents at a requested level, immediate children in Hilbert order, inclusive leaf-ID ranges, and\nfour edge neighbors ordered left/right/down/up in the input face coordinate system. Integer cube\nface transitions work through level 30, including corners, poles and mixed-level rows. Invalid\nkeys report status 1; asking a leaf for children or a coarser cell for a descendant parent reports\nstatus 2. All corresponding output keys are zero.\x3C/p>\n\x3Cp>\x3Ccode>GPUS2CellMeasures\x3C/code> returns area in steradians and perimeter in radians. Multiply by a chosen\nsphere's squared radius or radius explicitly for physical units. Levels 0–30 use analytic quadratic-UV increments to compute triangle determinants and edge\ncross products without subtracting rounded fine-cell vertices. The exact integer key is decoded\nbefore this local computation. This improves area/perimeter precision; it does not improve the\nabsolute xyz precision of arbitrary boundary vertices or polygon-cover predicates.\x3C/p>\n\x3Cp>\x3Ccode>GPUS2CapCovering\x3C/code> accepts unit xyz cap centers and angular radii in \x3Ccode>[0, pi]\x3C/code>. It enumerates all\n\x3Ccode>6 * 4^level\x3C/code> cells, with level restricted to 0–8, in ascending key order. Exterior covers select\ncells whose closest spherical point is within the cap plus a default \x3Ccode>1e-5\x3C/code>-radian safety margin.\nInterior covers require every point to be within the cap minus that margin, using antipodal closest\ndistance for the farthest point. Consequently an interior cover of a radius-pi cap conservatively\nexcludes cells containing the antipodal center. Capacity truncation reports status 2 and the full\nrequired count; such output is not a complete cover. Invalid caps report status 1. This uniform\nalgorithm is appropriate for modest cap batches; it is not S2's adaptive priority coverer.\x3C/p>\n\x3Cp>\x3Ccode>refinement: 'level-synchronous'\x3C/code> removes the level 8 ceiling. Instead of one invocation per cap\nscanning the whole sphere, it starts from the six face cells and runs \x3Ccode>level + 1\x3C/code> rounds. Each\nround launches one invocation per frontier cell and per cap, drops cells that cannot contain a\nselected descendant (a child is never closer to the cap than its parent), splits the others in\nfour, and a scan numbers the survivors, so every cap's cells stay in ascending key order with no\nsort. The cells, counts and status equal the uniform enumeration's (exterior and interior, any\ncapacity) and \x3Ccode>level\x3C/code> may reach 15. Each cap holds at most \x3Ccode>frontierCapacity\x3C/code> cells per round\n(default \x3Ccode>8 * capacity + 64\x3C/code>, at least \x3Ccode>capacity\x3C/code>): a round holds the four children of every kept\nparent, and a kept parent can have no selected child, so the frontier can reach about four times\nthe final cell count. The default holds a cover that exceeds \x3Ccode>capacity\x3C/code> by a factor of about two,\nso the caller still gets status 2 and the required count. A cap that outgrows the frontier reports\nstatus bit 4, writes no cells and reports counts \x3Ccode>(0, 0)\x3C/code>: a truncated frontier cannot know the\nsize of the full cover, so no required count is available; raise \x3Ccode>frontierCapacity\x3C/code> (or\n\x3Ccode>capacity\x3C/code>) and run again. A zero-radius cap on a face center covers the four cells that touch\nit in both enumerations. The rounds are not gated on the live frontier length (the published\n\x3Ccode>GPUScan\x3C/code> has no GPU-written dispatch size), and \x3Ccode>estimatedCommandNodeCount\x3C/code> is exact for both the\ncap and the polygon level-synchronous coverings. The default remains \x3Ccode>refinement: 'uniform'\x3C/code>, the reference tier.\x3C/p>\n\x3Ch2 id=\"safeguarded-ellipsoidal-measurements\">Safeguarded ellipsoidal measurements\x3C/h2>\n\x3Cp>Set \x3Ccode>ellipsoidalInverse: 'safeguarded'\x3C/code> on the existing \x3Ccode>GPUGeometryMeasures\x3C/code>. Ordinary converged\nVincenty rows keep their fast path. Failed rows scan 32 auxiliary-longitude intervals near the\ngeographic separation and bisect sign-changing residual brackets for up to 32 iterations. A root\nmust have residual at most \x3Ccode>7e-7\x3C/code> radians; the shortest accepted positive-distance solution wins.\nA singular/discontinuous or unbracketed root remains invalid. This is an independently implemented\nsafeguard, not the full Karney inverse algorithm. The default remains \x3Ccode>'vincenty'\x3C/code>.\x3C/p>\n\x3Cp>\x3Ccode>geodesicAreaTolerance\x3C/code> requests per-edge successive-refinement quadrature error estimation in\nsquared output units. \x3Ccode>geodesicAreaMaximumSegments\x3C/code> is a power of two from 2 through 256 (default\n256). Sampling doubles until \x3Ccode>abs(fine-coarse)/15\x3C/code> meets the requested estimate; exhaustion or\nnonfinite results invalidates the feature and increments \x3Ccode>invalidCount\x3C/code>. This estimates quadrature\nconvergence, not all f32, inverse/direct-series or input-quantization error. Default omitted tolerance\nretains the prior bounded-sampling behavior. Pole-winding polygon areas still report invalidity;\nthe spherical operators below handle spherical polar regions explicitly.\x3C/p>\n\x3Cp>Direct \x3Ccode>geographiclib==2.1\x3C/code> fixtures cover 128 near-antipodal and 128 global line pairs (exact f32\ninput coordinates), on serial and cooperative paths. Valid results must be within 10 meters; fewer\nthan eight of the 256 may be explicitly unresolved. Twelve holed polygons near high latitudes,\nthe equator and antimeridian compare adaptive area with \x3Ccode>Geodesic.WGS84.Polygon\x3C/code>: absolute error\nbelow \x3Ccode>max(2e6 square meters, 3e-6 * reference area)\x3C/code>. An intentionally impossible \x3Ccode>1e-20\x3C/code> tolerance\nwith a two-segment cap must invalidate all twelve. These are measured acceptance envelopes, not\nuser-requested tolerance guarantees.\x3C/p>\n\x3Ch2 id=\"spatial-context-limits-and-status-codes\">Spatial context, limits and status codes\x3C/h2>\n\x3Cp>The five spherical classes and the two S2 coverings read unit direction vectors. Each takes an\noptional \x3Ccode>spatialContext\x3C/code>, resolved with \x3Ccode>resolveGPUSpatialContext\x3C/code> and exposed as\n\x3Ccode>.spatialContext\x3C/code>. The accepted space is \x3Ccode>longitude-latitude\x3C/code>, the space whose positions these\nvectors embed on the sphere, with great-circle edges and the \x3Ccode>none\x3C/code> or \x3Ccode>great-circle\x3C/code> metric.\nOmitted, it defaults to \x3Ccode>GPU_SPHERICAL_DEFAULT_SPATIAL_CONTEXT\x3C/code>. A planar context throws\n\x3Ccode>&#x3C;id> does not support planar coordinates\x3C/code>, and a longitude-latitude context with linear edges\nthrows \x3Ccode>&#x3C;id> needs great-circle edges\x3C/code>. The context declares meaning only: the vectors are never\nconverted, and \x3Ccode>GPULonLatPolygonPreparation\x3C/code> remains the way from degrees to unit vectors.\x3C/p>\n\x3Cp>Validation messages name the contributor, the prop and the accepted range, for example\n\x3Ccode>spherical-arc-overlay left plus right positions must be at most 128\x3C/code>. The limits are named\nexports with their reasons:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Constant\x3C/th>\n\x3Cth>Value\x3C/th>\n\x3Cth>Reason\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_INPUT_VERTICES\x3C/code>\x3C/td>\n\x3Ctd>128\x3C/td>\n\x3Ctd>O(n^3) arrangement in one invocation with private scratch\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_OUTPUT_VERTICES\x3C/code>\x3C/td>\n\x3Ctd>1024\x3C/td>\n\x3Ctd>seven floats of scratch per output vertex\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GPU_SPHERICAL_CONVEX_MINIMUM_VERTICES\x3C/code>, \x3Ccode>GPU_SPHERICAL_CONVEX_MAXIMUM_VERTICES\x3C/code>\x3C/td>\n\x3Ctd>3, 32\x3C/td>\n\x3Ctd>convex polygons live in fixed private arrays\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GPU_SPHERICAL_CONVEX_INTERSECTION_MAXIMUM_CAPACITY\x3C/code>\x3C/td>\n\x3Ctd>64\x3C/td>\n\x3Ctd>a clip has at most the sum of two 32-vertex polygons\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GPU_SPHERICAL_MINIMUM_TOLERANCE\x3C/code>, \x3Ccode>GPU_SPHERICAL_MAXIMUM_TOLERANCE\x3C/code>\x3C/td>\n\x3Ctd>1e-7, 1e-2\x3C/td>\n\x3Ctd>below f32 noise, and the meaning of a boundary band\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GPU_SPHERICAL_MAXIMUM_ARRANGEMENT_TOLERANCE\x3C/code>\x3C/td>\n\x3Ctd>1e-3\x3C/td>\n\x3Ctd>arc overlay and S2 polygon covering\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GPU_SPHERICAL_OVERLAY_MINIMUM_COSINE\x3C/code>\x3C/td>\n\x3Ctd>1e-3\x3C/td>\n\x3Ctd>gnomonic chart scale near the horizon\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GPU_S2_POLYGON_COVERING_MAXIMUM_LEVEL\x3C/code>\x3C/td>\n\x3Ctd>15\x3C/td>\n\x3Ctd>f32 vertex resolution\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GPU_S2_POLYGON_COVERING_MAXIMUM_VISITED_CELLS\x3C/code>\x3C/td>\n\x3Ctd>1,048,576\x3C/td>\n\x3Ctd>frontier buffers fit one 128 MiB binding\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GPU_S2_CAP_COVERING_MAXIMUM_UNIFORM_LEVEL\x3C/code>\x3C/td>\n\x3Ctd>8\x3C/td>\n\x3Ctd>\x3Ccode>6 * 4^level\x3C/code> cells scanned per cap invocation\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GPU_S2_CAP_COVERING_MAXIMUM_REFINED_LEVEL\x3C/code>\x3C/td>\n\x3Ctd>15\x3C/td>\n\x3Ctd>f32 vertex resolution\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>GPU_CELL_TOPOLOGY_MAXIMUM_RADIUS\x3C/code>\x3C/td>\n\x3Ctd>8\x3C/td>\n\x3Ctd>\x3Ccode>GPUCellTopology\x3C/code> disk and ring \x3Ccode>k\x3C/code> (H3 disk of 217 cells, Quadbin 289)\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>Status words are documented on each output type and exported as constants, with the values\nunchanged: \x3Ccode>GPU_SPHERICAL_CONVEX_CONTAINS_STATUS_*\x3C/code>, \x3Ccode>GPU_SPHERICAL_POLYGON_CONTAINS_STATUS_*\x3C/code>,\n\x3Ccode>GPU_SPHERICAL_CONVEX_INTERSECTION_STATUS_*\x3C/code>, \x3Ccode>GPU_SPHERICAL_ARC_OVERLAY_STATUS_*\x3C/code>,\n\x3Ccode>GPU_SPHERICAL_POLYGON_OVERLAY_COMPLEMENT_*\x3C/code>, \x3Ccode>GPU_S2_POLYGON_COVERING_STATUS_*\x3C/code>,\n\x3Ccode>GPU_S2_CAP_COVERING_STATUS_*\x3C/code>, \x3Ccode>GPU_S2_CELL_HIERARCHY_STATUS_*\x3C/code> and \x3Ccode>GPU_S2_CELL_MEASURES_STATUS_*\x3C/code>.\x3C/p>\n\x3Ch2 id=\"general-spherical-topology\">General spherical topology\x3C/h2>\n\x3Cp>\x3Ccode>GPUSphericalPolygonContains\x3C/code> accepts nonconvex simple CCW shell/hole rings and a query-to-polygon\nindex. The first ring is the shell and subsequent rings are holes. Rings must be disjoint, holes\nproperly nested, and minor arcs nondegenerate. Boundary policy and status 0/1/2 follow the convex\npredicate. Each ring must lie in the open hemisphere defined by \x3Ccode>hemisphereCenter\x3C/code>, or its\nnormalized vertex mean when omitted. Supplying a pole avoids sensitivity to uneven vertex\nsampling. The operator checks ring self-crossings; cross-ring nesting is a prepared-input contract.\nDirect S2 checks include 1,032 normal/complement classifications on concave and holed rings rotated\nacross the pole and antimeridian.\x3C/p>\n\x3Cp>\x3Ccode>GPUSphericalPolygonOverlay\x3C/code> maps caller-prepared polygon/multipolygon boundaries into a common\ngnomonic hemisphere, runs the existing GPU snap-rounded arrangement, then lifts assembled rings\nonto the sphere. All four Boolean operations and left/right complements are supported. Every\nvertex must meet \x3Ccode>dot(chartCenter, vertex) >= minimumCosine\x3C/code> (default \x3Ccode>.01\x3C/code>, minimum \x3Ccode>.001\x3C/code>).\n\x3Ccode>vertexTolerance\x3C/code> is in chart coordinates. Complement output is a GPU word: 1 means the sphere\nminus the assembled region. Boundary provenance endpoints remain in chart coordinates. Counts,\nrequired counts, overflow and candidate overflow retain the planar arrangement contract. Projection\nor capacity failures cannot be interpreted as an empty successful region. The direct S2 oracle\nchecks nonconvex/holed Boolean ring counts and areas to \x3Ccode>3e-5\x3C/code> steradians.\x3C/p>\n\x3Cp>\x3Ccode>GPUSphericalArcOverlay\x3C/code> handles boundaries that cannot share a hemisphere. It nodes great-circle\narcs intrinsically, classifies adjacent faces by crossing parity, retains oriented boundary pieces,\nand assembles rings using the left-turn rule at junctions. Both operands supply the known membership\nof one common \x3Ccode>referencePoint\x3C/code>, separated from all boundaries; reversing that membership represents\nthe complement. Nested rings use parity, and an empty boundary with inside reference represents\nthe full sphere. The reference membership is caller-prepared semantic data, not inferred from ring\norientation. Simple disjoint boundary rings are checked for self/cross-ring intersections; touching\nrings within one operand are rejected. Output rings are open xyz rings with interior on the left.\x3C/p>\n\x3Cp>Intrinsic overlay accepts at most 128 total input vertices and 3–1024 output vertex capacity.\nTolerance ranges from \x3Ccode>1e-7\x3C/code> to \x3Ccode>1e-3\x3C/code> radians, default \x3Ccode>1e-6\x3C/code>. Seven deterministic two-arc parity\npaths avoid reference rays through vertices. Adjacent-side probes start at 16 times tolerance and\nshrink according to boundary separation; inadequate separation and unresolved junctions fail\nexplicitly. Counts are \x3Ccode>(written vertices, written rings, required segments, reference membership)\x3C/code>.\nStatus bits are 1 invalid input/reference/topology, 2 capacity and 4 numerical uncertainty. Failed\nresults have zero written geometry; required segments are only a lower bound on early failure.\nSegment storage is an explicit graph transient, not a large shader-private array. Twelve direct\nS2 Boolean cases cover globally distributed zigzag boundaries and complements, with area error\nbelow \x3Ccode>2e-5\x3C/code> steradians and exact ring counts. This is tolerance-based topology, not exact S2 parity.\x3C/p>\n\x3Ch2 id=\"adaptive-polygon-covers\">Adaptive polygon covers\x3C/h2>\n\x3Cp>\x3Ccode>GPUS2PolygonCovering\x3C/code> traverses the six S2 roots using a bounded depth-first stack. It emits whole\ncontained cells early and subdivides boundary cells through \x3Ccode>maximumLevel\x3C/code> (0–15), subject to\n\x3Ccode>minimumLevel\x3C/code>. Interior mode emits only contained cells; exterior mode includes intersecting\nterminal cells. Inputs use the same prepared shell/hole hemisphere contract and optional pole as\nthe nonconvex predicate, with explicit complement. Self-crossing rings and nonadjacent touches\nare rejected before traversal, producing invalid status, zero counts and zero output keys.\nCross-ring nesting remains a prepared-input contract. This is mixed-level geometric coverage, not\nH3 centroid containment or S2's priority-queue \x3Ccode>max_cells\x3C/code> minimization policy.\x3C/p>\n\x3Cp>\x3Ccode>maximumVisitedCells\x3C/code> defaults to 65,536 and may range from 6 to 1,048,576. Status bits are 1 invalid\ninput, 2 output capacity and 4 traversal exhaustion. Counts are \x3Ccode>(written, required so far)\x3C/code>;\nwhen exhausted they do not claim the complete requirement. \x3Ccode>visitedCount\x3C/code> exposes traversal work.\x3C/p>\n\x3Cp>The default \x3Ccode>refinement: 'serial'\x3C/code> runs the ring check and the depth-first walk in one invocation,\nwhich is exact but cannot use the GPU's width. \x3Ccode>refinement: 'level-synchronous'\x3C/code> distributes both.\nRing validation becomes one invocation per ring (shape, unit vertices, hemisphere center) and one\nper edge (zero length, hemisphere, crossings and touches against the ring's later edges). The\ntraversal then runs \x3Ccode>maximumLevel + 1\x3C/code> rounds over one ordered frontier list: each round\nclassifies every cell of the round's level in parallel (drop, keep, or split into four children),\na scan numbers the survivors and a write builds the next list, so the cover is already in\nascending cell-ID order and needs no sort. For every input that completes, the cells, counts,\nstatus bits 1 and 2 and \x3Ccode>visitedCount\x3C/code> equal the serial traversal's, which the recorded fixtures\ncheck on more than 100 cases. The difference is exhaustion: the serial traversal stops after\nexactly \x3Ccode>maximumVisitedCells\x3C/code> pops and keeps the cells emitted so far, while the level-synchronous\ntraversal fails the whole round, writes no cells and reports counts \x3Ccode>(0, 0)\x3C/code> with status bit 4\n(\x3Ccode>visitedCount\x3C/code> is capped at \x3Ccode>maximumVisitedCells\x3C/code>). \x3Ccode>maximumVisitedCells\x3C/code> also sizes the two\nping-pong frontier buffers (8 bytes per cell). The serial traversal stays the default because its\npartial results are pinned.\nThe direct \x3Ccode>s2geometry==0.14.0\x3C/code> oracle enumerates all 6,144 level-5 cells for each of two concave/holed\nregions: emitted interior cells are S2-contained, exterior covers include every S2 \x3Ccode>MayIntersect\x3C/code> cell,\nand summed interior/exterior cell areas bracket the region area. This is the precise tested\ncover guarantee on these two exhaustive fixtures; it does not certify every possible thin or\nnear-degenerate boundary. Capacity and visit-budget failures are separately exercised.\x3C/p>\n\x3Cp>The additional reproducible generators are \x3Ccode>difficult-geodesics.py\x3C/code>, \x3Ccode>geodesic-area-adaptive.py\x3C/code>,\n\x3Ccode>datum-horizontal.py\x3C/code>, \x3Ccode>spherical-polygon-contains.py\x3C/code>, \x3Ccode>spherical-polygon-overlay.py\x3C/code>,\n\x3Ccode>spherical-arc-overlay.py\x3C/code> and \x3Ccode>s2-polygon-covering.py\x3C/code> under \x3Ccode>modules/analysis/test/oracles/\x3C/code>.\nThey pin GeographicLib 2.1, pyproj 3.7.2 / PROJ 9.5.1 and S2Geometry 0.14.0. Horizontal PROJ\nfixtures write prioritized CTable2 grids and decode their actual f32-radian samples; split outputs\nmust agree within \x3Ccode>1e-9\x3C/code> degrees, including priority discontinuities and inclusive bounds.\x3C/p>\n\x3Ch2 id=\"evidence-and-limits\">Evidence and limits\x3C/h2>\n\x3Cp>\x3Ccode>modules/analysis/test/oracles/global-coordinates.py\x3C/code> pins \x3Ccode>s2sphere==0.2.5\x3C/code> and\n\x3Ccode>geographiclib==2.1\x3C/code>, \x3Ccode>pyproj==3.7.2\x3C/code> and \x3Ccode>shapely==2.1.2\x3C/code>. The committed JSON records direct upstream calls and a clearly labeled composed overlap oracle. PROJ samples a generated local GTX vertical grid. For spherical crossings, Shapely computes topology in a gnomonic plane (great circles become lines) and GeographicLib independently measures the lifted intersection on a unit sphere. S2 neighbor checks\ninclude every cell at levels 0–2 and sampled levels 15/30, including face seams and poles. The tests\ncompare measured area/perimeter with S2 values and check six-face area sums against \x3Ccode>4*pi\x3C/code>.\nAdditional independent tests cover affine-grid interpolation/inversion, first-grid priority, signed\nheight units, nodata, nonfinite arithmetic, inverse exhaustion, known octant area, overlap fractions,\nopen/closed/complement boundaries, capacity limits and unsupported near-antipodal geodesics.\nNode tests parse generated WGSL, audit reserved symbols and check binding counts. GPU tests are\nin \x3Ccode>modules/analysis/test/gpu-spatial-analysis/global-coordinates/global-coordinates.spec.ts\x3C/code>.\x3C/p>\n\x3Cp>These fixtures establish the tested numerical cases, not complete S2/PROJ/GeographicLib parity.\nThe bounded observations below add same-device timing and explicit-buffer evidence. Cross-device accuracy, driver memory peaks and representative geographic distributions remain unmeasured.\x3C/p>\n\x3Ch2 id=\"numerical-limits-established-by-the-committed-tests\">Numerical limits established by the committed tests\x3C/h2>\n\x3Cp>The tested limits below are acceptance thresholds, not certified worst-case error bounds or\npromises for every supported input:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Operation\x3C/th>\n\x3Cth>Tested threshold and scope\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>S2 hierarchy/neighbors\x3C/td>\n\x3Ctd>Exact u32 words: all 126 cells at levels 0–2, plus 20 sampled cells each at levels 15 and 30 (166 oracle rows total).\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>S2 area/perimeter\x3C/td>\n\x3Ctd>Relative error below \x3Ccode>2e-5\x3C/code> across all 166 direct S2 oracle cells, including 20 level-15 and 20 level-30 samples.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Ellipsoidal line distance\x3C/td>\n\x3Ctd>Absolute error below 5 meters on the three pinned regular, polar and antimeridian pairs. The pinned near-antipodal pair reports invalidity in serial/cooperative modes. This is not an antipodal accuracy envelope.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Spherical overlap\x3C/td>\n\x3Ctd>Eight-vertex crossing topology agrees with the gnomonic oracle; area and normalized overlap fractions use five-decimal-place assertions.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Datum grids\x3C/td>\n\x3Ctd>Affine bilinear forward values use five-decimal-place assertions; inverse coordinates use four and recovered height uses three. Nodata, out-of-coverage, exhausted iterations, nonfinite arithmetic and pole-crossing invalidity are checked separately.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>Spherical polygon predicate tolerance can be set from \x3Ccode>1e-7\x3C/code> to \x3Ccode>1e-2\x3C/code> (default \x3Ccode>1e-6\x3C/code>), and\nintersection deduplication uses four times this tolerance. Polygons whose center-to-edge separation\nis at or below tolerance are rejected as unsupported/degenerate; this avoids pretending that f32\ncan distinguish arbitrarily thin regions. The cap-cover margin ranges from \x3Ccode>1e-6\x3C/code> to \x3Ccode>1e-2\x3C/code>\nradians (default \x3Ccode>1e-5\x3C/code>). It deliberately expands exterior covers and shrinks interior covers.\x3C/p>\n\x3Ch2 id=\"opt-in-bounded-performance-observation\">Opt-in bounded performance observation\x3C/h2>\n\x3Cp>The benchmark spec is\n\x3Ccode>modules/analysis/test/gpu-spatial-analysis/global-coordinates/global-coordinates-benchmark.spec.ts\x3C/code>.\nRun \x3Ccode>yarn test-benchmarks modules/analysis/test/gpu-spatial-analysis/global-coordinates/global-coordinates-benchmark.spec.ts\x3C/code>.\nThe launcher selects benchmark files and enables their workload flags. Set optional\n\x3Ccode>VITE_BENCHMARK_REVISION\x3C/code> / \x3Ccode>VITE_BENCHMARK_SOURCE_STATE\x3C/code> metadata to identify the tested tree.\x3C/p>\n\x3Cp>Eight deterministic workloads compare small and larger batches: 166/16,384 S2 neighbor rows\ncycling through the exact-key corpus, 256/16,384 datum positions, 1/32 level-4 spherical caps\n(1,536 candidate cells per cap), and 1/256 four-vertex convex overlap pairs. These are repeated\nreference shapes, not geographic distribution or scalability benchmarks. Each workload changes\nresident inputs after the repeated measurements and validates the changed output.\x3C/p>\n\x3Cp>JSON records separate buffer allocation/setup, upload, synchronous graph compilation, first\nencode/submit/completion, five warm repeated runs, update upload and three updated runs. Readback\nand reference checks are timed separately. GPU timestamps are reported only when available.\nMemory reports explicit input/output bytes and graph transient allocation; driver peak memory\nis unavailable. The device is shared and pipeline caches are not cleared, so first execution is\nnot guaranteed to be a cold-driver measurement. No throughput advantage or latency threshold is\nasserted. Observed timings must identify the device/browser and source state; no performance\nresult is implied merely by adding this opt-in spec.\x3C/p>\n\x3Ch2 id=\"recorded-bounded-observations\">Recorded bounded observations\x3C/h2>\n\x3Cp>An Apple WebGPU adapter (\x3Ccode>metal-3\x3C/code>, non-fallback, chip model unspecified) running Headless Chrome151\ncompleted all eight benchmark workloads on October 23, 2026 at 9:07 PM EDT.\nThe raw phase samples and metadata\nretain upload, readback, validation, first/repeated/updated execution and allocation measurements.\x3C/p>\n\x3Cp>\x3Cstrong>Provenance limitation:\x3C/strong> the runner recorded \x3Ccode>sourceRevision: null\x3C/code> and \x3Ccode>sourceState: null\x3C/code>.\nThe source was a shared dirty working tree. These are local observations, not a frozen release\nbenchmark. Device caches were shared; compilation can be deferred into first execution, and no\ncold-driver guarantee applies. Timestamp queries were supported but no GPU timestamp durations\nwere recorded, so every execution number below includes CPU encoding, submission and queue wait.\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Workload\x3C/th>\n\x3Cth align=\"right\">Host compile ms\x3C/th>\n\x3Cth align=\"right\">First execution ms\x3C/th>\n\x3Cth align=\"right\">Warm median ms (5 runs)\x3C/th>\n\x3Cth align=\"right\">Updated median ms (3 runs)\x3C/th>\n\x3Cth align=\"right\">Explicit input + output bytes\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>s2-neighbors-166\x3C/code>\x3C/td>\n\x3Ctd align=\"right\">2.9\x3C/td>\n\x3Ctd align=\"right\">18.6\x3C/td>\n\x3Ctd align=\"right\">0.5\x3C/td>\n\x3Ctd align=\"right\">0.8\x3C/td>\n\x3Ctd align=\"right\">7,304\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>s2-neighbors-16384\x3C/code>\x3C/td>\n\x3Ctd align=\"right\">0.2\x3C/td>\n\x3Ctd align=\"right\">5.2\x3C/td>\n\x3Ctd align=\"right\">0.8\x3C/td>\n\x3Ctd align=\"right\">1.4\x3C/td>\n\x3Ctd align=\"right\">720,896\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>datum-grid-256\x3C/code>\x3C/td>\n\x3Ctd align=\"right\">0.3\x3C/td>\n\x3Ctd align=\"right\">3.5\x3C/td>\n\x3Ctd align=\"right\">0.5\x3C/td>\n\x3Ctd align=\"right\">0.6\x3C/td>\n\x3Ctd align=\"right\">7,232\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>datum-grid-16384\x3C/code>\x3C/td>\n\x3Ctd align=\"right\">0.2\x3C/td>\n\x3Ctd align=\"right\">2.8\x3C/td>\n\x3Ctd align=\"right\">0.6\x3C/td>\n\x3Ctd align=\"right\">0.3\x3C/td>\n\x3Ctd align=\"right\">458,816\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>s2-cap-cover-1\x3C/code>\x3C/td>\n\x3Ctd align=\"right\">0.6\x3C/td>\n\x3Ctd align=\"right\">102.5\x3C/td>\n\x3Ctd align=\"right\">9.1\x3C/td>\n\x3Ctd align=\"right\">7.5\x3C/td>\n\x3Ctd align=\"right\">12,316\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>s2-cap-cover-32\x3C/code>\x3C/td>\n\x3Ctd align=\"right\">0.2\x3C/td>\n\x3Ctd align=\"right\">49.4\x3C/td>\n\x3Ctd align=\"right\">7.1\x3C/td>\n\x3Ctd align=\"right\">7.0\x3C/td>\n\x3Ctd align=\"right\">394,112\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>spherical-overlap-1\x3C/code>\x3C/td>\n\x3Ctd align=\"right\">0.1\x3C/td>\n\x3Ctd align=\"right\">104.6\x3C/td>\n\x3Ctd align=\"right\">0.4\x3C/td>\n\x3Ctd align=\"right\">0.9\x3C/td>\n\x3Ctd align=\"right\">332\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>spherical-overlap-256\x3C/code>\x3C/td>\n\x3Ctd align=\"right\">0.2\x3C/td>\n\x3Ctd align=\"right\">110.6\x3C/td>\n\x3Ctd align=\"right\">0.5\x3C/td>\n\x3Ctd align=\"right\">0.5\x3C/td>\n\x3Ctd align=\"right\">82,952\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>All initial, repeated and updated outputs passed their pinned/analytic reference checks. Each\ncase reported zero graph-owned transient allocation; this excludes shader-private temporary\nstorage and driver allocation. The input/output byte totals include output capacity, including\nunused padded slots. Sub-millisecond differences and the cap batch ordering should not be read\nas scaling trends from these single shared-device runs. There is no optimized CPU timing baseline.\x3C/p>\n\x3Cp>The level-4 cap oracle exposed a real cancellation defect during benchmark development: subtractive\nprojection onto a nearly perpendicular great-circle plane could leave an f32 residue that\nnormalized to the query direction. The corrected double-cross projection is now guarded by a\nregular GPU regression against the pinned exact cell list. The successful records above come from\nthe corrected implementation; the earlier failed run is not represented as successful evidence.\x3C/p>\n\x3Ch2 id=\"executable-unit-sphere-examples\">Executable unit-sphere examples\x3C/h2>\n\x3Cp>These lazy examples execute actual GPU graphs on synthetic analytic inputs and capture the input views, result views and status flags. They are not benchmark runs or observed geographic datasets.\x3C/p>\n\x3Ch3 id=\"gpus2cellhierarchy\">\x3Ccode>GPUS2CellHierarchy\x3C/code>\x3C/h3>\n\x3Cp>Exact children of the six S2 root faces.\x3C/p>\n\x3Cp>{/* lens:GPUS2CellHierarchy */}\x3C/p>\n\x3Cp>::lens{scenario=gpu-spatial-analysis.s2-cell-hierarchy rung=result caption=\"Inspect captured input, result and status rows.\"}\x3C/p>\n\x3Cp>::lens{scenario=gpu-spatial-analysis.s2-cell-hierarchy rung=graph caption=\"Inspect the executed GPU command graph.\"}\x3C/p>\n\x3Ch3 id=\"gpus2cellmeasures\">\x3Ccode>GPUS2CellMeasures\x3C/code>\x3C/h3>\n\x3Cp>Unit-sphere area and perimeter of S2 cells at levels 0–30. This compatibility API retains\nsteradians/radians and its per-row status (0 valid, 1 invalid with NaN measures). It shares the\nstable local-increment arithmetic of \x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/operators-cells#gpucellgridpath-and-gpucellmeasures\">\x3Ccode>GPUCellMeasures\x3C/code>\x3C/a>.\nUse \x3Ccode>GPUCellMeasures\x3C/code> with \x3Ccode>family: 's2'\x3C/code> for meters/kilometers, ordered edges and the common\nH3/S2/Quadbin interface; invalid rows there are zero. Both APIs accept the compile-time\n\x3Ccode>precision: 'fp64'\x3C/code> option for published double-single projection and local-increment arithmetic;\nthe default is \x3Ccode>'float32'\x3C/code>. Output formats and the unit-sphere API's invalid statuses stay the same.\x3C/p>\n\x3Cp>{/* lens:GPUS2CellMeasures */}\x3C/p>\n\x3Cp>::lens{scenario=gpu-spatial-analysis.s2-cell-measures rung=result caption=\"Inspect captured input, result and status rows.\"}\x3C/p>\n\x3Cp>::lens{scenario=gpu-spatial-analysis.s2-cell-measures rung=graph caption=\"Inspect the executed GPU command graph.\"}\x3C/p>\n\x3Ch3 id=\"gpus2capcovering\">\x3Ccode>GPUS2CapCovering\x3C/code>\x3C/h3>\n\x3Cp>Exterior root-face covering of a small north-pole cap.\x3C/p>\n\x3Cp>{/* lens:GPUS2CapCovering */}\x3C/p>\n\x3Cp>::lens{scenario=gpu-spatial-analysis.s2-cap-covering rung=result caption=\"Inspect captured input, result and status rows.\"}\x3C/p>\n\x3Cp>::lens{scenario=gpu-spatial-analysis.s2-cap-covering rung=graph caption=\"Inspect the executed GPU command graph.\"}\x3C/p>\n\x3Ch3 id=\"gpusphericalconvexcontains\">\x3Ccode>GPUSphericalConvexContains\x3C/code>\x3C/h3>\n\x3Cp>Interior, exterior and closed-boundary queries on an octant.\x3C/p>\n\x3Cp>{/* lens:GPUSphericalConvexContains */}\x3C/p>\n\x3Cp>::lens{scenario=gpu-spatial-analysis.spherical-convex-contains rung=result caption=\"Inspect captured input, result and status rows.\"}\x3C/p>\n\x3Cp>::lens{scenario=gpu-spatial-analysis.spherical-convex-contains rung=graph caption=\"Inspect the executed GPU command graph.\"}\x3C/p>\n\x3Ch3 id=\"gpusphericalconvexintersection\">\x3Ccode>GPUSphericalConvexIntersection\x3C/code>\x3C/h3>\n\x3Cp>Identical octants with intersection area and overlap fractions.\x3C/p>\n\x3Cp>{/* lens:GPUSphericalConvexIntersection */}\x3C/p>\n\x3Cp>::lens{scenario=gpu-spatial-analysis.spherical-convex-intersection rung=result caption=\"Inspect captured input, result and status rows.\"}\x3C/p>\n\x3Cp>::lens{scenario=gpu-spatial-analysis.spherical-convex-intersection rung=graph caption=\"Inspect the executed GPU command graph.\"}\x3C/p>\n\x3Ch3 id=\"gpus2polygoncovering\">\x3Ccode>GPUS2PolygonCovering\x3C/code>\x3C/h3>\n\x3Cp>{/* lens:GPUS2PolygonCovering */}\x3C/p>\n\x3Cp>::lens{scenario=gpu-spatial-analysis.s2-polygon-covering rung=result caption=\"Inspect captured geometry, counts and failure flags.\"}\x3C/p>\n\x3Cp>::lens{scenario=gpu-spatial-analysis.s2-polygon-covering rung=graph caption=\"Inspect the executed GPU stages.\"}\x3C/p>\n\x3Ch3 id=\"gpusphericalpolygoncontains\">\x3Ccode>GPUSphericalPolygonContains\x3C/code>\x3C/h3>\n\x3Cp>{/* lens:GPUSphericalPolygonContains */}\x3C/p>\n\x3Cp>::lens{scenario=gpu-spatial-analysis.spherical-polygon-contains rung=result caption=\"Inspect captured geometry, counts and failure flags.\"}\x3C/p>\n\x3Cp>::lens{scenario=gpu-spatial-analysis.spherical-polygon-contains rung=graph caption=\"Inspect the executed GPU stages.\"}\x3C/p>\n\x3Ch3 id=\"gpusphericalpolygonoverlay\">\x3Ccode>GPUSphericalPolygonOverlay\x3C/code>\x3C/h3>\n\x3Cp>{/* lens:GPUSphericalPolygonOverlay */}\x3C/p>\n\x3Cp>::lens{scenario=gpu-spatial-analysis.spherical-polygon-overlay rung=result caption=\"Inspect captured geometry, counts and failure flags.\"}\x3C/p>\n\x3Cp>::lens{scenario=gpu-spatial-analysis.spherical-polygon-overlay rung=graph caption=\"Inspect the executed GPU stages.\"}\x3C/p>\n\x3Ch3 id=\"gpusphericalarcoverlay\">\x3Ccode>GPUSphericalArcOverlay\x3C/code>\x3C/h3>\n\x3Cp>{/* lens:GPUSphericalArcOverlay */}\x3C/p>\n\x3Cp>::lens{scenario=gpu-spatial-analysis.spherical-arc-overlay rung=result caption=\"Inspect captured geometry, counts and failure flags.\"}\x3C/p>\n\x3Cp>::lens{scenario=gpu-spatial-analysis.spherical-arc-overlay rung=graph caption=\"Inspect the executed GPU stages.\"}\x3C/p>\n\x3Ch2 id=\"expanded-mode-scaling-observations\">Expanded-mode scaling observations\x3C/h2>\n\x3Cp>The expanded harness completed fourteen workloads on the same Apple \x3Ccode>metal-3\x3C/code> adapter and\nHeadless Chrome 151 at 10:42 PM EDT on October 23, 2026. The complete phase records\ninclude the original eight cases and six added cases below. Source state is explicitly\n\x3Ccode>shared-dirty-tree\x3C/code>; revision is null, so this is not a frozen-source benchmark. These are CPU\nencode/submit/queue-completion measurements, with upload, validation and readback reported\nseparately. Five warm executions and three updated executions share caches and device state.\nNo optimized CPU baseline, speedup claim, cross-device result or driver peak measurement exists.\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Workload\x3C/th>\n\x3Cth align=\"right\">Host compile ms\x3C/th>\n\x3Cth align=\"right\">First execution ms\x3C/th>\n\x3Cth align=\"right\">Warm median ms\x3C/th>\n\x3Cth align=\"right\">Updated median ms\x3C/th>\n\x3Cth align=\"right\">Explicit input + output bytes\x3C/th>\n\x3Cth align=\"right\">Graph transient bytes\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>s2-stable-measures-166\x3C/code>\x3C/td>\n\x3Ctd align=\"right\">0.3\x3C/td>\n\x3Ctd align=\"right\">36.7\x3C/td>\n\x3Ctd align=\"right\">0.2\x3C/td>\n\x3Ctd align=\"right\">0.2\x3C/td>\n\x3Ctd align=\"right\">3,320\x3C/td>\n\x3Ctd align=\"right\">0\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>s2-stable-measures-16384\x3C/code>\x3C/td>\n\x3Ctd align=\"right\">0.1\x3C/td>\n\x3Ctd align=\"right\">29.4\x3C/td>\n\x3Ctd align=\"right\">0.4\x3C/td>\n\x3Ctd align=\"right\">1.1\x3C/td>\n\x3Ctd align=\"right\">327,680\x3C/td>\n\x3Ctd align=\"right\">0\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>s2-adaptive-cover-level4\x3C/code>\x3C/td>\n\x3Ctd align=\"right\">0.2\x3C/td>\n\x3Ctd align=\"right\">178.1\x3C/td>\n\x3Ctd align=\"right\">73.3\x3C/td>\n\x3Ctd align=\"right\">69.0\x3C/td>\n\x3Ctd align=\"right\">81,980\x3C/td>\n\x3Ctd align=\"right\">0\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>s2-adaptive-cover-level6\x3C/code>\x3C/td>\n\x3Ctd align=\"right\">0.4\x3C/td>\n\x3Ctd align=\"right\">372.7\x3C/td>\n\x3Ctd align=\"right\">309.1\x3C/td>\n\x3Ctd align=\"right\">302.9\x3C/td>\n\x3Ctd align=\"right\">81,980\x3C/td>\n\x3Ctd align=\"right\">0\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>spherical-intrinsic-overlay-8\x3C/code>\x3C/td>\n\x3Ctd align=\"right\">0.5\x3C/td>\n\x3Ctd align=\"right\">232.9\x3C/td>\n\x3Ctd align=\"right\">3.2\x3C/td>\n\x3Ctd align=\"right\">3.3\x3C/td>\n\x3Ctd align=\"right\">3,464\x3C/td>\n\x3Ctd align=\"right\">7,184\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>spherical-intrinsic-overlay-32\x3C/code>\x3C/td>\n\x3Ctd align=\"right\">0.2\x3C/td>\n\x3Ctd align=\"right\">241.7\x3C/td>\n\x3Ctd align=\"right\">22.2\x3C/td>\n\x3Ctd align=\"right\">22.1\x3C/td>\n\x3Ctd align=\"right\">3,752\x3C/td>\n\x3Ctd align=\"right\">7,184\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>Measure batches repeat the 166 direct-S2 oracle cells, including level 30, then reverse resident\nkey order. Adaptive covers rotate a spherical octant and include a downstream measure stage for\nall 4,096 capacity slots; checks require complete counts, sub-enumeration traversal work and an\nexterior area at least the octant area. Intrinsic overlays compare the same globally distributed\nS2-reference intersection with 8 versus 32 input vertices, then rotate both operands. Additional\nvertices sample the original minor arcs, so the region and oracle area remain unchanged.\x3C/p>\n\x3Cp>These observations show the cost of the bounded traversal and intrinsic arrangement as resolution\nor vertex count increases; they do not establish large-region scalability. In particular the\nlevel-6 cover costs about 309 ms in this fixture and the 32-vertex arrangement about 22 ms. Output\ncapacity bytes include unused slots, and graph transient bytes exclude shader-private and driver\nallocation. Every initial, repeated and updated result passed its numerical checks.\x3C/p>"},ssr:!0}]})($R["tsr"])</script><script data-tsr-stream-part="">$_TSR.e();{let s=document.currentScript,p;while((p=s.previousElementSibling)&&p.hasAttribute('data-tsr-stream-part'))p.remove();s.remove()}</script><script type="module" async="" src="/luma-contributors/assets/index-DIfTuwM1.js"></script><script>document.currentScript.remove();/*$tsr-stream-boundary*/</script></body></html>

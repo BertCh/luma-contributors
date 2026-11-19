@@ -1,0 +1,1 @@
+import{T as e}from"./gpu-contributor-utils-BIwLQON5.js";function t(t,n){return e(t,!n.count||!n.includedCount,`output.includedCount and legacy output.count are aliases; provide only one`),n.includedCount??n.count}export{t};

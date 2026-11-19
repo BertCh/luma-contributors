@@ -1,0 +1,1 @@
+function e(e,t){let n=1/0,r=1/0,i=-1/0,a=-1/0;for(let[t,o]of e)n=Math.min(n,t),i=Math.max(i,t),r=Math.min(r,o),a=Math.max(a,o);let o=.94*Math.min(t.width/(i-n||1),t.height/(a-r||1));return(e,s)=>[t.width/2+(e-(n+i)/2)*o,t.height/2+(s-(r+a)/2)*o]}export{e as t};

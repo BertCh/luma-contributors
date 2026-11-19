@@ -1,0 +1,1 @@
+function e(e,t){let n=e.length>>1,r=[e[0],e[1]],i=-1;for(let a=0;a<n;a++){let o=0;for(let r=0;r<n;r++)Math.hypot(e[r*2]-e[a*2],e[r*2+1]-e[a*2+1])<t&&o++;o>i&&(i=o,r=[e[a*2],e[a*2+1]])}return r}export{e as t};

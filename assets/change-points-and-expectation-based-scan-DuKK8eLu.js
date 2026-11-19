@@ -1,0 +1,141 @@
+var e={slug:`api/gpu-spatial-analysis/change-points-and-expectation-based-scan`,title:`Change points and the expectation-based scan`,html:`<h1 id="change-points-and-the-expectation-based-scan">Change points and the expectation-based scan</h1>
+<p>STX-06 and STX-07. Import from <code>@luma-contributors/analysis/gpu-spatial-analysis</code>. Cubes use the layouts of
+<code>GPUCubeLayoutTranspose</code>: <code>'cell-major'</code> (<code>cell * sliceCount + slice</code>) or <code>'period-major'</code>.</p>
+<h2 id="per-location-change-points-gpulocationchangepoints">Per-location change points: <code>GPULocationChangePoints</code></h2>
+<p><code>GPULocationChangePoints</code> runs unpruned optimal partitioning per cell: <code>F(t) = min_s F(s) + C(s + 1..t) + beta</code>, the same optimum PELT
+finds, with <code>sliceCount^2 / 2</code> bounded segment costs and no pruning. Missing (NaN) slices are skipped;
+<code>minimumSegmentLength</code> counts finite slices. Values are standardized per location by the series' own mean and
+standard deviation (the Poisson cost uses a deviance form), so the partition does not depend on the unit of <code>values</code>.
+The moments of each segment are running sums that begin at the segment's own start, about its first value; no
+difference of two long prefix sums is formed, so a quiet segment after a loud one keeps f32 relative accuracy at
+<code>sliceCount = 512</code>.</p>
+<p>Variance floor (<code>'variance'</code> and <code>'mean-variance'</code>): a segment variance below <code>1e-11</code> times the variance of the whole
+series is raised to that value, so a constant segment has a finite cost whatever the unit. (Until 2026-11-10 the floor
+was <code>1e-11</code> in data units, which clamped every segment of a series in small units, for example values near <code>1e-6</code>,
+and returned no change point.) The R <code>changepoint</code> package substitutes <code>1e-11</code> in data units only when a segment
+variance is not positive; the two rules pick the same segments, and differ in the value given to an exactly constant
+segment unless the series variance is 1. A constant series has no change point, and its <code>optimalCost</code> uses <code>1e-11</code>
+in data units.</p>
+<table>
+<thead>
+<tr>
+<th><code>cost</code></th>
+<th>Segment cost</th>
+<th>Smallest segment</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>'mean'</code></td>
+<td><code>sum (y - mean)^2</code>, a unit-variance Normal cost: standardize <code>values</code> or scale <code>penalty</code></td>
+<td>1</td>
+</tr>
+<tr>
+<td><code>'variance'</code></td>
+<td><code>n (ln(2 pi) + ln(s^2) + 1)</code>, <code>s^2 = sum (y - m)^2 / n</code>, <code>m</code> the mean of the whole series (the <code>changepoint</code> package's <code>cpt.var</code>)</td>
+<td>2</td>
+</tr>
+<tr>
+<td><code>'mean-variance'</code></td>
+<td>As <code>'variance'</code> with each segment's own mean</td>
+<td>2</td>
+</tr>
+<tr>
+<td><code>'poisson'</code></td>
+<td><code>2 x (ln n - ln x)</code>, <code>x</code> the segment total</td>
+<td>1</td>
+</tr>
+<tr>
+<td><code>'slope'</code></td>
+<td>Residual sum of squares of a line per segment, true slice positions</td>
+<td>3</td>
+</tr>
+</tbody>
+</table>
+<p><code>penalty</code> and <code>minimumSegmentLength</code> are per-frame; pack them with <code>getParameterValues</code>. The R <code>changepoint</code> package uses the <code>penalty</code> SIC
+<code>(p + 1) ln n</code>, with <code>p</code> the parameters added per segment. With the unit-variance <code>'mean'</code> and <code>'slope'</code> costs, scale the
+penalty by the variance.</p>
+<p>Outputs per cell: <code>changePointCount</code> (clamped to <code>maximumChangePoints</code>, the earliest kept), <code>changePoints</code> at <code>cell * maximumChangePoints + index</code>, the first slice of each later
+segment, unused rows <code>GPU_LOCATION_CHANGE_POINTS_NONE</code>. Optional: <code>requiredChangePointCounts</code> (unclamped), <code>optimalCost</code> (the sum of the
+segment costs plus <code>penalty</code> per change point), and <code>status.overflow</code> (<code>1</code> when any cell needed more than the capacity).</p>
+<p>Limits: <code>sliceCount &#x3C;= 512</code> (<code>&#x3C;= 256</code> for <code>'slope'</code>, whose time sums are exact unsigned integers up to that length), <code>maximumChangePoints &#x3C;= 128</code>. In the slope cost, when one line explains almost all the variance the cancellation of
+standardized moments limits the absolute residual to about <code>2e-6 * sliceCount * variance</code>.</p>
+<p>Validated against ruptures 1.1.10 Pelt for <code>'mean'</code>, <code>'slope'</code> and <code>'mean-variance'</code>. The variance and Poisson costs are checked only against a binary64 reference of the published <code>changepoint</code>
+definitions in the spec; the R package is GPL and R-only and was not run, so the external R fixture is pending.</p>
+<p>{/* lens:GPULocationChangePoints */}</p>
+<p>{/* parameters: GPULocationChangePoints generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h3 id="gpulocationchangepoints-parameters"><code>GPULocationChangePoints</code> parameters</h3>
+<ul>
+<li>Packer: <code>instance.getParameterValues(settings)</code>, writes the <code>float32</code> parameter view.</li>
+</ul>
+<p>Settings of <code>instance.getParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>penalty</code></td>
+<td><code>number</code></td>
+<td>Penalty <code>beta</code> per added change point, finite and non-negative, on the scale of the cost: see <code>GPULocationChangePoints</code>. For the <code>changepoint</code> package's <code>SIC</code>: <code>(p + 1) ln n</code> with <code>p</code> the parameters added per segment (1 for mean, variance and Poisson, 2 for mean-variance and slope, the Poisson and Normal likelihoods assume unit-variance scaling for mean and slope).</td>
+</tr>
+<tr>
+<td><code>minimumSegmentLength</code> (optional)</td>
+<td><code>number</code></td>
+<td>Smallest number of finite slices per segment. Defaults to the smallest length the cost is defined on: 1 for mean and Poisson, 2 for variance and mean-variance, 3 for slope.</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p>
+<h2 id="pettitt-test-gpupettitttest">Pettitt test: <code>GPUPettittTest</code></h2>
+<p><code>K = max_t |U_t|</code>, <code>U_t = sum_{i&#x3C;=t} sum_{j>t} sign(x_i - x_j)</code>, over the finite series in exact integers. Outputs one row per cell: <code>statistic</code> (uint32), <code>changeSlice</code> (the first slice after the
+change, <code>GPU_PETTITT_TEST_NO_CHANGE_SLICE</code> under 2 finite slices) and <code>pValues</code> (<code>min(1, 2 exp(-6 K^2 / (n^3 + n^2)))</code>).
+<code>sliceCount &#x3C;= 512</code>. Checked against pyhomogeneity 1.1.</p>
+<p>{/* lens:GPUPettittTest */}</p>
+<h2 id="corrected-emerging-hot-spot-trend">Corrected emerging hot spot trend</h2>
+<p><code>GPUEmergingHotSpots</code> and <code>addSpaceTimeHotSpotsRecipe</code> take <code>trendAutocorrelationCorrection</code>:</p>
+<ul>
+<li><code>'none'</code> (default): the unmodified Mann-Kendall test, as before.</li>
+<li><code>'hamed-rao'</code> (Hamed and Rao 1998): ranks of the Sen-detrended series, lags whose autocorrelation exceeds <code>trendCorrectionCriticalZ / sqrt(n)</code> (default 1.96).</li>
+<li><code>'yue-wang'</code> (Yue and Wang 2004): autocorrelation of the Sen-detrended values over all lags.</li>
+</ul>
+<p><code>trendCorrectionMaximumLag</code> limits the lags (default every lag). The correction is compile-time and needs
+<code>sliceCount &#x3C;= GPU_EMERGING_HOT_SPOTS_MAXIMUM_CORRECTED_TREND_SLICE_COUNT</code> (63), where each cell can select the Sen slope in one
+invocation. <code>trendS</code> and the category codes keep their meaning. Checked against pymannkendall 1.4.3.</p>
+<h2 id="expectation-based-scan-gpuexpectationbasedspacetimescan">Expectation-based scan: <code>GPUExpectationBasedSpaceTimeScan</code></h2>
+<p>The space-time permutation model of <code>GPUSpatialScanStatistic</code> conditions on the zone and bucket margins, so a rise shared by every zone is
+explained by the bucket margin and is not a cluster (Tango et al. 2011). This scan compares the counts with a supplied <code>baseline</code> instead:
+<code>F = C ln(C / B) + B - C</code> for <code>C > B</code>, Neill et al. (2005). It scans windows ending at the last bucket.</p>
+<p>For each center and window length, the neighborhood is its nearest zones (the kNN table the scan builds,
+<code>maximumNeighbors &#x3C;= 64</code>). Fast Subset Scan (Neill 2012): the best subset is a prefix of the zones sorted by
+<code>C_i / B_i</code>, so an exact search over the subsets of the neighborhood is a fixed sort and one prefix scan.
+A zone whose baseline is not positive is excluded. The most likely cluster is reported with its member zones.</p>
+<p>Neighbor discovery defaults to <code>nearestZoneSearch: 'auto'</code>, which uses the same exact coordinate
+indexes as the spatial scan for truncated lists (at most 64 rows). A whole-domain list uses
+full-scan. Neighbors are ordered by <code>(separation key, zone row)</code>; a zero-distance tie with lower
+rows can displace the center itself. For three coincident zones and <code>maximumNeighbors: 1</code>, every
+neighborhood contains only row 0, so cases on rows 1 and 2 are outside those neighborhoods.
+<code>'indexed'</code> selects it explicitly; <code>'full-scan'</code> selects the exhaustive route for comparison.
+<code>contributor.nearestZoneSearch</code> reports the resolved route, and
+<code>contributor.estimatedFullScanSeparationCount</code> bounds exhaustive separation evaluations per submission
+by <code>5 * zones^2</code> for a shorter-than-domain list, or <code>zones^2</code> for a whole-domain list, excluding sorting.
+Both routes order by <code>(separation key, zone row)</code> in planar and great-circle contexts. The index is
+rebuilt each submission; axis-degenerate data can still require quadratic search work. See the
+<a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-dynamics#gpuspatialscanstatistic">spatial scan neighbor discovery details</a>.</p>
+<p>Inference: <code>maximumReplicates</code> Monte Carlo replicates of independent Poisson counts from the baseline, each searched like the data.
+The p-value is <code>(1 + #{replicate maxima >= observed}) / (P + 1)</code>. Secondary clusters and repeated-analysis adjustment are not
+implemented; convert with <code>getGPUScanRecurrenceInterval(pValue, analysisInterval)</code>. Checked against an exhaustive binary64 subset enumeration and the same Philox streams; the <code>scanstatistics</code> R package (GPL, R-only) was not run, so its fixture is pending.</p>
+<p>Inputs: <code>cases</code> and <code>baseline</code>, <code>zones * timeBuckets</code> rows (<code>zone * timeBuckets + bucket</code>). The baseline is the caller's: for example a moving average of earlier buckets. Parameters (seed, replicate count,
+per-frame window limit) are packed by <code>getGPUExpectationBasedScanParameterValues</code>. Limits: <code>maximumWindowLength &#x3C;= 32</code>, <code>maximumReplicates &#x3C;= 99999</code>.
+Outputs: <code>clusterZones</code>, <code>clusterStatistics</code> (<code>GPU_EXPECTATION_BASED_SCAN_CLUSTER</code>), <code>statistics</code> (maxima per replicate, observed first),
+<code>summary</code> (<code>GPU_EXPECTATION_BASED_SCAN_SUMMARY</code>) and optional <code>zoneStatistics</code>.</p>
+<p>{/* lens:GPUExpectationBasedSpaceTimeScan */}</p>
+<h2 id="prospective-mode-of-gpuspatialscanstatistic">Prospective mode of <code>GPUSpatialScanStatistic</code></h2>
+<p><code>temporalMode: 'prospective'</code> keeps only windows that end at the last bucket, in the observed data and in every replicate. The default
+<code>'retrospective'</code> is unchanged. No adjustment for earlier analyses is applied: report recurrence intervals with
+<code>getGPUScanRecurrenceInterval(pValue, analysisInterval)</code>, in the unit of <code>analysisInterval</code>, and treat alarms from repeated analyses
+accordingly (Correa et al. 2015; Kulldorff and Kleinman 2015).</p>`};export{e as default};

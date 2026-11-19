@@ -1,0 +1,16 @@
+import{t as e}from"./spatial-statistics-writable-dispatches-BC35SiUi.js";import{i as t}from"./graph-chunk-dispatch-zBt8k2-o.js";import{t as n}from"./status-aOwAAXek.js";import{E as r,f as i}from"./gpu-contributor-utils-BIwLQON5.js";function a(e,t){let n=t??`exclude`;if(n!==`exclude`&&n!==`keep`)throw Error(`${e} islands must be 'exclude' or 'keep'`);return n}function o(e){return e.information?.transform===`row`}function s(e,t,n=`index`,r){let i=r?`activeRow - (`+r+`)`:`activeRow`;return`{
+    let activeRow = ${n};
+    let activeBegin = min(offsets[offsetsOffset + ${i}], CAPACITY);
+    let activeEnd = min(offsets[offsetsOffset + ${i} + 1u], CAPACITY);
+    for (var slot = activeBegin; slot < activeEnd; slot++) {
+      let neighbor = neighbors[neighborsOffset + slot];
+      if (neighbor >= ROWS || neighbor == activeRow) {
+        continue;
+      }
+      let weight = weights[weightsOffset + slot];
+      if (!(weight > 0.0) || !(${e})) {
+        continue;
+      }
+      ${t}
+    }
+  }`}function c(e,t,a=`weights`){if(r(t.offsets,[`uint32`],`${e} ${a}.offsets`),r(t.neighbors,[`uint32`],`${e} ${a}.neighbors`),r(t.weights,[`float32`],`${e} ${a}.weights`),i(e,`${a}.offsets length`,t.offsets.length,2),i(e,`${a}.neighbors length`,t.neighbors.length),t.weights.length!==t.neighbors.length)throw Error(`${e} ${a}.weights length must equal neighbors length`);if(t.distances&&(r(t.distances,[`float32`],`${e} ${a}.distances`),t.distances.length!==t.neighbors.length))throw Error(`${e} ${a}.distances length must equal neighbors length`);let o=t.offsets.length-1;t.status&&n(`${e} ${a}.status`,t.status);let{information:s}=t;if(s){if(s.rowCount!==o)throw Error(`${e} ${a}.information.rowCount must equal the row count`);if(!l.includes(s.transform))throw Error(`${e} ${a}.information.transform is unknown`);if(![!0,!1,`unknown`].includes(s.symmetric))throw Error(`${e} ${a}.information.symmetric must be a boolean or 'unknown'`)}return o}var l=[`unknown`,`raw`,`binary`,`row`,`double`,`variance`,`kernel`,`symmetric`];function u(n,r,i){let a=c(n,r,`output`),o={offsets:r.offsets,neighbors:r.neighbors,weights:r.weights,distances:r.distances,overflow:r.status?.overflow,requiredCount:r.status?.requiredCount,candidateOverflow:r.status?.candidateOverflow};if(i?e(n,o,i):t(n,o),!r.status?.overflow)throw Error(`${n} output.status.overflow is required`);return a}function d(e){return[e.offsets,e.neighbors,e.weights,e.distances]}function f(e){return[e.status.overflow,e.status.requiredCount,e.status.candidateOverflow]}function p(e,t){let n={...e.status,...t.status};return{...e,information:t.information,spatialContext:t.spatialContext??e.spatialContext,status:Object.keys(n).length>0?n:void 0}}function m(e){let{rowCount:t,capacity:n}=e;i(`getGPUSpatialWeightsCapacityPlan`,`rowCount`,t),i(`getGPUSpatialWeightsCapacityPlan`,`capacity`,n);let r=Math.max(e.headroom??.25,0),a=e.requiredCount??n;if(!(Number.isSafeInteger(a)&&a>=0))throw Error(`getGPUSpatialWeightsCapacityPlan requiredCount must be >= 0`);let o=a<=n?n:Math.ceil(a*(1+r)),s=8+(e.distances?4:0),c=(t+1)*Uint32Array.BYTES_PER_ELEMENT;return{capacity:o,estimatedRequiredCount:a,limited:o<a,offsetsByteLength:c,estimatedOutputBytes:o*s+c,estimatedPeakTransientBytes:0}}export{d as a,c,f as i,u as l,m as n,o,s as r,a as s,p as t};

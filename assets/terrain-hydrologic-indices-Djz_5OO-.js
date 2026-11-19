@@ -1,0 +1,29 @@
+import{r as e}from"./terrain-binding-preflight-laSEObQE.js";import{n as t,r as n}from"./raster-grid-utils-D2opjNmg.js";import{o as r}from"./wgsl-kernel-nodes-DagJklH2.js";import{E as i,x as a,y as o}from"./gpu-contributor-utils-BIwLQON5.js";import{u as s}from"./raster-grid-VB0AM_GY.js";import{c,d as l,f as u,h as d,n as f,o as p,r as m,u as h}from"./raster-band-utils-BcTxc8_Y.js";import{t as g}from"./gpu-raster-grid-C_izEAl0.js";import{t as _}from"./define-run-B-brkCe4.js";import{$ as v}from"./entry-preview-D70TdSbK.js";import{d as y,o as b,r as x}from"./terrain-Bwc0vRX3.js";var S=`GPUTerrainHydrologicIndices`;function C(e,t,r=new Float32Array(8)){return p(`getGPUTerrainHydrologicIndicesParameterValues`,r,8),n(r,t),r[4]=e.minimumSlope??.001,r[5]=0,r[6]=0,r[7]=0,r}var w=class{id;props;constructor(e){this.id=e.id??`terrain-hydrologic-indices`,this.props=e;let{id:t}=this,n=h(t,e.grid);d(t,e.parameters,8),s(t,e.cellSizeMode),l(t,e.grid,e.cellSizeMode),u(t,e.grid);let r=this.getOutputs();if(r.length===0)throw Error(`${t} requires at least one output`);for(let[a,o]of[[`accumulation`,e.accumulation],...r.map(([e,t])=>[`output.${e}`,t])])if(i(o,[`float32`],`${t} ${a}`),o.length!==n)throw Error(`${t} ${a} must contain one value per cell`);let a=r.map(([,e])=>e.buffer);if(new Set(a).size!==a.length)throw Error(`${t} outputs must not share buffers with each other`);o(t,r.map(([,e])=>e),[...f(e.elevation),e.accumulation,e.parameters])}getCommandNodes(n){e(n,this.id,this.props,{"canonical elevation":4*this.props.grid.width*this.props.grid.height});let{id:i,props:o}=this,{width:s,height:l}=o.grid,u=this.getOutputs();c(i,n,o.elevation,[]),a(i,n,[o.accumulation,o.parameters,...u.map(([,e])=>e)]);let d=m(n,i,o.elevation,o.grid,!0),f=[{name:`elevation`,view:d.band.storage.values,type:`f32`,access:`read`},{name:`accumulation`,view:o.accumulation,type:`f32`,access:`read`},{name:`settings`,view:o.parameters,type:`f32`,access:`read`},...u.map(([e,t])=>({name:e,view:t,type:`f32`,access:`read_write`}))],p=e=>u.map(([t])=>`${t}[${t}Offset + index] = ${e(t)};`).join(`
+  `),h={slope:`tangent`,specificCatchmentArea:`catchment`,wetnessIndex:`wetness`,streamPowerIndex:`catchment * tangent`},g=r(n,{id:`${i}-indices`,operation:S,variant:`indices`,bindings:f,invocationCount:s*l,declarations:t({width:s,height:l,cellSizeMode:o.cellSizeMode??`uniform`}),body:`let row = index / GRID_WIDTH;
+  let center = elevation[elevationOffset + index];
+  let area = accumulation[accumulationOffset + index];
+  if (!isFiniteValue(center) || !isFiniteValue(area)) {
+    ${p(()=>`getQuietNaN()`)}
+    return;
+  }
+  var steepest = 0.0;
+  for (var direction = 0u; direction < 8u; direction++) {
+    let neighbor = getD8Neighbor(index, direction);
+    if (neighbor == GRID_NONE) { continue; }
+    let neighborValue = elevation[elevationOffset + neighbor];
+    if (!isFiniteValue(neighborValue)) { continue; }
+    steepest = max(steepest, (center - neighborValue) / getD8Distance(direction, row));
+  }
+  var minimumSlope = settings[settingsOffset + 4u];
+  if (!(minimumSlope >= 0.0) || !isFiniteValue(minimumSlope)) { minimumSlope = 0.0; }
+  let tangent = max(steepest, minimumSlope);
+  let ground = getGroundCellSizeAtRowCoordinate(f32(row) + 0.5);
+  let catchment = area / sqrt(ground.x * ground.y);
+  // WGSL leaves division by zero and log(0) unspecified, so the limits are written explicitly.
+  var wetness = getInfinity();
+  if (catchment <= 0.0) {
+    wetness = -getInfinity();
+  } else if (tangent > 0.0) {
+    wetness = log(catchment / tangent);
+  }
+  ${p(e=>h[e])}`});return[...d.nodes,g]}getOutputs(){let{output:e}=this.props;return[[`slope`,e.slope],[`specificCatchmentArea`,e.specificCatchmentArea],[`wetnessIndex`,e.wetnessIndex],[`streamPowerIndex`,e.streamPowerIndex]].filter(e=>!!e[1])}},T=[[-4,1],[0,.1],[0,1],[.02,.25]],E=_({parameters:v,caption:`Wetness peaks in flat, high-accumulation valleys; stream power on steep channels.`,createInputs:e=>({...b(e),highlight:{source:null,threshold:NaN,output:-1,sorted:new Float32Array}}),build(e,t){let n=x(e,t,{accumulationUnits:`area`});n.writeStreamThreshold(25);let r=e.allocate(`index-parameters`,`float32`,8),i=e.allocate(`slope`,`float32`,t.cellCount),a=e.allocate(`catchment-area`,`float32`,t.cellCount),o=e.allocate(`wetness`,`float32`,t.cellCount),s=e.allocate(`stream-power`,`float32`,t.cellCount);e.graph.add(new w({grid:t.grid,elevation:g(n.filledElevation.view,t.grid,{id:`filled`}),accumulation:n.accumulation.view,parameters:r.view,output:{slope:i.view,specificCatchmentArea:a.view,wetnessIndex:o.view,streamPowerIndex:s.view}}));let c=e.allocate(`highlighted`,`float32`,t.cellCount);return{outputs:{filledElevation:n.filledElevation,indices:[o,s,i,a],highlighted:c},update:e=>r.write(C({minimumSlope:e.minimumSlope},t.grid))}},interaction:{kind:`level`,hint:`raise the level`,rest:[.5,.88],resolve(e,{inputs:t,outputs:n,values:r,world:i,peek:a}){let o=Math.round(r.output),s=a(n.indices[o]);if(!s)return{};let c=v[1].options?.[o]??`index`,l=Math.min(1,Math.max(0,(1-e.unitY-.05)/.9)),u=t.highlight;(u.source!==s||u.output!==o)&&(t.highlight={source:s,threshold:NaN,output:o,sorted:Float32Array.from(s.filter(Number.isFinite)).sort()});let d=t.highlight.sorted,f=Math.min(d.length-1,Math.floor((1-l)*d.length)),p=l<=0?1/0:d[f];return Object.is(t.highlight.threshold,p)||(n.highlighted.write(Float32Array.from(s,e=>e>=p?e:NaN)),t.highlight.threshold=p),{glyphs:[{shape:`line`,from:[0,e.y],to:[i.width,e.y],dashed:!0}],readout:`${c} >= ${Number.isFinite(p)?p.toFixed(2):`max`} · ${Math.round(l*100)}% of cells`}}},draw:({inputs:e,outputs:t,values:n})=>[y(e,t.filledElevation),{layer:`raster`,values:t.indices[Math.round(n.output)],columns:e.columns,rows:e.rows,ramp:`sequential`,range:T[Math.round(n.output)],alpha:.5,smoothing:!0},{layer:`raster`,values:t.highlighted,columns:e.columns,rows:e.rows,ramp:`sequential`,range:T[Math.round(n.output)],alpha:1}]});export{E as default};

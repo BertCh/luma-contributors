@@ -1,0 +1,16 @@
+import{o as e}from"./wgsl-kernel-nodes-DagJklH2.js";function t(t,n,r,i,a,o){t.graph.add({getCommandNodes:t=>[e(t,{id:n,operation:`embedding-component-extract`,bindings:[{name:`sourceValues`,view:r.view,type:`f32`,access:`read`},{name:`component`,view:a.view,type:`u32`,access:`read`},{name:`targetValues`,view:o.view,type:`f32`,access:`read_write`}],invocationCount:o.length,body:`targetValues[targetValuesOffset + index] = sourceValues[sourceValuesOffset + index * ${i}u + component[componentOffset]];`})]})}function n(t,n,r,i,a,o){let s=a.width/i.columns,c=a.height/i.rows;t.graph.add({getCommandNodes:t=>[e(t,{id:n,operation:`embedding-pixel-positions`,bindings:[{name:`pixelRows`,view:r.view,type:`u32`,access:`read`},{name:`targetValues`,view:o.view,type:`f32`,access:`read_write`}],invocationCount:r.length,body:`let pixel = pixelRows[pixelRowsOffset + index];
+  let missing = bitcast<f32>(0x7fc00000u | (index & 0u));
+  let column = f32(pixel % ${i.columns}u);
+  let row = f32(pixel / ${i.columns}u);
+  let valid = pixel < ${i.columns*i.rows}u;
+  targetValues[targetValuesOffset + index * 2u] = select(missing, (column + 0.5) * ${s.toFixed(8)}, valid);
+  targetValues[targetValuesOffset + index * 2u + 1u] = select(missing, ${a.height.toFixed(8)} - (row + 0.5) * ${c.toFixed(8)}, valid);`})]})}function r(t,n,r,i,a){t.graph.add({getCommandNodes:t=>[e(t,{id:n,operation:`flow-displacement-segments`,bindings:[{name:`starts`,view:r.view,type:`f32`,access:`read`},{name:`ends`,view:i.view,type:`f32`,access:`read`},{name:`targetValues`,view:a.view,type:`f32`,access:`read_write`}],invocationCount:a.length,body:`targetValues[targetValuesOffset + index * 4u] = starts[startsOffset + index * 2u];
+  targetValues[targetValuesOffset + index * 4u + 1u] = starts[startsOffset + index * 2u + 1u];
+  targetValues[targetValuesOffset + index * 4u + 2u] = ends[endsOffset + index * 2u];
+  targetValues[targetValuesOffset + index * 4u + 3u] = ends[endsOffset + index * 2u + 1u];`})]})}function i(t,n,r,i,a,o,s){let c=r.length/i;t.graph.add({getCommandNodes:t=>[e(t,{id:n,operation:`embedding-zone-gather`,bindings:[{name:`sourceValues`,view:r.view,type:`f32`,access:`read`},{name:`zones`,view:a.view,type:`u32`,access:`read`},{name:`component`,view:o.view,type:`u32`,access:`read`},{name:`targetValues`,view:s.view,type:`f32`,access:`read_write`}],invocationCount:s.length,body:`let zone = zones[zonesOffset + index];
+  let missing = bitcast<f32>(0x7fc00000u | (index & 0u));
+  let safeZone = min(zone, ${c-1}u);
+  let value = sourceValues[sourceValuesOffset + safeZone * ${i}u + component[componentOffset]];
+  targetValues[targetValuesOffset + index] = select(missing, value, zone < ${c}u);`})]})}function a(t,n,r,i,a){let o=a.length/i;t.graph.add({getCommandNodes:t=>[e(t,{id:n,operation:`flow-row-flip`,bindings:[{name:`sourceValues`,view:r.view,type:`f32`,access:`read`},{name:`targetValues`,view:a.view,type:`f32`,access:`read_write`}],invocationCount:a.length,body:`let column = index % ${i}u;
+  let row = index / ${i}u;
+  targetValues[targetValuesOffset + index] = sourceValues[sourceValuesOffset + (${o-1}u - row) * ${i}u + column];`})]})}export{i as a,a as i,r as n,n as r,t};

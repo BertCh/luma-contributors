@@ -1,0 +1,1 @@
+function e(e,t,n,r=`observer`){if(t!==void 0&&n!==void 0&&t.trim().toUpperCase()!==n.trim().toUpperCase())throw Error(`${e} ${r} heights are ${t} but elevation is ${n}; convert to one vertical datum first`)}function t(e,t){return t??e.verticalDatum}export{t as n,e as t};

@@ -1,0 +1,1 @@
+function e(e,t,n=[0,1]){return{layer:`raster`,values:t,columns:e.columns,rows:e.rows,ramp:`grey`,range:n,smoothing:!0}}export{e as t};

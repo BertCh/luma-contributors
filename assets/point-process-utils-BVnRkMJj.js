@@ -1,0 +1,1 @@
+import{E as e,T as t}from"./gpu-contributor-utils-BIwLQON5.js";function n(n,r,i,a=`point-process`){e(n,[r],a),t(a,n.length===i,`views must hold exactly ${i} rows`)}function r(e,n=`point-process`,r=`scalar`){t(n,Number.isFinite(Math.fround(e))&&Math.fround(e)>0,`${r} must be a positive finite number in float32`)}export{n,r as t};

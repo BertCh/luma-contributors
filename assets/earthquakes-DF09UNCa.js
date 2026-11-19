@@ -1,0 +1,1 @@
+import{t as e}from"./turkiye-quakes-DzqidErl.js";var t=e;function n(e,t,n){return[(e[0]-34)/10*t,(e[1]-35)/6*n]}function r(e,r){return Float32Array.from(t.flatMap(t=>n(t,e,r)))}export{r as n,n as r,t};

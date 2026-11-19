@@ -1,0 +1,1 @@
+var e=4294967295,t={closedRing:1,openChain:2,cut:4,dangle:8,unused:16};export{e as n,t};

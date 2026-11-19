@@ -1,0 +1,1 @@
+var e=`two-sided`;export{e as t};

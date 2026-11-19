@@ -1,0 +1,1 @@
+import{t as e}from"./facet-page-BFVtNpB1.js";import{r as t}from"./index-DIfTuwM1.js";import{t as n}from"./jsx-runtime-LKYXHABd.js";var r=n();function i(){let{id:n}=t.useParams();return(0,r.jsx)(e,{kind:`data`,id:n})}export{i as component};

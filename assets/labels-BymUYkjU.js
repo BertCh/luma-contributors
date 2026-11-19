@@ -1,0 +1,1 @@
+function e(e,t,n=`bottom`){let[r,i,a,o]=e;return{labels:t.map((e,s)=>({text:e,at:[r+(s+.5)/t.length*(a-r),n===`top`?o:i],anchor:n===`top`?`right`:`left`,angle:90,offset:[0,n===`top`?-4:4],role:`tick`,tone:`ink`,priority:1}))}}export{e as t};

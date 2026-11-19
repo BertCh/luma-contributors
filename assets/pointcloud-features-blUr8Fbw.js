@@ -1,0 +1,52 @@
+import{t as e}from"./construction-snapshot-DdkX9Pc0.js";import{D as t,E as n,T as r,f as i,g as a,p as o}from"./gpu-contributor-utils-BIwLQON5.js";import{t as s}from"./symmetric-eigen-wgsl-W1CmtqPF.js";import{u as c}from"./wgsl-common-DfyXiYB0.js";import{i as l,n as u,t as d}from"./pointcloud-chunk-kernel-nodes-0zmunsXp.js";import{a as f,o as p,r as m}from"./graph-chunk-dispatch-zBt8k2-o.js";import{t as h}from"./gpu-pointcloud-neighborhoods-DFos5SQe.js";import{t as g}from"./define-run-B-brkCe4.js";import{t as _}from"./pick-Bo3t3hjv.js";import{i as v,r as y,t as b}from"./pointcloud-display-run-BsAozfd0.js";import{S as x,_ as S,f as C,g as w,i as T,l as E,r as D,s as O,u as k,w as A,y as j}from"./helpers-DPAd8TjN.js";import{Oc as M}from"./entry-preview-D70TdSbK.js";var N=8,P=class{props;id;estimatedCommandNodeCount;chunkPlan;constructor(s){this.props=s,s=e(s,[`parameters`,`id`,`positions`,`indices`,`counts`,`capacity`,`viewpoint`,`output`]),this.id=s.id??`gpu-pointcloud-features`,r(this.id,s.output!==void 0&&s.output!==null,`output must be given`),this.props=s=Object.freeze({...s,output:e(s.output,[`normals`,`eigenvalues`,`covariance`,`shapes`,`status`])}),i(this.id,`capacity`,s.capacity,1,64),t(this.id,`indices`,s.indices,s.counts.length*s.capacity),t(this.id,`normals`,s.output.normals,s.counts.length),t(this.id,`eigenvalues`,s.output.eigenvalues,s.counts.length),t(this.id,`shapes`,s.output.shapes,s.counts.length),t(this.id,`status`,s.output.status,s.counts.length),s.output.covariance&&t(this.id,`covariance`,s.output.covariance,s.counts.length*6),s.parameters&&t(this.id,`parameters`,s.parameters,4),s.viewpoint?.forEach((e,t)=>a(this.id,`viewpoint[${t}]`,e)),n(s.positions,[`float32x3`],`${this.id} positions`),s.parameters&&n(s.parameters,[`float32`],`${this.id} parameters`),this.chunkPlan=d(this.id,m(this.id,{counts:s.counts,normals:s.output.normals,eigenvalues:s.output.eigenvalues,shapes:s.output.shapes,status:s.output.status}),{indices:{view:s.indices,stride:s.capacity},covariances:{view:s.output.covariance,stride:6}}),l(this.id,this.chunkPlan,[`counts`,`indices`],[`normals`,`eigenvalues`,`shapes`,`status`,`covariances`],{positions:s.positions,parameters:s.parameters},[{inputNames:[`indices`,`counts`],outputNames:[`normals`,`eigenvalues`,`status`,`covariances`],inputs:{positions:s.positions}},{inputNames:[`eigenvalues`,`status`],outputNames:[`shapes`]},...s.parameters?[{inputNames:[`indices`,`counts`],outputNames:[`normals`],inputs:{positions:s.positions,parameters:s.parameters}}]:[]]),this.estimatedCommandNodeCount=(s.parameters?3:2)*(1+this.chunkPlan.nonemptyChunkCount),o(this.id,this.estimatedCommandNodeCount)}getCommandNodes(e){let{positions:t,counts:n,capacity:r,viewpoint:i,parameters:a,output:{covariance:o}}=this.props;if(!this.chunkPlan.nonemptyChunkCount)return[];p(e,this.id,this.chunkPlan),f(e,this.id,{positions:t,parameters:a});let l=this.chunkPlan.chunks[0].views,d=u(e,{id:this.id,length:n.length,plan:this.chunkPlan,rowStrides:{indices:r,covariances:6},inputs:{positions:t,indices:l.indices,counts:l.counts},outputs:{normals:l.normals,eigenvalues:l.eigenvalues,status:l.status,...o?{covariances:l.covariances}:{}},declarations:c+s(3),body:`
+let count = min(readCounts(index), ${r}u);
+var flags = select(0u, 2u, readCounts(index) > ${r}u);
+${o?`for (var component = 0u; component < 6u; component++) { writeCovariances(index * 6u + component, 0.0); }`:``}
+writeNormals(index, vec3f(0.0)); writeEigenvalues(index, vec3f(0.0)); 
+if (count < 3u) { writeStatus(index, flags | 1u); return; }
+let origin = readPositions(readIndices(index * ${r}u));
+var mean = vec3f(0.0);
+for (var slot = 0u; slot < count; slot++) { mean += readPositions(readIndices(index * ${r}u + slot)) - origin; }
+mean /= f32(count);
+var covariance = mat3x3f(vec3f(0.0), vec3f(0.0), vec3f(0.0));
+for (var slot = 0u; slot < count; slot++) {
+  let difference = readPositions(readIndices(index * ${r}u + slot)) - origin - mean;
+  covariance += mat3x3f(difference * difference.x, difference * difference.y, difference * difference.z) * (1.0 / f32(count));
+}
+${o?`writeCovariances(index * 6u, covariance[0][0]); writeCovariances(index * 6u + 1u, covariance[0][1]); writeCovariances(index * 6u + 2u, covariance[0][2]); writeCovariances(index * 6u + 3u, covariance[1][1]); writeCovariances(index * 6u + 4u, covariance[1][2]); writeCovariances(index * 6u + 5u, covariance[2][2]);`:``}
+// The shared solver consumes a row-major lower triangle and returns ascending eigenpairs.
+var matrix: array<f32, 9>;
+for (var row = 0u; row < 3u; row++) {
+  for (var column = 0u; column < 3u; column++) { matrix[row * 3u + column] = covariance[column][row]; }
+}
+var vectors: array<f32, 9>;
+let decomposition = getSymmetricEigen_3(&matrix, &vectors, 3u, ${N}u, 1e-6);
+if (decomposition.status != 0u) { flags |= 4u; }
+let values = vec3f(max(decomposition.values[0], 0.0), max(decomposition.values[1], 0.0), max(decomposition.values[2], 0.0));
+var normal = safeNormal(vec3f(vectors[0], vectors[3], vectors[6]));
+${a?``:i?`if (dot(normal, vec3f(${i.map(Math.fround).join(`,`)}) - (origin+mean)) < 0.0) { normal = -normal; }`:`if (normal.z < 0.0 || (normal.z == 0.0 && normal.y < 0.0) || (normal.z == 0.0 && normal.y == 0.0 && normal.x < 0.0)) { normal = -normal; }`}
+let largest = max(max(values.x,values.y),values.z);
+let least = min(min(values.x,values.y),values.z);
+let middle = values.y;
+writeEigenvalues(index, vec3f(largest, middle, least));
+if (!(middle > largest * 1e-6) || !(largest > 1e-30)) { flags |= 1u; }
+else { writeNormals(index, normal); }
+writeStatus(index, flags);`});return d.push(...u(e,{id:`${this.id}-shapes`,length:n.length,plan:this.chunkPlan,inputs:{eigenvalues:l.eigenvalues,status:l.status},outputs:{shapes:l.shapes},body:`var shape = vec3f(0.0);
+if ((readStatus(index) & 1u) == 0u) {
+  let values = readEigenvalues(index);
+  shape = vec3f((values.x-values.y)/values.x, (values.y-values.z)/values.x, values.z/values.x);
+}
+writeShapes(index, shape);`})),a&&d.push(...u(e,{id:`${this.id}-orient`,length:n.length,plan:this.chunkPlan,rowStrides:{indices:r},inputs:{positions:t,indices:l.indices,counts:l.counts,parameters:a},outputs:{normals:l.normals},body:`var normal = readNormals(index);
+if (dot(normal, normal) < 0.5) { return; }
+if (readParameters(3u) == 0.0) {
+  if (normal.z < 0.0 || (normal.z == 0.0 && normal.y < 0.0) || (normal.z == 0.0 && normal.y == 0.0 && normal.x < 0.0)) { normal = -normal; }
+} else {
+  let count = min(readCounts(index), ${r}u);
+  let origin = readPositions(readIndices(index * ${r}u));
+  var mean = vec3f(0.0);
+  for (var slot = 0u; slot < count; slot++) { mean += readPositions(readIndices(index * ${r}u + slot)) - origin; }
+  mean /= f32(count);
+  let viewpoint = vec3f(readParameters(0u), readParameters(1u), readParameters(2u));
+  if (dot(normal, viewpoint - (origin + mean)) < 0.0) { normal = -normal; }
+}
+writeNormals(index, normal);`})),d}},F=5e3,I=.05,L=160,R=[[.95,.6,.2],[.3,.7,1],[.4,.8,.4]];function z({random:e,world:t}){let n=k(e,t.width,F),r=D(t.width,w(n.positions,F));return{cloud:n,layout:r,probe:T(n),mapPositions:O(r,n.positions,F),profilePositions:E(r,n.positions,F),focus:{row:-1}}}var B=g({parameters:M,caption:`Local shape descriptor per point from covariance eigenvalues; the strip below is the side profile (x against height).`,createInputs:z,build(e,t,n){let r=t.cloud,i=n.capacity,a=e.allocate(`positions`,`float32x3`,F),o=e.allocate(`indices`,`uint32`,F*i),s=e.allocate(`counts`,`uint32`,F);e.graph.add(new h({positions:a.view,radius:I,capacity:i,output:{indices:o.view,squaredDistances:e.allocate(`squared-distances`,`float32`,F*i).view,counts:s.view}}));let c=e.allocate(`shapes`,`float32x3`,F),l=e.allocate(`status`,`uint32`,F);return e.graph.add(new P({positions:a.view,indices:o.view,counts:s.view,capacity:i,output:{normals:e.allocate(`normals`,`float32x3`,F).view,eigenvalues:e.allocate(`eigenvalues`,`float32x3`,F).view,shapes:c.view,status:l.view}})),{outputs:{status:l,map:b(e,`usable-map`,e.upload(`map`,`float32x2`,t.mapPositions),l,F,{components:2,invalidBits:5}),profile:b(e,`usable-profile`,e.upload(`profile`,`float32x2`,t.profilePositions),l,F,{components:2,invalidBits:5}),neighborMap:e.allocate(`neighbor-map`,`float32x2`,L),neighborProfile:e.allocate(`neighbor-profile`,`float32x2`,L),dominant:e.allocate(`dominant`,`float32`,F),linearity:b(e,`linearity`,c,l,F,{componentStart:0,invalidBits:5}),planarity:b(e,`planarity`,c,l,F,{componentStart:1,invalidBits:5}),scattering:b(e,`scattering`,c,l,F,{componentStart:2,invalidBits:5})},update:e=>a.write(S(r,e.noise))}},rebuildOn:[`capacity`],interaction:{kind:`probe`,hint:`hover a point`,rest:({inputs:e})=>{let t=e.probe.restRow,[n,r]=x(e.layout,e.cloud.footprint[t*2],e.cloud.footprint[t*2+1]);return[n/e.layout.width,1-r]},resolve(e,{inputs:t,outputs:n,values:r,peek:i}){let{cloud:a,layout:o,probe:s}=t,c=i(n.linearity),l=i(n.planarity),u=i(n.scattering),d=i(n.status);c&&l&&u&&n.dominant.write(Float32Array.from(c,(e,t)=>y(e,l[t],u[t],d?.[t])));let[f,p]=C(o,e.x,Math.max(e.y,o.offsetY)),m=_(s.index,f,p,t.focus.row);if(t.focus.row=m,m<0)return{};let h=s.findNeighbors(m,I).slice(0,L),g=A(n.neighborMap,t.mapPositions,h);A(n.neighborProfile,t.profilePositions,h);let b=x(o,a.footprint[m*2],a.footprint[m*2+1]),S=j(o,a.positions[m*3],a.positions[m*3+2]),w=I*o.scale,T=I/o.heightMaximum*o.profileHeight,E=e=>{let t=i(e)?.[m];return t===void 0?`…`:t.toFixed(2)};return{focus:g,glyphs:[{shape:`ring`,at:b,radius:w},{shape:`box`,minimum:[S[0]-w,S[1]-T],maximum:[S[0]+w,S[1]+T]}],readout:`${v(d?.[m])} · ${d&&!(d[m]&5)?`lin ${E(n.linearity)} · planar ${E(n.planarity)} · scatter ${E(n.scattering)}`:`shape unavailable`} · ${g} neighbors`}}},draw:({outputs:e,values:t,interaction:n})=>{let r=t.shape===3,i=[e.linearity,e.planarity,e.scattering,e.dominant][t.shape],a=r?{ramp:`categorical`,categories:R}:{range:[0,1]},o=typeof n.focus==`number`?Math.max(1,n.focus):1;return[{layer:`dots`,positions:e.map,values:i,...a,radius:2.6},{layer:`dots`,positions:e.profile,values:i,...a,radius:2.2},{layer:`dots`,positions:e.neighborMap,count:o,color:[1,1,1,1],radius:3.6},{layer:`dots`,positions:e.neighborProfile,count:o,color:[1,1,1,1],radius:3}]}});export{B as default};

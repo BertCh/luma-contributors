@@ -1,0 +1,1 @@
+import{t as e}from"./gpu-elementwise-CcQBKyqy.js";function t(t,n,r){if(r.format===`uint32`){let i=t.allocate(`${n}-readout`,`uint32`,r.length);return t.graph.add(new e({id:`${n}-copy`,operation:`copy`,input:r,output:i.view})),i}let i=t.allocate(`${n}-readout`,`float32`,r.length);return t.graph.add(new e({id:`${n}-copy`,operation:`copy`,input:r,output:i.view})),i}export{t};

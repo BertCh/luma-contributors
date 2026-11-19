@@ -1,0 +1,354 @@
+<!DOCTYPE html><html lang="en"><head><meta charSet="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/tokens-DUsD-MQQ.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/base-Btcfj7He.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/components-Bq5SRdyd.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/home-BkA-QKrg.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/docs-CWchvtmE.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/index-Do-eHPVA.css" data-precedence="default"/><title>Raster change monitoring | Gridlight</title><meta name="description" content="Browse GPU spatial analysis operations by data type, use case and domain, each drawn live with luma.gl."/><link rel="modulepreload" href="/luma-contributors/assets/index-DIfTuwM1.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/rolldown-runtime-XKyaHtl9.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/react-DlmbjZJV.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/matchContext-BZe79Vhs.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/link-D9V6xy_k.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/jsx-runtime-LKYXHABd.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/preload-helper-Ehsq8Wa4.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/topics-BYMS4mpg.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/_-jF9EWkQq.js" fetchPriority="low"/><link rel="preconnect" href="https://fonts.googleapis.com"/><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous"/><script>try{var t=localStorage.getItem('gridlight-theme');if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}</script></head><body><header class="site-header"><div class="site-header__inner"><a class="brand-link" aria-label="Gridlight home" href="/luma-contributors/"><svg width="26" height="26" viewBox="0 0 32 32" role="img" aria-label="Gridlight" fill="none"><rect x="2.5" y="2.5" width="27" height="27" rx="5" stroke="currentColor" stroke-opacity="0.45"></rect><path d="M12 3v26M21 3v26M3 12h26M3 21h26" stroke="currentColor" stroke-opacity="0.22"></path><path d="M3 21c4-1 5-6 9-6s5 5 9 3 4-6 8-6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"></path><rect x="12.8" y="3.8" width="7.4" height="7.4" rx="1.5" fill="currentColor" fill-opacity="0.9"></rect><circle cx="24.5" cy="24.5" r="2.4" fill="var(--color-signal)"></circle></svg><span class="brand-link__text">grid<span style="color:var(--color-accent)">light</span></span></a><nav class="site-nav" aria-label="Main"><a href="/luma-contributors/explore">Explore</a><a href="/luma-contributors/how-it-works"><span class="site-nav__long">How it works</span><span class="site-nav__short">How</span></a><a class="active" href="/luma-contributors/docs" data-status="active" aria-current="page">Reference</a><a class="site-nav__github" href="https://github.com/BertCh/luma-contributors">GitHub</a><button type="button" class="theme-toggle" aria-label="Toggle light and dark theme"><svg class="theme-toggle__sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg><svg class="theme-toggle__moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"></path></svg></button></nav></div></header><!--$--><div class="docs-layout"><aside class="docs-sidebar"><ul><li><details open=""><summary>@luma-contributors/analysis</summary><ul><li><a href="/luma-contributors/docs/api">Analysis modules</a></li><li><a href="/luma-contributors/docs/api/operation-forms-and-cpu-twins">Operation forms and CPU twins</a></li><li><a href="/luma-contributors/docs/api/analysis-catalog">Analysis catalog</a></li><li><a href="/luma-contributors/docs/api/reused-analysis-preparation">Source topology and wide numeric profiling</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis-cross-reference">GPU spatial analysis cross-reference</a></li><li><details open=""><summary>Analysis core</summary><ul><li><a href="/luma-contributors/docs/api/analysis-core/fitting-kernels">Shared fitting kernels</a></li></ul></details></li><li><details open=""><summary>Spatial analysis</summary><ul><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis">GPU Spatial Analysis</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/concepts">GPU Spatial Analysis concepts</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/analysis-experience">Analysis experience vocabulary</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/gpu-analysis-contiguity-statistics">GPUAnalysisContiguityStatistics</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/chunked-spatial-weights-transpose">GPUChunkedSpatialWeightsTranspose</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/geodesic-precision">Geodesic precision (CR01)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/instrumental-variables-covariance">Instrumental-variable robust covariance</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/temporal-context">Temporal context</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/movement-semantics">Movement semantics</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/home-range-and-recursion-mob07">Home ranges and recursion</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/track-similarity-measures">Track similarity: EDR, ERP, SSPD and bounded search</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-statistics">Space-time weights, lagged and differential local Moran, cross-correlation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-clustering">Space-time clustering</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-density-and-k-function">Space-time kernel density, relative risk, K function and Diggle test</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/change-points-and-expectation-based-scan">Change points and the expectation-based scan</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/geographical-detector-redcap-entropy">Geographical detector, REDCAP, spatial entropy and the contiguity-order correlogram</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/colocation-category-dependence-adaptive-density">Colocation quotient, local category dependence and adaptive-bandwidth density</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/healpix-cells-dggs-json">HEALPix cells and DGGS-JSON zone data</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/scoring-rules">Proper scoring rules</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-hawkes">Space-time Hawkes process (STM-08)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/sinkhorn-divergence">Sinkhorn divergence between spatial distributions (STM-09)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/spatial-frames">Spatial frames</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators">GPU Spatial Analysis operators</a></li><li><details open=""><summary>Operator Families</summary><ul><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-weights">GPU Spatial Analysis: Spatial weights</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-statistics">GPU Spatial Analysis: Spatial statistics</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-dynamics">GPU Spatial Analysis: Distribution dynamics &amp; space-time tests</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-accessibility">GPU Spatial Analysis: Accessibility &amp; change of support</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-joins">GPU Spatial Analysis: Spatial joins</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-validity">GPU Spatial Analysis: Geometry validity &amp; intersections</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-density">GPU Spatial Analysis: Density &amp; interpolation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-cells">GPU Spatial Analysis: Cells (DGGS)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-lines">GPU Spatial Analysis: Lines &amp; trajectories</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-geometry">GPU Spatial Analysis: Geometry utilities</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-regression">GPU Spatial Analysis: Regression</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/recipes">GPU Spatial Analysis: Recipes</a></li></ul></details></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/statistical-expansion">Local variability, point patterns and spatial regression extensions</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/quantile-lisa">GPUQuantileLISA</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/gpu-dorling-cartogram">GPUDorlingCartogram</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/rate-mapping">Rate mapping recipes</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/adaptive-generalized-gwr">Adaptive generalized geographically weighted regression</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/panel-fixed-effects">Spatial panel unit fixed effects</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/losh-residual-permutation">Conditional LOSH residual inference</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/expansion-recipes">Geospatial workflow recipes</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/dasymetric-redistribution">Dasymetric redistribution</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/expansion-lenses">Geospatial expansion computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/coverage-expansion">Geospatial coverage expansion</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/global-coordinates">Global coordinates, spherical geometry and S2 analysis</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/interpolation-expansion">Bounded GPU interpolation and simulation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/vecchia-likelihood">Vecchia likelihood (STM-07)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/gaussian-random-field">Gaussian random fields</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/coverage-statistics">Bounded statistical estimation and validation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/spatial-validation-advanced">Spatial fold designs and nested interpolation validation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/point-process">Point process contributors</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/urban-morphology">Urban morphology recipes</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/landscape-ecology">Landscape ecology recipes</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/urban-ecology-lenses">Urban morphology and landscape ecology computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/geometry-refinement-lenses">Geometry refinement computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/interpolation-lenses">Executable interpolation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/movement-coverage">Trajectory estimation, restriction and search</a></li><li><a href="/luma-contributors/docs/api/gpu-geometry-refinement">GPU geometry refinement</a></li></ul></details></li><li><details open=""><summary>Network</summary><ul><li><a href="/luma-contributors/docs/api/gpu-network">GPU Network</a></li><li><a href="/luma-contributors/docs/api/gpu-network/concepts">GPU Network concepts</a></li><li><a href="/luma-contributors/docs/api/gpu-network/operators">GPU Network operators</a></li><li><a href="/luma-contributors/docs/api/gpu-network/louvain">GPUNetworkLouvain</a></li><li><a href="/luma-contributors/docs/api/gpu-network/alternative-routes">Alternative routes</a></li><li><a href="/luma-contributors/docs/api/gpu-network/k-shortest-paths">K-shortest simple paths</a></li><li><a href="/luma-contributors/docs/api/gpu-network/visibility-graph">Visibility graph and network centrality</a></li><li><a href="/luma-contributors/docs/api/gpu-network/flow-models-mob10">Flow models on origin-destination aggregation</a></li><li><a href="/luma-contributors/docs/api/gpu-network/map-matched-edge-volumes-mob05">Edge volumes of map-matched tracks</a></li><li><a href="/luma-contributors/docs/api/gpu-network/network-time-geography-mob09">Network time geography</a></li><li><a href="/luma-contributors/docs/api/gpu-network/expansion">Network structure, routes and spatial topology extensions</a></li><li><a href="/luma-contributors/docs/api/gpu-network/network-movement-coverage">Bounded network optimization and trajectory analysis</a></li><li><a href="/luma-contributors/docs/api/gpu-network/network-movement-benchmarks">Network and movement measurements</a></li><li><a href="/luma-contributors/docs/api/gpu-network/point-process">Network point processes</a></li></ul></details></li><li><details open=""><summary>Terrain</summary><ul><li><a href="/luma-contributors/docs/api/gpu-terrain">GPU Terrain</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/concepts">GPU Terrain concepts</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/operators">GPU Terrain operators</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/height-above-drainage">Height above drainage over D-infinity flow</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/expansion-lenses">Expansion computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/terrain-processing">Terrain processing</a></li></ul></details></li><li><details open=""><summary>Raster analysis</summary><ul><li><a href="/luma-contributors/docs/api/gpu-raster">Raster analysis</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/operations">Raster analysis operations</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/isolines-tiles">GPUIsolines: seam-safe tiles and vector overlays</a></li><li><details open=""><summary>Operation Families</summary><ul><li><a href="/luma-contributors/docs/api/gpu-raster/operations-analysis">GPURaster analysis contributors</a></li></ul></details></li><li><a href="/luma-contributors/docs/api/gpu-raster/expansion">Raster, terrain and geometry expansion</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/contrast-equalization">Raster contrast equalization</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-embedding-codecs">Embedding raster codecs</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-patches">Raster patch metrics and sieving</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/spectral-filter">Spectral raster filtering</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/fill-nodata">Nodata filling</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/tile-reprojection">GPURasterTileReprojection</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/fractional-zonal-distribution">GPURasterFractionalZonalDistribution</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/fractional-categorical-statistics">GPURasterFractionalCategoricalStatistics</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/focal-pairs">Focal cross-band statistics</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/spectral-indices">Calibrated spectral indices</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/expansion-lenses">Expansion computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-time-series">Raster time series</a></li><li><a class="active" href="/luma-contributors/docs/api/gpu-raster/raster-change-monitoring" data-status="active" aria-current="page">Raster change monitoring</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-eof-analysis">Raster EOF analysis and lagged correlation</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-embeddings">Embedding rasters</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/lagrangian-diagnostics-mob06">Lagrangian diagnostics (time-varying fields, FTLE, connectivity, residence time)</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/remote-sensing">Bounded remote-sensing contributors</a></li></ul></details></li><li><details open=""><summary>Dataframe analysis</summary><ul><li><a href="/luma-contributors/docs/api/gpu-dataframe-analysis">GPU Dataframe analysis contributors</a></li><li><a href="/luma-contributors/docs/api/dataframe-analysis/coregionalization-fit">GPUCoregionalizationFit</a></li><li><a href="/luma-contributors/docs/api/forest-inference">Forest inference</a></li><li><a href="/luma-contributors/docs/api/variable-standardization">GPUVariableStandardization</a></li></ul></details></li><li><details open=""><summary>Geospatial</summary><ul><li><a href="/luma-contributors/docs/api/geospatial">Geospatial analysis</a></li></ul></details></li><li><details open=""><summary>Point cloud analysis</summary><ul><li><a href="/luma-contributors/docs/api/pointcloud-analysis">Point cloud analysis</a></li></ul></details></li><li><details open=""><summary>Computation records and views</summary><ul><li><a href="/luma-contributors/docs/api/computation-record">Computation record</a></li><li><a href="/luma-contributors/docs/api/computation-views">Computation views authoring guide</a></li></ul></details></li></ul></details></li></ul></aside><article class="docs-content"><h1 id="raster-change-monitoring">Raster change monitoring</h1>
+<p><code>GPURasterHarmonicRegression</code>, <code>GPURasterClimateRunAccumulator</code>, <code>GPURasterGeometricMedianComposite</code>,
+<code>GPURasterBestAvailablePixel</code>, <code>GPURasterBFASTMonitor</code>, <code>GPURasterClimateAnomaly</code>, <code>GPURasterHANTS</code>,
+<code>GPURasterEOFProjection</code> and <code>GPURasterCOLDMonitor</code> accept aligned chunked cell
+records. Keep each complete time series, mask and output record within a chunk; slice limits still
+apply per cell. Harmonic regression defaults to storage-backed QR; the other reference slice caps remain.</p>
+<p>Contributors for irregular-date seasonal-trend regression and for change detection on raster time
+series: <code>GPURasterHarmonicRegression</code>, a simplified COLD monitor (CCDC family), and BFAST Monitor. Import
+from <code>@luma-contributors/analysis/raster-analysis</code>. All are <code>GPUCommandNodeProducer</code> classes, take a
+<a href="/luma-contributors/docs/api/gpu-raster/raster-time-series#irregular-date-axis"><code>GPURasterIrregularDateAxis</code></a> as <code>dateAxis</code>, are cell-major,
+and take <code>mask</code> per observation with zero rejecting a sample; non-finite values are missing. Years are
+centred fractional years of 365.2425 days, so a fit's slope is per year and its intercept is at the midpoint
+of the axis.</p>
+<h2 id="gpurasterharmonicregression"><code>GPURasterHarmonicRegression</code></h2>
+<p>Default storage-backed QR supports 4,096 slices with bounded scratch batches; mode reference retains
+256 slices. Aligned cell chunks retain complete time-series records.</p>
+<p>Ordinary least squares per cell of <code>intercept + slope t + sum(cos, sin harmonic j / period)</code> over the valid
+observations (<code>getRasterLeastSquaresWGSL</code>). Outputs the coefficients, a two-word summary
+<code>[status, observationCount]</code>, and optionally the fitted curve and the residual standard deviation with
+<code>count - coefficients</code> degrees of freedom. Status is 1 at most <code>2 + 2 * harmonicCount</code> valid observations,
+and 2 on a rank failure. Storage-backed QR is the default through 4,096 slices. The reference route
+retains its construction-time private-memory bound: 256 slices allow one harmonic.
+Reference mode writes coefficients, summary, fitted values and RMSE in one dispatch, so disjoint
+ranges of one imported output buffer are supported. Storage mode publishes fitted values in a
+second dispatch that reads coefficients and summary; fitted values must use a different physical
+buffer from those two fields, even when their byte ranges are disjoint.</p>
+<p>{/* parameters: GPURasterHarmonicRegression generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h3 id="gpurasterharmonicregression-parameters"><code>GPURasterHarmonicRegression</code> parameters</h3>
+<ul>
+<li>Packer: <code>getGPURasterHarmonicRegressionParameterValues(settings)</code>, writes <code>GPU_RASTER_HARMONIC_REGRESSION_PARAMETER_LENGTH</code> (1) <code>float32</code> values.</li>
+</ul>
+<p>Settings of <code>getGPURasterHarmonicRegressionParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>period</code></td>
+<td><code>number</code></td>
+<td>Base period of the harmonics in fractional years; 1 for an annual cycle.</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p>
+<h2 id="gpurastercoldmonitor"><code>GPURasterCOLDMonitor</code></h2>
+<p>A <strong>simplified</strong> COLD monitor (Zhu et al. 2020, RSE 238:111116; CCDC, Zhu and Woodcock 2014), per cell and
+per observation date, on several bands:</p>
+<ol>
+<li>Initialization: from a start position, a window of <code>minimumObservations</code> (12) valid observations spanning
+at least <code>minimumSpanYears</code> (1). A gap of <code>maximumInitializationGapYears</code> (1) or more shifts the window
+by one observation. Each candidate is fitted with 4 coefficients and accepted when
+<code>sum over bands ((|slope| * span + max(|first residual|, |last residual|)) / max(RMSE, minimumRMSE))^2 &#x3C;= changeThreshold</code>, otherwise the window shifts. The test is pyxccd's; how the window moves after a rejection
+is not (see the table). (Until 2026-11-11 this monitor added
+the two end residuals instead of taking the larger. That rejected windows pyxccd accepts, so segments
+started 1 to 9 observations later on the pyxccd fixture.)</li>
+<li>Monitoring: each following observation is scored as <code>sum over bands (residual / max(RMSE, minimumRMSE))^2</code>.
+A change is confirmed when <code>consecutiveCount</code> (6) observations all exceed <code>changeThreshold</code> and the mean
+cosine between consecutive residual vectors is at least <code>minimumMeanCosine</code> (<code>cos 45deg</code>). The break is the
+first confirming observation. A lone observation above <code>outlierThreshold</code> is skipped. Otherwise it joins the
+segment, and the model is refitted when the included count has grown by a factor of 1.33.</li>
+<li>The number of coefficients follows the COLD rule by included observations: 4 below 18, 6 below 24, 8 above,
+capped by <code>maximumCoefficientCount</code>.</li>
+</ol>
+<p>Choose <code>changeThreshold</code> and <code>outlierThreshold</code> from the chi-squared distribution with <code>bandCount</code> degrees of
+freedom. pyxccd 1.1.0 uses probabilities 0.99 and <code>1 - 1e-5</code> (its <code>T_MAX_CG</code> is 30.8562, that quantile for five
+bands).</p>
+<h3 id="how-simplified-differs-from-pyxccd">How "simplified" differs from pyxccd</h3>
+<p>pyxccd's <code>cold_detect</code> (Apache-2.0) is the reference implementation of COLD. This monitor differs as follows,
+each stated so a result can be read correctly. "pyxccd" in the last column is the comparison below; "NumPy" is
+the binary64 reference of this monitor with one COLD element switched on, written from the papers.</p>
+<table>
+<thead>
+<tr>
+<th>pyxccd</th>
+<th>Here</th>
+<th>Effect</th>
+<th>Measured against</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LASSO, <code>lam=20</code> by default</td>
+<td>Ordinary least squares, which is pyxccd at <code>lam=0</code></td>
+<td>Coefficients are not shrunk. pyxccd's default RMSE is 10 to 13 units above this monitor's on the one-break series (noise 40)</td>
+<td>pyxccd, NumPy</td>
+</tr>
+<tr>
+<td>Tmask robust pre-screening of the window and the next <code>conse</code> observations</td>
+<td>Not applied; caller QA only</td>
+<td>An unflagged cloud stays in the fit: RMSE 274 against pyxccd's 39.5 on the fixture, same break date. It can also shift the start of the segment</td>
+<td>pyxccd, NumPy</td>
+</tr>
+<tr>
+<td>Refit at every observation up to 24 included, then whenever the count has grown by more than 3%</td>
+<td>Refit when the included count has grown by a factor of 1.33</td>
+<td>The model at a break is older. For a break near the change threshold this decides whether it is confirmed at all: pyxccd's model absorbs a small step within a few observations, this monitor's keeps scoring against the old level, so it confirms breaks pyxccd does not, often late (31 of 80 series differ; see "Break size" below). For larger breaks only the change magnitudes differ (by up to 20 units on breaks of up to 900). A drifting series can flag a change earlier or later</td>
+<td>pyxccd, NumPy</td>
+</tr>
+<tr>
+<td>Temporally adjusted RMSE after 24 observations: the residuals nearest in day of year</td>
+<td>One whole-segment RMSE per band</td>
+<td>Seasonal noise changes which observations exceed the threshold</td>
+<td>NumPy</td>
+</tr>
+<tr>
+<td>Variogram minimum RMSE: the median absolute difference of successive clear observations</td>
+<td>Caller-supplied <code>minimumRMSE</code> per band</td>
+<td>The floor is not derived from the data. Supplying pyxccd's value reproduces its break dates for breaks well above the threshold only (see "Break size" below)</td>
+<td>pyxccd</td>
+</tr>
+<tr>
+<td>Backward lookback from the accepted window to the previous break</td>
+<td>Not applied</td>
+<td>A segment can start later: slice 2 against pyxccd's 0 on the fixture</td>
+<td>pyxccd</td>
+</tr>
+<tr>
+<td>After a rejected initialization window, both ends move by one observation: the window keeps its observation count and only grows. <code>conse</code> further observations must follow the window</td>
+<td>The shortest window of <code>minimumObservations</code> and <code>minimumSpanYears</code> is rebuilt from the next start. A window may reach the last observation</td>
+<td>On irregular dates the two test different windows. With pyxccd's advance in the binary64 reference, 3 of the 160 series of the break-size study change, all on the dense-and-sparse revisit: two starts move by 1 and 2 slices, and one small break is dated 11 slices later. Together with the lookback, starts differ from pyxccd's in 20 of the 129 series whose break dates agree</td>
+<td>NumPy (patched in scratch, not committed); pyxccd for the 20 of 129</td>
+</tr>
+<tr>
+<td>Scores five of its seven bands (green, red, NIR, SWIR1, SWIR2); fits all seven</td>
+<td>Scores and fits every band given</td>
+<td>Pass the bands to score, and thresholds for that band count</td>
+<td>pyxccd</td>
+</tr>
+<tr>
+<td>Snow and insufficient-clear procedures; cfmask classes (clear and water kept)</td>
+<td><code>mask</code> only</td>
+<td>No class-specific handling</td>
+<td>pyxccd (QA as <code>mask</code>)</td>
+</tr>
+<tr>
+<td>Change probability and a partial break in the last <code>conse</code> observations, which are left out of the last fit</td>
+<td>Not reported; the tail after the last testable observation joins the last segment and its fit</td>
+<td>No gradual-change probability. Coefficients of the last segment differ (up to 20 units on the fixture)</td>
+<td>pyxccd</td>
+</tr>
+<tr>
+<td>Mean included angle of consecutive residual vectors (below 45 degrees)</td>
+<td>Mean cosine of those vectors, at least <code>minimumMeanCosine</code> (<code>cos 45deg</code>)</td>
+<td>The two differ when the angles are uneven: 30, 30, 30, 30 and 100 degrees have a mean angle of 44 degrees (COLD confirms) and a mean cosine of 0.658 (this monitor does not)</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Years of 365.25 days; coefficients on ordinal days, intercept at day 0, slope per day times 10000</td>
+<td>Years of 365.2425 days; intercept at the midpoint of the date axis, slope per year</td>
+<td><code>period</code>, <code>minimumSpanYears</code> and <code>maximumInitializationGapYears</code> of <code>365.25 / 365.2425</code> reproduce pyxccd's year</td>
+<td>pyxccd</td>
+</tr>
+</tbody>
+</table>
+<p>A gradual change is where the differences add up: on a 30-observation ramp pyxccd confirms the break 7 slices
+after the ramp starts (10 with LASSO), this monitor 5, and the next segment starts 5 to 10 slices later than
+pyxccd's.</p>
+<h3 id="comparison-with-pyxccd-110">Comparison with pyxccd 1.1.0</h3>
+<p><code>test/oracles/rts04-cold-pyxccd.py</code> runs <code>cold_detect</code> (with <code>lam=20</code> and <code>lam=0</code>) on eight synthetic seven-band
+series of 140 to 160 irregular dates with known breaks, 0 to 10000 scaling and noise 40, and
+<code>test/gpu-raster/raster-time-series/rts04-cold-pyxccd.spec.ts</code> runs this monitor on the five scored bands with
+pyxccd's thresholds, its variogram floor as <code>minimumRMSE</code> and its year. On the seven series with abrupt breaks
+(one or two disturbances, a small one, flagged clouds, an unflagged cloud, four confirming observations, none):</p>
+<ul>
+<li>Break dates are equal to pyxccd's with and without LASSO, and to the known dates. Eight series do not show
+how far this holds; "Break size" below does. The small one is a series where the two happen to agree.</li>
+<li>Segment starts and ends are equal to those of pyxccd's default run, except one start (lookback, above).</li>
+<li>A segment that pyxccd last refitted on the observations this monitor fits has its coefficients to 0.07 and
+its RMSE to 0.02 (<code>lam=0</code>). Where pyxccd's last refit is a few observations old the gaps are 2.7 and 0.35.</li>
+<li>Change magnitudes are within 20 of pyxccd's at <code>lam=0</code>.</li>
+</ul>
+<p><strong>Break size.</strong> Whether the two confirm the same break depends on how far the break stands above <code>changeThreshold</code>. The same
+generator draws 160 series of 150 dates with one break at a random slice: the full disturbance of the series
+above, a half and a quarter of it, on an 8 to 24 day revisit and on alternating dense and sparse revisits. The
+"score" column is the change score the break alone would give, <code>sum over bands (shift / max(RMSE, minimumRMSE))^2</code>,
+over the threshold (15.09). Counts are from the test GPU.</p>
+<table>
+<thead>
+<tr>
+<th>Break</th>
+<th>Score over threshold</th>
+<th>Shift per band, in residual scales (in noise)</th>
+<th>Series</th>
+<th>Break dates equal to pyxccd, <code>lam=0</code></th>
+<th><code>lam=20</code></th>
+<th>pyxccd confirms exactly the true break</th>
+<th>This monitor does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Full</td>
+<td>15 to 24</td>
+<td>5.8 to 9.8 (6 to 22)</td>
+<td>40</td>
+<td>40</td>
+<td>40</td>
+<td>40</td>
+<td>40</td>
+</tr>
+<tr>
+<td>Half</td>
+<td>4 to 6</td>
+<td>2.9 to 4.9 (3 to 11)</td>
+<td>40</td>
+<td>40</td>
+<td>40</td>
+<td>40</td>
+<td>40</td>
+</tr>
+<tr>
+<td>Quarter</td>
+<td>1.05 to 1.45</td>
+<td>1.5 to 2.4 (1.6 to 5.6)</td>
+<td>80</td>
+<td>49</td>
+<td>30</td>
+<td>16</td>
+<td>26</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>At 4 times the threshold and above, every break date is pyxccd's and the true one. Starts differ in 14 of
+those 80 series (lookback and window advance).</li>
+<li>Near the threshold there is no parity, and neither implementation finds the break reliably. Of the 31
+series that differ, in 23 pyxccd confirms nothing and this monitor confirms a break, often some observations
+after the true one; in 8 both confirm, at different slices; in none does only pyxccd confirm. A reviewer's
+independent draw of the same kind gave 35 of 80, with one series where only pyxccd confirmed.</li>
+<li>Between 1.45 and 4 times the threshold nothing was measured.</li>
+<li>Why: mostly the refit schedule. With pyxccd's schedule in the binary64 reference (patched in scratch, not
+committed and not in the kernel) the break dates are equal in 64 of the 80 quarter-size series instead of 49;
+adding the temporally adjusted RMSE of the reference gives 65. The remaining differences were not attributed.</li>
+<li>What matching the schedule would take. In the same patched reference, pyxccd's schedule costs a median of 56
+to 73 fits of all bands for one of these series (at most 81), against 12 to 14 (at most 17) now. The default <code>maximumFitCount</code> is 96 and the per-cell work budget allows 163 fits
+at 160 slices, 5 bands and 8 coefficients (117 at 7 bands), so a series with two breaks would stop with status
+8. It needs a fit that is updated per observation instead of redone (the normal equations of each band
+accumulated, and one 8 by 8 solve per observation), or a larger work budget. Neither is done: the schedule
+stays a documented difference.</li>
+</ul>
+<p><code>test/oracles/rts04-change-monitoring-numpy.py</code> records a binary64 reference for the monitor's own definition,
+plus a toggled run for four COLD elements written from the papers, so the spec fails if the monitor quietly
+starts behaving like the full algorithm.</p>
+<p>Outputs per segment: <code>[start, end, break, coefficientCount]</code> as slices, <code>8</code> coefficient columns per band, RMSE and
+median change magnitude (NaN when the segment ended without a break), and a three-word <code>cellSummary</code>
+<code>[segmentCount, status, fitCount]</code>. Status bits: 1 no segment could be initialized, 2 rank failure, 8 <code>maximumFitCount</code>
+reached (partial result published), 16 more segments needed than <code>maximumSegmentCount</code>.</p>
+<p>float32 limits: fits are the shared QR per band, so coefficients agree with the binary64 reference to about <code>2e-3</code> and
+RMSE to <code>1e-3</code> on bands of magnitude 0.2 to 0.6, and with pyxccd (itself float32) to 0.07 and 0.02 on bands of 600 to
+3200. Per-thread working memory is checked at construction: 8 coefficients
+allow about 167 slices at 5 bands; 4 coefficients allow 256 slices.</p>
+<p>{/* parameters: GPURasterCOLDMonitor generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h3 id="gpurastercoldmonitor-parameters"><code>GPURasterCOLDMonitor</code> parameters</h3>
+<ul>
+<li>Packer: <code>getGPURasterCOLDMonitorParameterValues(settings)</code>, writes <code>GPU_RASTER_COLD_MONITOR_BASE_PARAMETER_LENGTH</code> (6) <code>float32</code> values.</li>
+</ul>
+<p>Settings of <code>getGPURasterCOLDMonitorParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>period</code> (optional)</td>
+<td><code>number</code></td>
+<td>Base period of the harmonics in fractional years; 1 for an annual cycle.</td>
+</tr>
+<tr>
+<td><code>changeThreshold</code></td>
+<td><code>number</code></td>
+<td>Chi-squared quantile of the band count that flags one observation as anomalous (COLD: probability 0.99).</td>
+</tr>
+<tr>
+<td><code>outlierThreshold</code></td>
+<td><code>number</code></td>
+<td>Larger chi-squared quantile above which one observation is skipped as an outlier (pyxccd 1.1.0: <code>1 - 1e-5</code>).</td>
+</tr>
+<tr>
+<td><code>minimumMeanCosine</code> (optional)</td>
+<td><code>number</code></td>
+<td>Smallest mean cosine between consecutive normalized residual vectors of the peek window; defaults to <code>cos(45 deg)</code>.</td>
+</tr>
+<tr>
+<td><code>minimumSpanYears</code> (optional)</td>
+<td><code>number</code></td>
+<td>Smallest span of an initialization window in fractional years; defaults to 1.</td>
+</tr>
+<tr>
+<td><code>maximumInitializationGapYears</code> (optional)</td>
+<td><code>number</code></td>
+<td>A gap of at least this many years in an initialization window shifts it; defaults to 1.</td>
+</tr>
+<tr>
+<td><code>minimumRMSE</code></td>
+<td><code>readonly number[]</code></td>
+<td>Floor per band for the RMSE that normalizes residuals, in band units. Replaces COLD's variogram floor.</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p>
+<h2 id="gpurasterbfastmonitor"><code>GPURasterBFASTMonitor</code></h2>
+<p>BFAST Monitor (Verbesselt, Zeileis and Herold 2012): one least-squares fit of the harmonic and optionally trend model on the fixed
+history (<code>historySliceCount</code> leading slices), then OLS-MOSUM monitoring (Leisch, Hornik and Kuan 2000). With <code>n</code> valid history
+observations, <code>h = floor(bandwidth * n)</code>, and residual scale <code>sigma</code> on <code>n - k</code> degrees of freedom, the process at observation <code>t</code> is
+<code>sum(residuals of the last h observations) / (sigma * sqrt(n))</code>, compared with <code>lambda * sqrt(2 * log+(t / n))</code>, where
+<code>log+</code> is <code>max(1, log)</code>. Windows reach back into the history. Missing observations are dropped, not interpolated.</p>
+<p><code>criticalValue</code> (<code>lambda</code>) is supplied by the caller. The bfast package and its critical-value tables are GPL and R-only, so
+neither is reproduced here; the fixture is a binary64 implementation written from the published definitions. Stable-history
+selection (ROC and Bai-Perron) is not included: the history is fixed.</p>
+<p>Outputs: <code>coefficients</code>, <code>scores</code> <code>[magnitude, maximumBoundaryRatio]</code> (the median monitoring residual, bfastmonitor's <code>magnitude</code>,
+and the largest <code>|MOSUM| / boundary</code>), <code>cellSummary</code> <code>[breakSlice, status, historyObservationCount]</code>, and optionally the MOSUM per
+monitoring slice. Status is 1 for too few valid history observations, 2 for a rank failure or zero residual scale.</p>
+<p>{/* parameters: GPURasterBFASTMonitor generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h3 id="gpurasterbfastmonitor-parameters"><code>GPURasterBFASTMonitor</code> parameters</h3>
+<ul>
+<li>Packer: <code>getGPURasterBFASTMonitorParameterValues(settings)</code>, writes <code>GPU_RASTER_BFAST_MONITOR_PARAMETER_LENGTH</code> (3) <code>float32</code> values.</li>
+</ul>
+<p>Settings of <code>getGPURasterBFASTMonitorParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>period</code> (optional)</td>
+<td><code>number</code></td>
+<td>Base period of the harmonics in fractional years; 1 for an annual cycle.</td>
+</tr>
+<tr>
+<td><code>bandwidth</code> (optional)</td>
+<td><code>number</code></td>
+<td>MOSUM bandwidth as a fraction of the valid history observations, in <code>(0, 1]</code>; bfastmonitor uses 0.25.</td>
+</tr>
+<tr>
+<td><code>criticalValue</code></td>
+<td><code>number</code></td>
+<td>Critical value <code>lambda</code> of the boundary <code>lambda * sqrt(2 * log+(t / n))</code>. It depends on the bandwidth, the monitoring horizon and the significance level; choose it from the published critical-value tables for those settings. No table is shipped.</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p></article></div><script>(function(a,f){let l;try{l=JSON.parse(sessionStorage.getItem(a)||"{}")}catch{return}const n=l?.[f||history.state?.__TSR_key];let c=!1;for(const t in n){const e=n[t],o=e?.scrollX,s=e?.scrollY;if(Number.isFinite(o)&&Number.isFinite(s)){if(t==="window")scrollTo(o,s),c=!0;else if(t)try{const r=document.querySelector(t);r&&(r.scrollLeft=o,r.scrollTop=s)}catch{}}}if(c)return;const i=location.hash.slice(1);if(i){const t=history.state?.__hashScrollIntoViewOptions??!0;if(t){const e=document.getElementById(i);e&&e.scrollIntoView(t)}return}scrollTo(0,0)})("tsr-scroll-restoration-v1_3");document.currentScript.remove()</script><!--/$--><footer class="site-footer"><div class="site-footer__inner"><span>Gridlight · GPU geospatial analysis on luma.gl. Code licensed under MIT.</span><nav class="site-footer__links" aria-label="Footer"><a href="/luma-contributors/explore">Explore</a><a href="/luma-contributors/how-it-works">How it works</a><a href="/luma-contributors/demo-data">Demo data</a><a class="active" href="/luma-contributors/docs" data-status="active" aria-current="page">Reference</a><a href="https://github.com/BertCh/luma-contributors">GitHub</a><a href="https://luma.gl">luma.gl</a></nav></div></footer><script data-tsr-stream-part="">(self.$R=self.$R||{})["tsr"]=[];self.$_TSR={h(){this.hydrated=!0,this.c()},e(){this.streamEnded=!0,this.c()},c(){this.hydrated&&this.streamEnded&&(delete self.$_TSR,delete self.$R.tsr)},p(e){this.initialized?e():this.buffer.push(e)},buffer:[]}</script><script data-tsr-stream-part="">$_TSR.router=($R=>$R[0]={manifest:$R[1]={routes:$R[2]={__root__:$R[3]={preloads:$R[4]=["/luma-contributors/assets/index-DIfTuwM1.js","/luma-contributors/assets/rolldown-runtime-XKyaHtl9.js","/luma-contributors/assets/react-DlmbjZJV.js","/luma-contributors/assets/matchContext-BZe79Vhs.js","/luma-contributors/assets/link-D9V6xy_k.js","/luma-contributors/assets/jsx-runtime-LKYXHABd.js","/luma-contributors/assets/preload-helper-Ehsq8Wa4.js","/luma-contributors/assets/topics-BYMS4mpg.js"],scripts:$R[5]=[$R[6]={attrs:$R[7]={type:"module",async:!0,src:"/luma-contributors/assets/index-DIfTuwM1.js"}}],css:$R[8]=["/luma-contributors/assets/index-Do-eHPVA.css"]},"/docs/$":$R[9]={preloads:$R[10]=["/luma-contributors/assets/_-jF9EWkQq.js"]}}},matches:$R[11]=[$R[12]={i:"__root__#",u:1795048386236,s:"success",ssr:!0},$R[13]={i:"#docs#$#docs#api#gpu-raster#raster-change-monitoring",u:1795048386236,s:"success",l:$R[14]={slug:"api/gpu-raster/raster-change-monitoring",title:"Raster change monitoring",html:"\x3Ch1 id=\"raster-change-monitoring\">Raster change monitoring\x3C/h1>\n\x3Cp>\x3Ccode>GPURasterHarmonicRegression\x3C/code>, \x3Ccode>GPURasterClimateRunAccumulator\x3C/code>, \x3Ccode>GPURasterGeometricMedianComposite\x3C/code>,\n\x3Ccode>GPURasterBestAvailablePixel\x3C/code>, \x3Ccode>GPURasterBFASTMonitor\x3C/code>, \x3Ccode>GPURasterClimateAnomaly\x3C/code>, \x3Ccode>GPURasterHANTS\x3C/code>,\n\x3Ccode>GPURasterEOFProjection\x3C/code> and \x3Ccode>GPURasterCOLDMonitor\x3C/code> accept aligned chunked cell\nrecords. Keep each complete time series, mask and output record within a chunk; slice limits still\napply per cell. Harmonic regression defaults to storage-backed QR; the other reference slice caps remain.\x3C/p>\n\x3Cp>Contributors for irregular-date seasonal-trend regression and for change detection on raster time\nseries: \x3Ccode>GPURasterHarmonicRegression\x3C/code>, a simplified COLD monitor (CCDC family), and BFAST Monitor. Import\nfrom \x3Ccode>@luma-contributors/analysis/raster-analysis\x3C/code>. All are \x3Ccode>GPUCommandNodeProducer\x3C/code> classes, take a\n\x3Ca href=\"/luma-contributors/docs/api/gpu-raster/raster-time-series#irregular-date-axis\">\x3Ccode>GPURasterIrregularDateAxis\x3C/code>\x3C/a> as \x3Ccode>dateAxis\x3C/code>, are cell-major,\nand take \x3Ccode>mask\x3C/code> per observation with zero rejecting a sample; non-finite values are missing. Years are\ncentred fractional years of 365.2425 days, so a fit's slope is per year and its intercept is at the midpoint\nof the axis.\x3C/p>\n\x3Ch2 id=\"gpurasterharmonicregression\">\x3Ccode>GPURasterHarmonicRegression\x3C/code>\x3C/h2>\n\x3Cp>Default storage-backed QR supports 4,096 slices with bounded scratch batches; mode reference retains\n256 slices. Aligned cell chunks retain complete time-series records.\x3C/p>\n\x3Cp>Ordinary least squares per cell of \x3Ccode>intercept + slope t + sum(cos, sin harmonic j / period)\x3C/code> over the valid\nobservations (\x3Ccode>getRasterLeastSquaresWGSL\x3C/code>). Outputs the coefficients, a two-word summary\n\x3Ccode>[status, observationCount]\x3C/code>, and optionally the fitted curve and the residual standard deviation with\n\x3Ccode>count - coefficients\x3C/code> degrees of freedom. Status is 1 at most \x3Ccode>2 + 2 * harmonicCount\x3C/code> valid observations,\nand 2 on a rank failure. Storage-backed QR is the default through 4,096 slices. The reference route\nretains its construction-time private-memory bound: 256 slices allow one harmonic.\nReference mode writes coefficients, summary, fitted values and RMSE in one dispatch, so disjoint\nranges of one imported output buffer are supported. Storage mode publishes fitted values in a\nsecond dispatch that reads coefficients and summary; fitted values must use a different physical\nbuffer from those two fields, even when their byte ranges are disjoint.\x3C/p>\n\x3Cp>{/* parameters: GPURasterHarmonicRegression generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch3 id=\"gpurasterharmonicregression-parameters\">\x3Ccode>GPURasterHarmonicRegression\x3C/code> parameters\x3C/h3>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPURasterHarmonicRegressionParameterValues(settings)\x3C/code>, writes \x3Ccode>GPU_RASTER_HARMONIC_REGRESSION_PARAMETER_LENGTH\x3C/code> (1) \x3Ccode>float32\x3C/code> values.\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPURasterHarmonicRegressionParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>period\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Base period of the harmonics in fractional years; 1 for an annual cycle.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>\n\x3Ch2 id=\"gpurastercoldmonitor\">\x3Ccode>GPURasterCOLDMonitor\x3C/code>\x3C/h2>\n\x3Cp>A \x3Cstrong>simplified\x3C/strong> COLD monitor (Zhu et al. 2020, RSE 238:111116; CCDC, Zhu and Woodcock 2014), per cell and\nper observation date, on several bands:\x3C/p>\n\x3Col>\n\x3Cli>Initialization: from a start position, a window of \x3Ccode>minimumObservations\x3C/code> (12) valid observations spanning\nat least \x3Ccode>minimumSpanYears\x3C/code> (1). A gap of \x3Ccode>maximumInitializationGapYears\x3C/code> (1) or more shifts the window\nby one observation. Each candidate is fitted with 4 coefficients and accepted when\n\x3Ccode>sum over bands ((|slope| * span + max(|first residual|, |last residual|)) / max(RMSE, minimumRMSE))^2 &#x3C;= changeThreshold\x3C/code>, otherwise the window shifts. The test is pyxccd's; how the window moves after a rejection\nis not (see the table). (Until 2026-11-11 this monitor added\nthe two end residuals instead of taking the larger. That rejected windows pyxccd accepts, so segments\nstarted 1 to 9 observations later on the pyxccd fixture.)\x3C/li>\n\x3Cli>Monitoring: each following observation is scored as \x3Ccode>sum over bands (residual / max(RMSE, minimumRMSE))^2\x3C/code>.\nA change is confirmed when \x3Ccode>consecutiveCount\x3C/code> (6) observations all exceed \x3Ccode>changeThreshold\x3C/code> and the mean\ncosine between consecutive residual vectors is at least \x3Ccode>minimumMeanCosine\x3C/code> (\x3Ccode>cos 45deg\x3C/code>). The break is the\nfirst confirming observation. A lone observation above \x3Ccode>outlierThreshold\x3C/code> is skipped. Otherwise it joins the\nsegment, and the model is refitted when the included count has grown by a factor of 1.33.\x3C/li>\n\x3Cli>The number of coefficients follows the COLD rule by included observations: 4 below 18, 6 below 24, 8 above,\ncapped by \x3Ccode>maximumCoefficientCount\x3C/code>.\x3C/li>\n\x3C/ol>\n\x3Cp>Choose \x3Ccode>changeThreshold\x3C/code> and \x3Ccode>outlierThreshold\x3C/code> from the chi-squared distribution with \x3Ccode>bandCount\x3C/code> degrees of\nfreedom. pyxccd 1.1.0 uses probabilities 0.99 and \x3Ccode>1 - 1e-5\x3C/code> (its \x3Ccode>T_MAX_CG\x3C/code> is 30.8562, that quantile for five\nbands).\x3C/p>\n\x3Ch3 id=\"how-simplified-differs-from-pyxccd\">How \"simplified\" differs from pyxccd\x3C/h3>\n\x3Cp>pyxccd's \x3Ccode>cold_detect\x3C/code> (Apache-2.0) is the reference implementation of COLD. This monitor differs as follows,\neach stated so a result can be read correctly. \"pyxccd\" in the last column is the comparison below; \"NumPy\" is\nthe binary64 reference of this monitor with one COLD element switched on, written from the papers.\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>pyxccd\x3C/th>\n\x3Cth>Here\x3C/th>\n\x3Cth>Effect\x3C/th>\n\x3Cth>Measured against\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>LASSO, \x3Ccode>lam=20\x3C/code> by default\x3C/td>\n\x3Ctd>Ordinary least squares, which is pyxccd at \x3Ccode>lam=0\x3C/code>\x3C/td>\n\x3Ctd>Coefficients are not shrunk. pyxccd's default RMSE is 10 to 13 units above this monitor's on the one-break series (noise 40)\x3C/td>\n\x3Ctd>pyxccd, NumPy\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Tmask robust pre-screening of the window and the next \x3Ccode>conse\x3C/code> observations\x3C/td>\n\x3Ctd>Not applied; caller QA only\x3C/td>\n\x3Ctd>An unflagged cloud stays in the fit: RMSE 274 against pyxccd's 39.5 on the fixture, same break date. It can also shift the start of the segment\x3C/td>\n\x3Ctd>pyxccd, NumPy\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Refit at every observation up to 24 included, then whenever the count has grown by more than 3%\x3C/td>\n\x3Ctd>Refit when the included count has grown by a factor of 1.33\x3C/td>\n\x3Ctd>The model at a break is older. For a break near the change threshold this decides whether it is confirmed at all: pyxccd's model absorbs a small step within a few observations, this monitor's keeps scoring against the old level, so it confirms breaks pyxccd does not, often late (31 of 80 series differ; see \"Break size\" below). For larger breaks only the change magnitudes differ (by up to 20 units on breaks of up to 900). A drifting series can flag a change earlier or later\x3C/td>\n\x3Ctd>pyxccd, NumPy\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Temporally adjusted RMSE after 24 observations: the residuals nearest in day of year\x3C/td>\n\x3Ctd>One whole-segment RMSE per band\x3C/td>\n\x3Ctd>Seasonal noise changes which observations exceed the threshold\x3C/td>\n\x3Ctd>NumPy\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Variogram minimum RMSE: the median absolute difference of successive clear observations\x3C/td>\n\x3Ctd>Caller-supplied \x3Ccode>minimumRMSE\x3C/code> per band\x3C/td>\n\x3Ctd>The floor is not derived from the data. Supplying pyxccd's value reproduces its break dates for breaks well above the threshold only (see \"Break size\" below)\x3C/td>\n\x3Ctd>pyxccd\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Backward lookback from the accepted window to the previous break\x3C/td>\n\x3Ctd>Not applied\x3C/td>\n\x3Ctd>A segment can start later: slice 2 against pyxccd's 0 on the fixture\x3C/td>\n\x3Ctd>pyxccd\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>After a rejected initialization window, both ends move by one observation: the window keeps its observation count and only grows. \x3Ccode>conse\x3C/code> further observations must follow the window\x3C/td>\n\x3Ctd>The shortest window of \x3Ccode>minimumObservations\x3C/code> and \x3Ccode>minimumSpanYears\x3C/code> is rebuilt from the next start. A window may reach the last observation\x3C/td>\n\x3Ctd>On irregular dates the two test different windows. With pyxccd's advance in the binary64 reference, 3 of the 160 series of the break-size study change, all on the dense-and-sparse revisit: two starts move by 1 and 2 slices, and one small break is dated 11 slices later. Together with the lookback, starts differ from pyxccd's in 20 of the 129 series whose break dates agree\x3C/td>\n\x3Ctd>NumPy (patched in scratch, not committed); pyxccd for the 20 of 129\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Scores five of its seven bands (green, red, NIR, SWIR1, SWIR2); fits all seven\x3C/td>\n\x3Ctd>Scores and fits every band given\x3C/td>\n\x3Ctd>Pass the bands to score, and thresholds for that band count\x3C/td>\n\x3Ctd>pyxccd\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Snow and insufficient-clear procedures; cfmask classes (clear and water kept)\x3C/td>\n\x3Ctd>\x3Ccode>mask\x3C/code> only\x3C/td>\n\x3Ctd>No class-specific handling\x3C/td>\n\x3Ctd>pyxccd (QA as \x3Ccode>mask\x3C/code>)\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Change probability and a partial break in the last \x3Ccode>conse\x3C/code> observations, which are left out of the last fit\x3C/td>\n\x3Ctd>Not reported; the tail after the last testable observation joins the last segment and its fit\x3C/td>\n\x3Ctd>No gradual-change probability. Coefficients of the last segment differ (up to 20 units on the fixture)\x3C/td>\n\x3Ctd>pyxccd\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Mean included angle of consecutive residual vectors (below 45 degrees)\x3C/td>\n\x3Ctd>Mean cosine of those vectors, at least \x3Ccode>minimumMeanCosine\x3C/code> (\x3Ccode>cos 45deg\x3C/code>)\x3C/td>\n\x3Ctd>The two differ when the angles are uneven: 30, 30, 30, 30 and 100 degrees have a mean angle of 44 degrees (COLD confirms) and a mean cosine of 0.658 (this monitor does not)\x3C/td>\n\x3Ctd>No\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Years of 365.25 days; coefficients on ordinal days, intercept at day 0, slope per day times 10000\x3C/td>\n\x3Ctd>Years of 365.2425 days; intercept at the midpoint of the date axis, slope per year\x3C/td>\n\x3Ctd>\x3Ccode>period\x3C/code>, \x3Ccode>minimumSpanYears\x3C/code> and \x3Ccode>maximumInitializationGapYears\x3C/code> of \x3Ccode>365.25 / 365.2425\x3C/code> reproduce pyxccd's year\x3C/td>\n\x3Ctd>pyxccd\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>A gradual change is where the differences add up: on a 30-observation ramp pyxccd confirms the break 7 slices\nafter the ramp starts (10 with LASSO), this monitor 5, and the next segment starts 5 to 10 slices later than\npyxccd's.\x3C/p>\n\x3Ch3 id=\"comparison-with-pyxccd-110\">Comparison with pyxccd 1.1.0\x3C/h3>\n\x3Cp>\x3Ccode>test/oracles/rts04-cold-pyxccd.py\x3C/code> runs \x3Ccode>cold_detect\x3C/code> (with \x3Ccode>lam=20\x3C/code> and \x3Ccode>lam=0\x3C/code>) on eight synthetic seven-band\nseries of 140 to 160 irregular dates with known breaks, 0 to 10000 scaling and noise 40, and\n\x3Ccode>test/gpu-raster/raster-time-series/rts04-cold-pyxccd.spec.ts\x3C/code> runs this monitor on the five scored bands with\npyxccd's thresholds, its variogram floor as \x3Ccode>minimumRMSE\x3C/code> and its year. On the seven series with abrupt breaks\n(one or two disturbances, a small one, flagged clouds, an unflagged cloud, four confirming observations, none):\x3C/p>\n\x3Cul>\n\x3Cli>Break dates are equal to pyxccd's with and without LASSO, and to the known dates. Eight series do not show\nhow far this holds; \"Break size\" below does. The small one is a series where the two happen to agree.\x3C/li>\n\x3Cli>Segment starts and ends are equal to those of pyxccd's default run, except one start (lookback, above).\x3C/li>\n\x3Cli>A segment that pyxccd last refitted on the observations this monitor fits has its coefficients to 0.07 and\nits RMSE to 0.02 (\x3Ccode>lam=0\x3C/code>). Where pyxccd's last refit is a few observations old the gaps are 2.7 and 0.35.\x3C/li>\n\x3Cli>Change magnitudes are within 20 of pyxccd's at \x3Ccode>lam=0\x3C/code>.\x3C/li>\n\x3C/ul>\n\x3Cp>\x3Cstrong>Break size.\x3C/strong> Whether the two confirm the same break depends on how far the break stands above \x3Ccode>changeThreshold\x3C/code>. The same\ngenerator draws 160 series of 150 dates with one break at a random slice: the full disturbance of the series\nabove, a half and a quarter of it, on an 8 to 24 day revisit and on alternating dense and sparse revisits. The\n\"score\" column is the change score the break alone would give, \x3Ccode>sum over bands (shift / max(RMSE, minimumRMSE))^2\x3C/code>,\nover the threshold (15.09). Counts are from the test GPU.\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Break\x3C/th>\n\x3Cth>Score over threshold\x3C/th>\n\x3Cth>Shift per band, in residual scales (in noise)\x3C/th>\n\x3Cth>Series\x3C/th>\n\x3Cth>Break dates equal to pyxccd, \x3Ccode>lam=0\x3C/code>\x3C/th>\n\x3Cth>\x3Ccode>lam=20\x3C/code>\x3C/th>\n\x3Cth>pyxccd confirms exactly the true break\x3C/th>\n\x3Cth>This monitor does\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>Full\x3C/td>\n\x3Ctd>15 to 24\x3C/td>\n\x3Ctd>5.8 to 9.8 (6 to 22)\x3C/td>\n\x3Ctd>40\x3C/td>\n\x3Ctd>40\x3C/td>\n\x3Ctd>40\x3C/td>\n\x3Ctd>40\x3C/td>\n\x3Ctd>40\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Half\x3C/td>\n\x3Ctd>4 to 6\x3C/td>\n\x3Ctd>2.9 to 4.9 (3 to 11)\x3C/td>\n\x3Ctd>40\x3C/td>\n\x3Ctd>40\x3C/td>\n\x3Ctd>40\x3C/td>\n\x3Ctd>40\x3C/td>\n\x3Ctd>40\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>Quarter\x3C/td>\n\x3Ctd>1.05 to 1.45\x3C/td>\n\x3Ctd>1.5 to 2.4 (1.6 to 5.6)\x3C/td>\n\x3Ctd>80\x3C/td>\n\x3Ctd>49\x3C/td>\n\x3Ctd>30\x3C/td>\n\x3Ctd>16\x3C/td>\n\x3Ctd>26\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cul>\n\x3Cli>At 4 times the threshold and above, every break date is pyxccd's and the true one. Starts differ in 14 of\nthose 80 series (lookback and window advance).\x3C/li>\n\x3Cli>Near the threshold there is no parity, and neither implementation finds the break reliably. Of the 31\nseries that differ, in 23 pyxccd confirms nothing and this monitor confirms a break, often some observations\nafter the true one; in 8 both confirm, at different slices; in none does only pyxccd confirm. A reviewer's\nindependent draw of the same kind gave 35 of 80, with one series where only pyxccd confirmed.\x3C/li>\n\x3Cli>Between 1.45 and 4 times the threshold nothing was measured.\x3C/li>\n\x3Cli>Why: mostly the refit schedule. With pyxccd's schedule in the binary64 reference (patched in scratch, not\ncommitted and not in the kernel) the break dates are equal in 64 of the 80 quarter-size series instead of 49;\nadding the temporally adjusted RMSE of the reference gives 65. The remaining differences were not attributed.\x3C/li>\n\x3Cli>What matching the schedule would take. In the same patched reference, pyxccd's schedule costs a median of 56\nto 73 fits of all bands for one of these series (at most 81), against 12 to 14 (at most 17) now. The default \x3Ccode>maximumFitCount\x3C/code> is 96 and the per-cell work budget allows 163 fits\nat 160 slices, 5 bands and 8 coefficients (117 at 7 bands), so a series with two breaks would stop with status\n8. It needs a fit that is updated per observation instead of redone (the normal equations of each band\naccumulated, and one 8 by 8 solve per observation), or a larger work budget. Neither is done: the schedule\nstays a documented difference.\x3C/li>\n\x3C/ul>\n\x3Cp>\x3Ccode>test/oracles/rts04-change-monitoring-numpy.py\x3C/code> records a binary64 reference for the monitor's own definition,\nplus a toggled run for four COLD elements written from the papers, so the spec fails if the monitor quietly\nstarts behaving like the full algorithm.\x3C/p>\n\x3Cp>Outputs per segment: \x3Ccode>[start, end, break, coefficientCount]\x3C/code> as slices, \x3Ccode>8\x3C/code> coefficient columns per band, RMSE and\nmedian change magnitude (NaN when the segment ended without a break), and a three-word \x3Ccode>cellSummary\x3C/code>\n\x3Ccode>[segmentCount, status, fitCount]\x3C/code>. Status bits: 1 no segment could be initialized, 2 rank failure, 8 \x3Ccode>maximumFitCount\x3C/code>\nreached (partial result published), 16 more segments needed than \x3Ccode>maximumSegmentCount\x3C/code>.\x3C/p>\n\x3Cp>float32 limits: fits are the shared QR per band, so coefficients agree with the binary64 reference to about \x3Ccode>2e-3\x3C/code> and\nRMSE to \x3Ccode>1e-3\x3C/code> on bands of magnitude 0.2 to 0.6, and with pyxccd (itself float32) to 0.07 and 0.02 on bands of 600 to\n3200. Per-thread working memory is checked at construction: 8 coefficients\nallow about 167 slices at 5 bands; 4 coefficients allow 256 slices.\x3C/p>\n\x3Cp>{/* parameters: GPURasterCOLDMonitor generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch3 id=\"gpurastercoldmonitor-parameters\">\x3Ccode>GPURasterCOLDMonitor\x3C/code> parameters\x3C/h3>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPURasterCOLDMonitorParameterValues(settings)\x3C/code>, writes \x3Ccode>GPU_RASTER_COLD_MONITOR_BASE_PARAMETER_LENGTH\x3C/code> (6) \x3Ccode>float32\x3C/code> values.\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPURasterCOLDMonitorParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>period\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Base period of the harmonics in fractional years; 1 for an annual cycle.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>changeThreshold\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Chi-squared quantile of the band count that flags one observation as anomalous (COLD: probability 0.99).\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>outlierThreshold\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Larger chi-squared quantile above which one observation is skipped as an outlier (pyxccd 1.1.0: \x3Ccode>1 - 1e-5\x3C/code>).\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>minimumMeanCosine\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Smallest mean cosine between consecutive normalized residual vectors of the peek window; defaults to \x3Ccode>cos(45 deg)\x3C/code>.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>minimumSpanYears\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Smallest span of an initialization window in fractional years; defaults to 1.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>maximumInitializationGapYears\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>A gap of at least this many years in an initialization window shifts it; defaults to 1.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>minimumRMSE\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>readonly number[]\x3C/code>\x3C/td>\n\x3Ctd>Floor per band for the RMSE that normalizes residuals, in band units. Replaces COLD's variogram floor.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>\n\x3Ch2 id=\"gpurasterbfastmonitor\">\x3Ccode>GPURasterBFASTMonitor\x3C/code>\x3C/h2>\n\x3Cp>BFAST Monitor (Verbesselt, Zeileis and Herold 2012): one least-squares fit of the harmonic and optionally trend model on the fixed\nhistory (\x3Ccode>historySliceCount\x3C/code> leading slices), then OLS-MOSUM monitoring (Leisch, Hornik and Kuan 2000). With \x3Ccode>n\x3C/code> valid history\nobservations, \x3Ccode>h = floor(bandwidth * n)\x3C/code>, and residual scale \x3Ccode>sigma\x3C/code> on \x3Ccode>n - k\x3C/code> degrees of freedom, the process at observation \x3Ccode>t\x3C/code> is\n\x3Ccode>sum(residuals of the last h observations) / (sigma * sqrt(n))\x3C/code>, compared with \x3Ccode>lambda * sqrt(2 * log+(t / n))\x3C/code>, where\n\x3Ccode>log+\x3C/code> is \x3Ccode>max(1, log)\x3C/code>. Windows reach back into the history. Missing observations are dropped, not interpolated.\x3C/p>\n\x3Cp>\x3Ccode>criticalValue\x3C/code> (\x3Ccode>lambda\x3C/code>) is supplied by the caller. The bfast package and its critical-value tables are GPL and R-only, so\nneither is reproduced here; the fixture is a binary64 implementation written from the published definitions. Stable-history\nselection (ROC and Bai-Perron) is not included: the history is fixed.\x3C/p>\n\x3Cp>Outputs: \x3Ccode>coefficients\x3C/code>, \x3Ccode>scores\x3C/code> \x3Ccode>[magnitude, maximumBoundaryRatio]\x3C/code> (the median monitoring residual, bfastmonitor's \x3Ccode>magnitude\x3C/code>,\nand the largest \x3Ccode>|MOSUM| / boundary\x3C/code>), \x3Ccode>cellSummary\x3C/code> \x3Ccode>[breakSlice, status, historyObservationCount]\x3C/code>, and optionally the MOSUM per\nmonitoring slice. Status is 1 for too few valid history observations, 2 for a rank failure or zero residual scale.\x3C/p>\n\x3Cp>{/* parameters: GPURasterBFASTMonitor generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch3 id=\"gpurasterbfastmonitor-parameters\">\x3Ccode>GPURasterBFASTMonitor\x3C/code> parameters\x3C/h3>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPURasterBFASTMonitorParameterValues(settings)\x3C/code>, writes \x3Ccode>GPU_RASTER_BFAST_MONITOR_PARAMETER_LENGTH\x3C/code> (3) \x3Ccode>float32\x3C/code> values.\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPURasterBFASTMonitorParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>period\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Base period of the harmonics in fractional years; 1 for an annual cycle.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>bandwidth\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>MOSUM bandwidth as a fraction of the valid history observations, in \x3Ccode>(0, 1]\x3C/code>; bfastmonitor uses 0.25.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>criticalValue\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Critical value \x3Ccode>lambda\x3C/code> of the boundary \x3Ccode>lambda * sqrt(2 * log+(t / n))\x3C/code>. It depends on the bandwidth, the monitoring horizon and the significance level; choose it from the published critical-value tables for those settings. No table is shipped.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>"},ssr:!0}]})($R["tsr"])</script><script data-tsr-stream-part="">$_TSR.e();{let s=document.currentScript,p;while((p=s.previousElementSibling)&&p.hasAttribute('data-tsr-stream-part'))p.remove();s.remove()}</script><script type="module" async="" src="/luma-contributors/assets/index-DIfTuwM1.js"></script><script>document.currentScript.remove();/*$tsr-stream-boundary*/</script></body></html>

@@ -1,0 +1,1 @@
+import{t as e}from"./chicago-workplace-blocks-CMqg5CE3.js";import{u as t}from"./inputs-CJKKIRKK.js";function n(n,r){let i=t(n,r,8),a=new Float32Array(e.length*2),o=new Uint32Array(e.length),s=new Float32Array(e.length);return e.forEach(([e,t,n,r],c)=>{a.set(i.projectMeters(e,t),c*2),o[c]=r,s[c]=n}),{tracts:i,positions:a,keys:o,jobs:s}}export{n as t};

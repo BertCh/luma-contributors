@@ -1,0 +1,1 @@
+import{n as e}from"./gpu-raster-grid-C_izEAl0.js";function t(t,n){let r=t.height/n,i=Math.round(t.width/r),a=new Float32Array(i*n*2);for(let e=0;e<n;e++)for(let n=0;n<i;n++)a[(e*i+n)*2]=(n+.5)*r,a[(e*i+n)*2+1]=t.height-(e+.5)*r;return{columns:i,rows:n,cellSize:r,grid:e({width:i,height:n,cellSize:r,origin:[0,t.height]}),window:[0,0,i*r,t.height],centers:a}}export{t};

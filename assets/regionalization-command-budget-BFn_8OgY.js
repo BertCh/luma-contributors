@@ -1,0 +1,1 @@
+var e=4096;function t(e,t){let n=Math.ceil(Math.log2(Math.max(e,2)));return 256+(2*n+8)*(n+4)+n+6*t}function n(e,t,n){let r=Math.ceil(Math.log2(Math.max(e,2))),i=8+(n?e<=4096?10:37:3+Math.ceil(r/8));return 256+r+i*t}function r(e,n,r,i){return 256+9*n+3*r+(i>0?t(e,i):128)}export{n as i,t as n,r,e as t};

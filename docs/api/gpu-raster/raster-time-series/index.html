@@ -1,0 +1,692 @@
+<!DOCTYPE html><html lang="en"><head><meta charSet="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/tokens-DUsD-MQQ.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/base-Btcfj7He.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/components-Bq5SRdyd.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/home-BkA-QKrg.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/docs-CWchvtmE.css" data-precedence="default"/><link rel="stylesheet" href="/luma-contributors/assets/index-Do-eHPVA.css" data-precedence="default"/><title>Raster time series | Gridlight</title><meta name="description" content="Browse GPU spatial analysis operations by data type, use case and domain, each drawn live with luma.gl."/><link rel="modulepreload" href="/luma-contributors/assets/index-DIfTuwM1.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/rolldown-runtime-XKyaHtl9.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/react-DlmbjZJV.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/matchContext-BZe79Vhs.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/link-D9V6xy_k.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/jsx-runtime-LKYXHABd.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/preload-helper-Ehsq8Wa4.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/topics-BYMS4mpg.js" fetchPriority="low"/><link rel="modulepreload" href="/luma-contributors/assets/_-jF9EWkQq.js" fetchPriority="low"/><link rel="preconnect" href="https://fonts.googleapis.com"/><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous"/><script>try{var t=localStorage.getItem('gridlight-theme');if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}</script></head><body><header class="site-header"><div class="site-header__inner"><a class="brand-link" aria-label="Gridlight home" href="/luma-contributors/"><svg width="26" height="26" viewBox="0 0 32 32" role="img" aria-label="Gridlight" fill="none"><rect x="2.5" y="2.5" width="27" height="27" rx="5" stroke="currentColor" stroke-opacity="0.45"></rect><path d="M12 3v26M21 3v26M3 12h26M3 21h26" stroke="currentColor" stroke-opacity="0.22"></path><path d="M3 21c4-1 5-6 9-6s5 5 9 3 4-6 8-6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"></path><rect x="12.8" y="3.8" width="7.4" height="7.4" rx="1.5" fill="currentColor" fill-opacity="0.9"></rect><circle cx="24.5" cy="24.5" r="2.4" fill="var(--color-signal)"></circle></svg><span class="brand-link__text">grid<span style="color:var(--color-accent)">light</span></span></a><nav class="site-nav" aria-label="Main"><a href="/luma-contributors/explore">Explore</a><a href="/luma-contributors/how-it-works"><span class="site-nav__long">How it works</span><span class="site-nav__short">How</span></a><a class="active" href="/luma-contributors/docs" data-status="active" aria-current="page">Reference</a><a class="site-nav__github" href="https://github.com/BertCh/luma-contributors">GitHub</a><button type="button" class="theme-toggle" aria-label="Toggle light and dark theme"><svg class="theme-toggle__sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg><svg class="theme-toggle__moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"></path></svg></button></nav></div></header><!--$--><div class="docs-layout"><aside class="docs-sidebar"><ul><li><details open=""><summary>@luma-contributors/analysis</summary><ul><li><a href="/luma-contributors/docs/api">Analysis modules</a></li><li><a href="/luma-contributors/docs/api/operation-forms-and-cpu-twins">Operation forms and CPU twins</a></li><li><a href="/luma-contributors/docs/api/analysis-catalog">Analysis catalog</a></li><li><a href="/luma-contributors/docs/api/reused-analysis-preparation">Source topology and wide numeric profiling</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis-cross-reference">GPU spatial analysis cross-reference</a></li><li><details open=""><summary>Analysis core</summary><ul><li><a href="/luma-contributors/docs/api/analysis-core/fitting-kernels">Shared fitting kernels</a></li></ul></details></li><li><details open=""><summary>Spatial analysis</summary><ul><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis">GPU Spatial Analysis</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/concepts">GPU Spatial Analysis concepts</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/analysis-experience">Analysis experience vocabulary</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/gpu-analysis-contiguity-statistics">GPUAnalysisContiguityStatistics</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/chunked-spatial-weights-transpose">GPUChunkedSpatialWeightsTranspose</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/geodesic-precision">Geodesic precision (CR01)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/instrumental-variables-covariance">Instrumental-variable robust covariance</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/temporal-context">Temporal context</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/movement-semantics">Movement semantics</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/home-range-and-recursion-mob07">Home ranges and recursion</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/track-similarity-measures">Track similarity: EDR, ERP, SSPD and bounded search</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-statistics">Space-time weights, lagged and differential local Moran, cross-correlation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-clustering">Space-time clustering</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-density-and-k-function">Space-time kernel density, relative risk, K function and Diggle test</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/change-points-and-expectation-based-scan">Change points and the expectation-based scan</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/geographical-detector-redcap-entropy">Geographical detector, REDCAP, spatial entropy and the contiguity-order correlogram</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/colocation-category-dependence-adaptive-density">Colocation quotient, local category dependence and adaptive-bandwidth density</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/healpix-cells-dggs-json">HEALPix cells and DGGS-JSON zone data</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/scoring-rules">Proper scoring rules</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/space-time-hawkes">Space-time Hawkes process (STM-08)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/sinkhorn-divergence">Sinkhorn divergence between spatial distributions (STM-09)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/spatial-frames">Spatial frames</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators">GPU Spatial Analysis operators</a></li><li><details open=""><summary>Operator Families</summary><ul><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-weights">GPU Spatial Analysis: Spatial weights</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-statistics">GPU Spatial Analysis: Spatial statistics</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-dynamics">GPU Spatial Analysis: Distribution dynamics &amp; space-time tests</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-accessibility">GPU Spatial Analysis: Accessibility &amp; change of support</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-joins">GPU Spatial Analysis: Spatial joins</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-validity">GPU Spatial Analysis: Geometry validity &amp; intersections</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-density">GPU Spatial Analysis: Density &amp; interpolation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-cells">GPU Spatial Analysis: Cells (DGGS)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-lines">GPU Spatial Analysis: Lines &amp; trajectories</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-geometry">GPU Spatial Analysis: Geometry utilities</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/operators-regression">GPU Spatial Analysis: Regression</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/recipes">GPU Spatial Analysis: Recipes</a></li></ul></details></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/statistical-expansion">Local variability, point patterns and spatial regression extensions</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/quantile-lisa">GPUQuantileLISA</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/gpu-dorling-cartogram">GPUDorlingCartogram</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/rate-mapping">Rate mapping recipes</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/adaptive-generalized-gwr">Adaptive generalized geographically weighted regression</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/panel-fixed-effects">Spatial panel unit fixed effects</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/losh-residual-permutation">Conditional LOSH residual inference</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/expansion-recipes">Geospatial workflow recipes</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/dasymetric-redistribution">Dasymetric redistribution</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/expansion-lenses">Geospatial expansion computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/coverage-expansion">Geospatial coverage expansion</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/global-coordinates">Global coordinates, spherical geometry and S2 analysis</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/interpolation-expansion">Bounded GPU interpolation and simulation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/vecchia-likelihood">Vecchia likelihood (STM-07)</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/gaussian-random-field">Gaussian random fields</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/coverage-statistics">Bounded statistical estimation and validation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/spatial-validation-advanced">Spatial fold designs and nested interpolation validation</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/point-process">Point process contributors</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/urban-morphology">Urban morphology recipes</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/landscape-ecology">Landscape ecology recipes</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/urban-ecology-lenses">Urban morphology and landscape ecology computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/geometry-refinement-lenses">Geometry refinement computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/interpolation-lenses">Executable interpolation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-spatial-analysis/movement-coverage">Trajectory estimation, restriction and search</a></li><li><a href="/luma-contributors/docs/api/gpu-geometry-refinement">GPU geometry refinement</a></li></ul></details></li><li><details open=""><summary>Network</summary><ul><li><a href="/luma-contributors/docs/api/gpu-network">GPU Network</a></li><li><a href="/luma-contributors/docs/api/gpu-network/concepts">GPU Network concepts</a></li><li><a href="/luma-contributors/docs/api/gpu-network/operators">GPU Network operators</a></li><li><a href="/luma-contributors/docs/api/gpu-network/louvain">GPUNetworkLouvain</a></li><li><a href="/luma-contributors/docs/api/gpu-network/alternative-routes">Alternative routes</a></li><li><a href="/luma-contributors/docs/api/gpu-network/k-shortest-paths">K-shortest simple paths</a></li><li><a href="/luma-contributors/docs/api/gpu-network/visibility-graph">Visibility graph and network centrality</a></li><li><a href="/luma-contributors/docs/api/gpu-network/flow-models-mob10">Flow models on origin-destination aggregation</a></li><li><a href="/luma-contributors/docs/api/gpu-network/map-matched-edge-volumes-mob05">Edge volumes of map-matched tracks</a></li><li><a href="/luma-contributors/docs/api/gpu-network/network-time-geography-mob09">Network time geography</a></li><li><a href="/luma-contributors/docs/api/gpu-network/expansion">Network structure, routes and spatial topology extensions</a></li><li><a href="/luma-contributors/docs/api/gpu-network/network-movement-coverage">Bounded network optimization and trajectory analysis</a></li><li><a href="/luma-contributors/docs/api/gpu-network/network-movement-benchmarks">Network and movement measurements</a></li><li><a href="/luma-contributors/docs/api/gpu-network/point-process">Network point processes</a></li></ul></details></li><li><details open=""><summary>Terrain</summary><ul><li><a href="/luma-contributors/docs/api/gpu-terrain">GPU Terrain</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/concepts">GPU Terrain concepts</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/operators">GPU Terrain operators</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/height-above-drainage">Height above drainage over D-infinity flow</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/expansion-lenses">Expansion computation lenses</a></li><li><a href="/luma-contributors/docs/api/gpu-terrain/terrain-processing">Terrain processing</a></li></ul></details></li><li><details open=""><summary>Raster analysis</summary><ul><li><a href="/luma-contributors/docs/api/gpu-raster">Raster analysis</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/operations">Raster analysis operations</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/isolines-tiles">GPUIsolines: seam-safe tiles and vector overlays</a></li><li><details open=""><summary>Operation Families</summary><ul><li><a href="/luma-contributors/docs/api/gpu-raster/operations-analysis">GPURaster analysis contributors</a></li></ul></details></li><li><a href="/luma-contributors/docs/api/gpu-raster/expansion">Raster, terrain and geometry expansion</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/contrast-equalization">Raster contrast equalization</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-embedding-codecs">Embedding raster codecs</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-patches">Raster patch metrics and sieving</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/spectral-filter">Spectral raster filtering</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/fill-nodata">Nodata filling</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/tile-reprojection">GPURasterTileReprojection</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/fractional-zonal-distribution">GPURasterFractionalZonalDistribution</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/fractional-categorical-statistics">GPURasterFractionalCategoricalStatistics</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/focal-pairs">Focal cross-band statistics</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/spectral-indices">Calibrated spectral indices</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/expansion-lenses">Expansion computation lenses</a></li><li><a class="active" href="/luma-contributors/docs/api/gpu-raster/raster-time-series" data-status="active" aria-current="page">Raster time series</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-change-monitoring">Raster change monitoring</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-eof-analysis">Raster EOF analysis and lagged correlation</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/raster-embeddings">Embedding rasters</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/lagrangian-diagnostics-mob06">Lagrangian diagnostics (time-varying fields, FTLE, connectivity, residence time)</a></li><li><a href="/luma-contributors/docs/api/gpu-raster/remote-sensing">Bounded remote-sensing contributors</a></li></ul></details></li><li><details open=""><summary>Dataframe analysis</summary><ul><li><a href="/luma-contributors/docs/api/gpu-dataframe-analysis">GPU Dataframe analysis contributors</a></li><li><a href="/luma-contributors/docs/api/dataframe-analysis/coregionalization-fit">GPUCoregionalizationFit</a></li><li><a href="/luma-contributors/docs/api/forest-inference">Forest inference</a></li><li><a href="/luma-contributors/docs/api/variable-standardization">GPUVariableStandardization</a></li></ul></details></li><li><details open=""><summary>Geospatial</summary><ul><li><a href="/luma-contributors/docs/api/geospatial">Geospatial analysis</a></li></ul></details></li><li><details open=""><summary>Point cloud analysis</summary><ul><li><a href="/luma-contributors/docs/api/pointcloud-analysis">Point cloud analysis</a></li></ul></details></li><li><details open=""><summary>Computation records and views</summary><ul><li><a href="/luma-contributors/docs/api/computation-record">Computation record</a></li><li><a href="/luma-contributors/docs/api/computation-views">Computation views authoring guide</a></li></ul></details></li></ul></details></li></ul></aside><article class="docs-content"><h1 id="raster-time-series">Raster time series</h1>
+<p><code>GPURasterHarmonicRegression</code>, <code>GPURasterClimateRunAccumulator</code>, <code>GPURasterGeometricMedianComposite</code>,
+<code>GPURasterBestAvailablePixel</code>, <code>GPURasterBFASTMonitor</code>, <code>GPURasterClimateAnomaly</code>, <code>GPURasterHANTS</code>,
+<code>GPURasterEOFProjection</code> and <code>GPURasterCOLDMonitor</code> accept aligned chunked cell
+records. Keep each complete time series, mask and output record within a chunk; slice limits still
+apply per cell. Harmonic regression defaults to storage-backed QR; the other reference slice caps remain.</p>
+<p>Both time-series execution routes use the same cell topology: packed fields can accompany a
+single-chunk vector when each field holds exactly <code>cellCount * entriesPerCell</code> entries. Once a
+field has multiple chunks, every cell field must have the same number of chunks and the same
+cell counts per chunk, with no split cell records. Shared date and parameter tables stay packed.
+Calls using only packed fields retain their documented spare-capacity support.
+HANTS and temporal resampling type their output views independently of the source view: a packed
+source can feed matching one-chunk outputs, and a one-chunk source can feed packed outputs.</p>
+<p>Writable logical ranges must be disjoint across fields and chunks. Co-bound writable ranges
+must also have disjoint storage-aligned binding ranges. HANTS and temporal resampling can use
+one pooled output buffer under these rules. A dispatch's read-only inputs and writable outputs
+must use separate physical buffers, even for disjoint ranges. A physical buffer participating in
+writes must use one imported handle; a buffer used only by read-only inputs may have multiple
+imports. Pooling output fields requires an explicit per-dispatch access declaration in the
+contributor; callers without one retain separate output buffers because a later dispatch may read
+one output while writing another. HANTS and temporal resampling declare their accesses explicitly.</p>
+<p>Contributors for stacks of raster time slices beyond regular composites: an irregular acquisition-date
+axis, streaming accumulators without a slice limit, penalised and harmonic smoothers, gap filling onto a
+regular grid, and climate indices. Import from <code>@luma-contributors/analysis/raster-analysis</code>. All are
+<code>GPUCommandNodeProducer</code> classes. Every contributor is cell-major (<code>cell * sliceCount + slice</code>) and takes
+<code>mask</code> per observation with zero rejecting a sample; non-finite values are missing. Each class
+documents its per-frame and compile-time props in its source.</p>
+<h2 id="irregular-date-axis">Irregular date axis</h2>
+<p><code>GPURasterIrregularDateAxis</code> declares a stack's acquisition dates: one <code>uint32x2</code> Int64 <code>(low, high)</code> row
+per slice, with a <a href="/luma-contributors/docs/api/gpu-spatial-analysis/temporal-context"><code>GPUTemporalContext</code></a> of encoding
+<code>int64-words</code> and <code>{kind: 'irregular'}</code>, any unit and epoch. Dates must be strictly increasing. They become
+<strong>centred fractional years</strong> in float32: years of 365.2425 days after the midpoint of the first and last
+acquisition, so the trend column is O(1) and harmonics stay in <code>[-1, 1]</code>. Elapsed years come from the Int64
+words directly, so nearby dates keep full float32 precision. <code>getGPURasterCentredFractionalYears</code> gives the
+same axis on the CPU, for example to choose a regular output grid.</p>
+<p><code>GPURasterTemporal</code>, <code>GPUChangeDetection</code> and <code>GPURasterSeasonalBreak</code> take this axis as <code>dateAxis</code>.
+Omitted, slot behaviour and results are unchanged.</p>
+<ul>
+<li><code>GPURasterTemporal</code>: the Savitzky-Golay polynomial is fitted on real elapsed time over the same window of
+neighbouring acquisitions. Composites do not depend on time.</li>
+<li><code>GPUChangeDetection</code>: <code>senSlope</code> is per year of real elapsed time. Other outputs depend on order only.</li>
+<li><code>GPURasterSeasonalBreak</code>: <code>period</code> is in fractional years, the slope is per year, and <code>missingPolicy: 'interpolate'</code> uses elapsed time. Dummy seasons are defined on regular slots and are rejected.</li>
+</ul>
+<h2 id="gpurasterstreamingaccumulator"><code>GPURasterStreamingAccumulator</code></h2>
+<p>Accumulates counts, sums, squared deviations and extrema chunk by chunk, so a stack has no slice limit.
+Each dispatch consumes at most 256 slices; memory is O(cells x calendar slots). Slot indices assign a
+calendar slot (for example a month) to each chunk slice.</p>
+<p>Set <code>reset</code> on the first chunk of a stream. <code>activeSliceCount</code> allows a short last chunk. Declare
+<code>maximumValueMagnitude</code>: a sample above it is treated as missing. Sums and squared deviations are <strong>96-bit
+fixed-point integers</strong> (three <code>uint32</code> words per slot, decoded with <code>getGPURasterFixedPointValues</code>), because
+float32 compensated summation was optimized away by the shader compiler on the tested GPU (the low word stayed
+zero). Fixed-point sums are exact to the declared unit, about <code>maximumValueMagnitude * 2^-70</code> at the default
+stream length.</p>
+<p>{/* parameters: GPURasterStreamingAccumulator generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h3 id="gpurasterstreamingaccumulator-parameters"><code>GPURasterStreamingAccumulator</code> parameters</h3>
+<ul>
+<li>Packer: <code>getGPURasterStreamingAccumulatorParameterValues(settings, chunkSliceCount)</code>, writes <code>GPU_RASTER_STREAMING_ACCUMULATOR_PARAMETER_LENGTH</code> (5) <code>float32</code> values.
+<ul>
+<li><code>chunkSliceCount</code> (<code>number</code>)</li>
+</ul>
+</li>
+</ul>
+<p>Settings of <code>getGPURasterStreamingAccumulatorParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>reset</code></td>
+<td><code>boolean</code></td>
+<td>True on the first chunk of a stream, which clears the state first.</td>
+</tr>
+<tr>
+<td><code>activeSliceCount</code> (optional)</td>
+<td><code>number</code></td>
+<td>Slices of this chunk that hold data; defaults to the whole chunk.</td>
+</tr>
+<tr>
+<td><code>maximumValueMagnitude</code></td>
+<td><code>number</code></td>
+<td>Largest absolute sample the stream can hold. It sets the fixed-point unit of the sums: declare it tightly, because a sample above it is treated as missing, and the unit is about <code>maximumValueMagnitude * 2^-70</code> at the default stream length.</td>
+</tr>
+<tr>
+<td><code>maximumStreamSliceCount</code> (optional)</td>
+<td><code>number</code></td>
+<td>Longest stream in slices, for the fixed-point headroom. Defaults to 2^24.</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p>
+<h2 id="gpurasterrollingmean"><code>GPURasterRollingMean</code></h2>
+<p>Trailing rolling mean over a chunked stream, the aggregation SPI and SPEI apply before fitting. A missing
+sample in the window makes that output missing, as xclim's <code>rolling(...).mean(skipna=False)</code>. Window state
+lives in caller-owned buffers between chunks.</p>
+<p>{/* parameters: GPURasterRollingMean generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h3 id="gpurasterrollingmean-parameters"><code>GPURasterRollingMean</code> parameters</h3>
+<ul>
+<li>Packer: <code>getGPURasterStreamingAccumulatorParameterValues(settings, chunkSliceCount)</code>, writes <code>GPU_RASTER_STREAMING_ACCUMULATOR_PARAMETER_LENGTH</code> (5) <code>float32</code> values.
+<ul>
+<li>Input port: <code>parameters</code>.</li>
+<li><code>chunkSliceCount</code> (<code>number</code>)</li>
+</ul>
+</li>
+</ul>
+<p>Settings of <code>getGPURasterStreamingAccumulatorParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>reset</code></td>
+<td><code>boolean</code></td>
+<td>True on the first chunk of a stream, which clears the state first.</td>
+</tr>
+<tr>
+<td><code>activeSliceCount</code> (optional)</td>
+<td><code>number</code></td>
+<td>Slices of this chunk that hold data; defaults to the whole chunk.</td>
+</tr>
+<tr>
+<td><code>maximumValueMagnitude</code></td>
+<td><code>number</code></td>
+<td>Largest absolute sample the stream can hold. It sets the fixed-point unit of the sums: declare it tightly, because a sample above it is treated as missing, and the unit is about <code>maximumValueMagnitude * 2^-70</code> at the default stream length.</td>
+</tr>
+<tr>
+<td><code>maximumStreamSliceCount</code> (optional)</td>
+<td><code>number</code></td>
+<td>Longest stream in slices, for the fixed-point headroom. Defaults to 2^24.</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p>
+<h2 id="gpurasterwhittakersmoother"><code>GPURasterWhittakerSmoother</code></h2>
+<p>Weighted Whittaker smoother per cell: minimises <code>sum w (y - z)^2 + lambda |D z|^2</code> by a banded Givens QR of
+<code>[sqrt(W); sqrt(lambda) D]</code> on the values minus their per-cell mean (added back afterwards; the smoother is
+exact on constants), with zero weight on missing observations so gaps are filled. <code>D</code> is the order <code>d</code> difference (1 to 3). With
+<code>dateAxis</code> it is the divided difference on acquisition dates, scaled by the mean spacing, so a regular axis
+reduces to ordinary differences and <code>lambda</code> keeps its usual meaning. <code>lambda</code> is limited to <code>1e7</code>.</p>
+<p>Fixed robust reweighting passes: Tukey <code>bisquare</code> on the residual over 6 MAD, or <code>upper-envelope</code> for
+cloud-depressed series. Reference: the phenofit <code>smooth_wWHIT</code> definition (Eilers 2003, divided differences);
+R is not installed, so the fixtures use a binary64 SciPy <code>solve_banded</code> implementation of the same algorithm
+(<code>test/oracles/rts02-whittaker-hants-scipy.py</code>). phenofit itself remains a pending oracle.</p>
+<p>float32 limits: the result agrees with a binary64 solve to about one float32 step of the published value
+for every difference order and every <code>lambda</code> up to the cap of <code>1e7</code> (256 slices, series at 0.5, 300 and
+3000 with one gap in five), and to within <code>2e-5</code> on the irregular fixture series. The error does not grow
+with the offset of the data (kelvin, scaled reflectance). Status 2 means the triangular factor has a zero
+or non-finite diagonal or the solution is not finite, for example <code>lambda = 0</code> with a gap; it is not raised
+for a system that is only badly conditioned. Very sparse support is solved, with status 0: 2, 3 or 5 valid
+observations out of 256 slices, at either end, in the middle or spread out, agree with an exact rational
+solve (<code>test/oracles/rts02-whittaker-sparse-exact.py</code>) for <code>lambda</code> from 1 to <code>1e7</code>. There, orders 2 and 3
+continue the curve as a line or a parabola across the gap and the float32 error grows with the gap: over
+250 slices beyond 3 or 5 adjacent observations it stays within <code>6e-4</code> (order 2) and <code>1.3e-2</code> (order 3) of
+the spread of the curve, and within one float32 step of the values for order 1 or for observations spread
+over the series (order 3 spread: <code>1e-3</code> of the spread).</p>
+<p>{/* parameters: GPURasterWhittakerSmoother generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h3 id="gpurasterwhittakersmoother-parameters"><code>GPURasterWhittakerSmoother</code> parameters</h3>
+<ul>
+<li>Packer: <code>getGPURasterWhittakerSmootherParameterValues(settings)</code>, writes <code>GPU_RASTER_WHITTAKER_SMOOTHER_PARAMETER_LENGTH</code> (2) <code>float32</code> values.</li>
+</ul>
+<p>Settings of <code>getGPURasterWhittakerSmootherParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>smoothingParameter</code></td>
+<td><code>number</code></td>
+<td>Penalty weight lambda of the Whittaker smoother; larger is smoother.</td>
+</tr>
+<tr>
+<td><code>minimumWeight</code> (optional)</td>
+<td><code>number</code></td>
+<td>Robust-weight floor, so a point is never removed outright. Defaults to <code>0.01</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p>
+<h2 id="gpurasterhants"><code>GPURasterHANTS</code></h2>
+<p>Harmonic ANalysis of Time Series (Roerink, Menenti and Verhoef 2000; GRASS <code>r.hants</code>): a least-squares
+harmonic fit (<code>getRasterLeastSquaresWGSL</code>) with a bounded reject-and-refit loop that drops the worst
+observation beyond the fit-error tolerance on the chosen side. A cell out of rejection passes publishes its
+latest fit and reports status 8 (<code>converged = 0</code>). <code>2 * harmonicCount + 1 + degreeOfOverdetermination</code>
+observations are always kept. Coefficients are centred on the axis midpoint. The GRASS module is a definition
+reference only; the fixture is a binary64 NumPy implementation, and GRASS itself remains a pending oracle.</p>
+<p>Working memory is checked at construction: 256 slices allow two harmonics; 128 slices allow six.</p>
+<p>{/* parameters: GPURasterHANTS generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h3 id="gpurasterhants-parameters"><code>GPURasterHANTS</code> parameters</h3>
+<ul>
+<li>Packer: <code>getGPURasterHANTSParameterValues(settings)</code>, writes <code>GPU_RASTER_HANTS_PARAMETER_LENGTH</code> (3) <code>float32</code> values.</li>
+</ul>
+<p>Settings of <code>getGPURasterHANTSParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>period</code></td>
+<td><code>number</code></td>
+<td>Base period of the harmonics, in fractional years with a date axis, otherwise in slices.</td>
+</tr>
+<tr>
+<td><code>fitErrorTolerance</code></td>
+<td><code>number</code></td>
+<td>Fit-error tolerance: observations further than this from the curve are rejected.</td>
+</tr>
+<tr>
+<td><code>degreeOfOverdetermination</code> (optional)</td>
+<td><code>number</code></td>
+<td>Observations kept above the <code>2 * harmonicCount + 1</code> minimum; defaults to 1.</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p>
+<h2 id="gpurastertemporalresample"><code>GPURasterTemporalResample</code></h2>
+<p>Fills a regular time grid (<code>gridStart</code>, <code>gridStep</code> in centred fractional years, up to 4096 points) by linear
+interpolation between bracketing valid observations. Grid points outside the observed range get status 1;
+points inside a gap larger than <code>maximumGap</code> get status 2. Nothing is extrapolated. A Whittaker or HANTS output
+is finite in its gaps, so it feeds this node directly, which then feeds regular-time operations.</p>
+<p>{/* parameters: GPURasterTemporalResample generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h3 id="gpurastertemporalresample-parameters"><code>GPURasterTemporalResample</code> parameters</h3>
+<ul>
+<li>Packer: <code>getGPURasterTemporalResampleParameterValues(settings)</code>, writes <code>GPU_RASTER_TEMPORAL_RESAMPLE_PARAMETER_LENGTH</code> (3) <code>float32</code> values.</li>
+</ul>
+<p>Settings of <code>getGPURasterTemporalResampleParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>gridStart</code></td>
+<td><code>number</code></td>
+<td>-</td>
+</tr>
+<tr>
+<td><code>gridStep</code></td>
+<td><code>number</code></td>
+<td>-</td>
+</tr>
+<tr>
+<td><code>maximumGap</code> (optional)</td>
+<td><code>number</code></td>
+<td>Largest allowed span between the bracketing observations; defaults to no limit.</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p>
+<h2 id="compositing-and-phenology">Compositing and phenology</h2>
+<p>Per-cell compositing across the slices of a stack, and phenology metrics on a smoothed curve. The multivariate
+contributors use the layout <code>(cell * sliceCount + slice) * bandCount + band</code> and treat an observation with any
+non-finite band as missing as a whole; <code>mask</code> is per observation (<code>cell * sliceCount + slice</code>) and zero
+rejects it. A cell without a valid observation publishes NaN and <code>0xffffffff</code> as its slice.</p>
+<p>Reference: hdmedians (Apache-2.0) defines <code>nanmedoid</code> and the geometric median. hdmedians is not installed
+here, so the fixture <code>test/oracles/fixtures/rts05-compositing-numpy.json</code> comes from binary64 NumPy
+implementations of those definitions (<code>test/oracles/rts05-compositing-numpy.py</code>); the geometric median is
+also checked against the true minimiser found by SciPy. TIMESAT parity and double-logistic fits are out of
+scope: the latter are ill-conditioned in float32.</p>
+<h3 id="gpurastermedoidcomposite"><code>GPURasterMedoidComposite</code></h3>
+<p>The valid observation with the smallest sum of Euclidean distances (over all bands) to the other valid
+observations. The result is a real acquisition, so <code>output.sliceIndex</code> is the provenance of every band. Ties go
+to the earliest slice. Work is <code>O(slices^2 * bands)</code> per cell on one invocation, so <code>sliceCount</code> is limited to 64
+and <code>bandCount</code> to 16. Float32 distance sums that differ by less than rounding can pick a different slice than
+binary64.</p>
+<h3 id="gpurastergeometricmediancomposite"><code>GPURasterGeometricMedianComposite</code></h3>
+<p>The point minimising the sum of Euclidean distances to the valid observations over all bands together (Roberts,
+Mueller and McIntyre 2017): band relationships are preserved, so an index computed after compositing equals the
+index computed before. The result is synthetic. It runs Weiszfeld's recursion from the mean for exactly
+<code>iterationCount</code> iterations (at most 64, no data-dependent exit), with each distance floored at
+<code>distanceEpsilon</code>. <code>output.lastStep</code> is the length of the last step, the convergence indicator to read when the
+observations are few or skewed. The fixture cells agree with binary64 to within <code>2e-5</code> and sit within <code>1e-5</code>
+relative of the SciPy minimum after 32 iterations.</p>
+<p>Call <code>getGPURasterGeometricMedianCompositeOutputLayout({cellCount, bandCount, lastStep})</code> before
+allocating outputs. It returns scalar formats and element counts without allocating storage.
+<code>lastStep</code> defaults to false: its descriptor is absent unless requested. The contributor's
+validation, <code>GPURasterGeometricMedianCompositeOperation</code>, the CPU operation's graph outputs and
+the pure CPU result's allocation all use this layout. The pure CPU function always returns
+<code>lastStep</code>; the operation publishes it only when <code>output.lastStep</code> names a graph value.</p>
+<p>{/* geometric-median-output-layout:start */}</p>
+<table>
+<thead>
+<tr>
+<th>Output field</th>
+<th>Scalar format</th>
+<th>Element count</th>
+<th>Condition and meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>composite</code></td>
+<td><code>float32</code></td>
+<td><code>cellCount * bandCount</code></td>
+<td>Always: <code>cell * bandCount + band</code>; NaN when the cell has no valid observation.</td>
+</tr>
+<tr>
+<td><code>status</code></td>
+<td><code>uint32</code></td>
+<td><code>cellCount</code></td>
+<td>Always: per-cell code 0 for a composite, 1 for no valid observation.</td>
+</tr>
+<tr>
+<td><code>lastStep</code></td>
+<td><code>float32</code></td>
+<td><code>cellCount</code></td>
+<td>When <code>lastStep: true</code>: final step length per cell; NaN when there is no valid observation.</td>
+</tr>
+</tbody>
+</table>
+<p>{/* geometric-median-output-layout:end */}</p>
+<p>The table is checked against the public layout in the node tests. Counts and the
+<code>cellCount * bandCount</code> product must be positive integers no greater than 4,294,967,295.
+The layout covers both execution forms; GPU execution additionally limits each cell to 256 slices,
+16 bands and 64 iterations. The CPU twin retains the iteration budget and uint32 indexing limits,
+and allows larger slice, band and iteration counts. The GPU operation uses exact-sized packed
+graph values; a direct contributor also accepts packed output views with spare capacity and
+nonzero byte offsets, writing only the used prefix. Chunked cell fields must follow the shared
+time-series topology rules above. Output formats must match the table, including <code>uint32</code> status.</p>
+<p>For example, two cells with three bands need six <code>float32</code> composite entries and two <code>uint32</code>
+status entries. Requesting <code>lastStep: true</code> adds two <code>float32</code> entries. Input masks and output
+buffers remain caller-owned.</p>
+<p>{/* parameters: GPURasterGeometricMedianComposite generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h4 id="gpurastergeometricmediancomposite-parameters"><code>GPURasterGeometricMedianComposite</code> parameters</h4>
+<ul>
+<li>Packer: <code>getGPURasterGeometricMedianCompositeParameterValues(settings?)</code>, writes <code>GPU_RASTER_GEOMETRIC_MEDIAN_COMPOSITE_PARAMETER_LENGTH</code> (1) <code>float32</code> values.</li>
+</ul>
+<p>Settings of <code>getGPURasterGeometricMedianCompositeParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>distanceEpsilon</code> (optional)</td>
+<td><code>number</code></td>
+<td>Smallest distance used as a Weiszfeld weight denominator, in value units: an estimate that lands on an observation stays there instead of dividing by zero. Defaults to <code>1e-5</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p>
+<h3 id="gpurasterbestavailablepixel"><code>GPURasterBestAvailablePixel</code></h3>
+<p>Best-available-pixel scoring (Griffiths et al. 2013): <code>score = wDay * exp(-0.5 (dDay / sigma)^2) + wYear * max(0, 1 - |year - targetYear| / maximumYearDistance) + wCloud * clamp((cloudDistance - minimum) / (maximum - minimum), 0, 1)</code>, with <code>dDay</code> the circular distance in days to the target day of year. The cell takes
+the highest score, the earliest slice on ties, and optionally its band values. Per-slice day of year and year come
+in <code>sliceAttributes</code>. <code>cloudDistance</code> is per observation, in pixels to the nearest cloud or shadow of its slice:
+run <code>GPUDistanceField</code> on each slice's cloud mask and pass the result (positive infinity means no cloud in
+reach; without the view the cloud score is zero).</p>
+<p>{/* parameters: GPURasterBestAvailablePixel generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h4 id="gpurasterbestavailablepixel-parameters"><code>GPURasterBestAvailablePixel</code> parameters</h4>
+<ul>
+<li>Packer: <code>getGPURasterBestAvailablePixelParameterValues(settings)</code>, writes <code>GPU_RASTER_BEST_AVAILABLE_PIXEL_PARAMETER_LENGTH</code> (9) <code>float32</code> values.</li>
+</ul>
+<p>Settings of <code>getGPURasterBestAvailablePixelParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>targetDayOfYear</code></td>
+<td><code>number</code></td>
+<td>Target day of year in <code>[0, 366]</code>.</td>
+</tr>
+<tr>
+<td><code>dayOfYearSigma</code></td>
+<td><code>number</code></td>
+<td>Standard deviation of the Gaussian day-of-year score, in days.</td>
+</tr>
+<tr>
+<td><code>dayOfYearWeight</code></td>
+<td><code>number</code></td>
+<td>Weight of the day-of-year score; Griffiths et al. 2013 example <code>0.5</code>.</td>
+</tr>
+<tr>
+<td><code>targetYear</code></td>
+<td><code>number</code></td>
+<td>Target year in the unit of the <code>sliceAttributes</code> year column.</td>
+</tr>
+<tr>
+<td><code>maximumYearDistance</code></td>
+<td><code>number</code></td>
+<td>Year distance at which the linear year score reaches zero.</td>
+</tr>
+<tr>
+<td><code>yearWeight</code></td>
+<td><code>number</code></td>
+<td>Weight of the year score; example <code>0.2</code>.</td>
+</tr>
+<tr>
+<td><code>minimumCloudDistance</code></td>
+<td><code>number</code></td>
+<td>Cloud distance at or below which the cloud score is zero (pixels), example <code>10</code>.</td>
+</tr>
+<tr>
+<td><code>maximumCloudDistance</code></td>
+<td><code>number</code></td>
+<td>Cloud distance at or above which the cloud score is one (pixels), example <code>100</code>.</td>
+</tr>
+<tr>
+<td><code>cloudWeight</code></td>
+<td><code>number</code></td>
+<td>Weight of the cloud-distance score; example <code>0.3</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p>
+<h3 id="gpurasterphenologymetrics"><code>GPURasterPhenologyMetrics</code></h3>
+<p>Up to two seasons per cell from amplitude thresholds on the smoothed curve, for example <code>output.smoothed</code> of
+<code>GPURasterWhittakerSmoother</code> (same <code>cell * sliceCount + slice</code> layout; pass the same <code>dateAxis</code> and times are
+centred fractional years, otherwise slice indices). Base is the curve minimum and amplitude the maximum minus the
+minimum. A season starts where the curve last falls below <code>startFraction</code> of the amplitude before its peak and ends
+where it first falls below <code>endFraction</code> after it, both by linear interpolation (the Copernicus MR-VPP
+definitions use 0.25 and 0.15). The first season is the highest sample; the second is the highest sample outside
+the first season's span that reaches <code>secondSeasonMinimumFraction</code>. Seasons are ordered by peak time. A crossing
+that is not found cuts the season at the series end or at the other season and sets a bit of
+<code>GPU_RASTER_PHENOLOGY_FLAG</code>. <code>output.metrics</code> holds the ten fields of <code>GPU_RASTER_PHENOLOGY_METRIC</code> per season:
+start, end, peak time, length, peak value, base value, amplitude, left and right slope, and the integral between
+the curve and the base from start to end. Cell status is 1 for a non-finite curve and 2 for an amplitude below
+<code>minimumAmplitude</code>.</p>
+<p>{/* parameters: GPURasterPhenologyMetrics generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h4 id="gpurasterphenologymetrics-parameters"><code>GPURasterPhenologyMetrics</code> parameters</h4>
+<ul>
+<li>Packer: <code>getGPURasterPhenologyMetricsParameterValues(settings)</code>, writes <code>GPU_RASTER_PHENOLOGY_METRICS_PARAMETER_LENGTH</code> (4) <code>float32</code> values.</li>
+</ul>
+<p>Settings of <code>getGPURasterPhenologyMetricsParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>startFraction</code></td>
+<td><code>number</code></td>
+<td>Fraction of the curve amplitude above the base where a season starts, in <code>(0, 1)</code>; MR-VPP uses <code>0.25</code>.</td>
+</tr>
+<tr>
+<td><code>endFraction</code></td>
+<td><code>number</code></td>
+<td>Fraction of the curve amplitude above the base where a season ends, in <code>(0, 1)</code>; MR-VPP uses <code>0.15</code>.</td>
+</tr>
+<tr>
+<td><code>minimumAmplitude</code></td>
+<td><code>number</code></td>
+<td>Cells whose amplitude (maximum minus minimum) is below this get status 2 and no season.</td>
+</tr>
+<tr>
+<td><code>secondSeasonMinimumFraction</code> (optional)</td>
+<td><code>number</code></td>
+<td>A second season needs a peak at least this fraction of the amplitude above the base. It must be at least both start and end fractions, so the shoulders of the first season are not a second one. Defaults to the larger of the two.</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p>
+<h2 id="spi-and-spei">SPI and SPEI</h2>
+<p><code>GPURasterStandardizedIndex</code> evaluates up to 16,777,216 slices per chunk, subject to device
+bindings. Calibration keeps its separate per-dispatch limit. Cell records and aligned outputs
+accept chunked input without changing the fitted calendar-slot model.</p>
+<p><code>GPURasterStandardizedIndexCalibration</code> streams calibration chunks (for example 30 years of months) into
+per-slot statistics, with zeros and non-positive values excluded from the fit and counted, and writes a fit
+per calendar slot. <code>GPURasterStandardizedIndex</code> then evaluates any chunk against that fit. Pass the rolling
+mean output for aggregations such as SPI-3. Both match xclim's <code>method='APP'</code> (Thom's gamma estimator for
+<code>gamma</code> with <code>floc</code>, the method-of-moments estimator for <code>fisk</code> with <code>floc</code>) and xclim's defaults for zero
+inflation (<code>prob_zero_interpolation='upper'</code>, <code>plotting_position_zero='ecdf'</code>). <code>location</code> is the fixed
+<code>floc</code> used for water-balance series that may be negative.</p>
+<p>Reference: xclim 1.0.0, Apache-2.0, run for <code>test/oracles/fixtures/rts06-climate-indices-xclim.json</code> (numba and
+dask imports stubbed; see the fixture). SPI-1, SPI-3 and SPEI agree with xclim to within 0.01 over 420 months in
+float32.</p>
+<p>float32 limits and what the code does about them:</p>
+<ul>
+<li><strong>APP, not iterative ML.</strong> Newton iterations on the shape are noisy in float32; APP is closed form. Only
+sums over the slot enter it.</li>
+<li><strong>Fit sums are fixed-point, not float32.</strong> The gamma estimator is driven by <code>ln(mean) - mean(ln x)</code>, a
+difference of nearly equal numbers. The sums of <code>x</code>, <code>ln x</code> and squared deviations are exact 96-bit integers,
+so the only float32 rounding is the final conversion to a mean.</li>
+<li><strong>Tails are computed directly.</strong> The gamma CDF and quantile near 1 cannot be represented as <code>1 - p</code> in
+float32, so whichever tail is small is computed directly (series below, continued fraction above) and the
+quantile is taken of that tail. Results stay accurate on both sides.</li>
+<li><strong>Clipped to <code>+-8.21</code></strong>, xclim's bound. Tails flush to zero near <code>1e-38</code> in float32, well beyond that.</li>
+<li><strong>The fit needs at least two positive values per slot</strong>; a slot without a usable fit marks every output NaN
+with status 2.</li>
+</ul>
+<p>{/* parameters: GPURasterStandardizedIndex generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h3 id="gpurasterstandardizedindex-parameters"><code>GPURasterStandardizedIndex</code> parameters</h3>
+<ul>
+<li>Packer: <code>getGPURasterStandardizedIndexParameterValues(settings, chunkSliceCount)</code>, writes <code>GPU_RASTER_STANDARDIZED_INDEX_PARAMETER_LENGTH</code> (2) <code>float32</code> values.
+<ul>
+<li><code>chunkSliceCount</code> (<code>number</code>)</li>
+</ul>
+</li>
+</ul>
+<p>Settings of <code>getGPURasterStandardizedIndexParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>activeSliceCount</code> (optional)</td>
+<td><code>number</code></td>
+<td>-</td>
+</tr>
+<tr>
+<td><code>location</code> (optional)</td>
+<td><code>number</code></td>
+<td>-</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p>
+<p>{/* parameters: GPURasterStandardizedIndexCalibration generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h3 id="gpurasterstandardizedindexcalibration-parameters"><code>GPURasterStandardizedIndexCalibration</code> parameters</h3>
+<ul>
+<li>Packer: <code>getGPURasterStandardizedIndexCalibrationParameterValues(settings, chunkSliceCount)</code>, writes <code>GPU_RASTER_STANDARDIZED_CALIBRATION_PARAMETER_LENGTH</code> (7) <code>float32</code> values.
+<ul>
+<li><code>chunkSliceCount</code> (<code>number</code>)</li>
+</ul>
+</li>
+</ul>
+<p>Settings of <code>getGPURasterStandardizedIndexCalibrationParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>reset</code></td>
+<td><code>boolean</code></td>
+<td>-</td>
+</tr>
+<tr>
+<td><code>activeSliceCount</code> (optional)</td>
+<td><code>number</code></td>
+<td>-</td>
+</tr>
+<tr>
+<td><code>location</code> (optional)</td>
+<td><code>number</code></td>
+<td>-</td>
+</tr>
+<tr>
+<td><code>maximumValueMagnitude</code></td>
+<td><code>number</code></td>
+<td>-</td>
+</tr>
+<tr>
+<td><code>maximumStreamSliceCount</code> (optional)</td>
+<td><code>number</code></td>
+<td>-</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p>
+<h2 id="gpurasterclimaterunaccumulator"><code>GPURasterClimateRunAccumulator</code></h2>
+<p>Streaming spell lengths, exceedance counts and degree days per cell against a threshold. The condition
+(<code>above</code>, <code>at-or-above</code>, <code>below</code>, <code>at-or-below</code>) is fixed at construction and matches xclim's comparison
+operators; spell length, wet/dry spell and degree-day definitions match xclim 1.0.0 for reset-per-year chunks.
+A missing sample breaks the run and is counted. <code>minimumSpellLength</code> counts spells when they reach the length.</p>
+<p>{/* parameters: GPURasterClimateRunAccumulator generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h3 id="gpurasterclimaterunaccumulator-parameters"><code>GPURasterClimateRunAccumulator</code> parameters</h3>
+<ul>
+<li>Packer: <code>getGPURasterClimateRunAccumulatorParameterValues(settings, chunkSliceCount)</code>, writes <code>GPU_RASTER_CLIMATE_RUN_ACCUMULATOR_PARAMETER_LENGTH</code> (4) <code>float32</code> values.
+<ul>
+<li><code>chunkSliceCount</code> (<code>number</code>)</li>
+</ul>
+</li>
+</ul>
+<p>Settings of <code>getGPURasterClimateRunAccumulatorParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>reset</code></td>
+<td><code>boolean</code></td>
+<td>-</td>
+</tr>
+<tr>
+<td><code>activeSliceCount</code> (optional)</td>
+<td><code>number</code></td>
+<td>-</td>
+</tr>
+<tr>
+<td><code>threshold</code></td>
+<td><code>number</code></td>
+<td>-</td>
+</tr>
+<tr>
+<td><code>maximumIncrement</code></td>
+<td><code>number</code></td>
+<td>-</td>
+</tr>
+<tr>
+<td><code>maximumStreamSliceCount</code> (optional)</td>
+<td><code>number</code></td>
+<td>-</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p>
+<h2 id="gpurasterclimateanomaly"><code>GPURasterClimateAnomaly</code></h2>
+<p>Reads a <code>GPURasterStreamingAccumulator</code>'s state: per-slot mean and sample standard deviation, and the anomaly
+(or z-score) of a chunk against them.</p>
+<p>{/* parameters: GPURasterClimateAnomaly generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}</p>
+<h3 id="gpurasterclimateanomaly-parameters"><code>GPURasterClimateAnomaly</code> parameters</h3>
+<ul>
+<li>Packer: <code>getGPURasterStreamingAccumulatorParameterValues(settings, chunkSliceCount)</code>, writes <code>GPU_RASTER_STREAMING_ACCUMULATOR_PARAMETER_LENGTH</code> (5) <code>float32</code> values.
+<ul>
+<li>Input port: <code>accumulatorParameters</code>.</li>
+<li><code>chunkSliceCount</code> (<code>number</code>)</li>
+</ul>
+</li>
+</ul>
+<p>Settings of <code>getGPURasterStreamingAccumulatorParameterValues</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>reset</code></td>
+<td><code>boolean</code></td>
+<td>True on the first chunk of a stream, which clears the state first.</td>
+</tr>
+<tr>
+<td><code>activeSliceCount</code> (optional)</td>
+<td><code>number</code></td>
+<td>Slices of this chunk that hold data; defaults to the whole chunk.</td>
+</tr>
+<tr>
+<td><code>maximumValueMagnitude</code></td>
+<td><code>number</code></td>
+<td>Largest absolute sample the stream can hold. It sets the fixed-point unit of the sums: declare it tightly, because a sample above it is treated as missing, and the unit is about <code>maximumValueMagnitude * 2^-70</code> at the default stream length.</td>
+</tr>
+<tr>
+<td><code>maximumStreamSliceCount</code> (optional)</td>
+<td><code>number</code></td>
+<td>Longest stream in slices, for the fixed-point headroom. Defaults to 2^24.</td>
+</tr>
+</tbody>
+</table>
+<p>{/* /parameters */}</p></article></div><script>(function(a,f){let l;try{l=JSON.parse(sessionStorage.getItem(a)||"{}")}catch{return}const n=l?.[f||history.state?.__TSR_key];let c=!1;for(const t in n){const e=n[t],o=e?.scrollX,s=e?.scrollY;if(Number.isFinite(o)&&Number.isFinite(s)){if(t==="window")scrollTo(o,s),c=!0;else if(t)try{const r=document.querySelector(t);r&&(r.scrollLeft=o,r.scrollTop=s)}catch{}}}if(c)return;const i=location.hash.slice(1);if(i){const t=history.state?.__hashScrollIntoViewOptions??!0;if(t){const e=document.getElementById(i);e&&e.scrollIntoView(t)}return}scrollTo(0,0)})("tsr-scroll-restoration-v1_3");document.currentScript.remove()</script><!--/$--><footer class="site-footer"><div class="site-footer__inner"><span>Gridlight · GPU geospatial analysis on luma.gl. Code licensed under MIT.</span><nav class="site-footer__links" aria-label="Footer"><a href="/luma-contributors/explore">Explore</a><a href="/luma-contributors/how-it-works">How it works</a><a href="/luma-contributors/demo-data">Demo data</a><a class="active" href="/luma-contributors/docs" data-status="active" aria-current="page">Reference</a><a href="https://github.com/BertCh/luma-contributors">GitHub</a><a href="https://luma.gl">luma.gl</a></nav></div></footer><script data-tsr-stream-part="">(self.$R=self.$R||{})["tsr"]=[];self.$_TSR={h(){this.hydrated=!0,this.c()},e(){this.streamEnded=!0,this.c()},c(){this.hydrated&&this.streamEnded&&(delete self.$_TSR,delete self.$R.tsr)},p(e){this.initialized?e():this.buffer.push(e)},buffer:[]}</script><script data-tsr-stream-part="">$_TSR.router=($R=>$R[0]={manifest:$R[1]={routes:$R[2]={__root__:$R[3]={preloads:$R[4]=["/luma-contributors/assets/index-DIfTuwM1.js","/luma-contributors/assets/rolldown-runtime-XKyaHtl9.js","/luma-contributors/assets/react-DlmbjZJV.js","/luma-contributors/assets/matchContext-BZe79Vhs.js","/luma-contributors/assets/link-D9V6xy_k.js","/luma-contributors/assets/jsx-runtime-LKYXHABd.js","/luma-contributors/assets/preload-helper-Ehsq8Wa4.js","/luma-contributors/assets/topics-BYMS4mpg.js"],scripts:$R[5]=[$R[6]={attrs:$R[7]={type:"module",async:!0,src:"/luma-contributors/assets/index-DIfTuwM1.js"}}],css:$R[8]=["/luma-contributors/assets/index-Do-eHPVA.css"]},"/docs/$":$R[9]={preloads:$R[10]=["/luma-contributors/assets/_-jF9EWkQq.js"]}}},matches:$R[11]=[$R[12]={i:"__root__#",u:1795048386250,s:"success",ssr:!0},$R[13]={i:"#docs#$#docs#api#gpu-raster#raster-time-series",u:1795048386251,s:"success",l:$R[14]={slug:"api/gpu-raster/raster-time-series",title:"Raster time series",html:"\x3Ch1 id=\"raster-time-series\">Raster time series\x3C/h1>\n\x3Cp>\x3Ccode>GPURasterHarmonicRegression\x3C/code>, \x3Ccode>GPURasterClimateRunAccumulator\x3C/code>, \x3Ccode>GPURasterGeometricMedianComposite\x3C/code>,\n\x3Ccode>GPURasterBestAvailablePixel\x3C/code>, \x3Ccode>GPURasterBFASTMonitor\x3C/code>, \x3Ccode>GPURasterClimateAnomaly\x3C/code>, \x3Ccode>GPURasterHANTS\x3C/code>,\n\x3Ccode>GPURasterEOFProjection\x3C/code> and \x3Ccode>GPURasterCOLDMonitor\x3C/code> accept aligned chunked cell\nrecords. Keep each complete time series, mask and output record within a chunk; slice limits still\napply per cell. Harmonic regression defaults to storage-backed QR; the other reference slice caps remain.\x3C/p>\n\x3Cp>Both time-series execution routes use the same cell topology: packed fields can accompany a\nsingle-chunk vector when each field holds exactly \x3Ccode>cellCount * entriesPerCell\x3C/code> entries. Once a\nfield has multiple chunks, every cell field must have the same number of chunks and the same\ncell counts per chunk, with no split cell records. Shared date and parameter tables stay packed.\nCalls using only packed fields retain their documented spare-capacity support.\nHANTS and temporal resampling type their output views independently of the source view: a packed\nsource can feed matching one-chunk outputs, and a one-chunk source can feed packed outputs.\x3C/p>\n\x3Cp>Writable logical ranges must be disjoint across fields and chunks. Co-bound writable ranges\nmust also have disjoint storage-aligned binding ranges. HANTS and temporal resampling can use\none pooled output buffer under these rules. A dispatch's read-only inputs and writable outputs\nmust use separate physical buffers, even for disjoint ranges. A physical buffer participating in\nwrites must use one imported handle; a buffer used only by read-only inputs may have multiple\nimports. Pooling output fields requires an explicit per-dispatch access declaration in the\ncontributor; callers without one retain separate output buffers because a later dispatch may read\none output while writing another. HANTS and temporal resampling declare their accesses explicitly.\x3C/p>\n\x3Cp>Contributors for stacks of raster time slices beyond regular composites: an irregular acquisition-date\naxis, streaming accumulators without a slice limit, penalised and harmonic smoothers, gap filling onto a\nregular grid, and climate indices. Import from \x3Ccode>@luma-contributors/analysis/raster-analysis\x3C/code>. All are\n\x3Ccode>GPUCommandNodeProducer\x3C/code> classes. Every contributor is cell-major (\x3Ccode>cell * sliceCount + slice\x3C/code>) and takes\n\x3Ccode>mask\x3C/code> per observation with zero rejecting a sample; non-finite values are missing. Each class\ndocuments its per-frame and compile-time props in its source.\x3C/p>\n\x3Ch2 id=\"irregular-date-axis\">Irregular date axis\x3C/h2>\n\x3Cp>\x3Ccode>GPURasterIrregularDateAxis\x3C/code> declares a stack's acquisition dates: one \x3Ccode>uint32x2\x3C/code> Int64 \x3Ccode>(low, high)\x3C/code> row\nper slice, with a \x3Ca href=\"/luma-contributors/docs/api/gpu-spatial-analysis/temporal-context\">\x3Ccode>GPUTemporalContext\x3C/code>\x3C/a> of encoding\n\x3Ccode>int64-words\x3C/code> and \x3Ccode>{kind: 'irregular'}\x3C/code>, any unit and epoch. Dates must be strictly increasing. They become\n\x3Cstrong>centred fractional years\x3C/strong> in float32: years of 365.2425 days after the midpoint of the first and last\nacquisition, so the trend column is O(1) and harmonics stay in \x3Ccode>[-1, 1]\x3C/code>. Elapsed years come from the Int64\nwords directly, so nearby dates keep full float32 precision. \x3Ccode>getGPURasterCentredFractionalYears\x3C/code> gives the\nsame axis on the CPU, for example to choose a regular output grid.\x3C/p>\n\x3Cp>\x3Ccode>GPURasterTemporal\x3C/code>, \x3Ccode>GPUChangeDetection\x3C/code> and \x3Ccode>GPURasterSeasonalBreak\x3C/code> take this axis as \x3Ccode>dateAxis\x3C/code>.\nOmitted, slot behaviour and results are unchanged.\x3C/p>\n\x3Cul>\n\x3Cli>\x3Ccode>GPURasterTemporal\x3C/code>: the Savitzky-Golay polynomial is fitted on real elapsed time over the same window of\nneighbouring acquisitions. Composites do not depend on time.\x3C/li>\n\x3Cli>\x3Ccode>GPUChangeDetection\x3C/code>: \x3Ccode>senSlope\x3C/code> is per year of real elapsed time. Other outputs depend on order only.\x3C/li>\n\x3Cli>\x3Ccode>GPURasterSeasonalBreak\x3C/code>: \x3Ccode>period\x3C/code> is in fractional years, the slope is per year, and \x3Ccode>missingPolicy: 'interpolate'\x3C/code> uses elapsed time. Dummy seasons are defined on regular slots and are rejected.\x3C/li>\n\x3C/ul>\n\x3Ch2 id=\"gpurasterstreamingaccumulator\">\x3Ccode>GPURasterStreamingAccumulator\x3C/code>\x3C/h2>\n\x3Cp>Accumulates counts, sums, squared deviations and extrema chunk by chunk, so a stack has no slice limit.\nEach dispatch consumes at most 256 slices; memory is O(cells x calendar slots). Slot indices assign a\ncalendar slot (for example a month) to each chunk slice.\x3C/p>\n\x3Cp>Set \x3Ccode>reset\x3C/code> on the first chunk of a stream. \x3Ccode>activeSliceCount\x3C/code> allows a short last chunk. Declare\n\x3Ccode>maximumValueMagnitude\x3C/code>: a sample above it is treated as missing. Sums and squared deviations are \x3Cstrong>96-bit\nfixed-point integers\x3C/strong> (three \x3Ccode>uint32\x3C/code> words per slot, decoded with \x3Ccode>getGPURasterFixedPointValues\x3C/code>), because\nfloat32 compensated summation was optimized away by the shader compiler on the tested GPU (the low word stayed\nzero). Fixed-point sums are exact to the declared unit, about \x3Ccode>maximumValueMagnitude * 2^-70\x3C/code> at the default\nstream length.\x3C/p>\n\x3Cp>{/* parameters: GPURasterStreamingAccumulator generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch3 id=\"gpurasterstreamingaccumulator-parameters\">\x3Ccode>GPURasterStreamingAccumulator\x3C/code> parameters\x3C/h3>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPURasterStreamingAccumulatorParameterValues(settings, chunkSliceCount)\x3C/code>, writes \x3Ccode>GPU_RASTER_STREAMING_ACCUMULATOR_PARAMETER_LENGTH\x3C/code> (5) \x3Ccode>float32\x3C/code> values.\n\x3Cul>\n\x3Cli>\x3Ccode>chunkSliceCount\x3C/code> (\x3Ccode>number\x3C/code>)\x3C/li>\n\x3C/ul>\n\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPURasterStreamingAccumulatorParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>reset\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>boolean\x3C/code>\x3C/td>\n\x3Ctd>True on the first chunk of a stream, which clears the state first.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>activeSliceCount\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Slices of this chunk that hold data; defaults to the whole chunk.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>maximumValueMagnitude\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Largest absolute sample the stream can hold. It sets the fixed-point unit of the sums: declare it tightly, because a sample above it is treated as missing, and the unit is about \x3Ccode>maximumValueMagnitude * 2^-70\x3C/code> at the default stream length.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>maximumStreamSliceCount\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Longest stream in slices, for the fixed-point headroom. Defaults to 2^24.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>\n\x3Ch2 id=\"gpurasterrollingmean\">\x3Ccode>GPURasterRollingMean\x3C/code>\x3C/h2>\n\x3Cp>Trailing rolling mean over a chunked stream, the aggregation SPI and SPEI apply before fitting. A missing\nsample in the window makes that output missing, as xclim's \x3Ccode>rolling(...).mean(skipna=False)\x3C/code>. Window state\nlives in caller-owned buffers between chunks.\x3C/p>\n\x3Cp>{/* parameters: GPURasterRollingMean generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch3 id=\"gpurasterrollingmean-parameters\">\x3Ccode>GPURasterRollingMean\x3C/code> parameters\x3C/h3>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPURasterStreamingAccumulatorParameterValues(settings, chunkSliceCount)\x3C/code>, writes \x3Ccode>GPU_RASTER_STREAMING_ACCUMULATOR_PARAMETER_LENGTH\x3C/code> (5) \x3Ccode>float32\x3C/code> values.\n\x3Cul>\n\x3Cli>Input port: \x3Ccode>parameters\x3C/code>.\x3C/li>\n\x3Cli>\x3Ccode>chunkSliceCount\x3C/code> (\x3Ccode>number\x3C/code>)\x3C/li>\n\x3C/ul>\n\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPURasterStreamingAccumulatorParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>reset\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>boolean\x3C/code>\x3C/td>\n\x3Ctd>True on the first chunk of a stream, which clears the state first.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>activeSliceCount\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Slices of this chunk that hold data; defaults to the whole chunk.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>maximumValueMagnitude\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Largest absolute sample the stream can hold. It sets the fixed-point unit of the sums: declare it tightly, because a sample above it is treated as missing, and the unit is about \x3Ccode>maximumValueMagnitude * 2^-70\x3C/code> at the default stream length.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>maximumStreamSliceCount\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Longest stream in slices, for the fixed-point headroom. Defaults to 2^24.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>\n\x3Ch2 id=\"gpurasterwhittakersmoother\">\x3Ccode>GPURasterWhittakerSmoother\x3C/code>\x3C/h2>\n\x3Cp>Weighted Whittaker smoother per cell: minimises \x3Ccode>sum w (y - z)^2 + lambda |D z|^2\x3C/code> by a banded Givens QR of\n\x3Ccode>[sqrt(W); sqrt(lambda) D]\x3C/code> on the values minus their per-cell mean (added back afterwards; the smoother is\nexact on constants), with zero weight on missing observations so gaps are filled. \x3Ccode>D\x3C/code> is the order \x3Ccode>d\x3C/code> difference (1 to 3). With\n\x3Ccode>dateAxis\x3C/code> it is the divided difference on acquisition dates, scaled by the mean spacing, so a regular axis\nreduces to ordinary differences and \x3Ccode>lambda\x3C/code> keeps its usual meaning. \x3Ccode>lambda\x3C/code> is limited to \x3Ccode>1e7\x3C/code>.\x3C/p>\n\x3Cp>Fixed robust reweighting passes: Tukey \x3Ccode>bisquare\x3C/code> on the residual over 6 MAD, or \x3Ccode>upper-envelope\x3C/code> for\ncloud-depressed series. Reference: the phenofit \x3Ccode>smooth_wWHIT\x3C/code> definition (Eilers 2003, divided differences);\nR is not installed, so the fixtures use a binary64 SciPy \x3Ccode>solve_banded\x3C/code> implementation of the same algorithm\n(\x3Ccode>test/oracles/rts02-whittaker-hants-scipy.py\x3C/code>). phenofit itself remains a pending oracle.\x3C/p>\n\x3Cp>float32 limits: the result agrees with a binary64 solve to about one float32 step of the published value\nfor every difference order and every \x3Ccode>lambda\x3C/code> up to the cap of \x3Ccode>1e7\x3C/code> (256 slices, series at 0.5, 300 and\n3000 with one gap in five), and to within \x3Ccode>2e-5\x3C/code> on the irregular fixture series. The error does not grow\nwith the offset of the data (kelvin, scaled reflectance). Status 2 means the triangular factor has a zero\nor non-finite diagonal or the solution is not finite, for example \x3Ccode>lambda = 0\x3C/code> with a gap; it is not raised\nfor a system that is only badly conditioned. Very sparse support is solved, with status 0: 2, 3 or 5 valid\nobservations out of 256 slices, at either end, in the middle or spread out, agree with an exact rational\nsolve (\x3Ccode>test/oracles/rts02-whittaker-sparse-exact.py\x3C/code>) for \x3Ccode>lambda\x3C/code> from 1 to \x3Ccode>1e7\x3C/code>. There, orders 2 and 3\ncontinue the curve as a line or a parabola across the gap and the float32 error grows with the gap: over\n250 slices beyond 3 or 5 adjacent observations it stays within \x3Ccode>6e-4\x3C/code> (order 2) and \x3Ccode>1.3e-2\x3C/code> (order 3) of\nthe spread of the curve, and within one float32 step of the values for order 1 or for observations spread\nover the series (order 3 spread: \x3Ccode>1e-3\x3C/code> of the spread).\x3C/p>\n\x3Cp>{/* parameters: GPURasterWhittakerSmoother generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch3 id=\"gpurasterwhittakersmoother-parameters\">\x3Ccode>GPURasterWhittakerSmoother\x3C/code> parameters\x3C/h3>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPURasterWhittakerSmootherParameterValues(settings)\x3C/code>, writes \x3Ccode>GPU_RASTER_WHITTAKER_SMOOTHER_PARAMETER_LENGTH\x3C/code> (2) \x3Ccode>float32\x3C/code> values.\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPURasterWhittakerSmootherParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>smoothingParameter\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Penalty weight lambda of the Whittaker smoother; larger is smoother.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>minimumWeight\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Robust-weight floor, so a point is never removed outright. Defaults to \x3Ccode>0.01\x3C/code>.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>\n\x3Ch2 id=\"gpurasterhants\">\x3Ccode>GPURasterHANTS\x3C/code>\x3C/h2>\n\x3Cp>Harmonic ANalysis of Time Series (Roerink, Menenti and Verhoef 2000; GRASS \x3Ccode>r.hants\x3C/code>): a least-squares\nharmonic fit (\x3Ccode>getRasterLeastSquaresWGSL\x3C/code>) with a bounded reject-and-refit loop that drops the worst\nobservation beyond the fit-error tolerance on the chosen side. A cell out of rejection passes publishes its\nlatest fit and reports status 8 (\x3Ccode>converged = 0\x3C/code>). \x3Ccode>2 * harmonicCount + 1 + degreeOfOverdetermination\x3C/code>\nobservations are always kept. Coefficients are centred on the axis midpoint. The GRASS module is a definition\nreference only; the fixture is a binary64 NumPy implementation, and GRASS itself remains a pending oracle.\x3C/p>\n\x3Cp>Working memory is checked at construction: 256 slices allow two harmonics; 128 slices allow six.\x3C/p>\n\x3Cp>{/* parameters: GPURasterHANTS generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch3 id=\"gpurasterhants-parameters\">\x3Ccode>GPURasterHANTS\x3C/code> parameters\x3C/h3>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPURasterHANTSParameterValues(settings)\x3C/code>, writes \x3Ccode>GPU_RASTER_HANTS_PARAMETER_LENGTH\x3C/code> (3) \x3Ccode>float32\x3C/code> values.\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPURasterHANTSParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>period\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Base period of the harmonics, in fractional years with a date axis, otherwise in slices.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>fitErrorTolerance\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Fit-error tolerance: observations further than this from the curve are rejected.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>degreeOfOverdetermination\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Observations kept above the \x3Ccode>2 * harmonicCount + 1\x3C/code> minimum; defaults to 1.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>\n\x3Ch2 id=\"gpurastertemporalresample\">\x3Ccode>GPURasterTemporalResample\x3C/code>\x3C/h2>\n\x3Cp>Fills a regular time grid (\x3Ccode>gridStart\x3C/code>, \x3Ccode>gridStep\x3C/code> in centred fractional years, up to 4096 points) by linear\ninterpolation between bracketing valid observations. Grid points outside the observed range get status 1;\npoints inside a gap larger than \x3Ccode>maximumGap\x3C/code> get status 2. Nothing is extrapolated. A Whittaker or HANTS output\nis finite in its gaps, so it feeds this node directly, which then feeds regular-time operations.\x3C/p>\n\x3Cp>{/* parameters: GPURasterTemporalResample generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch3 id=\"gpurastertemporalresample-parameters\">\x3Ccode>GPURasterTemporalResample\x3C/code> parameters\x3C/h3>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPURasterTemporalResampleParameterValues(settings)\x3C/code>, writes \x3Ccode>GPU_RASTER_TEMPORAL_RESAMPLE_PARAMETER_LENGTH\x3C/code> (3) \x3Ccode>float32\x3C/code> values.\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPURasterTemporalResampleParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>gridStart\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>-\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>gridStep\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>-\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>maximumGap\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Largest allowed span between the bracketing observations; defaults to no limit.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>\n\x3Ch2 id=\"compositing-and-phenology\">Compositing and phenology\x3C/h2>\n\x3Cp>Per-cell compositing across the slices of a stack, and phenology metrics on a smoothed curve. The multivariate\ncontributors use the layout \x3Ccode>(cell * sliceCount + slice) * bandCount + band\x3C/code> and treat an observation with any\nnon-finite band as missing as a whole; \x3Ccode>mask\x3C/code> is per observation (\x3Ccode>cell * sliceCount + slice\x3C/code>) and zero\nrejects it. A cell without a valid observation publishes NaN and \x3Ccode>0xffffffff\x3C/code> as its slice.\x3C/p>\n\x3Cp>Reference: hdmedians (Apache-2.0) defines \x3Ccode>nanmedoid\x3C/code> and the geometric median. hdmedians is not installed\nhere, so the fixture \x3Ccode>test/oracles/fixtures/rts05-compositing-numpy.json\x3C/code> comes from binary64 NumPy\nimplementations of those definitions (\x3Ccode>test/oracles/rts05-compositing-numpy.py\x3C/code>); the geometric median is\nalso checked against the true minimiser found by SciPy. TIMESAT parity and double-logistic fits are out of\nscope: the latter are ill-conditioned in float32.\x3C/p>\n\x3Ch3 id=\"gpurastermedoidcomposite\">\x3Ccode>GPURasterMedoidComposite\x3C/code>\x3C/h3>\n\x3Cp>The valid observation with the smallest sum of Euclidean distances (over all bands) to the other valid\nobservations. The result is a real acquisition, so \x3Ccode>output.sliceIndex\x3C/code> is the provenance of every band. Ties go\nto the earliest slice. Work is \x3Ccode>O(slices^2 * bands)\x3C/code> per cell on one invocation, so \x3Ccode>sliceCount\x3C/code> is limited to 64\nand \x3Ccode>bandCount\x3C/code> to 16. Float32 distance sums that differ by less than rounding can pick a different slice than\nbinary64.\x3C/p>\n\x3Ch3 id=\"gpurastergeometricmediancomposite\">\x3Ccode>GPURasterGeometricMedianComposite\x3C/code>\x3C/h3>\n\x3Cp>The point minimising the sum of Euclidean distances to the valid observations over all bands together (Roberts,\nMueller and McIntyre 2017): band relationships are preserved, so an index computed after compositing equals the\nindex computed before. The result is synthetic. It runs Weiszfeld's recursion from the mean for exactly\n\x3Ccode>iterationCount\x3C/code> iterations (at most 64, no data-dependent exit), with each distance floored at\n\x3Ccode>distanceEpsilon\x3C/code>. \x3Ccode>output.lastStep\x3C/code> is the length of the last step, the convergence indicator to read when the\nobservations are few or skewed. The fixture cells agree with binary64 to within \x3Ccode>2e-5\x3C/code> and sit within \x3Ccode>1e-5\x3C/code>\nrelative of the SciPy minimum after 32 iterations.\x3C/p>\n\x3Cp>Call \x3Ccode>getGPURasterGeometricMedianCompositeOutputLayout({cellCount, bandCount, lastStep})\x3C/code> before\nallocating outputs. It returns scalar formats and element counts without allocating storage.\n\x3Ccode>lastStep\x3C/code> defaults to false: its descriptor is absent unless requested. The contributor's\nvalidation, \x3Ccode>GPURasterGeometricMedianCompositeOperation\x3C/code>, the CPU operation's graph outputs and\nthe pure CPU result's allocation all use this layout. The pure CPU function always returns\n\x3Ccode>lastStep\x3C/code>; the operation publishes it only when \x3Ccode>output.lastStep\x3C/code> names a graph value.\x3C/p>\n\x3Cp>{/* geometric-median-output-layout:start */}\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Output field\x3C/th>\n\x3Cth>Scalar format\x3C/th>\n\x3Cth>Element count\x3C/th>\n\x3Cth>Condition and meaning\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>composite\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>float32\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>cellCount * bandCount\x3C/code>\x3C/td>\n\x3Ctd>Always: \x3Ccode>cell * bandCount + band\x3C/code>; NaN when the cell has no valid observation.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>status\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>uint32\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>cellCount\x3C/code>\x3C/td>\n\x3Ctd>Always: per-cell code 0 for a composite, 1 for no valid observation.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>lastStep\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>float32\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>cellCount\x3C/code>\x3C/td>\n\x3Ctd>When \x3Ccode>lastStep: true\x3C/code>: final step length per cell; NaN when there is no valid observation.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* geometric-median-output-layout:end */}\x3C/p>\n\x3Cp>The table is checked against the public layout in the node tests. Counts and the\n\x3Ccode>cellCount * bandCount\x3C/code> product must be positive integers no greater than 4,294,967,295.\nThe layout covers both execution forms; GPU execution additionally limits each cell to 256 slices,\n16 bands and 64 iterations. The CPU twin retains the iteration budget and uint32 indexing limits,\nand allows larger slice, band and iteration counts. The GPU operation uses exact-sized packed\ngraph values; a direct contributor also accepts packed output views with spare capacity and\nnonzero byte offsets, writing only the used prefix. Chunked cell fields must follow the shared\ntime-series topology rules above. Output formats must match the table, including \x3Ccode>uint32\x3C/code> status.\x3C/p>\n\x3Cp>For example, two cells with three bands need six \x3Ccode>float32\x3C/code> composite entries and two \x3Ccode>uint32\x3C/code>\nstatus entries. Requesting \x3Ccode>lastStep: true\x3C/code> adds two \x3Ccode>float32\x3C/code> entries. Input masks and output\nbuffers remain caller-owned.\x3C/p>\n\x3Cp>{/* parameters: GPURasterGeometricMedianComposite generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch4 id=\"gpurastergeometricmediancomposite-parameters\">\x3Ccode>GPURasterGeometricMedianComposite\x3C/code> parameters\x3C/h4>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPURasterGeometricMedianCompositeParameterValues(settings?)\x3C/code>, writes \x3Ccode>GPU_RASTER_GEOMETRIC_MEDIAN_COMPOSITE_PARAMETER_LENGTH\x3C/code> (1) \x3Ccode>float32\x3C/code> values.\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPURasterGeometricMedianCompositeParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>distanceEpsilon\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Smallest distance used as a Weiszfeld weight denominator, in value units: an estimate that lands on an observation stays there instead of dividing by zero. Defaults to \x3Ccode>1e-5\x3C/code>.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>\n\x3Ch3 id=\"gpurasterbestavailablepixel\">\x3Ccode>GPURasterBestAvailablePixel\x3C/code>\x3C/h3>\n\x3Cp>Best-available-pixel scoring (Griffiths et al. 2013): \x3Ccode>score = wDay * exp(-0.5 (dDay / sigma)^2) + wYear * max(0, 1 - |year - targetYear| / maximumYearDistance) + wCloud * clamp((cloudDistance - minimum) / (maximum - minimum), 0, 1)\x3C/code>, with \x3Ccode>dDay\x3C/code> the circular distance in days to the target day of year. The cell takes\nthe highest score, the earliest slice on ties, and optionally its band values. Per-slice day of year and year come\nin \x3Ccode>sliceAttributes\x3C/code>. \x3Ccode>cloudDistance\x3C/code> is per observation, in pixels to the nearest cloud or shadow of its slice:\nrun \x3Ccode>GPUDistanceField\x3C/code> on each slice's cloud mask and pass the result (positive infinity means no cloud in\nreach; without the view the cloud score is zero).\x3C/p>\n\x3Cp>{/* parameters: GPURasterBestAvailablePixel generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch4 id=\"gpurasterbestavailablepixel-parameters\">\x3Ccode>GPURasterBestAvailablePixel\x3C/code> parameters\x3C/h4>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPURasterBestAvailablePixelParameterValues(settings)\x3C/code>, writes \x3Ccode>GPU_RASTER_BEST_AVAILABLE_PIXEL_PARAMETER_LENGTH\x3C/code> (9) \x3Ccode>float32\x3C/code> values.\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPURasterBestAvailablePixelParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>targetDayOfYear\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Target day of year in \x3Ccode>[0, 366]\x3C/code>.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>dayOfYearSigma\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Standard deviation of the Gaussian day-of-year score, in days.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>dayOfYearWeight\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Weight of the day-of-year score; Griffiths et al. 2013 example \x3Ccode>0.5\x3C/code>.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>targetYear\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Target year in the unit of the \x3Ccode>sliceAttributes\x3C/code> year column.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>maximumYearDistance\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Year distance at which the linear year score reaches zero.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>yearWeight\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Weight of the year score; example \x3Ccode>0.2\x3C/code>.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>minimumCloudDistance\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Cloud distance at or below which the cloud score is zero (pixels), example \x3Ccode>10\x3C/code>.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>maximumCloudDistance\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Cloud distance at or above which the cloud score is one (pixels), example \x3Ccode>100\x3C/code>.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>cloudWeight\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Weight of the cloud-distance score; example \x3Ccode>0.3\x3C/code>.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>\n\x3Ch3 id=\"gpurasterphenologymetrics\">\x3Ccode>GPURasterPhenologyMetrics\x3C/code>\x3C/h3>\n\x3Cp>Up to two seasons per cell from amplitude thresholds on the smoothed curve, for example \x3Ccode>output.smoothed\x3C/code> of\n\x3Ccode>GPURasterWhittakerSmoother\x3C/code> (same \x3Ccode>cell * sliceCount + slice\x3C/code> layout; pass the same \x3Ccode>dateAxis\x3C/code> and times are\ncentred fractional years, otherwise slice indices). Base is the curve minimum and amplitude the maximum minus the\nminimum. A season starts where the curve last falls below \x3Ccode>startFraction\x3C/code> of the amplitude before its peak and ends\nwhere it first falls below \x3Ccode>endFraction\x3C/code> after it, both by linear interpolation (the Copernicus MR-VPP\ndefinitions use 0.25 and 0.15). The first season is the highest sample; the second is the highest sample outside\nthe first season's span that reaches \x3Ccode>secondSeasonMinimumFraction\x3C/code>. Seasons are ordered by peak time. A crossing\nthat is not found cuts the season at the series end or at the other season and sets a bit of\n\x3Ccode>GPU_RASTER_PHENOLOGY_FLAG\x3C/code>. \x3Ccode>output.metrics\x3C/code> holds the ten fields of \x3Ccode>GPU_RASTER_PHENOLOGY_METRIC\x3C/code> per season:\nstart, end, peak time, length, peak value, base value, amplitude, left and right slope, and the integral between\nthe curve and the base from start to end. Cell status is 1 for a non-finite curve and 2 for an amplitude below\n\x3Ccode>minimumAmplitude\x3C/code>.\x3C/p>\n\x3Cp>{/* parameters: GPURasterPhenologyMetrics generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch4 id=\"gpurasterphenologymetrics-parameters\">\x3Ccode>GPURasterPhenologyMetrics\x3C/code> parameters\x3C/h4>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPURasterPhenologyMetricsParameterValues(settings)\x3C/code>, writes \x3Ccode>GPU_RASTER_PHENOLOGY_METRICS_PARAMETER_LENGTH\x3C/code> (4) \x3Ccode>float32\x3C/code> values.\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPURasterPhenologyMetricsParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>startFraction\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Fraction of the curve amplitude above the base where a season starts, in \x3Ccode>(0, 1)\x3C/code>; MR-VPP uses \x3Ccode>0.25\x3C/code>.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>endFraction\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Fraction of the curve amplitude above the base where a season ends, in \x3Ccode>(0, 1)\x3C/code>; MR-VPP uses \x3Ccode>0.15\x3C/code>.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>minimumAmplitude\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Cells whose amplitude (maximum minus minimum) is below this get status 2 and no season.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>secondSeasonMinimumFraction\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>A second season needs a peak at least this fraction of the amplitude above the base. It must be at least both start and end fractions, so the shoulders of the first season are not a second one. Defaults to the larger of the two.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>\n\x3Ch2 id=\"spi-and-spei\">SPI and SPEI\x3C/h2>\n\x3Cp>\x3Ccode>GPURasterStandardizedIndex\x3C/code> evaluates up to 16,777,216 slices per chunk, subject to device\nbindings. Calibration keeps its separate per-dispatch limit. Cell records and aligned outputs\naccept chunked input without changing the fitted calendar-slot model.\x3C/p>\n\x3Cp>\x3Ccode>GPURasterStandardizedIndexCalibration\x3C/code> streams calibration chunks (for example 30 years of months) into\nper-slot statistics, with zeros and non-positive values excluded from the fit and counted, and writes a fit\nper calendar slot. \x3Ccode>GPURasterStandardizedIndex\x3C/code> then evaluates any chunk against that fit. Pass the rolling\nmean output for aggregations such as SPI-3. Both match xclim's \x3Ccode>method='APP'\x3C/code> (Thom's gamma estimator for\n\x3Ccode>gamma\x3C/code> with \x3Ccode>floc\x3C/code>, the method-of-moments estimator for \x3Ccode>fisk\x3C/code> with \x3Ccode>floc\x3C/code>) and xclim's defaults for zero\ninflation (\x3Ccode>prob_zero_interpolation='upper'\x3C/code>, \x3Ccode>plotting_position_zero='ecdf'\x3C/code>). \x3Ccode>location\x3C/code> is the fixed\n\x3Ccode>floc\x3C/code> used for water-balance series that may be negative.\x3C/p>\n\x3Cp>Reference: xclim 1.0.0, Apache-2.0, run for \x3Ccode>test/oracles/fixtures/rts06-climate-indices-xclim.json\x3C/code> (numba and\ndask imports stubbed; see the fixture). SPI-1, SPI-3 and SPEI agree with xclim to within 0.01 over 420 months in\nfloat32.\x3C/p>\n\x3Cp>float32 limits and what the code does about them:\x3C/p>\n\x3Cul>\n\x3Cli>\x3Cstrong>APP, not iterative ML.\x3C/strong> Newton iterations on the shape are noisy in float32; APP is closed form. Only\nsums over the slot enter it.\x3C/li>\n\x3Cli>\x3Cstrong>Fit sums are fixed-point, not float32.\x3C/strong> The gamma estimator is driven by \x3Ccode>ln(mean) - mean(ln x)\x3C/code>, a\ndifference of nearly equal numbers. The sums of \x3Ccode>x\x3C/code>, \x3Ccode>ln x\x3C/code> and squared deviations are exact 96-bit integers,\nso the only float32 rounding is the final conversion to a mean.\x3C/li>\n\x3Cli>\x3Cstrong>Tails are computed directly.\x3C/strong> The gamma CDF and quantile near 1 cannot be represented as \x3Ccode>1 - p\x3C/code> in\nfloat32, so whichever tail is small is computed directly (series below, continued fraction above) and the\nquantile is taken of that tail. Results stay accurate on both sides.\x3C/li>\n\x3Cli>\x3Cstrong>Clipped to \x3Ccode>+-8.21\x3C/code>\x3C/strong>, xclim's bound. Tails flush to zero near \x3Ccode>1e-38\x3C/code> in float32, well beyond that.\x3C/li>\n\x3Cli>\x3Cstrong>The fit needs at least two positive values per slot\x3C/strong>; a slot without a usable fit marks every output NaN\nwith status 2.\x3C/li>\n\x3C/ul>\n\x3Cp>{/* parameters: GPURasterStandardizedIndex generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch3 id=\"gpurasterstandardizedindex-parameters\">\x3Ccode>GPURasterStandardizedIndex\x3C/code> parameters\x3C/h3>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPURasterStandardizedIndexParameterValues(settings, chunkSliceCount)\x3C/code>, writes \x3Ccode>GPU_RASTER_STANDARDIZED_INDEX_PARAMETER_LENGTH\x3C/code> (2) \x3Ccode>float32\x3C/code> values.\n\x3Cul>\n\x3Cli>\x3Ccode>chunkSliceCount\x3C/code> (\x3Ccode>number\x3C/code>)\x3C/li>\n\x3C/ul>\n\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPURasterStandardizedIndexParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>activeSliceCount\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>-\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>location\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>-\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>\n\x3Cp>{/* parameters: GPURasterStandardizedIndexCalibration generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch3 id=\"gpurasterstandardizedindexcalibration-parameters\">\x3Ccode>GPURasterStandardizedIndexCalibration\x3C/code> parameters\x3C/h3>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPURasterStandardizedIndexCalibrationParameterValues(settings, chunkSliceCount)\x3C/code>, writes \x3Ccode>GPU_RASTER_STANDARDIZED_CALIBRATION_PARAMETER_LENGTH\x3C/code> (7) \x3Ccode>float32\x3C/code> values.\n\x3Cul>\n\x3Cli>\x3Ccode>chunkSliceCount\x3C/code> (\x3Ccode>number\x3C/code>)\x3C/li>\n\x3C/ul>\n\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPURasterStandardizedIndexCalibrationParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>reset\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>boolean\x3C/code>\x3C/td>\n\x3Ctd>-\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>activeSliceCount\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>-\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>location\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>-\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>maximumValueMagnitude\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>-\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>maximumStreamSliceCount\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>-\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>\n\x3Ch2 id=\"gpurasterclimaterunaccumulator\">\x3Ccode>GPURasterClimateRunAccumulator\x3C/code>\x3C/h2>\n\x3Cp>Streaming spell lengths, exceedance counts and degree days per cell against a threshold. The condition\n(\x3Ccode>above\x3C/code>, \x3Ccode>at-or-above\x3C/code>, \x3Ccode>below\x3C/code>, \x3Ccode>at-or-below\x3C/code>) is fixed at construction and matches xclim's comparison\noperators; spell length, wet/dry spell and degree-day definitions match xclim 1.0.0 for reset-per-year chunks.\nA missing sample breaks the run and is counted. \x3Ccode>minimumSpellLength\x3C/code> counts spells when they reach the length.\x3C/p>\n\x3Cp>{/* parameters: GPURasterClimateRunAccumulator generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch3 id=\"gpurasterclimaterunaccumulator-parameters\">\x3Ccode>GPURasterClimateRunAccumulator\x3C/code> parameters\x3C/h3>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPURasterClimateRunAccumulatorParameterValues(settings, chunkSliceCount)\x3C/code>, writes \x3Ccode>GPU_RASTER_CLIMATE_RUN_ACCUMULATOR_PARAMETER_LENGTH\x3C/code> (4) \x3Ccode>float32\x3C/code> values.\n\x3Cul>\n\x3Cli>\x3Ccode>chunkSliceCount\x3C/code> (\x3Ccode>number\x3C/code>)\x3C/li>\n\x3C/ul>\n\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPURasterClimateRunAccumulatorParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>reset\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>boolean\x3C/code>\x3C/td>\n\x3Ctd>-\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>activeSliceCount\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>-\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>threshold\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>-\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>maximumIncrement\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>-\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>maximumStreamSliceCount\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>-\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>\n\x3Ch2 id=\"gpurasterclimateanomaly\">\x3Ccode>GPURasterClimateAnomaly\x3C/code>\x3C/h2>\n\x3Cp>Reads a \x3Ccode>GPURasterStreamingAccumulator\x3C/code>'s state: per-slot mean and sample standard deviation, and the anomaly\n(or z-score) of a chunk against them.\x3C/p>\n\x3Cp>{/* parameters: GPURasterClimateAnomaly generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}\x3C/p>\n\x3Ch3 id=\"gpurasterclimateanomaly-parameters\">\x3Ccode>GPURasterClimateAnomaly\x3C/code> parameters\x3C/h3>\n\x3Cul>\n\x3Cli>Packer: \x3Ccode>getGPURasterStreamingAccumulatorParameterValues(settings, chunkSliceCount)\x3C/code>, writes \x3Ccode>GPU_RASTER_STREAMING_ACCUMULATOR_PARAMETER_LENGTH\x3C/code> (5) \x3Ccode>float32\x3C/code> values.\n\x3Cul>\n\x3Cli>Input port: \x3Ccode>accumulatorParameters\x3C/code>.\x3C/li>\n\x3Cli>\x3Ccode>chunkSliceCount\x3C/code> (\x3Ccode>number\x3C/code>)\x3C/li>\n\x3C/ul>\n\x3C/li>\n\x3C/ul>\n\x3Cp>Settings of \x3Ccode>getGPURasterStreamingAccumulatorParameterValues\x3C/code>:\x3C/p>\n\x3Ctable>\n\x3Cthead>\n\x3Ctr>\n\x3Cth>Field\x3C/th>\n\x3Cth>Type\x3C/th>\n\x3Cth>Description\x3C/th>\n\x3C/tr>\n\x3C/thead>\n\x3Ctbody>\n\x3Ctr>\n\x3Ctd>\x3Ccode>reset\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>boolean\x3C/code>\x3C/td>\n\x3Ctd>True on the first chunk of a stream, which clears the state first.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>activeSliceCount\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Slices of this chunk that hold data; defaults to the whole chunk.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>maximumValueMagnitude\x3C/code>\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Largest absolute sample the stream can hold. It sets the fixed-point unit of the sums: declare it tightly, because a sample above it is treated as missing, and the unit is about \x3Ccode>maximumValueMagnitude * 2^-70\x3C/code> at the default stream length.\x3C/td>\n\x3C/tr>\n\x3Ctr>\n\x3Ctd>\x3Ccode>maximumStreamSliceCount\x3C/code> (optional)\x3C/td>\n\x3Ctd>\x3Ccode>number\x3C/code>\x3C/td>\n\x3Ctd>Longest stream in slices, for the fixed-point headroom. Defaults to 2^24.\x3C/td>\n\x3C/tr>\n\x3C/tbody>\n\x3C/table>\n\x3Cp>{/* /parameters */}\x3C/p>"},ssr:!0}]})($R["tsr"])</script><script data-tsr-stream-part="">$_TSR.e();{let s=document.currentScript,p;while((p=s.previousElementSibling)&&p.hasAttribute('data-tsr-stream-part'))p.remove();s.remove()}</script><script type="module" async="" src="/luma-contributors/assets/index-DIfTuwM1.js"></script><script>document.currentScript.remove();/*$tsr-stream-boundary*/</script></body></html>

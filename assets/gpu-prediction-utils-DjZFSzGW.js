@@ -1,0 +1,3 @@
+import{E as e,y as t}from"./gpu-contributor-utils-BIwLQON5.js";function n(n,r,i){for(let t of[...r,...i])e(t,[t.format],n);if(t(n,i,r),new Set(i.map(e=>e.buffer)).size!==i.length)throw Error(`${n} outputs must have distinct buffers`)}function r(e,t=[]){return Object.entries(e).map(([e,t])=>`fn read_${e}(row: u32) -> vec${t}<f32> { return vec${t}<f32>(${Array.from({length:t},(n,r)=>`${e}[${e}Offset + row * ${t}u + ${r}u]`).join(`, `)}); }`).join(`
+`)+t.map(e=>`fn write_${e}(row: u32, value: vec4<f32>) { ${Array.from({length:4},(t,n)=>`${e}[${e}Offset + row * 4u + ${n}u] = value[${n}u];`).join(` `)} }`).join(`
+`)}export{n,r as t};

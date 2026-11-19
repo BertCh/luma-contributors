@@ -1,0 +1,1 @@
+import{o as e}from"./wgsl-kernel-nodes-DagJklH2.js";var t=256;function n(n,r){let i=r.workgroupSize??t;return e(n,{...r,body:r.guardIndex===!1?`if (workgroupIndex >= (INVOCATION_COUNT - 1u) / ${i}u + 1u) { return; }\n${r.body}`:r.body})}export{n as t};

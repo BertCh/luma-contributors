@@ -1,0 +1,1 @@
+import{n as e}from"./triangulation-Nv4HznK-.js";import{Po as t}from"./entry-preview-D70TdSbK.js";var n=e({parameters:t,constrained:!1,caption:`Concave polygons (with holes) triangulated on the GPU; fill is the output triangles.`});export{n as default};
