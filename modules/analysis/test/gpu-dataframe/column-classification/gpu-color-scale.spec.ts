@@ -687,6 +687,7 @@ it('GPUColorScale writes subsets of outputs and is bitwise reproducible', async 
     {colors: true, classIndices: true, classCounts: true}
   ];
   let reference: FrameResult | undefined;
+  const subsetResults: {outputs: (typeof outputSets)[number]; result: FrameResult}[] = [];
   for (const outputs of outputSets) {
     const config: FixtureConfig = {
       values,
@@ -703,9 +704,24 @@ it('GPUColorScale writes subsets of outputs and is bitwise reproducible', async 
     if (outputs.colors && outputs.classIndices && outputs.classCounts) {
       reference = first;
     }
+    subsetResults.push({outputs, result: first});
     fixture.destroy();
   }
   expect(reference).toBeDefined();
+  // Each requested output of a subset equals the same output of the run that requests all three.
+  for (const {outputs, result} of subsetResults) {
+    const label = JSON.stringify(outputs);
+    if (outputs.colors) {
+      expect(Array.from(result.colors), label).toEqual(Array.from(reference!.colors));
+    }
+    if (outputs.classIndices) {
+      expect(Array.from(result.classIndices), label).toEqual(Array.from(reference!.classIndices));
+    }
+    if (outputs.classCounts) {
+      expect(Array.from(result.classCounts), label).toEqual(Array.from(reference!.classCounts));
+    }
+  }
+  expect(Array.from(reference!.classCounts).reduce((sum, count) => sum + count, 0)).toBe(2000);
   const full = createFixture(device, {
     values,
     maximumDomainCount: 4,

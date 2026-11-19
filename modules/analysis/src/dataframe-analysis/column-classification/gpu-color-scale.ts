@@ -386,8 +386,10 @@ ${COLOR_SCALE_WGSL}`;
             variant: 'colorize',
             bindings: [
               read('classes', classes, 'u32'),
-              read('positions', positions, 'f32'),
-              read('palette', props.palette, 'u32'),
+              // The counts-only body reads neither the ramp positions nor the palette; an unused declared binding breaks the inferred layout.
+              ...(output.colors
+                ? [read('positions', positions, 'f32'), read('palette', props.palette, 'u32')]
+                : []),
               read('params', props.parameters, 'f32'),
               ...(output.colors
                 ? [

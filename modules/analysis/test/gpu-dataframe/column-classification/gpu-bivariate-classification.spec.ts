@@ -64,7 +64,7 @@ type Fixture = {
   destroy(): void;
 };
 
-function createFixture(device: Device, scene: Scene): Fixture {
+function createFixture(device: Device, scene: Scene, includeColors = true): Fixture {
   const rows = scene.valuesX.length;
   const maximum = scene.maximumClassCount;
   const graph = new GPUCommandGraph(device, {id: 'bivariate-graph'});
@@ -128,7 +128,9 @@ function createFixture(device: Device, scene: Scene): Fixture {
       maximumClassCount: maximum,
       output: {
         classIds: importGraphBuffer(graph, 'o-ids', outputs.classIds, 'uint32', rows),
-        colors: importGraphBuffer(graph, 'o-colors', outputs.colors, 'uint32', rows),
+        colors: includeColors
+          ? importGraphBuffer(graph, 'o-colors', outputs.colors, 'uint32', rows)
+          : undefined,
         classCounts: importGraphBuffer(
           graph,
           'o-counts',
@@ -156,7 +158,9 @@ function createFixture(device: Device, scene: Scene): Fixture {
       submitGraph(device, compiled, undefined);
       return {
         classIds: Uint32Array.from(await readUint32(outputs.classIds, rows)),
-        colors: Uint32Array.from(await readUint32(outputs.colors, rows)),
+        colors: includeColors
+          ? Uint32Array.from(await readUint32(outputs.colors, rows))
+          : new Uint32Array(0),
         classCounts: Uint32Array.from(await readUint32(outputs.classCounts, maximum * maximum))
       };
     },
@@ -390,4 +394,27 @@ it('GPUBivariateClassification is bitwise reproducible', async () => {
   expect(Array.from(second.classIds)).toEqual(Array.from(first.classIds));
   expect(Array.from(second.classCounts)).toEqual(Array.from(first.classCounts));
   fixture.destroy();
+});
+
+it('GPUBivariateClassification without a colors output writes the same class ids and counts', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const scene = createScene(23, 4000, 4);
+  const frame: Frame = {
+    breaksX: [-Infinity, 0, 6, 12, Infinity],
+    breaksY: [-5, 4, 8, 16, 30],
+    palette: createGridPalette(4),
+    options: {classCountX: 4, classCountY: 4, noDataColor: NO_DATA}
+  };
+  const full = createFixture(device, scene);
+  const expected = await full.run(frame);
+  full.destroy();
+  const countsOnly = createFixture(device, scene, false);
+  const actual = await countsOnly.run(frame);
+  countsOnly.destroy();
+  expect(Array.from(expected.classCounts).reduce((sum, count) => sum + count, 0)).toBeGreaterThan(
+    0
+  );
+  expect(Array.from(actual.classIds)).toEqual(Array.from(expected.classIds));
+  expect(Array.from(actual.classCounts)).toEqual(Array.from(expected.classCounts));
 });

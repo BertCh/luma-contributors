@@ -366,8 +366,10 @@ fn getAxisClass(valueKey: u32, classCount: u32, isX: bool) -> u32 {
             variant: 'colorize',
             bindings: [
               read('classes', classes, 'u32'),
-              read('palette', props.palette, 'u32'),
-              read('params', props.parameters, 'f32'),
+              // The counts-only body reads neither the palette nor the parameters; an unused declared binding breaks the inferred layout.
+              ...(output.colors
+                ? [read('palette', props.palette, 'u32'), read('params', props.parameters, 'f32')]
+                : []),
               ...(props.alphaValues && output.colors
                 ? [read('alphaValues', props.alphaValues, 'f32')]
                 : []),
