@@ -14,14 +14,19 @@ const repositoryRoot = path.resolve(here, '../../../../../..');
 const baselinePath = path.join(repositoryRoot, 'scripts/contributor-contract-baseline.json');
 const sourceRoot = path.join(repositoryRoot, 'modules/analysis/src/analysis-core');
 
-type BaselineValue = number | string[];
+type BaselineValue = number | unknown[];
 const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf8')) as Record<
   string,
-  Record<string, BaselineValue>
+  number | Record<string, BaselineValue>
 >;
 
-// A rule's findings: a count per file, or a list of symbols per file.
-const rules = Object.entries(baseline).map(([id, files]) => ({
+// A rule's findings: a count per file, or a list of entries per file. Keys that start with an
+// underscore, such as `_version`, describe the baseline file and are not rules.
+const ruleEntries = Object.entries(baseline).filter(
+  (entry): entry is [string, Record<string, BaselineValue>] =>
+    !entry[0].startsWith('_') && typeof entry[1] === 'object'
+);
+const rules = ruleEntries.map(([id, files]) => ({
   id,
   files: Object.keys(files).length,
   findings: Object.values(files).reduce<number>(

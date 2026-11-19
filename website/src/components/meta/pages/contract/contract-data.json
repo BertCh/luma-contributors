@@ -1,9 +1,14 @@
 {
  "rules": [
   {
+   "id": "internal-export",
+   "files": 2,
+   "findings": 3
+  },
+  {
    "id": "multiple-classes",
-   "files": 9,
-   "findings": 21
+   "files": 7,
+   "findings": 15
   },
   {
    "id": "root-file",
@@ -12,11 +17,11 @@
   },
   {
    "id": "single-invocation-data-loop",
-   "files": 34,
-   "findings": 46
+   "files": 88,
+   "findings": 127
   }
  ],
- "totalFindings": 88,
+ "totalFindings": 166,
  "ports": [
   {
    "name": "candidateOverflow",
@@ -90,7 +95,7 @@
   },
   {
    "name": "requiredCount",
-   "doc": "Exact unclamped requirement. Omit when the operation cannot compute it exactly.",
+   "doc": "Unclamped requirement at the producer's final stage, before final-output truncation. A lower bound on the full requirement when candidates were lost; scan totals saturate at `0xffffffff`. Exact only when neither candidate loss nor saturation occurred.",
    "group": "GPUCardinalityPort"
   },
   {

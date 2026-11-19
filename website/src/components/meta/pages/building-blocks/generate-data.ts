@@ -52,10 +52,10 @@ const REDUCTION_LEAF_COUNT = 16;
 const timeWindowRecord = readRecord('gpu-dataframe.time-window-filter');
 const timestamps = getCapture(timeWindowRecord, 'timestamps');
 const outputMask = getCapture(timeWindowRecord, 'outputMask');
-const ids = getCapture(timeWindowRecord, 'ids');
+const packedRows = getCapture(timeWindowRecord, 'rows');
 const [keptCount] = getCapture(timeWindowRecord, 'count');
 const slotByRow = new Map<number, number>();
-for (let slot = 0; slot < keptCount; slot++) slotByRow.set(ids[slot], slot);
+for (let slot = 0; slot < keptCount; slot++) slotByRow.set(packedRows[slot], slot);
 
 const toyRows = Array.from({length: TOY_ROW_COUNT}, (_, index) => {
   const row = index * TOY_ROW_STRIDE;
@@ -63,7 +63,7 @@ const toyRows = Array.from({length: TOY_ROW_COUNT}, (_, index) => {
     row,
     timestamp: timestamps[row],
     flag: outputMask[row] ? 1 : 0,
-    // Slot of this row in the recorded, packed `ids` output; -1 when the row was not kept.
+    // Slot of this row in the recorded, packed `rows` output; -1 when the row was not kept.
     recordedSlot: slotByRow.get(row) ?? -1
   };
 });
