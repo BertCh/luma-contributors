@@ -1,45 +1,49 @@
 {
   "lumaVersion": "10.0.0-alpha.16",
   "entryPoints": 11,
-  "sourceFileCount": 1772,
-  "contributorClassCount": 499,
-  "importStatementCount": 1658,
+  "sourceFileCount": 2096,
+  "contributorClassCount": 500,
+  "importStatementCount": 1802,
   "imports": [
     {
       "specifier": "@luma.gl/graph/gpu-core",
-      "count": 1268
+      "count": 1379
     },
     {
       "specifier": "@luma.gl/graph/gpu-raster",
-      "count": 159
+      "count": 168
     },
     {
       "specifier": "@luma.gl/core",
-      "count": 127
+      "count": 144
     },
     {
       "specifier": "@luma.gl/graph",
-      "count": 41
+      "count": 37
     },
     {
       "specifier": "@luma.gl/shaders",
-      "count": 23
+      "count": 30
+    },
+    {
+      "specifier": "@luma.gl/graph/gpu-data",
+      "count": 14
     },
     {
       "specifier": "@luma.gl/graph/geospatial",
       "count": 12
     },
     {
-      "specifier": "@luma.gl/graph/gpu-data",
-      "count": 12
-    },
-    {
       "specifier": "@luma.gl/graph/gpu-project",
-      "count": 9
+      "count": 10
     },
     {
       "specifier": "@luma.gl/graph/gpu-vector-search",
       "count": 3
+    },
+    {
+      "specifier": "@luma.gl/graph/arrow",
+      "count": 2
     },
     {
       "specifier": "@luma.gl/core/dynamic",
@@ -50,19 +54,15 @@
       "count": 1
     },
     {
-      "specifier": "@luma.gl/graph/arrow",
-      "count": 1
-    },
-    {
       "specifier": "@luma.gl/shaders/wgsl",
       "count": 1
     }
   ],
   "workarounds": {
-    "dropped": 9,
-    "workaround": 36,
-    "accepted regression": 8,
-    "obsolete": 1,
+    "dropped": 4,
+    "workaround": 35,
+    "accepted regression": 6,
+    "obsolete": 0,
     "unmeasured": 1
   }
 }

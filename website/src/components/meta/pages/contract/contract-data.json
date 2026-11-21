@@ -17,11 +17,11 @@
   },
   {
    "id": "single-invocation-data-loop",
-   "files": 88,
-   "findings": 127
+   "files": 47,
+   "findings": 65
   }
  ],
- "totalFindings": 166,
+ "totalFindings": 104,
  "ports": [
   {
    "name": "candidateOverflow",
@@ -32,6 +32,16 @@
    "name": "uncertainCount",
    "doc": "Exact number of classifications resolved through the documented uncertainty fallback.",
    "group": "GPUUncertaintyStatusPort"
+  },
+  {
+   "name": "unresolvedCount",
+   "doc": "Number of classifications or work items still unresolved after the stage's available work.",
+   "group": "GPUUncertaintyStatusPort"
+  },
+  {
+   "name": "complete",
+   "doc": "One when the entire promised result is present, accounting for all supplied loss evidence; zero otherwise. In `GPURecipeStageStatusPort.status`, certifies only the stage named by `stage`, not the aggregate recipe. The producer documents the exact result being certified. Omission provides no certificate and must not be interpreted as completeness.",
+   "group": "GPUCompletenessStatusPort"
   },
   {
    "name": "antimeridianUncertainCount",
@@ -87,6 +97,11 @@
    "name": "requiredRingCount",
    "doc": "Unclamped number of rings the result needs.",
    "group": "GPURingCountStatusPort"
+  },
+  {
+   "name": "code",
+   "doc": "Optional one-row result code of a stage whose contributor reports a code rather than row counts (for example a solver's `status.code`): 0 on success, otherwise the contributor's documented failure code. Test it against 0; it is not a count and must not be summed.",
+   "group": "GPURecipeStageStatusPort"
   },
   {
    "name": "count",
