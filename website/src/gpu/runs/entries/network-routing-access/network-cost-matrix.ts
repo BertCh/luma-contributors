@@ -47,7 +47,16 @@ export default defineOperationRun({
       })
     );
     return {
-      outputs: {matrix},
+      // A uniform underlay: unreached pairs are not drawn by the cost raster, so they show this muted
+      // color instead of the background, which looked like cost 0 at the dark end of the ramp.
+      outputs: {
+        matrix,
+        unreached: builder.upload(
+          'unreached',
+          'float32',
+          new Float32Array(originCount * destinationCount)
+        )
+      },
       update: current => {
         network.fillWeights(inputs.costs, current.congestion);
         weights.write(inputs.costs);
@@ -99,6 +108,16 @@ export default defineOperationRun({
     }
   },
   draw: ({outputs, values, theme}) => [
+    {
+      layer: 'raster',
+      context: true,
+      values: outputs.unreached,
+      columns: Math.round(values.targetNodes),
+      rows: Math.round(values.startNodes),
+      ramp: 'categorical',
+      categories: [theme.muted],
+      range: [0, 1]
+    },
     {
       layer: 'raster',
       values: outputs.matrix,

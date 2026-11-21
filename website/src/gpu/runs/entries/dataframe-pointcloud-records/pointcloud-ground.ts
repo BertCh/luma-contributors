@@ -21,8 +21,12 @@ import {
   getHeightMaximum
 } from './_lib/helpers';
 import {parameters} from './pointcloud-ground.parameters';
-import {summarizePointCloudGround} from './_lib/pointcloud-display';
-import {addPointCloudDisplayCopy} from './_lib/pointcloud-display-run';
+import {summarizePointCloudGroundClasses} from './_lib/pointcloud-display';
+import {
+  addGroundClasses,
+  addPointCloudDisplayCopy,
+  groundClassLook
+} from './_lib/pointcloud-display-run';
 
 const POINT_COUNT = 9000;
 const CELL_SIZE = 0.03;
@@ -33,6 +37,9 @@ const THRESHOLDS = [0.005, 0.02, 0.08, 0.2, 0.6] as const;
 const SLOPE = 0.1;
 const MAXIMUM_THRESHOLD = 0.8;
 const RADII = [1, 2, 4, 8] as const;
+// Status bit 1 (GPU_POINT_CLOUD_GROUND_STATUS_UNSUPPORTED): the point was not classified. Bit 2
+// (INCOMPLETE_WINDOW) only marks a classification as provisional, so those points stay visible.
+const UNSUPPORTED_BIT = 1;
 
 function createInputs({
   random,
@@ -53,14 +60,21 @@ function createInputs({
 }
 type Inputs = ReturnType<typeof createInputs>;
 type Outputs = Record<
-  'map' | 'profile' | 'displayMap' | 'displayProfile' | 'heights' | 'groundMask' | 'status',
+  | 'map'
+  | 'profile'
+  | 'displayMap'
+  | 'displayProfile'
+  | 'heights'
+  | 'groundMask'
+  | 'groundClasses'
+  | 'status',
   RunBuffer
 >;
 
 export default defineOperationRun<Inputs, Outputs>({
   parameters,
   caption:
-    'Points colored by height (left of the curtain) and by the ground mask the morphological filter wrote (right: ground orange, removed blue); the squares are its window sizes. In this lidar tile ground and trees are far apart in height, so only initialThreshold above about 0.2 moves the classification; the window count changes few points. slope (0.1) and maximumThreshold (0.8) are fixed.',
+    'Points colored by height (left of the curtain) and by the class the morphological filter wrote (right: ground orange, removed blue, faded where the window reached past cells with no points, so the classification is provisional); the squares are its window sizes. In this lidar tile ground and trees are far apart in height, so only initialThreshold above about 0.2 moves the classification; the window count changes few points. slope (0.1) and maximumThreshold (0.8) are fixed.',
 
   buildCache: 5,
   createInputs,
@@ -112,7 +126,8 @@ export default defineOperationRun<Inputs, Outputs>({
         map,
         profile,
         displayMap: addPointCloudDisplayCopy(builder, 'supported-map', map, status, POINT_COUNT, {
-          components: 2
+          components: 2,
+          invalidBits: UNSUPPORTED_BIT
         }),
         displayProfile: addPointCloudDisplayCopy(
           builder,
@@ -120,10 +135,11 @@ export default defineOperationRun<Inputs, Outputs>({
           profile,
           status,
           POINT_COUNT,
-          {components: 2}
+          {components: 2, invalidBits: UNSUPPORTED_BIT}
         ),
         heights: builder.upload('heights', 'float32', inputs.heights),
         groundMask,
+        groundClasses: addGroundClasses(builder, groundMask, status, POINT_COUNT, UNSUPPORTED_BIT),
         status
       }
     };
@@ -140,7 +156,7 @@ export default defineOperationRun<Inputs, Outputs>({
       const level = Math.floor(fraction * THRESHOLDS.length);
       const mask = peek(outputs.groundMask);
       const status = peek(outputs.status);
-      const summary = summarizePointCloudGround(mask, status);
+      const summary = summarizePointCloudGroundClasses(mask, status, UNSUPPORTED_BIT);
       const glyphs: RunGlyph[] = [{shape: 'curtain', x: pointer.x}];
       for (const radius of RADII.slice(0, values.radiusCount)) {
         const half = radius * CELL_SIZE * inputs.layout.scale;
@@ -156,13 +172,16 @@ export default defineOperationRun<Inputs, Outputs>({
         settle: {initialThreshold: THRESHOLDS[level]},
 
         glyphs,
-        readout: `initialThreshold ${THRESHOLDS[level]} · ground ${status ? summary.ground : '…'} of ${summary.supported} supported · ${summary.incomplete} incomplete/unsupported (hidden)`
+        readout: `initialThreshold ${THRESHOLDS[level]} · ground ${status ? summary.ground : '…'} · removed ${summary.removed} · provisional ${summary.provisionalGround + summary.provisionalRemoved} (incomplete window, faded) · ${summary.unclassified} unclassified (hidden)`
       };
     }
   },
-  draw: ({inputs, outputs, interaction, world}) => {
+  draw: ({inputs, outputs, interaction, world, theme}) => {
     const curtain = interaction.curtain ?? world.width / 2;
-    const height = {values: outputs.heights, range: [0, inputs.layout.heightMaximum]} as const;
+    // The ramp starts below zero so ground returns land on a visible purple, not the near-black
+    // bottom of the ramp that disappears on the dark theme.
+    const heightMaximum = inputs.layout.heightMaximum;
+    const height = {values: outputs.heights, range: [-0.5 * heightMaximum, heightMaximum]} as const;
     return [
       {
         layer: 'dots',
@@ -181,14 +200,16 @@ export default defineOperationRun<Inputs, Outputs>({
       {
         layer: 'dots',
         positions: outputs.displayMap,
-        values: outputs.groundMask,
+        values: outputs.groundClasses,
+        ...groundClassLook(theme),
         radius: 2.4,
         clip: {side: 'right', x: curtain}
       },
       {
         layer: 'dots',
         positions: outputs.displayProfile,
-        values: outputs.groundMask,
+        values: outputs.groundClasses,
+        ...groundClassLook(theme),
         radius: 2,
         clip: {side: 'right', x: curtain}
       }

@@ -279,12 +279,15 @@ fn readValue(index: u32) -> f32 {
 }
 `;
 
-// Unsigned labels: wrapped into 16 categories; 0xffffffff (noise or unreached) reads as invalid.
+// Unsigned values: labels on the categorical ramp (mode 2) wrap into its 16 colors; on any other
+// ramp the value is used as is (counts, ranks), so it spans the layer's range. 0xffffffff (noise or
+// unreached) reads as invalid. Every shader that reads values declares `look` (PALETTE_STRUCT).
 const UINT_VALUES = (binding: number) => /* wgsl */ `
 @group(0) @binding(${binding}) var<storage, read> values: array<u32>;
 fn readValue(index: u32) -> f32 {
   let raw = values[index];
-  return select(f32(raw % 16u), 1.0e30, raw == 0xffffffffu);
+  let categorical = look.mode > 1.5 && look.mode < 2.5;
+  return select(select(f32(raw), f32(raw % 16u), categorical), 1.0e30, raw == 0xffffffffu);
 }
 `;
 

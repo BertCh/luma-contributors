@@ -134,6 +134,9 @@ export default defineOperationRun<Inputs, Outputs>({
         },
         parameters: parameterBuffer.view,
         candidateCount: 8,
+        // The default 64-node route search drops nodes on some hops of this network, which marks
+        // every picture with 48 or more tracks as incomplete; 128 keeps the default settings complete.
+        routeNodeBudget: 128,
         cellSize: 0.06,
         bounds: {minimum: [-0.2, -0.2], maximum: [inputs.world.width + 0.2, 1.2]},
         traversedEdgeCapacity: TRAVERSED_EDGE_CAPACITY,

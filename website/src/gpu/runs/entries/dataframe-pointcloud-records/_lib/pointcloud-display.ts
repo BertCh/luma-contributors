@@ -92,6 +92,70 @@ export function summarizePointCloudGround(
   return {ground, supported, incomplete};
 }
 
+/**
+ * Ground filter classes for display: 0 removed, 1 ground (complete support), 2 provisionally
+ * removed, 3 provisionally ground (a status bit outside `unclassifiedBits` is set, so the
+ * classification is less certain), NaN when a bit of `unclassifiedBits` says the row was not
+ * classified. Provisional rows never enter the ground count, as in the showcase lidar scene.
+ */
+export const POINT_CLOUD_GROUND_CLASS_LABELS = [
+  'removed',
+  'ground',
+  'provisionally removed',
+  'provisionally ground'
+] as const;
+
+export function summarizePointCloudGroundClasses(
+  mask: ArrayLike<number> | null | undefined,
+  status: ArrayLike<number> | null | undefined,
+  unclassifiedBits: number
+) {
+  const counts = {
+    ground: 0,
+    removed: 0,
+    provisionalGround: 0,
+    provisionalRemoved: 0,
+    unclassified: 0
+  };
+  for (let row = 0; mask && status && row < mask.length; row++) {
+    if ((status[row] & unclassifiedBits) !== 0) counts.unclassified++;
+    else if (status[row] !== 0) {
+      if (mask[row] !== 0) counts.provisionalGround++;
+      else counts.provisionalRemoved++;
+    } else if (mask[row] !== 0) counts.ground++;
+    else counts.removed++;
+  }
+  return counts;
+}
+
+export function createPointCloudGroundClassNode(
+  graph: GPUCommandGraph,
+  props: {
+    id: string;
+    mask: GraphDataView;
+    status: GraphDataView;
+    output: GraphDataView;
+    unclassifiedBits: number;
+  }
+) {
+  return createWGSLKernelNode(graph, {
+    id: props.id,
+    operation: 'PointCloudGroundClass',
+    invocationCount: props.output.length,
+    bindings: [
+      {name: 'mask', view: props.mask, type: 'u32', access: 'read'},
+      {name: 'status', view: props.status, type: 'u32', access: 'read'},
+      {name: 'classes', view: props.output, type: 'f32', access: 'read_write'}
+    ],
+    body: `let code = status[statusOffset + index];
+var value = bitcast<f32>(0x7fc00000u | (index & 0u));
+if ((code & ${props.unclassifiedBits}u) == 0u) {
+  value = f32(select(0u, 1u, mask[maskOffset + index] != 0u) + select(0u, 2u, code != 0u));
+}
+classes[classesOffset + index] = value;`
+  });
+}
+
 /** Suppress unusable measurements and coordinates before rendering, without CPU readback. */
 export function createPointCloudDisplayCopyNode(
   graph: GPUCommandGraph,

@@ -13,7 +13,7 @@ import {
   executeCommandNodesOnCPU
 } from '../segment-intersection/wgsl-graph-executor';
 import {GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK} from '../../../src/gpu-spatial-analysis/geometry-validity/geometry-validity-types';
-import {GEOMETRY_VALIDITY_CLASSES_WGSL} from '../../../../../website/src/gpu/runs/entries/geometry-processing/geometry-validity-classes';
+import {GEOMETRY_VALIDITY_CLASSES_WGSL} from '../../../../../website/src/gpu/runs/entries/geometry-processing/shared/geometry-validity-classes';
 
 it('website classes keep an unchecked zero code incomplete and retain observed defects', () => {
   const body = GEOMETRY_VALIDITY_CLASSES_WGSL;

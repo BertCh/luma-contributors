@@ -4,7 +4,7 @@
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
-import {GEOMETRY_VALIDITY_CLASSES_WGSL} from '../../../../../website/src/gpu/runs/entries/geometry-processing/geometry-validity-classes';
+import {GEOMETRY_VALIDITY_CLASSES_WGSL} from '../../../../../website/src/gpu/runs/entries/geometry-processing/shared/geometry-validity-classes';
 import {createWGSLKernelNode} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {

@@ -77,7 +77,8 @@ export default defineOperationRun({
       kind: 'bars',
       values: outputs.adjacency,
       ramp: 'sequential',
-      range: [0, 60],
+      // Class adjacency counts reach the hundreds on this 64 x 36 grid; the range follows the data
+      // (a fixed [0, 60] clipped most bars).
       rectangle: [0.04, 0.05, 0.48, 0.34]
     },
     {

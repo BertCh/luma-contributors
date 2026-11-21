@@ -21,7 +21,7 @@ import {
 import {findRingCrossings} from './shared/pointer-support';
 import {addFeatureValues, addKernel} from './shared/shape-segments';
 import {parameters} from './geometry-validity.parameters';
-import {GEOMETRY_VALIDITY_CLASSES_WGSL} from './geometry-validity-classes';
+import {GEOMETRY_VALIDITY_CLASSES_WGSL} from './shared/geometry-validity-classes';
 
 /** Colors of the seven validity classes, in the order the class kernel numbers them. */
 const CLASS_COLORS = [

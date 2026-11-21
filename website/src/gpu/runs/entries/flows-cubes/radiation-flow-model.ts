@@ -45,7 +45,7 @@ export default defineOperationRun<
 >({
   parameters,
   caption:
-    'Expected flow out of one Chicago tract by the radiation model. A tract’s population here is the workers living plus the jobs located in it, summed over the 1,200 largest LODES 2021 flows that pass the minimum, not census totals. Bars: the share of each tract’s outflow the model places; finite-size normalization makes every bar full.',
+    'Expected flow out of one Chicago tract by the radiation model. A tract’s population here is the workers living plus the jobs located in it, summed over the 1,200 largest LODES 2021 flows that pass the minimum, not census totals. Bars: the share of each tract’s outflow the model places. Without normalization the model places all but about the origin’s own share of the population (97 to 99.9% here); finite-size normalization places exactly 100%, so the bars barely change.',
   createInputs,
   build(builder, inputs, values) {
     const {flows} = inputs;

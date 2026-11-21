@@ -11,15 +11,25 @@ import {clamp} from '../../interaction';
 import {addFloatCopy} from './_lib/convert';
 import {createCloudGrid, createTerrainCloud} from './_lib/helpers';
 import {parameters} from './pointcloud-smrf.parameters';
-import {summarizePointCloudGround} from './_lib/pointcloud-display';
-import {addPointCloudDisplayCopy} from './_lib/pointcloud-display-run';
+import {summarizePointCloudGroundClasses} from './_lib/pointcloud-display';
+import {
+  addGroundClasses,
+  addPointCloudDisplayCopy,
+  groundClassLook
+} from './_lib/pointcloud-display-run';
 
-// Fixed prop: on this tile the window changes no classification, so it has no slider.
-const SMOOTHING_WINDOW = 0.3;
+// Fixed prop: on this tile the window changes few classifications, so it has no slider. It is kept
+// small because the filter marks points within about twice the window (and four times the cut) of the
+// tile edge as provisional; a larger window left no fully supported point on this 1-unit-tall tile.
+const SMOOTHING_WINDOW = 0.12;
 const POINT_COUNT = 9000;
 const CELL_SIZE = 0.03;
 // The thresholds the pointer's height picks among (applied once it rests).
 const THRESHOLDS = [0.01, 0.04, 0.1, 0.2, 0.3] as const;
+// Status bits 1, 2 and 4 (INVALID, NO_TERRAIN, EXCLUDED): the point was not classified. Bit 8
+// (INPAINTED: inpainted terrain or within the filter margin of the edge) marks a provisional
+// classification; on this small tile the margin covers most points, so they stay visible.
+const UNCLASSIFIED_BITS = 1 | 2 | 4;
 
 function createInputs({
   random,
@@ -43,12 +53,15 @@ function createInputs({
   };
 }
 type Inputs = ReturnType<typeof createInputs>;
-type Outputs = Record<'footprint' | 'groundMask' | 'surface' | 'status', RunBuffer>;
+type Outputs = Record<
+  'footprint' | 'groundMask' | 'groundClasses' | 'surface' | 'status',
+  RunBuffer
+>;
 
 export default defineOperationRun<Inputs, Outputs>({
   parameters,
   caption:
-    'Inpainted ground surface (left of the curtain, hillshaded) and the points classified as ground (orange) or removed (blue) (right). The tile has little intermediate relief, so the window (fixed at 0.3) barely changes the result.',
+    'Inpainted ground surface (left of the curtain, hillshaded) and the points classified as ground (orange) or removed (blue) (right), faded where the terrain was inpainted or the point is within the filter margin of the tile edge (provisional). Raising cut widens that margin. The tile has little intermediate relief, so the window (fixed at 0.12) barely changes the result.',
   buildCache: 5,
   createInputs,
   build(builder, inputs, values) {
@@ -84,9 +97,16 @@ export default defineOperationRun<Inputs, Outputs>({
           footprint,
           status,
           POINT_COUNT,
-          {components: 2}
+          {components: 2, invalidBits: UNCLASSIFIED_BITS}
         ),
         groundMask,
+        groundClasses: addGroundClasses(
+          builder,
+          groundMask,
+          status,
+          POINT_COUNT,
+          UNCLASSIFIED_BITS
+        ),
         status,
         surface: addFloatCopy(builder, 'surface-grid', groundSurface, cellCount)
       }
@@ -104,16 +124,16 @@ export default defineOperationRun<Inputs, Outputs>({
       const level = Math.floor(fraction * THRESHOLDS.length);
       const mask = peek(outputs.groundMask);
       const status = peek(outputs.status);
-      const summary = summarizePointCloudGround(mask, status);
+      const summary = summarizePointCloudGroundClasses(mask, status, UNCLASSIFIED_BITS);
       return {
         curtain: pointer.x,
         settle: {threshold: THRESHOLDS[level]},
         glyphs: [{shape: 'curtain', x: pointer.x}],
-        readout: `threshold ${THRESHOLDS[level]} · ground ${status ? summary.ground : '…'} of ${summary.supported} supported · ${summary.incomplete} incomplete/unsupported (hidden); raster is provisional`
+        readout: `threshold ${THRESHOLDS[level]} · ground ${status ? summary.ground : '…'} · removed ${summary.removed} · provisional ${summary.provisionalGround + summary.provisionalRemoved} (inpainted or near the edge, faded) · ${summary.unclassified} unclassified (hidden)`
       };
     }
   },
-  draw: ({inputs, outputs, interaction, world}) => {
+  draw: ({inputs, outputs, interaction, world, theme}) => {
     const grid = createCloudGrid(inputs.width, CELL_SIZE);
     const curtain = interaction.curtain ?? world.width / 2;
     return [
@@ -130,7 +150,8 @@ export default defineOperationRun<Inputs, Outputs>({
       {
         layer: 'dots',
         positions: outputs.footprint,
-        values: outputs.groundMask,
+        values: outputs.groundClasses,
+        ...groundClassLook(theme),
         radius: 2.4,
         clip: {side: 'right', x: curtain}
       }

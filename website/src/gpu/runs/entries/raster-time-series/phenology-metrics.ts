@@ -211,9 +211,11 @@ export default defineOperationRun({
         ramp: 'sequential',
         range: [0, 1]
       }),
+      // The floor sits below the earliest start so the two-season pixels in the east, which start
+      // earliest, stay above the near-black bottom of the dark ramp.
       getMapLayer(extra?.map ?? outputs.blank, stack.grid, stack.grid.mapLeft, {
         ramp: 'sequential',
-        range: [-0.5, 0.3]
+        range: [-0.8, 0.3]
       }),
       getDotsLayer(outputs.observations, FRAME, RANGE, xRange, getInk(theme), 4),
       getDotsLayer(outputs.curve, FRAME, RANGE, xRange, getAccent(theme, 0), 3),

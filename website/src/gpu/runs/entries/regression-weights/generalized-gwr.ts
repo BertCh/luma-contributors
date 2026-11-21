@@ -31,6 +31,29 @@ function samplePoisson(mean: number, uniform: number): number {
   return count;
 }
 
+// GPU_ITERATIVE_REGRESSION_STATUS: 0 converged and 3 iteration limit publish a fit; the other codes
+// (excluded, singular, numerical failure, degenerate response, separation) leave NaN, drawn empty.
+const FIT_STATUS_TEXT = [
+  'converged',
+  'excluded',
+  'singular',
+  'iteration limit (last iterate)',
+  'numerical failure',
+  'degenerate response',
+  'separation'
+];
+
+function formatTractFit(codes: ArrayLike<number> | null | undefined, tract: number): string {
+  return codes ? (FIT_STATUS_TEXT[codes[tract]] ?? `status ${codes[tract]}`) : '…';
+}
+
+function formatFailedCount(codes: ArrayLike<number> | null | undefined): string {
+  if (!codes) return '…';
+  let failed = 0;
+  for (let row = 0; row < codes.length; row++) if (codes[row] !== 0 && codes[row] !== 3) failed++;
+  return `${failed} of ${codes.length} without a fit (empty)`;
+}
+
 export default defineOperationRun({
   parameters,
   caption: 'Local slope of the first predictor (left) and fitted mean or probability (right).',
@@ -44,6 +67,7 @@ export default defineOperationRun({
     const parameterBuffer = builder.allocate('parameters', 'float32', 2);
     const coefficients = builder.allocate('coefficients', 'float32', rowCount * 3);
     const fitted = builder.allocate('fitted', 'float32', rowCount);
+    const codes = builder.allocate('codes', 'uint32', rowCount);
     builder.graph.add(
       new GPUGeneralizedGeographicallyWeightedRegression({
         family: isPoisson ? 'poisson' : 'logistic',
@@ -58,7 +82,7 @@ export default defineOperationRun({
           coefficients: coefficients.view,
           fitted: fitted.view,
           status: {
-            codes: builder.allocate('codes', 'uint32', rowCount).view,
+            codes: codes.view,
             iterationCount: builder.allocate('iteration-count', 'uint32', rowCount).view
           }
         }
@@ -70,6 +94,7 @@ export default defineOperationRun({
           uploadRegressionMap(builder, inputs),
           uploadRegressionMap(builder, inputs, inputs.mapWidth * 1.14)
         ],
+        codes,
         slope: addTableColumn(builder, 'local-slope', coefficients, 3, 1, rowCount),
         fitted,
         response
@@ -135,7 +160,7 @@ export default defineOperationRun({
       return {
         focus: tract,
         glyphs,
-        readout: `slope ${slope[tract].toFixed(1)} · ${values.family === 0 ? 'mean' : 'p'} ${fitted[tract].toFixed(2)} · bw ${values.bandwidth}`
+        readout: `${formatTractFit(peek(outputs.codes), tract)} · slope ${slope[tract].toFixed(1)} · ${values.family === 0 ? 'mean' : 'p'} ${fitted[tract].toFixed(2)} · bw ${values.bandwidth} · ${formatFailedCount(peek(outputs.codes))}`
       };
     }
   },

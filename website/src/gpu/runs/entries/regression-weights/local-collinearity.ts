@@ -99,14 +99,16 @@ export default defineOperationRun({
     }
   },
   draw: ({inputs, outputs}) => [
+    // Both floors sit below the smallest possible value (1) so the low-collinearity west keeps a
+    // visible color instead of the near-black bottom of the dark ramp.
     ...drawTractMap(inputs, outputs.meshes[0], outputs.inflation, {
       ramp: 'sequential',
       logarithmic: true,
-      range: [1, 8]
+      range: [-1.5, 3]
     }),
     ...drawTractMap(inputs, outputs.meshes[1], outputs.conditionNumbers, {
       ramp: 'sequential',
-      range: [1, 12]
+      range: [-4, 12]
     })
   ]
 });

@@ -119,9 +119,11 @@ export default defineOperationRun({
   },
   async afterRun({outputs, inputs, upload}) {
     const summary = await readUint32(outputs.cellSummary);
-    // Segments per pixel as three classes: one (stable, muted), two (one break), more.
+    // Segments per pixel as three classes: one (stable, muted), two (one break), more. Status bits
+    // 1 (no segment initialized) and 2 (rank deficient) leave no usable segments; bits 8 (fit
+    // limit) and 16 (segment overflow) still publish the segments found, so those cells are drawn.
     const map = Float32Array.from({length: inputs.grid.cellCount}, (_, cell) => {
-      if (!(inputs.level[cell] > 0) || summary[cell * 3 + 1] !== 0) return Number.NaN;
+      if (!(inputs.level[cell] > 0) || (summary[cell * 3 + 1] & 3) !== 0) return Number.NaN;
       const count = summary[cell * 3];
       return count <= 1 ? Number.NaN : count === 2 ? 1 : 2;
     });
